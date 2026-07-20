@@ -6,7 +6,7 @@ namespace WAFlow.Core.Domain;
 public enum LeadStage { New, Contacted, Interested, Negotiation, Waiting, Customer, Lost }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum AnalysisStatus { NotRun, Running, Succeeded, RetryableFailed }
+public enum AnalysisStatus { NotRun, Queued, Running, Succeeded, RetryableFailed }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum DraftStatus { Draft, Approved, Superseded }
@@ -62,7 +62,7 @@ public sealed class Lead
     public string Grade { get; set; } = "D";
     public Dictionary<string, int> ScoreBreakdown { get; set; } = [];
     public List<string> ScoreReasons { get; set; } = [];
-    public string ProfileSummary { get; set; } = "等待 DeepSeek 分析";
+    public string ProfileSummary { get; set; } = "等待 AI 分析";
     public string CustomerSegment { get; set; } = "未分析";
     public string NextAction { get; set; } = "补充客户信息后进行分析";
     public List<string> Risks { get; set; } = [];
@@ -70,6 +70,11 @@ public sealed class Lead
     public double AnalysisConfidence { get; set; }
     public AnalysisStatus AnalysisStatus { get; set; } = AnalysisStatus.NotRun;
     public string AnalysisError { get; set; } = "";
+    public bool AiScoreApplied { get; set; }
+    public string AnalysisTrigger { get; set; } = "";
+    public DateTimeOffset? AnalysisRequestedAt { get; set; }
+    public DateTimeOffset? LastAnalyzedAt { get; set; }
+    public List<string> LatestReplySignals { get; set; } = [];
     public string LatestMessage { get; set; } = "";
     public DateTimeOffset? LastContactAt { get; set; }
     public DateTimeOffset? NextFollowUpAt { get; set; }
@@ -299,7 +304,7 @@ public sealed class OutreachDraft
     public List<string> Assumptions { get; set; } = [];
     public List<string> Risks { get; set; } = [];
     public DraftStatus Status { get; set; } = DraftStatus.Draft;
-    public string Provider { get; set; } = "deepseek";
+    public string Provider { get; set; } = "compatible";
     public string Model { get; set; } = "deepseek-chat";
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
@@ -326,6 +331,9 @@ public sealed class AppSettings
 {
     public string DeepSeekBaseUrl { get; set; } = "https://api.deepseek.com";
     public string DeepSeekModel { get; set; } = "deepseek-chat";
+    public List<string> AvailableModels { get; set; } = [];
+    public string ModelsBaseUrl { get; set; } = "";
+    public DateTimeOffset? ModelsFetchedAt { get; set; }
 }
 
 public sealed class OnboardingState
@@ -346,7 +354,7 @@ public static class Labels
 
     public static string Analysis(AnalysisStatus value) => value switch
     {
-        AnalysisStatus.Running => "分析中", AnalysisStatus.Succeeded => "已完成",
+        AnalysisStatus.Queued => "等待 AI", AnalysisStatus.Running => "分析中", AnalysisStatus.Succeeded => "已完成",
         AnalysisStatus.RetryableFailed => "可重试", _ => "未分析"
     };
 }

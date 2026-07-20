@@ -10,7 +10,7 @@ namespace WAFlow.Desktop;
 
 public partial class MainWindow : Window
 {
-    private const int CurrentGuideVersion = 2;
+    private const int CurrentGuideVersion = 3;
     private readonly AppServices _services;
     private readonly DashboardView _dashboard;
     private readonly LeadIntelligenceView _intelligence;
@@ -22,7 +22,7 @@ public partial class MainWindow : Window
     private static readonly GuideStep[] GuideSteps =
     [
         new("欢迎使用 AI Sales OS", "这是一套本地原生的 WhatsApp 商机管理与销售自动化工具。客户资料、任务和同步消息默认保存在当前电脑，不需要启动本地网页服务。", "先认识左侧主导航", "Dashboard 查看销售脉搏；商机智能用于评分与 AI 建议；客户列表保存所有原表字段；WhatsApp Inbox 管理会话；自动化群发建立逐人发送任务。"),
-        new("接入 AI API", "首次进入不再要求填写企业名称、产品或优势。只需配置 DeepSeek，或填写兼容接口的 HTTPS Base URL、模型名称和 API Key。", "首次必需：配置 AI Provider", "API Key 只写入 Windows 凭据管理器，不写入数据库、日志或话术内容；企业销售资料可在需要 AI 分析时再补充。", true),
+        new("接入 AI API", "首次进入不再要求填写企业名称、产品或优势。填写 DeepSeek 或兼容接口的 Base URL 与 API Key 后，系统会自动拉取全部可用模型，选择一个即可。", "首次必需：配置 AI Provider 并选择模型", "API Key 只写入 Windows 凭据管理器；模型目录和当前选择保存在本机。企业销售资料可稍后补充。", true),
         new("导入并维护客户数据", "在客户列表或商机智能页面点击“导入客户”。Excel / CSV 的每一列都会保留，表格自定义列也可以成为群发话术字段。", "建议先导入客户并检查号码", "请补充有效 WhatsApp 号码；营销自动发送还要求勾选“客户已同意接收 WhatsApp 营销消息”，已退订客户会被强制排除。"),
         new("连接 WhatsApp Inbox", "进入 WhatsApp Inbox，选择个人账号并扫描二维码。连接后会同步联系人、历史消息和客户侧栏资料。", "必须连接：WhatsApp Inbox", "群发运行时会每 10 秒并在每次发送前核对公网 IP；与任务基线不一致时立即停止所有自动触达，但仍无法保证个人账号不会被限制。"),
         new("建立自动化群发任务", "先保存话术模板并插入客户字段，再单选或多选客户，选择即时或北京时间定时任务，设置逐条发送间隔，预览后人工批准。", "开始使用：WhatsApp 自动化群发", "每位客户会生成独立文本快照。发送间隔只是节奏控制，不能规避 WhatsApp 风控；任务运行期间请保持软件开启且账号已连接。")
@@ -44,6 +44,7 @@ public partial class MainWindow : Window
         _inbox.DataChanged += async (_, _) => await RefreshAllAsync();
         _campaigns.DataChanged += async (_, _) => await RefreshAllAsync();
         _services.Campaigns.SafetyStopped += Campaigns_SafetyStopped;
+        _services.LeadAutomation.AnalysisChanged += LeadAutomation_AnalysisChanged;
         Loaded += MainWindow_Loaded;
     }
 
@@ -57,6 +58,7 @@ public partial class MainWindow : Window
     {
         WindowsTaskbarIdentity.ReleaseWindowIcon();
         _services.Campaigns.SafetyStopped -= Campaigns_SafetyStopped;
+        _services.LeadAutomation.AnalysisChanged -= LeadAutomation_AnalysisChanged;
         base.OnClosed(e);
     }
 
@@ -126,7 +128,7 @@ public partial class MainWindow : Window
         if (_onboardingStep < GuideSteps.Length - 1) { ShowGuide(_onboardingStep + 1); return; }
         if (!_services.DeepSeek.HasApiKey())
         {
-            MessageBox.Show("请先配置 DeepSeek 或兼容 AI 接口的 API Key，再结束首次使用引导。", "需要配置 AI API", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("请先配置 DeepSeek 或兼容 AI 接口的 API Key，并从自动拉取的列表中选择模型，再结束首次使用引导。", "需要配置 AI API", MessageBoxButton.OK, MessageBoxImage.Information);
             await OpenSettingsAsync(true);
             if (!_services.DeepSeek.HasApiKey()) return;
         }
@@ -151,10 +153,19 @@ public partial class MainWindow : Window
     private async Task UpdateProviderStateAsync()
     {
         var configured = _services.DeepSeek.HasApiKey();
-        ProviderText.Text = configured ? "DeepSeek 已配置" : "DeepSeek 未配置";
+        var settings = await _services.Repository.GetAppSettingsAsync();
+        ProviderText.Text = configured ? $"AI 已配置 · {settings.DeepSeekModel}" : "AI API 未配置";
         ProviderBadge.Background = (System.Windows.Media.Brush)FindResource(configured ? "SuccessSoft" : "WarningSoft");
         ProviderText.Foreground = new System.Windows.Media.SolidColorBrush(configured ? System.Windows.Media.Color.FromRgb(15, 112, 79) : System.Windows.Media.Color.FromRgb(138, 97, 16));
-        await Task.CompletedTask;
+    }
+
+    private void LeadAutomation_AnalysisChanged(object? sender, LeadAnalysisAutomationEventArgs e)
+    {
+        _ = Dispatcher.InvokeAsync(async () =>
+        {
+            await _dashboard.RefreshAsync();
+            await _intelligence.RefreshAsync();
+        });
     }
 
     private async Task RefreshAllAsync()

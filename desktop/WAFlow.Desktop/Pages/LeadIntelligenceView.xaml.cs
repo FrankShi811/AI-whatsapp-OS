@@ -23,6 +23,8 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     {
         var selectedId = (LeadGrid.SelectedItem as Lead)?.Id;
         _leads = await _services.Repository.GetLeadsAsync(SearchBox.Text, GradeFilter.SelectedItem as string);
+        var settings = await _services.Repository.GetAppSettingsAsync();
+        AnalyzeButton.Content = $"使用 {settings.DeepSeekModel} 分析 / 重试";
         LeadGrid.ItemsSource = _leads;
         LeadGrid.SelectedItem = _leads.FirstOrDefault(x => x.Id == selectedId) ?? _leads.FirstOrDefault();
         UpdateInspector(LeadGrid.SelectedItem as Lead);
@@ -30,17 +32,21 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
 
     private void UpdateInspector(Lead? lead)
     {
-        AnalyzeButton.IsEnabled = lead is not null;
+        AnalyzeButton.IsEnabled = lead is not null && lead.AnalysisStatus != AnalysisStatus.Running;
         if (lead is null)
         {
             LeadNameText.Text = "选择一个商机"; CompanyText.Text = ""; GradeText.Text = "—"; StageText.Text = "—"; AmountText.Text = "—";
-            ProfileText.Text = "尚未选择客户"; NextActionText.Text = "—"; FactorItems.ItemsSource = null; RiskItems.ItemsSource = null; AnalysisErrorText.Text = ""; return;
+            ProfileText.Text = "尚未选择客户"; AnalysisMetaText.Text = ""; SignalItems.ItemsSource = null; NextActionText.Text = "—"; FactorItems.ItemsSource = null; RiskItems.ItemsSource = null; AnalysisErrorText.Text = ""; return;
         }
         LeadNameText.Text = lead.DisplayName; CompanyText.Text = $"{lead.Company} · {lead.Country}"; GradeText.Text = lead.Grade;
         StageText.Text = lead.StageLabel; AmountText.Text = lead.AmountLabel; ProfileText.Text = lead.ProfileSummary; NextActionText.Text = lead.NextAction;
+        var trigger = lead.AnalysisTrigger == "whatsapp_reply" ? "WhatsApp 新回复自动触发" : lead.AnalysisTrigger == "manual" ? "人工触发" : "尚未触发";
+        var analyzedAt = lead.LastAnalyzedAt is null ? "尚未完成 AI 分析" : $"最近完成 {lead.LastAnalyzedAt.Value.LocalDateTime:yyyy-MM-dd HH:mm}";
+        AnalysisMetaText.Text = $"{trigger} · {analyzedAt} · {lead.AnalysisStateLabel}";
+        SignalItems.ItemsSource = lead.LatestReplySignals.Count > 0 ? lead.LatestReplySignals : new[] { "尚未捕捉到明确回复信号" };
         var labels = new Dictionary<string, string> { ["marketValue"]="市场价值", ["companyScale"]="公司规模", ["productFit"]="产品匹配", ["purchasePower"]="采购能力", ["replyEngagement"]="回复积极度", ["recency"]="活跃时间", ["explicitDemand"]="明确需求", ["registeredOrConsulted"]="注册 / 咨询" };
         FactorItems.ItemsSource = LeadScoringLabel.Order.Select(key => new FactorMetric(labels[key], lead.ScoreBreakdown.GetValueOrDefault(key), WAFlow.Core.Services.LeadScoringService.Weights[key])).ToList();
-        RiskItems.ItemsSource = lead.Risks.Count > 0 ? lead.Risks : lead.PhoneValid ? new[] { "AI 分析结论仍需人工核对。" } : new[] { "号码无效，禁止打开 WhatsApp。" };
+        RiskItems.ItemsSource = lead.Risks.Count > 0 ? lead.Risks : !lead.PhoneValid ? new[] { "号码无效，禁止打开 WhatsApp。" } : lead.AiScoreApplied ? new[] { "AI 分析结论仍需人工核对。" } : new[] { "当前 D 级是未分析初始值，不代表低价值客户。" };
         AnalysisErrorText.Text = lead.AnalysisError;
         GradeBadge.Background = (System.Windows.Media.Brush)FindResource(lead.Grade is "A" or "B" ? "SuccessSoft" : lead.Grade == "C" ? "WarningSoft" : "DangerSoft");
     }
@@ -48,17 +54,18 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     private async void Analyze_Click(object sender, RoutedEventArgs e)
     {
         if (LeadGrid.SelectedItem is not Lead lead) return;
-        var profile = await _services.Repository.GetSalesProfileAsync();
-        if (profile is null) { MessageBox.Show("请先完成企业销售资料设置。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Information); return; }
-        AnalyzeButton.IsEnabled = false; AnalyzeButton.Content = "DeepSeek 分析中…";
+        var profile = await _services.Repository.GetSalesProfileAsync() ?? new SalesProfile();
+        lead.AnalysisTrigger = "manual";
+        lead.AnalysisRequestedAt = DateTimeOffset.Now;
+        AnalyzeButton.IsEnabled = false; AnalyzeButton.Content = "AI 分析中…";
         try
         {
             await _services.DeepSeek.AnalyzeLeadAsync(lead, profile);
             await RefreshAsync(); DataChanged?.Invoke(this, EventArgs.Empty);
             MessageBox.Show("分析已完成，评分、证据和下一步动作已保存。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Information);
         }
-        catch (Exception error) { MessageBox.Show(error.Message, "DeepSeek 分析失败（可重试）", MessageBoxButton.OK, MessageBoxImage.Warning); await RefreshAsync(); }
-        finally { AnalyzeButton.Content = "使用 DeepSeek 分析 / 重试"; AnalyzeButton.IsEnabled = true; }
+        catch (Exception error) { MessageBox.Show(error.Message, "AI 分析失败（可重试）", MessageBoxButton.OK, MessageBoxImage.Warning); await RefreshAsync(); }
+        finally { var settings = await _services.Repository.GetAppSettingsAsync(); AnalyzeButton.Content = $"使用 {settings.DeepSeekModel} 分析 / 重试"; AnalyzeButton.IsEnabled = true; }
     }
 
     private void LeadGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateInspector(LeadGrid.SelectedItem as Lead);

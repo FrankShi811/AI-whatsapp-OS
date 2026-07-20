@@ -28,6 +28,8 @@ public partial class DraftsView : UserControl, IRefreshableView
         var leadId = (LeadCombo.SelectedItem as Lead)?.Id;
         var draftId = _current?.Id;
         _leads = await _services.Repository.GetLeadsAsync(); _drafts = await _services.Repository.GetDraftsAsync();
+        var settings = await _services.Repository.GetAppSettingsAsync();
+        GenerateButton.Content = $"{settings.DeepSeekModel} 生成";
         LeadCombo.ItemsSource = _leads; LeadCombo.SelectedItem = _leads.FirstOrDefault(l => l.Id == leadId) ?? _leads.FirstOrDefault();
         DraftList.ItemsSource = _drafts; DraftCountText.Text = $"{_drafts.Count} 条";
         if (draftId is not null) DraftList.SelectedItem = _drafts.FirstOrDefault(d => d.Id == draftId);
@@ -37,8 +39,7 @@ public partial class DraftsView : UserControl, IRefreshableView
     private async void Generate_Click(object sender, RoutedEventArgs e)
     {
         if (LeadCombo.SelectedItem is not Lead lead) { MessageBox.Show("请先选择客户。", "AI Sales OS"); return; }
-        var profile = await _services.Repository.GetSalesProfileAsync();
-        if (profile is null) { MessageBox.Show("请先完成企业销售资料设置。", "AI Sales OS"); return; }
+        var profile = await _services.Repository.GetSalesProfileAsync() ?? new SalesProfile();
         GenerateButton.IsEnabled = false; GenerateButton.Content = "生成中…";
         try
         {
@@ -49,7 +50,7 @@ public partial class DraftsView : UserControl, IRefreshableView
             DataChanged?.Invoke(this, EventArgs.Empty);
         }
         catch (Exception error) { MessageBox.Show(error.Message, "话术生成失败", MessageBoxButton.OK, MessageBoxImage.Warning); }
-        finally { GenerateButton.IsEnabled = true; GenerateButton.Content = "DeepSeek 生成"; UpdateButtons(); }
+        finally { var settings = await _services.Repository.GetAppSettingsAsync(); GenerateButton.IsEnabled = true; GenerateButton.Content = $"{settings.DeepSeekModel} 生成"; UpdateButtons(); }
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e)

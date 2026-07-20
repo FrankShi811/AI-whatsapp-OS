@@ -5,7 +5,7 @@
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
         <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <StackPanel><TextBlock Text="Lead Intelligence" Style="{StaticResource PageTitle}"/><TextBlock Text="规则评分提供基线，DeepSeek 分析提供证据、画像和策略。" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/></StackPanel>
+            <StackPanel><TextBlock Text="Lead Intelligence" Style="{StaticResource PageTitle}"/><TextBlock Text="未分析客户统一为 D；WhatsApp 新回复自动进入所选 AI 模型的分析队列。" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/></StackPanel>
             <Button Grid.Column="1" Content="＋ 导入 Excel / CSV" Style="{StaticResource PrimaryButton}" Click="Import_Click" VerticalAlignment="Center"/>
         </Grid>
         <Border Grid.Row="1" Style="{StaticResource Card}" Padding="14" Margin="0,20,0,14">
@@ -44,6 +44,12 @@
                         <Border Height="1" Background="{StaticResource Line}" Margin="0,16"/>
                         <TextBlock Text="AI 客户画像" Style="{StaticResource SectionTitle}"/>
                         <TextBlock x:Name="ProfileText" Text="尚未分析" Foreground="#425049" LineHeight="21" Margin="0,8,0,0"/>
+                        <TextBlock x:Name="AnalysisMetaText" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,7,0,0" TextWrapping="Wrap"/>
+                        <TextBlock Text="WhatsApp 回复信号" Style="{StaticResource SectionTitle}" Margin="0,18,0,0"/>
+                        <ItemsControl x:Name="SignalItems" Margin="0,7,0,0">
+                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate><DataTemplate><Border Background="#EDF4F0" CornerRadius="9" Padding="8,4" Margin="0,0,6,6"><TextBlock Text="{Binding}" Foreground="#17634D" FontSize="10"/></Border></DataTemplate></ItemsControl.ItemTemplate>
+                        </ItemsControl>
                         <TextBlock Text="下一步动作" Style="{StaticResource SectionTitle}" Margin="0,18,0,0"/>
                         <Border Background="{StaticResource SuccessSoft}" CornerRadius="8" Padding="12" Margin="0,8,0,0"><TextBlock x:Name="NextActionText" Text="—" Foreground="#155F49" LineHeight="20"/></Border>
                         <TextBlock Text="评分证据" Style="{StaticResource SectionTitle}" Margin="0,18,0,0"/>
@@ -59,7 +65,7 @@
                         <TextBlock x:Name="AnalysisErrorText" Foreground="#B23636" Margin="0,12,0,0"/>
                     </StackPanel></ScrollViewer>
                     <Border Grid.Row="2" Padding="16" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
-                        <Button x:Name="AnalyzeButton" Content="使用 DeepSeek 分析 / 重试" Style="{StaticResource PrimaryButton}" Click="Analyze_Click" HorizontalAlignment="Stretch"/>
+                        <Button x:Name="AnalyzeButton" Content="使用所选 AI 模型分析 / 重试" Style="{StaticResource PrimaryButton}" Click="Analyze_Click" HorizontalAlignment="Stretch"/>
                     </Border>
                 </Grid>
             </Border>

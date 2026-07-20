@@ -7,7 +7,7 @@
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <StackPanel>
                     <TextBlock Text="销售脉搏" Style="{StaticResource PageTitle}"/>
-                    <TextBlock Text="规则评分与 DeepSeek 分析分开记录，所有触达均需人工确认。" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
+                    <TextBlock Text="WhatsApp 回复驱动 AI 分析；未分析客户统一为 D，所有触达均需人工确认。" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
                 </StackPanel>
                 <Border Grid.Column="1" Background="{StaticResource SuccessSoft}" CornerRadius="8" Padding="12,7" VerticalAlignment="Center">
                     <TextBlock Text="● 数据保存在本机" Foreground="#0A7B57" FontSize="12" FontWeight="SemiBold"/>
@@ -27,7 +27,7 @@
                 <Border Style="{StaticResource Card}" Margin="0,0,10,0">
                     <StackPanel>
                         <TextBlock Text="等级分布" Style="{StaticResource SectionTitle}"/>
-                        <TextBlock Text="评分阈值：A≥80 · B 60–79 · C 40–59 · D&lt;40" Style="{StaticResource LabelText}" Margin="0,4,0,16"/>
+                        <TextBlock Text="AI 评分：A≥80 · B 60–79 · C 40–59 · D&lt;40；未分析统一为 D" Style="{StaticResource LabelText}" Margin="0,4,0,16" TextWrapping="Wrap"/>
                         <Grid Height="165">
                             <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
                             <StackPanel Grid.Column="0" VerticalAlignment="Bottom" HorizontalAlignment="Center"><Border x:Name="GradeABar" Width="42" Height="20" Background="#128B67" CornerRadius="7,7,0,0"/><TextBlock x:Name="GradeAText" Text="0" HorizontalAlignment="Center" FontWeight="Bold" Margin="0,7,0,0"/><TextBlock Text="A" HorizontalAlignment="Center" Foreground="{StaticResource Muted}"/></StackPanel>
@@ -54,7 +54,7 @@
             </Grid>
             <Border Style="{StaticResource Card}" Margin="0,20,0,0">
                 <StackPanel>
-                    <Grid Margin="0,0,0,12"><TextBlock Text="优先商机" Style="{StaticResource SectionTitle}"/><TextBlock Text="按规则 / AI 分数排序" HorizontalAlignment="Right" Style="{StaticResource LabelText}"/></Grid>
+                    <Grid Margin="0,0,0,12"><TextBlock Text="优先商机" Style="{StaticResource SectionTitle}"/><TextBlock Text="按已完成的 AI 分数排序" HorizontalAlignment="Right" Style="{StaticResource LabelText}"/></Grid>
                     <DataGrid x:Name="PriorityGrid" IsReadOnly="True" MaxHeight="285">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="客户" Binding="{Binding DisplayName}" Width="1.25*"/>

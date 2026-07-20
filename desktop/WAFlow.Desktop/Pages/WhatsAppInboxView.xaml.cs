@@ -432,6 +432,10 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 if (index >= 0) _leads[index] = lead;
             }
             await _services.Repository.SynchronizeLeadConnectionsFromInboxAsync([lead]);
+            var latestReply = (await _services.Repository.GetWhatsAppMessagesForLeadAsync(lead, 40))
+                .LastOrDefault(message => message.Direction == WhatsAppMessageDirection.Incoming && !string.IsNullOrWhiteSpace(message.Body));
+            if (latestReply is not null && (!lead.AiScoreApplied || lead.LastAnalyzedAt is null || latestReply.Timestamp > lead.LastAnalyzedAt))
+                await _services.LeadAutomation.QueueLeadForReplyAsync(latestReply);
             conversation.LeadId = lead.Id;
             conversation.DisplayName = lead.DisplayName;
             LeadLinkStateText.Text = $"已关联：{lead.Grade} 级 · {Labels.Stage(lead.Stage)}";

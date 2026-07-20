@@ -14,6 +14,8 @@ public sealed class DeepSeekException : Exception
     public DeepSeekException(string code, string message, bool retryable, Exception? inner = null) : base(message, inner) { Code = code; Retryable = retryable; }
 }
 
+public sealed record AiModelCatalog(IReadOnlyList<string> Models, DateTimeOffset FetchedAt);
+
 public sealed class DeepSeekService
 {
     private readonly LocalRepository _repository;
@@ -32,19 +34,94 @@ public sealed class DeepSeekService
         catch { return false; }
     }
 
+    public async Task<AiModelCatalog> DiscoverModelsAsync(string baseUrl, string? apiKeyOverride = null, CancellationToken cancellationToken = default)
+    {
+        var key = string.IsNullOrWhiteSpace(apiKeyOverride) ? _secrets.Read() : apiKeyOverride.Trim();
+        if (string.IsNullOrWhiteSpace(key)) throw new DeepSeekException("provider_not_configured", "请先填写 API Key，再自动拉取模型。", false);
+        if (!Uri.TryCreate(baseUrl.Trim(), UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
+            throw new DeepSeekException("invalid_base_url", "AI Base URL 必须是有效的 HTTPS 地址。", false);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri.ToString().TrimEnd('/') + "/models");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+        HttpResponseMessage response;
+        try { response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken); }
+        catch (TaskCanceledException error) { throw new DeepSeekException("model_discovery_timeout", "拉取模型列表超时，请检查网络后重试。", true, error); }
+        catch (HttpRequestException error) { throw new DeepSeekException("model_discovery_unavailable", "无法连接 AI 模型列表接口，请检查网络和 Base URL。", true, error); }
+        using (response)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                var unauthorized = response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden;
+                throw new DeepSeekException(
+                    unauthorized ? "provider_unauthorized" : "model_discovery_failed",
+                    unauthorized ? "API Key 无效或没有读取模型列表的权限。" : $"拉取模型列表失败（HTTP {(int)response.StatusCode}）。",
+                    response.StatusCode == HttpStatusCode.TooManyRequests || (int)response.StatusCode >= 500);
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(body);
+                var root = document.RootElement;
+                var array = root.ValueKind == JsonValueKind.Array
+                    ? root
+                    : root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array
+                        ? data
+                        : root.TryGetProperty("models", out var models) && models.ValueKind == JsonValueKind.Array
+                            ? models
+                            : throw new JsonException("Missing model array");
+                var ids = array.EnumerateArray()
+                    .Select(item => item.ValueKind == JsonValueKind.String
+                        ? item.GetString()
+                        : item.ValueKind == JsonValueKind.Object && item.TryGetProperty("id", out var id)
+                            ? id.GetString()
+                            : item.ValueKind == JsonValueKind.Object && item.TryGetProperty("name", out var name)
+                                ? name.GetString()
+                                : null)
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .Select(id => id!.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                    .Take(500)
+                    .ToList();
+                if (ids.Count == 0) throw new JsonException("Empty model array");
+                return new AiModelCatalog(ids, DateTimeOffset.Now);
+            }
+            catch (Exception error) when (error is not DeepSeekException)
+            {
+                throw new DeepSeekException("invalid_model_catalog", "模型列表接口未返回可选择的模型名称。", true, error);
+            }
+        }
+    }
+
     public async Task<Lead> AnalyzeLeadAsync(Lead lead, SalesProfile profile, CancellationToken cancellationToken = default)
     {
         var settings = await _repository.GetAppSettingsAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(settings.DeepSeekModel)) throw new DeepSeekException("model_not_selected", "请先从自动拉取的模型列表中选择一个模型。", false);
         var runId = Guid.NewGuid().ToString("N");
+        var requestedAt = lead.AnalysisRequestedAt;
         lead.AnalysisStatus = AnalysisStatus.Running; lead.AnalysisError = "";
         await _repository.UpsertLeadAsync(lead, cancellationToken);
         await _repository.SaveAnalysisRunAsync(runId, lead.Id, "running", settings.DeepSeekModel, null, null, cancellationToken);
         try
         {
+            var recentMessages = await _repository.GetWhatsAppMessagesForLeadAsync(lead, 40, cancellationToken);
+            var replySignals = WhatsAppReplySignalExtractor.Extract(recentMessages);
             var payload = new
             {
                 seller = profile,
-                lead = new { lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.EstimatedOrderValue, lead.Currency, lead.CompanyScale, lead.PurchasePower, lead.ExplicitDemand, lead.RegisteredOrConsulted, lead.Source, stage = lead.Stage.ToString(), lead.LatestMessage, deterministicScore = lead.Score, deterministicGrade = lead.Grade },
+                lead = new { lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.EstimatedOrderValue, lead.Currency, lead.CompanyScale, lead.PurchasePower, lead.ExplicitDemand, lead.RegisteredOrConsulted, lead.Source, lead.Tags, lead.Owner, lead.CustomFields, stage = lead.Stage.ToString(), lead.LatestMessage },
+                whatsapp = new
+                {
+                    replySignals,
+                    recentMessages = recentMessages.Select(message => new
+                    {
+                        direction = message.Direction == WhatsAppMessageDirection.Incoming ? "customer" : "seller",
+                        timestamp = message.Timestamp,
+                        message.Kind,
+                        message.Body
+                    })
+                },
                 scoringWeights = LeadScoringService.Weights
             };
             var instructions = """
@@ -53,26 +130,33 @@ public sealed class DeepSeekService
                 stage(one of new,contacted,interested,negotiation,waiting,customer,lost), confidence(0..1), evidence(array of field,value,interpretation),
                 profileSummary, customerSegment, nextAction, risks(array of strings).
                 Factor keys and maximums must exactly match scoringWeights. Score must equal the factor sum. Grade: A>=80, B=60..79, C=40..59, D<40.
+                WhatsApp customer replies are the primary evidence for replyEngagement, explicitDemand, recency and stage. Keyword signals are retrieval hints only:
+                verify every signal against the exact message text and context, and do not treat a keyword alone as intent. CRM/imported fields are supporting context.
                 State uncertainty in risks; never invent facts. Answer profileSummary, nextAction and rationale in Simplified Chinese.
                 """;
             var content = await CompleteJsonAsync(settings, instructions, Infrastructure.Json.Serialize(payload), cancellationToken);
             var analysis = ParseAnalysis(content);
             Validate(analysis);
-            lead.Score = analysis.Score; lead.Grade = analysis.Grade; lead.ScoreBreakdown = analysis.Factors.ToDictionary(f => f.Key, f => f.Score);
-            lead.ScoreReasons = analysis.Factors.OrderByDescending(f => f.Score / (double)Math.Max(1, f.MaxScore)).Take(3).Select(f => f.Rationale).ToList();
-            lead.Stage = analysis.Stage; lead.AnalysisConfidence = analysis.Confidence; lead.Evidence = analysis.Evidence;
-            lead.ProfileSummary = analysis.ProfileSummary; lead.CustomerSegment = analysis.CustomerSegment; lead.NextAction = analysis.NextAction; lead.Risks = analysis.Risks;
-            lead.AnalysisStatus = AnalysisStatus.Succeeded; lead.AnalysisError = "";
-            await _repository.UpsertLeadAsync(lead, cancellationToken);
+            var target = await _repository.GetLeadAsync(lead.Id, cancellationToken) ?? lead;
+            target.Score = analysis.Score; target.Grade = analysis.Grade; target.ScoreBreakdown = analysis.Factors.ToDictionary(f => f.Key, f => f.Score);
+            target.ScoreReasons = analysis.Factors.OrderByDescending(f => f.Score / (double)Math.Max(1, f.MaxScore)).Take(3).Select(f => f.Rationale).ToList();
+            target.Stage = analysis.Stage; target.AnalysisConfidence = analysis.Confidence; target.Evidence = analysis.Evidence;
+            target.ProfileSummary = analysis.ProfileSummary; target.CustomerSegment = analysis.CustomerSegment; target.NextAction = analysis.NextAction; target.Risks = analysis.Risks;
+            target.LatestReplySignals = replySignals;
+            target.AnalysisStatus = AnalysisStatus.Succeeded; target.AnalysisError = ""; target.AiScoreApplied = true; target.LastAnalyzedAt = DateTimeOffset.Now;
+            await _repository.UpsertLeadAsync(target, cancellationToken);
             await _repository.SaveAnalysisRunAsync(runId, lead.Id, "succeeded", settings.DeepSeekModel, analysis, null, cancellationToken);
-            await _repository.LogEventAsync("lead_analyzed", lead.Id, null, $"provider=deepseek; model={settings.DeepSeekModel}", cancellationToken);
-            return lead;
+            await _repository.LogEventAsync("lead_analyzed", lead.Id, null, $"provider=compatible; model={settings.DeepSeekModel}; trigger={target.AnalysisTrigger}", cancellationToken);
+            return target;
         }
         catch (Exception error)
         {
-            var safe = error is DeepSeekException dse ? $"{dse.Code}: {dse.Message}" : "DeepSeek 返回内容无法验证，请重试。";
-            lead.AnalysisStatus = AnalysisStatus.RetryableFailed; lead.AnalysisError = safe;
-            await _repository.UpsertLeadAsync(lead, cancellationToken);
+            var safe = error is DeepSeekException dse ? $"{dse.Code}: {dse.Message}" : "AI 返回内容无法验证，请重试。";
+            var target = await _repository.GetLeadAsync(lead.Id, cancellationToken) ?? lead;
+            var hasNewerRequest = target.AnalysisRequestedAt is not null && (requestedAt is null || target.AnalysisRequestedAt > requestedAt);
+            target.AnalysisStatus = hasNewerRequest ? AnalysisStatus.Queued : AnalysisStatus.RetryableFailed;
+            target.AnalysisError = hasNewerRequest ? $"{safe} 新回复已重新排队。" : safe;
+            await _repository.UpsertLeadAsync(target, cancellationToken);
             await _repository.SaveAnalysisRunAsync(runId, lead.Id, "retryable_failed", settings.DeepSeekModel, null, safe, cancellationToken);
             throw error is DeepSeekException ? error : new DeepSeekException("invalid_structured_output", safe, true, error);
         }
@@ -92,13 +176,13 @@ public sealed class DeepSeekService
         var content = await CompleteJsonAsync(settings, instructions, Infrastructure.Json.Serialize(payload), cancellationToken);
         GeneratedDraft? generated;
         try { generated = Infrastructure.Json.Deserialize<GeneratedDraft>(ExtractJson(content)); }
-        catch (Exception error) { throw new DeepSeekException("invalid_structured_output", "DeepSeek 话术 JSON 解析失败。", true, error); }
-        if (generated is null || string.IsNullOrWhiteSpace(generated.Body) || generated.Body.Length > 4096) throw new DeepSeekException("invalid_structured_output", "DeepSeek 话术缺少正文或正文过长。", true);
+        catch (Exception error) { throw new DeepSeekException("invalid_structured_output", "AI 话术 JSON 解析失败。", true, error); }
+        if (generated is null || string.IsNullOrWhiteSpace(generated.Body) || generated.Body.Length > 4096) throw new DeepSeekException("invalid_structured_output", "AI 话术缺少正文或正文过长。", true);
         var draft = new OutreachDraft
         {
             LeadId=lead.Id, LeadName=lead.DisplayName, Purpose=purpose, Language=language, Body=generated.Body.Trim(),
             Rationale=generated.Rationale ?? [], Assumptions=generated.Assumptions ?? [], Risks=generated.Risks ?? [],
-            Provider="deepseek", Model=settings.DeepSeekModel
+            Provider="compatible", Model=settings.DeepSeekModel
         };
         await _repository.SaveDraftAsync(draft, "generated", cancellationToken: cancellationToken);
         await _repository.LogEventAsync("draft_generated", lead.Id, draft.Id, $"purpose={purpose}; language={language}", cancellationToken);
@@ -108,7 +192,7 @@ public sealed class DeepSeekService
     private async Task<string> CompleteJsonAsync(AppSettings settings, string instructions, string payload, CancellationToken cancellationToken)
     {
         var key = _secrets.Read();
-        if (string.IsNullOrWhiteSpace(key)) throw new DeepSeekException("provider_not_configured", "请先在企业设置中填写 DeepSeek API Key。", false);
+        if (string.IsNullOrWhiteSpace(key)) throw new DeepSeekException("provider_not_configured", "请先在 AI 设置中填写 API Key。", false);
         var endpoint = settings.DeepSeekBaseUrl.TrimEnd('/') + "/chat/completions";
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
@@ -120,8 +204,8 @@ public sealed class DeepSeekService
         }), Encoding.UTF8, "application/json");
         HttpResponseMessage response;
         try { response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken); }
-        catch (TaskCanceledException error) { throw new DeepSeekException("provider_timeout", "DeepSeek 请求超时，请稍后重试。", true, error); }
-        catch (HttpRequestException error) { throw new DeepSeekException("provider_unavailable", "无法连接 DeepSeek，请检查网络和 Base URL。", true, error); }
+        catch (TaskCanceledException error) { throw new DeepSeekException("provider_timeout", "AI 请求超时，请稍后重试。", true, error); }
+        catch (HttpRequestException error) { throw new DeepSeekException("provider_unavailable", "无法连接 AI Provider，请检查网络和 Base URL。", true, error); }
         using (response)
         {
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -129,7 +213,7 @@ public sealed class DeepSeekService
             {
                 var code = response.StatusCode == HttpStatusCode.TooManyRequests ? "provider_rate_limited" : response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden ? "provider_unauthorized" : "provider_request_failed";
                 var retryable = response.StatusCode == HttpStatusCode.TooManyRequests || (int)response.StatusCode >= 500;
-                throw new DeepSeekException(code, response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden ? "DeepSeek API Key 无效或无权限。" : $"DeepSeek 请求失败（HTTP {(int)response.StatusCode}）。", retryable);
+                throw new DeepSeekException(code, response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden ? "AI API Key 无效或无权限。" : $"AI 请求失败（HTTP {(int)response.StatusCode}）。", retryable);
             }
             try
             {
@@ -138,7 +222,7 @@ public sealed class DeepSeekService
                 if (string.IsNullOrWhiteSpace(content)) throw new JsonException("Empty content");
                 return content;
             }
-            catch (Exception error) { throw new DeepSeekException("invalid_provider_response", "DeepSeek 响应缺少有效内容。", true, error); }
+            catch (Exception error) { throw new DeepSeekException("invalid_provider_response", "AI Provider 响应缺少有效内容。", true, error); }
         }
     }
 
@@ -162,7 +246,7 @@ public sealed class DeepSeekService
                 Risks=root.TryGetProperty("risks", out var risks) ? risks.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => x.Length > 0).ToList() : []
             };
         }
-        catch (Exception error) { throw new DeepSeekException("invalid_structured_output", "DeepSeek 分析 JSON 解析失败。", true, error); }
+        catch (Exception error) { throw new DeepSeekException("invalid_structured_output", "AI 分析 JSON 解析失败。", true, error); }
     }
 
     private static void Validate(LeadAnalysis analysis)
@@ -183,7 +267,7 @@ public sealed class DeepSeekService
             if (firstLine >= 0 && lastFence > firstLine) trimmed = trimmed[(firstLine + 1)..lastFence].Trim();
         }
         var start = trimmed.IndexOf('{'); var end = trimmed.LastIndexOf('}');
-        if (start < 0 || end <= start) throw new DeepSeekException("invalid_structured_output", "DeepSeek 未返回 JSON 对象。", true);
+        if (start < 0 || end <= start) throw new DeepSeekException("invalid_structured_output", "AI Provider 未返回 JSON 对象。", true);
         return trimmed[start..(end + 1)];
     }
 

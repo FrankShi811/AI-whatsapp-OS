@@ -21,6 +21,7 @@ public partial class App : Application
             var main = new MainWindow(Services);
             MainWindow = main;
             main.Show();
+            await Services.LeadAutomation.StartAsync();
             await Services.Campaigns.StartAsync();
         }
         catch (Exception error)
@@ -57,6 +58,7 @@ public partial class App : Application
     {
         if (Services is not null)
         {
+            Services.LeadAutomation.DisposeAsync().AsTask().GetAwaiter().GetResult();
             Services.Campaigns.DisposeAsync().AsTask().GetAwaiter().GetResult();
             Services.WhatsApp.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }

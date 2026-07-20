@@ -19,12 +19,20 @@
             </StackPanel></Border>
             <Border Style="{StaticResource Card}" Margin="0,16,0,0"><StackPanel>
                 <Grid><TextBlock Text="AI Provider（DeepSeek / 兼容接口）" Style="{StaticResource SectionTitle}"/><Border HorizontalAlignment="Right" Background="{StaticResource SuccessSoft}" CornerRadius="10" Padding="9,4"><TextBlock x:Name="ApiStatusText" Text="未配置" Foreground="#0B7855" FontSize="11"/></Border></Grid>
-                <TextBlock Text="API Key" Style="{StaticResource LabelText}" Margin="0,14,0,5"/><PasswordBox x:Name="ApiKeyBox" Padding="10,8" BorderBrush="#CED9D3" BorderThickness="1" FontSize="13"/>
+                <TextBlock Text="API Key" Style="{StaticResource LabelText}" Margin="0,14,0,5"/><PasswordBox x:Name="ApiKeyBox" Padding="10,8" BorderBrush="#CED9D3" BorderThickness="1" FontSize="13" PasswordChanged="ProviderInput_Changed"/>
                 <TextBlock Text="留空会保留现有 Key；程序不会将 Key 写入数据库、日志或界面。" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,5,0,0"/>
-                <Grid Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="1.5*"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                    <StackPanel Margin="0,0,8,0"><TextBlock Text="Base URL" Style="{StaticResource LabelText}" Margin="0,0,0,5"/><TextBox x:Name="BaseUrlBox" Text="https://api.deepseek.com"/></StackPanel>
-                    <StackPanel Grid.Column="1" Margin="8,0,0,0"><TextBlock Text="模型" Style="{StaticResource LabelText}" Margin="0,0,0,5"/><TextBox x:Name="ModelBox" Text="deepseek-chat"/></StackPanel>
+                <Grid Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="1.15*"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="Base URL" Style="{StaticResource LabelText}" Margin="0,0,0,5"/><TextBox x:Name="BaseUrlBox" Text="https://api.deepseek.com" TextChanged="ProviderInput_Changed"/></StackPanel>
+                    <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                        <TextBlock Text="工作模型" Style="{StaticResource LabelText}" Margin="0,0,0,5"/>
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <ComboBox x:Name="ModelBox" IsEditable="False" IsTextSearchEnabled="True" MinWidth="190" ToolTip="系统从 API 的 /models 接口自动拉取；选择后用于商机分析与话术生成。"/>
+                            <Button x:Name="ReloadModelsButton" Grid.Column="1" Content="拉取模型" Style="{StaticResource SecondaryButton}" Padding="12,7" Margin="8,0,0,0" Click="ReloadModels_Click"/>
+                        </Grid>
+                    </StackPanel>
                 </Grid>
+                <TextBlock x:Name="ModelStatusText" Text="填写 API Key 后将自动拉取可用模型。" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,7,0,0" TextWrapping="Wrap"/>
+                <Border Background="#FFF7E1" CornerRadius="8" Padding="10" Margin="0,12,0,0"><TextBlock Text="AI 只会把分析结果写入商机智能与 Dashboard 等级分布；未完成 AI 分析的客户统一保持 D 级。WhatsApp 新回复会进入 AI 分析队列。" Foreground="#75550C" FontSize="10" TextWrapping="Wrap"/></Border>
             </StackPanel></Border>
             <Border Background="#EDF4F0" CornerRadius="9" Padding="12" Margin="0,16,0,0"><StackPanel><TextBlock Text="本地数据位置" FontWeight="SemiBold" FontSize="11"/><TextBlock x:Name="DatabasePathText" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap"/></StackPanel></Border>
         </StackPanel></ScrollViewer>

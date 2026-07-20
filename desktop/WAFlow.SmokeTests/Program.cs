@@ -15,13 +15,13 @@ var database = Path.Combine(root, "smoke.db");
 var repository = new LocalRepository(database);
 await repository.InitializeAsync();
 var scorer = new LeadScoringService();
-var imports = new ImportService(repository, scorer);
+var imports = new ImportService(repository);
 
 if (args.Length >= 3 && args[0] == "--database-reimport")
 {
     var upgradeRepository = new LocalRepository(args[2]);
     await upgradeRepository.InitializeAsync();
-    var upgradeImports = new ImportService(upgradeRepository, scorer);
+    var upgradeImports = new ImportService(upgradeRepository);
     var realParsed = upgradeImports.Parse(args[1]);
     var sherrySheet = realParsed.Sheets.FirstOrDefault(sheet => sheet.Name == "\u5ba2\u6237\u603b\u8868\uff08Sherry3\uff09") ?? realParsed.Sheets[0];
     var realPreview = await upgradeImports.BuildPreviewAsync(sherrySheet, upgradeImports.SuggestMapping(sherrySheet));
@@ -77,6 +77,14 @@ var wa = PhoneNormalizer.BuildWaMeUrl("+44 7700 900123", "Hello Elena & team");
 Check(wa == "https://wa.me/447700900123?text=Hello%20Elena%20%26%20team", "wa.me encoding");
 Check(StageParser.Parse("qualified") == WAFlow.Core.Domain.LeadStage.Interested && StageParser.Parse("won") == WAFlow.Core.Domain.LeadStage.Customer, "legacy stage migration");
 
+var baselineRoot = Path.Combine(root, "ai-baseline");
+var baselineRepository = new LocalRepository(Path.Combine(baselineRoot, "baseline.db"));
+await baselineRepository.InitializeAsync();
+await baselineRepository.UpsertLeadAsync(new Lead { Id="legacy-rule-score", Name="Legacy Rule Score", Grade="B", Score=72, ScoreBreakdown=new Dictionary<string, int> { ["productFit"]=18 }, ScoreReasons=["旧规则评分"], AnalysisStatus=AnalysisStatus.NotRun });
+await baselineRepository.InitializeAsync();
+var alignedBaseline = await baselineRepository.GetLeadAsync("legacy-rule-score");
+Check(alignedBaseline is { Grade: "D", Score: 0, AiScoreApplied: false, AnalysisStatus: AnalysisStatus.NotRun } && alignedBaseline.ScoreBreakdown.Count == 0, "upgrade resets legacy non-AI scores to the D baseline");
+
 var csvPath = Path.Combine(root, "sample.csv");
 await File.WriteAllTextAsync(csvPath, "客户姓名,公司名称,国家,WhatsApp号码,意向产品,预计订单额,阶段,备注,门店数量,采购周期\r\nNew Buyer,North Star,United Kingdom,07700900999,Oak chair,12000,new,=HYPERLINK(\"bad\"),12,Quarterly\r\nElena Duplicate,Nordline Living,Italy,+393491234567,DC-18,26000,won,Needs quote,28,Monthly", new UTF8Encoding(true));
 var parsed = imports.Parse(csvPath);
@@ -96,6 +104,7 @@ Check(elena?.Stage == WAFlow.Core.Domain.LeadStage.Negotiation, "duplicate stage
 var newBuyer = (await repository.GetLeadsAsync("New Buyer")).Single();
 Check(newBuyer.CustomFields.GetValueOrDefault("门店数量") == "12" && newBuyer.CustomFields.GetValueOrDefault("采购周期") == "Quarterly", "custom dimensions persisted on lead");
 Check(newBuyer.CustomFields.Count == parsed.Sheets[0].Headers.Count && newBuyer.CustomFields.GetValueOrDefault("客户姓名") == "New Buyer", "every original spreadsheet column persisted");
+Check(newBuyer is { Grade: "D", Score: 0, AnalysisStatus: AnalysisStatus.NotRun, AiScoreApplied: false }, "new imports stay D until an AI analysis succeeds");
 var dashboard = await repository.GetDashboardAsync();
 Check(dashboard.TotalLeads == 6, "SQLite persisted seed plus imported lead");
 
@@ -346,8 +355,8 @@ var safetyPassed = await campaigns.CheckSafetyValveAsync();
 var safetyStoppedCampaign = await repository.GetCampaignAsync(campaign.Id);
 var executionHistory = await campaigns.GetExecutionHistoryAsync();
 Check(!safetyPassed && safetyStoppedCampaign is { Status: CampaignStatus.SafetyStopped, SafetyStopFromIp: "198.51.100.30", SafetyStopToIp: "203.0.113.31" } && (await repository.GetCampaignAsync(secondAccountCampaign.Id))?.Status == CampaignStatus.SafetyStopped && safetyNotice?.Campaigns.Count == 2 && safetyNotice.Campaigns.Sum(item => item.Failed) == 1 && executionHistory.Single(item => item.Campaign.Id == campaign.Id).StopOrNext.Contains("已处理"), "IP change safety valve stops all active outreach across accounts and preserves execution position");
-await repository.SaveOnboardingStateAsync(new OnboardingState { Completed=true, GuideVersion=2, CompletedAt=DateTimeOffset.Now });
-Check((await repository.GetOnboardingStateAsync()) is { Completed: true, GuideVersion: 2 }, "API-only first-run onboarding completion persists");
+await repository.SaveOnboardingStateAsync(new OnboardingState { Completed=true, GuideVersion=3, CompletedAt=DateTimeOffset.Now });
+Check((await repository.GetOnboardingStateAsync()) is { Completed: true, GuideVersion: 3 }, "API-only first-run onboarding completion persists");
 
 await using (var embeddedBridge = new WhatsAppConnectionManager())
 {
@@ -376,6 +385,8 @@ var invalidAnalysisJson = "{\"score\":99,\"grade\":\"A\",\"factors\":[],\"stage\
 var handler = new QueueHandler([Envelope(analysisJson), Envelope(draftJson), Envelope(invalidAnalysisJson)]);
 var deepSeek = new DeepSeekService(repository, new FakeSecretStore("sk-test-redacted"), new HttpClient(handler) { Timeout=TimeSpan.FromSeconds(5) });
 await repository.SaveAppSettingsAsync(new AppSettings { DeepSeekBaseUrl="https://api.deepseek.com", DeepSeekModel="deepseek-chat" });
+var catalog = await deepSeek.DiscoverModelsAsync("https://api.deepseek.com");
+Check(catalog.Models.SequenceEqual(["deepseek-chat", "deepseek-reasoner"]), "AI provider model catalog is fetched and sorted");
 var salesProfile = new SalesProfile { CompanyName="WAFlow Test", Products=["Oak chair"], Advantages=["Flexible MOQ"], DefaultLanguage="en" };
 var analyzed = await deepSeek.AnalyzeLeadAsync((await repository.GetLeadAsync("lead_elena"))!, salesProfile);
 Check(analyzed.AnalysisStatus == AnalysisStatus.Succeeded && analyzed.Score == 88 && analyzed.Evidence.Count == 1, "DeepSeek structured analysis success");
@@ -387,7 +398,31 @@ try
     Check(false, "DeepSeek invalid structure rejected");
 }
 catch (DeepSeekException error) { Check(error.Code == "invalid_structured_output" && error.Retryable, "DeepSeek invalid structure rejected"); }
-Check(handler.Requests.All(x => x.Authorization == "Bearer sk-test-redacted" && x.Uri == "https://api.deepseek.com/chat/completions"), "DeepSeek request contract and server-side key");
+Check(handler.Requests.All(x => x.Authorization == "Bearer sk-test-redacted") && handler.Requests.Count(x => x.Method == "GET" && x.Uri == "https://api.deepseek.com/models") == 1 && handler.Requests.Count(x => x.Method == "POST" && x.Uri == "https://api.deepseek.com/chat/completions") == 3, "AI model discovery and chat requests use the server-side key");
+Check(WhatsAppReplySignalExtractor.Extract("Yes, please quote 300 pcs and confirm the lead time.").Contains("采购数量") && WhatsAppReplySignalExtractor.Extract("Yes, please quote 300 pcs and confirm the lead time.").Contains("价格 / 报价"), "WhatsApp reply keywords are captured as non-scoring AI hints");
+
+var automationLead = new Lead { Id="reply-automation-lead", Name="Reply Buyer", PhoneE164="+8829990000123", PhoneValid=true };
+await repository.UpsertLeadAsync(automationLead);
+var automationConversation = new WhatsAppConversation { Id="primary:8829990000123", AccountId="primary", Phone="8829990000123", LeadId=automationLead.Id, DisplayName=automationLead.Name, LastMessage="Please quote 300 pcs", LastMessageAt=DateTimeOffset.Now };
+await repository.UpsertWhatsAppConversationAsync(automationConversation);
+var automationMessage = new WhatsAppMessage { Id="primary:reply-auto", ProviderMessageId="reply-auto", AccountId="primary", ConversationId=automationConversation.Id, LeadId=automationLead.Id, Phone=automationConversation.Phone, Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received, Body="Yes, please quote 300 pcs and confirm the lead time.", Timestamp=DateTimeOffset.Now };
+await repository.UpsertWhatsAppMessageAsync(automationMessage);
+var automationHandler = new QueueHandler([Envelope(analysisJson)]);
+var automationProvider = new DeepSeekService(repository, new FakeSecretStore("sk-automation"), new HttpClient(automationHandler) { Timeout=TimeSpan.FromSeconds(5) });
+await using (var automationBridge = new WhatsAppConnectionManager())
+{
+    var automationSync = new WhatsAppSyncService(repository, automationBridge);
+    await using var automation = new LeadIntelligenceAutomationService(repository, automationProvider, automationSync);
+    var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    automation.AnalysisChanged += (_, change) => { if (change.LeadId == automationLead.Id && change.Status == AnalysisStatus.Succeeded) completed.TrySetResult(); };
+    await automation.QueueLeadForReplyAsync(automationMessage);
+    var queuedLead = await repository.GetLeadAsync(automationLead.Id);
+    Check(queuedLead is { Grade: "D", Score: 0, AnalysisStatus: AnalysisStatus.Queued } && queuedLead.LatestReplySignals.Contains("采购数量"), "WhatsApp reply queues analysis while retaining the initial D grade");
+    await automation.StartAsync();
+    await completed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    var automaticallyAnalyzed = await repository.GetLeadAsync(automationLead.Id);
+    Check(automaticallyAnalyzed is { Grade: "A", Score: 88, AnalysisStatus: AnalysisStatus.Succeeded, AiScoreApplied: true } && automaticallyAnalyzed.LastAnalyzedAt is not null, "selected AI model updates lead intelligence and grade after a WhatsApp reply");
+}
 
 var lifecycleRoot = Path.Combine(root, "lifecycle");
 var lifecycleRepository = new LocalRepository(Path.Combine(lifecycleRoot, "lifecycle.db"));
@@ -417,10 +452,12 @@ sealed class FakeSecretStore(string value) : ISecretStore
 sealed class QueueHandler(IEnumerable<string> responses) : HttpMessageHandler
 {
     private readonly Queue<string> _responses = new(responses);
-    public List<(string Uri, string Authorization)> Requests { get; } = [];
+    public List<(string Method, string Uri, string Authorization)> Requests { get; } = [];
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        Requests.Add((request.RequestUri!.ToString(), request.Headers.Authorization?.ToString() ?? ""));
+        Requests.Add((request.Method.Method, request.RequestUri!.ToString(), request.Headers.Authorization?.ToString() ?? ""));
+        if (request.Method == HttpMethod.Get)
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent("{\"data\":[{\"id\":\"deepseek-reasoner\"},{\"id\":\"deepseek-chat\"}]}", Encoding.UTF8, "application/json") };
         _ = await request.Content!.ReadAsStringAsync(cancellationToken);
         return new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent(_responses.Dequeue(), Encoding.UTF8, "application/json") };
     }

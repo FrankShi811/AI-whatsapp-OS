@@ -94,7 +94,13 @@ public partial class CustomerEditWindow : Window
             if (StageBox.SelectedItem is StageOption stage) _lead.Stage = stage.Value;
             _lead.CustomFields = _dimensions.ToDictionary(item => item.Header, item => item.Value ?? "", StringComparer.OrdinalIgnoreCase);
 
-            _services.Scoring.Score(_lead);
+            if (!_lead.AiScoreApplied)
+            {
+                _lead.Score = 0;
+                _lead.Grade = "D";
+                _lead.ScoreBreakdown = [];
+                _lead.ScoreReasons = [];
+            }
             await _services.Repository.UpsertLeadAsync(_lead);
             await _services.Repository.LogEventAsync("customer_edited", _lead.Id, null, $"edited core fields and {_lead.CustomFields.Count} table dimensions");
             DialogResult = true;

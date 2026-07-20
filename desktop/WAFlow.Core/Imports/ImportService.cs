@@ -15,12 +15,10 @@ public sealed class ImportService
     public const long MaxCells = 5_000_000;
     public const int WriteBatchSize = 500;
     private readonly LocalRepository _repository;
-    private readonly LeadScoringService _scorer;
 
-    public ImportService(LocalRepository repository, LeadScoringService scorer)
+    public ImportService(LocalRepository repository)
     {
         _repository = repository;
-        _scorer = scorer;
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
     }
 
@@ -173,11 +171,17 @@ public sealed class ImportService
                     ApplyImportedValues(lead, row.Values, row.CustomValues, row.PhoneE164, row.PhoneValid, true, true, isNew:true);
                     created++;
                 }
-                _scorer.Score(lead);
                 if (!row.IsDuplicate && row.DuplicateRowNumber is null)
                 {
-                    lead.ProfileSummary = "\u5df2\u5b8c\u6210\u89c4\u5219\u8bc4\u5206\uff0c\u7b49\u5f85 DeepSeek \u5206\u6790\u3002";
-                    lead.NextAction = row.PhoneValid ? "\u8fd0\u884c DeepSeek \u5206\u6790\u5e76\u51c6\u5907\u4eba\u5de5\u5ba1\u6838\u8bdd\u672f\u3002" : "\u6838\u5bf9 WhatsApp \u53f7\u7801\u540e\u518d\u89e6\u8fbe\u3002";
+                    lead.Score = 0;
+                    lead.Grade = "D";
+                    lead.ScoreBreakdown = [];
+                    lead.ScoreReasons = [];
+                    lead.AiScoreApplied = false;
+                    lead.AnalysisStatus = AnalysisStatus.NotRun;
+                    lead.ProfileSummary = "等待 AI 分析";
+                    lead.CustomerSegment = "未分析";
+                    lead.NextAction = row.PhoneValid ? "等待客户回复或手动运行 AI 分析。" : "核对 WhatsApp 号码后再触达。";
                 }
                 importedRows[row.RowNumber] = lead;
                 pending[lead.Id] = lead;

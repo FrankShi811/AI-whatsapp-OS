@@ -170,6 +170,7 @@ public sealed class LocalRepository
         await SeedIfEmptyAsync(db, cancellationToken);
         await using var cleanup = await db.BeginTransactionAsync(cancellationToken);
         await RemoveDemoLeadsIfRealDataExistsInternalAsync(db, cleanup as SqliteTransaction, cancellationToken);
+        await AlignLeadAiBaselineInternalAsync(db, cleanup as SqliteTransaction, cancellationToken);
         await cleanup.CommitAsync(cancellationToken);
     }
 
@@ -178,7 +179,6 @@ public sealed class LocalRepository
         await using var count = db.CreateCommand();
         count.CommandText = "SELECT COUNT(*) FROM leads";
         if (Convert.ToInt32(await count.ExecuteScalarAsync(cancellationToken)) > 0) return;
-        var scorer = new Services.LeadScoringService();
         var samples = new[]
         {
             new Lead { Id="lead_elena", Name="Elena Rossi", Company="Nordline Living", Country="Italy", PhoneE164="+393491234567", PhoneValid=true, Email="elena@nordline.example", PreferredLanguage="it", ProductInterest="Oak dining chair · Model DC-18", EstimatedOrderValue=24800, Currency="EUR", CompanyScale=.8, PurchasePower=.9, ExplicitDemand=true, RegisteredOrConsulted=true, Source="Global buyer discovery", Tags=["Distributor","Furniture","EU"], Owner="Olivia Chen", Stage=LeadStage.Negotiation, LatestMessage="Could you confirm the lead time for 300 units?", LastContactAt=DateTimeOffset.Now.AddHours(-2), NextFollowUpAt=DateTimeOffset.Now.AddHours(3) },
@@ -188,10 +188,54 @@ public sealed class LocalRepository
             new Lead { Id="lead_invalid", Name="Test Invalid", Company="Example Trading", Country="Unknown", PhoneE164="12345", PhoneValid=false, PreferredLanguage="en", ProductInterest="Sample catalogue", EstimatedOrderValue=2000, CompanyScale=.3, PurchasePower=.3, Source="Test import", Tags=["Risk"], Stage=LeadStage.New }
         };
         foreach (var lead in samples)
-        {
-            scorer.Score(lead);
-            if (lead.Id == "lead_elena") { lead.Score = 88; lead.Grade = "A"; lead.ProfileSummary = "欧洲家具分销商，询问 300 件交期，采购意图明确。"; lead.CustomerSegment = "高价值经销商"; lead.NextAction = "确认交期并提供阶梯报价。"; lead.AnalysisStatus = AnalysisStatus.Succeeded; }
             await UpsertLeadInternalAsync(db, lead, cancellationToken);
+    }
+
+    private static async Task AlignLeadAiBaselineInternalAsync(SqliteConnection db, SqliteTransaction? transaction, CancellationToken cancellationToken)
+    {
+        var leads = new List<Lead>();
+        await using (var select = db.CreateCommand())
+        {
+            select.Transaction = transaction;
+            select.CommandText = "SELECT data_json FROM leads";
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<Lead>(reader.GetString(0)) is { } lead) leads.Add(lead);
+        }
+
+        foreach (var lead in leads)
+        {
+            var changed = false;
+            if (lead.AnalysisStatus == AnalysisStatus.Succeeded && !lead.AiScoreApplied)
+            {
+                lead.AiScoreApplied = true;
+                lead.LastAnalyzedAt ??= lead.UpdatedAt;
+                changed = true;
+            }
+            else if (!lead.AiScoreApplied)
+            {
+                if (lead.Score != 0 || lead.Grade != "D" || lead.ScoreBreakdown.Count > 0 || lead.ScoreReasons.Count > 0)
+                {
+                    lead.Score = 0;
+                    lead.Grade = "D";
+                    lead.ScoreBreakdown = [];
+                    lead.ScoreReasons = [];
+                    lead.AnalysisConfidence = 0;
+                    lead.Evidence = [];
+                    lead.Risks = [];
+                    lead.ProfileSummary = "等待 AI 分析";
+                    lead.CustomerSegment = "未分析";
+                    lead.NextAction = "等待客户回复或手动运行 AI 分析";
+                    changed = true;
+                }
+                if (lead.AnalysisStatus == AnalysisStatus.Running)
+                {
+                    lead.AnalysisStatus = AnalysisStatus.Queued;
+                    lead.AnalysisError = "上次分析被程序退出中断，已重新排队。";
+                    changed = true;
+                }
+            }
+            if (changed) await UpsertLeadInternalAsync(db, lead, cancellationToken, transaction);
         }
     }
 
@@ -637,6 +681,22 @@ public sealed class LocalRepository
         await using var command = db.CreateCommand();
         command.CommandText = "SELECT data_json FROM whatsapp_messages WHERE conversation_id=$conversation ORDER BY timestamp DESC LIMIT $limit";
         command.Parameters.AddWithValue("$conversation", conversationId); command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 5000));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken)) if (Json.Deserialize<WhatsAppMessage>(reader.GetString(0)) is { } item) items.Add(item);
+        items.Reverse();
+        return items;
+    }
+
+    public async Task<List<WhatsAppMessage>> GetWhatsAppMessagesForLeadAsync(Lead lead, int limit = 40, CancellationToken cancellationToken = default)
+    {
+        var items = new List<WhatsAppMessage>();
+        var phone = Services.PhoneIdentity.Digits(lead.PhoneE164);
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM whatsapp_messages WHERE lead_id=$lead OR ($phone <> '' AND phone=$phone) ORDER BY timestamp DESC LIMIT $limit";
+        command.Parameters.AddWithValue("$lead", lead.Id);
+        command.Parameters.AddWithValue("$phone", phone);
+        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 200));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken)) if (Json.Deserialize<WhatsAppMessage>(reader.GetString(0)) is { } item) items.Add(item);
         items.Reverse();
