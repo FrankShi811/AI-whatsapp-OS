@@ -36,6 +36,18 @@ public partial class MainWindow : Window
         Loaded += MainWindow_Loaded;
     }
 
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        WindowsTaskbarIdentity.ApplyWindowIcon(this);
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        WindowsTaskbarIdentity.ReleaseWindowIcon();
+        base.OnClosed(e);
+    }
+
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         await UpdateProviderStateAsync();

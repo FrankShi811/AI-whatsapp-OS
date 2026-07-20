@@ -10,6 +10,7 @@ public partial class App : Application
 
     protected override async void OnStartup(StartupEventArgs e)
     {
+        WindowsTaskbarIdentity.InitializeProcess();
         base.OnStartup(e);
         DispatcherUnhandledException += OnUnhandledException;
         try

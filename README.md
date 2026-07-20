@@ -1,6 +1,6 @@
 # AI Sales OS Windows 原生版
 
-直接双击 `AI Sales OS.exe` 运行。当前版本为 1.5.0，主要数据继续保存在 `%LOCALAPPDATA%\WAFlow\waflow.db`，因此升级后仍会读取原有客户、账号、Campaign 和设置。
+直接双击 `AI Sales OS.exe` 运行。当前版本为 1.5.1，主要数据继续保存在 `%LOCALAPPDATA%\WAFlow\waflow.db`，因此升级后仍会读取原有客户、账号、Campaign 和设置。
 
 这是 WPF/.NET 8 自包含单文件 EXE，不是 Electron、Tauri 或 WebView 套壳，不启动 localhost HTTP 服务。最终用户无需安装 Node.js、npm、浏览器或 .NET Runtime；WhatsApp 桥接程序已作为 Windows EXE 嵌入主程序。
 
