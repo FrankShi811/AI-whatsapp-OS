@@ -44,9 +44,18 @@ if (Test-Path -LiteralPath $bridgeBuild) {
 if ($LASTEXITCODE -ne 0) { throw 'AI Sales OS desktop publish failed.' }
 
 Copy-Item -LiteralPath (Join-Path $publish 'AISalesOS.exe') -Destination $output -Force
-Copy-Item -LiteralPath $output -Destination $rootOutput -Force
 $file = Get-Item -LiteralPath $output
+$threePartVersion = (($file.VersionInfo.FileVersion -split '\.')[0..2] -join '.')
+$versionedRootOutput = Join-Path $root "AI Sales OS $threePartVersion.exe"
+Copy-Item -LiteralPath $output -Destination $versionedRootOutput -Force
+try {
+  Copy-Item -LiteralPath $output -Destination $rootOutput -Force
+}
+catch [System.IO.IOException] {
+  Write-Warning "The canonical root EXE is currently running and could not be replaced. New build is available at: $versionedRootOutput"
+}
 $hash = Get-FileHash -LiteralPath $output -Algorithm SHA256
 Write-Host "Created: $($file.FullName)"
+Write-Host "Versioned copy: $versionedRootOutput"
 Write-Host "Size: $([Math]::Round($file.Length / 1MB, 2)) MB"
 Write-Host "SHA256: $($hash.Hash)"

@@ -19,7 +19,7 @@ public sealed class AppServices
 
     public AppServices(LocalRepository? repository = null)
     {
-        Repository = repository ?? new LocalRepository();
+        Repository = repository ?? CreateDefaultRepository();
         Scoring = new LeadScoringService();
         Secrets = new WindowsCredentialStore();
         Imports = new ImportService(Repository);
@@ -32,4 +32,10 @@ public sealed class AppServices
     }
 
     public Task InitializeAsync(CancellationToken cancellationToken = default) => Repository.InitializeAsync(cancellationToken);
+
+    private static LocalRepository CreateDefaultRepository()
+    {
+        var overridePath = Environment.GetEnvironmentVariable("WAFLOW_DATABASE_PATH");
+        return new LocalRepository(string.IsNullOrWhiteSpace(overridePath) ? null : overridePath);
+    }
 }

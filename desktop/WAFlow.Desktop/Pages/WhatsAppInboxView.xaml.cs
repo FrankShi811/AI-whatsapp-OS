@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -320,11 +321,14 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         var phone = Text(e.Data, "phone");
         if (string.IsNullOrWhiteSpace(phone)) return;
         var messageId = Text(e.Data, "id");
-        var text = Text(e.Data, "text");
+        var text = WhatsAppTextEncodingRepair.Repair(Text(e.Data, "text"));
         var fromMe = Bool(e.Data, "fromMe");
-        var displayName = Text(e.Data, "pushName");
+        var displayName = WhatsAppTextEncodingRepair.Repair(Text(e.Data, "pushName"));
         var kind = Text(e.Data, "kind");
-        var fileName = Text(e.Data, "fileName");
+        var fileName = WhatsAppTextEncodingRepair.Repair(Text(e.Data, "fileName"));
+        var mimeType = Text(e.Data, "mimeType");
+        var mediaPath = Text(e.Data, "mediaPath");
+        var mediaDownloadError = Text(e.Data, "mediaDownloadError");
         var timestamp = DateTimeOffset.TryParse(Text(e.Data, "timestamp"), out var parsed) ? parsed : DateTimeOffset.Now;
         var conversation = _conversations.FirstOrDefault(x => x.Phone == phone);
         if (conversation is null)
@@ -336,7 +340,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             _conversations.Insert(0, conversation);
         }
         if (!conversation.Messages.Any(x => x.Id == messageId))
-            conversation.Messages.Add(new MessageItem(messageId, text, timestamp, fromMe, kind, fileName, ParseMessageStatus(e.Data, fromMe), ParseTime(e.Data, "statusAt"), ParseTime(e.Data, "deliveredAt"), ParseTime(e.Data, "readAt"), Text(e.Data, "failureReason")));
+            conversation.Messages.Add(new MessageItem(messageId, text, timestamp, fromMe, kind, fileName, mimeType, mediaPath, mediaDownloadError, ParseMessageStatus(e.Data, fromMe), ParseTime(e.Data, "statusAt"), ParseTime(e.Data, "deliveredAt"), ParseTime(e.Data, "readAt"), Text(e.Data, "failureReason")));
         conversation.LastMessage = MessagePreview(text, kind, fileName);
         conversation.LastAt = timestamp;
         if (!fromMe && ConversationList.SelectedItem != conversation) conversation.Unread++;
@@ -379,7 +383,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         var persistedMessages = string.IsNullOrWhiteSpace(conversation.Phone) ? [] : await _services.Repository.GetWhatsAppMessagesAsync(conversation.Id, 2000);
         foreach (var message in persistedMessages)
             if (!conversation.Messages.Any(x => x.Id == message.ProviderMessageId))
-                conversation.Messages.Add(new MessageItem(message.ProviderMessageId, message.Body, message.Timestamp, message.Direction == WhatsAppMessageDirection.Outgoing, message.Kind, message.FileName, message.Status, message.StatusUpdatedAt, message.DeliveredAt, message.ReadAt, message.FailureReason));
+                conversation.Messages.Add(new MessageItem(message.ProviderMessageId, message.Body, message.Timestamp, message.Direction == WhatsAppMessageDirection.Outgoing, message.Kind, message.FileName, message.MimeType, message.MediaPath, message.MediaDownloadError, message.Status, message.StatusUpdatedAt, message.DeliveredAt, message.ReadAt, message.FailureReason));
         MessageList.ItemsSource = conversation.Messages;
         if (_connected) { QrPanel.Visibility = Visibility.Collapsed; MessageList.Visibility = Visibility.Visible; }
         SaveLeadButton.IsEnabled = !string.IsNullOrWhiteSpace(conversation.Phone);
@@ -508,9 +512,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         _sending = true;
         var pendingId = $"local-{Guid.NewGuid():N}";
         var pendingTimestamp = DateTimeOffset.Now;
-        var pendingKind = string.IsNullOrWhiteSpace(attachmentPath) ? "text" : "document";
+        var pendingKind = string.IsNullOrWhiteSpace(attachmentPath) ? "text" : KindFromFileName(attachmentPath);
         var pendingFileName = string.IsNullOrWhiteSpace(attachmentPath) ? "" : Path.GetFileName(attachmentPath);
-        var pendingMessage = new MessageItem(pendingId, text, pendingTimestamp, true, pendingKind, pendingFileName, WhatsAppMessageStatus.Pending, pendingTimestamp);
+        var pendingMessage = new MessageItem(pendingId, text, pendingTimestamp, true, pendingKind, pendingFileName, "", attachmentPath, "", WhatsAppMessageStatus.Pending, pendingTimestamp);
         conversation.Messages.Add(pendingMessage);
         conversation.LastMessage = MessagePreview(text, pendingKind, pendingFileName);
         conversation.LastAt = pendingTimestamp;
@@ -558,7 +562,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 Id = $"{conversation.AccountId}:{id}", ProviderMessageId = id, AccountId = conversation.AccountId,
                 ConversationId = conversation.Id, LeadId = _currentLead?.Id ?? conversation.LeadId, Phone = conversation.Phone,
                 Direction = WhatsAppMessageDirection.Outgoing, Status = status, Kind = kind,
-                Body = text, FileName = fileName, MimeType = mimeType, Timestamp = timestamp,
+                Body = text, FileName = fileName, MimeType = mimeType, MediaPath = attachmentPath, Timestamp = timestamp,
                 StatusUpdatedAt = DateTimeOffset.Now,
                 DeliveredAt = status is WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read ? DateTimeOffset.Now : null,
                 ReadAt = status == WhatsAppMessageStatus.Read ? DateTimeOffset.Now : null,
@@ -744,6 +748,25 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         var image = new BitmapImage(); image.BeginInit(); image.CacheOption = BitmapCacheOption.OnLoad; image.StreamSource = stream; image.EndInit(); image.Freeze(); return image;
     }
 
+    private void OpenMedia_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: MessageItem item } || string.IsNullOrWhiteSpace(item.MediaPath) || !File.Exists(item.MediaPath))
+        {
+            MessageBox.Show("媒体文件尚未下载到本机。连接 WhatsApp 后再次同步，可重新尝试下载。", "WhatsApp 媒体", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        try { Process.Start(new ProcessStartInfo(item.MediaPath) { UseShellExecute = true }); }
+        catch (Exception error) { MessageBox.Show(error.Message, "无法打开媒体", MessageBoxButton.OK, MessageBoxImage.Warning); }
+    }
+
+    private static string KindFromFileName(string fileName) => Path.GetExtension(fileName).ToLowerInvariant() switch
+    {
+        ".jpg" or ".jpeg" or ".png" or ".webp" => "image",
+        ".gif" or ".mp4" or ".3gp" or ".mov" => "video",
+        ".mp3" or ".m4a" or ".ogg" or ".opus" or ".wav" or ".aac" => "audio",
+        _ => "document"
+    };
+
     private static WhatsAppMessageStatus ParseMessageStatus(JsonElement data, bool fromMe)
     {
         if (!fromMe) return WhatsAppMessageStatus.Received;
@@ -802,14 +825,18 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             bool fromMe,
             string kind = "text",
             string fileName = "",
+            string mimeType = "",
+            string mediaPath = "",
+            string mediaDownloadError = "",
             WhatsAppMessageStatus status = WhatsAppMessageStatus.Received,
             DateTimeOffset? statusUpdatedAt = null,
             DateTimeOffset? deliveredAt = null,
             DateTimeOffset? readAt = null,
             string failureReason = "")
         {
-            Id = id; Text = text; Timestamp = timestamp; FromMe = fromMe; Kind = kind; FileName = fileName;
+            Id = id; Text = text; Timestamp = timestamp; FromMe = fromMe; Kind = kind; FileName = fileName; MimeType = mimeType; MediaPath = mediaPath; MediaDownloadError = mediaDownloadError;
             Status = status; StatusUpdatedAt = statusUpdatedAt; DeliveredAt = deliveredAt; ReadAt = readAt; FailureReason = failureReason;
+            MediaPreview = LoadMediaPreview(kind, mediaPath);
         }
 
         public string Id { get; private set; }
@@ -818,12 +845,25 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         public bool FromMe { get; }
         public string Kind { get; private set; }
         public string FileName { get; private set; }
+        public string MimeType { get; }
+        public string MediaPath { get; }
+        public string MediaDownloadError { get; }
+        public ImageSource? MediaPreview { get; }
         public WhatsAppMessageStatus Status { get; private set; }
         public DateTimeOffset? StatusUpdatedAt { get; private set; }
         public DateTimeOffset? DeliveredAt { get; private set; }
         public DateTimeOffset? ReadAt { get; private set; }
         public string FailureReason { get; private set; }
         public string DisplayText => MessagePreview(Text, Kind, FileName);
+        public bool HasMedia => Kind is "image" or "video" or "audio" or "document" or "sticker";
+        public bool HasDownloadedMedia => !string.IsNullOrWhiteSpace(MediaPath) && File.Exists(MediaPath);
+        public string TextContent => !string.IsNullOrWhiteSpace(Text) ? Text : HasMedia && HasDownloadedMedia ? "" : DisplayText;
+        public Visibility TextVisibility => string.IsNullOrWhiteSpace(TextContent) ? Visibility.Collapsed : Visibility.Visible;
+        public Visibility ImageVisibility => HasDownloadedMedia && MediaPreview is not null ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility FileVisibility => HasDownloadedMedia && MediaPreview is null ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility MediaMissingVisibility => HasMedia && !HasDownloadedMedia ? Visibility.Visible : Visibility.Collapsed;
+        public string MediaActionLabel => Kind switch { "video" => $"▶ 打开视频 {FileName}", "audio" => $"♪ 播放音频 {FileName}", "document" => $"▣ 打开文件 {FileName}", _ => $"打开媒体 {FileName}" };
+        public string MediaMissingText => string.IsNullOrWhiteSpace(MediaDownloadError) ? "媒体尚未下载；重新同步后会再次尝试。" : $"媒体下载失败：{MediaDownloadError}";
         public string TimeLabel => Timestamp.LocalDateTime.ToString("MM-dd HH:mm");
         public HorizontalAlignment Alignment => FromMe ? HorizontalAlignment.Right : HorizontalAlignment.Left;
         public Brush BubbleBrush => new SolidColorBrush(FromMe ? Color.FromRgb(220,248,233) : Colors.White);
@@ -888,6 +928,18 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
         private static string At(DateTimeOffset? value) => value is null ? "--" : value.Value.LocalDateTime.ToString("MM-dd HH:mm");
         private static string ShortReason(string value) => value.Length <= 60 ? value : value[..60] + "…";
+        private static ImageSource? LoadMediaPreview(string kind, string mediaPath)
+        {
+            if (kind is not ("image" or "sticker") || string.IsNullOrWhiteSpace(mediaPath) || !File.Exists(mediaPath)) return null;
+            try
+            {
+                using var stream = new FileStream(mediaPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                var image = new BitmapImage();
+                image.BeginInit(); image.CacheOption = BitmapCacheOption.OnLoad; image.StreamSource = stream; image.EndInit(); image.Freeze();
+                return image;
+            }
+            catch { return null; }
+        }
         private void NotifyAll()
         {
             foreach (var name in new[] { nameof(Id), nameof(DisplayText), nameof(TimeLabel), nameof(ReceiptGlyph), nameof(ReceiptBrush), nameof(StatusDetailLabel) })

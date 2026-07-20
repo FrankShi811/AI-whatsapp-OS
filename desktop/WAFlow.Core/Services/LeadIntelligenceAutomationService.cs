@@ -96,8 +96,7 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
             AnalysisChanged?.Invoke(this, new LeadAnalysisAutomationEventArgs(lead.Id, AnalysisStatus.Running, "AI 正在分析 WhatsApp 回复"));
             try
             {
-                var profile = await _repository.GetSalesProfileAsync(cancellationToken) ?? new SalesProfile();
-                var analyzed = await _provider.AnalyzeLeadAsync(lead, profile, cancellationToken);
+                var analyzed = await _provider.AnalyzeLeadAsync(lead, cancellationToken);
                 AnalysisChanged?.Invoke(this, new LeadAnalysisAutomationEventArgs(analyzed.Id, AnalysisStatus.Succeeded, "AI 已更新商机画像与等级"));
                 if (analyzed.AnalysisRequestedAt is not null && requestMarker is not null && analyzed.AnalysisRequestedAt > requestMarker)
                 {

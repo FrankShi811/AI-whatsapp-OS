@@ -94,7 +94,7 @@ public sealed class DeepSeekService
         }
     }
 
-    public async Task<Lead> AnalyzeLeadAsync(Lead lead, SalesProfile profile, CancellationToken cancellationToken = default)
+    public async Task<Lead> AnalyzeLeadAsync(Lead lead, CancellationToken cancellationToken = default)
     {
         var settings = await _repository.GetAppSettingsAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(settings.DeepSeekModel)) throw new DeepSeekException("model_not_selected", "请先从自动拉取的模型列表中选择一个模型。", false);
@@ -109,7 +109,6 @@ public sealed class DeepSeekService
             var replySignals = WhatsAppReplySignalExtractor.Extract(recentMessages);
             var payload = new
             {
-                seller = profile,
                 lead = new { lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.EstimatedOrderValue, lead.Currency, lead.CompanyScale, lead.PurchasePower, lead.ExplicitDemand, lead.RegisteredOrConsulted, lead.Source, lead.Tags, lead.Owner, lead.CustomFields, stage = lead.Stage.ToString(), lead.LatestMessage },
                 whatsapp = new
                 {
@@ -162,11 +161,11 @@ public sealed class DeepSeekService
         }
     }
 
-    public async Task<OutreachDraft> GenerateDraftAsync(Lead lead, SalesProfile profile, string purpose, string language, string extraInstructions, CancellationToken cancellationToken = default)
+    public async Task<OutreachDraft> GenerateDraftAsync(Lead lead, string purpose, string language, string extraInstructions, CancellationToken cancellationToken = default)
     {
         if (lead.OptedOut) throw new InvalidOperationException("客户已退订，禁止生成触达话术。");
         var settings = await _repository.GetAppSettingsAsync(cancellationToken);
-        var payload = new { seller=profile, lead=new { lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.EstimatedOrderValue, lead.Currency, lead.ProfileSummary, lead.NextAction, lead.Risks, lead.LatestMessage }, purpose, language, extraInstructions };
+        var payload = new { lead=new { lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.EstimatedOrderValue, lead.Currency, lead.ProfileSummary, lead.NextAction, lead.Risks, lead.LatestMessage, lead.CustomFields }, purpose, language, extraInstructions };
         var instructions = """
             You are AI Sales OS's B2B WhatsApp copywriter. Return one JSON object only, without markdown.
             Required properties: purpose, language, body, rationale(array of strings), assumptions(array of strings), risks(array of strings).

@@ -85,7 +85,7 @@
                         </Grid>
 
                         <Border Background="{StaticResource WarningSoft}" CornerRadius="8" Padding="10" Margin="0,12,0,11">
-                            <TextBlock Text="发送间隔只是节奏控制，不能规避 WhatsApp 风控。任务批准时会记录公网 IP，运行中每 10 秒及每次发送前核对；IP 不一致会立即停止所有自动触达。仅会向号码有效、已记录营销同意且未退订的客户发送。" Foreground="#7A5610" FontSize="9" TextWrapping="Wrap"/>
+                            <TextBlock Text="发送间隔只是节奏控制，不能规避 WhatsApp 风控。任务批准时会记录公网 IP，运行中每 10 秒及每次发送前核对；IP 不一致会立即停止所有自动触达。号码有效且未退订的客户可以选择；是否已记录营销同意会作为状态提示保留。" Foreground="#7A5610" FontSize="9" TextWrapping="Wrap"/>
                         </Border>
 
                         <WrapPanel>

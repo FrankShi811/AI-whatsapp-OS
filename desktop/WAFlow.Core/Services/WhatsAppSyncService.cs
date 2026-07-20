@@ -77,7 +77,7 @@ public sealed class WhatsAppSyncService
         if (string.IsNullOrWhiteSpace(jid)) jid = sourceJid;
         if (string.IsNullOrWhiteSpace(jid)) return;
         var phone = Digits(Text(data, "phone"));
-        var displayName = FirstText(data, "displayName", "savedName", "notifyName", "verifiedName", "username");
+        var displayName = WhatsAppTextEncodingRepair.Repair(FirstText(data, "displayName", "savedName", "notifyName", "verifiedName", "username"));
         if (string.IsNullOrWhiteSpace(displayName)) displayName = string.IsNullOrWhiteSpace(phone) ? jid : $"+{phone}";
         var contact = new WhatsAppContact
         {
@@ -87,10 +87,10 @@ public sealed class WhatsAppSyncService
             SourceJid = sourceJid,
             Phone = phone,
             DisplayName = displayName,
-            SavedName = Text(data, "savedName"),
-            NotifyName = Text(data, "notifyName"),
-            VerifiedName = Text(data, "verifiedName"),
-            Username = Text(data, "username"),
+            SavedName = WhatsAppTextEncodingRepair.Repair(Text(data, "savedName")),
+            NotifyName = WhatsAppTextEncodingRepair.Repair(Text(data, "notifyName")),
+            VerifiedName = WhatsAppTextEncodingRepair.Repair(Text(data, "verifiedName")),
+            Username = WhatsAppTextEncodingRepair.Repair(Text(data, "username")),
             Source = Text(data, "source")
         };
         await _repository.UpsertWhatsAppContactAsync(contact);
@@ -121,7 +121,7 @@ public sealed class WhatsAppSyncService
         {
             Id = $"{accountId}:{phone}", AccountId = accountId, Phone = phone
         };
-        var displayName = Text(data, "displayName");
+        var displayName = WhatsAppTextEncodingRepair.Repair(Text(data, "displayName"));
         if (lead is not null)
         {
             conversation.LeadId = lead.Id;
@@ -131,7 +131,7 @@ public sealed class WhatsAppSyncService
         {
             conversation.DisplayName = displayName;
         }
-        var lastMessage = Text(data, "lastMessage");
+        var lastMessage = WhatsAppTextEncodingRepair.Repair(Text(data, "lastMessage"));
         if (DateTimeOffset.TryParse(Text(data, "lastMessageAt"), out var lastAt) && lastAt >= conversation.LastMessageAt)
         {
             conversation.LastMessageAt = lastAt;
@@ -166,7 +166,7 @@ public sealed class WhatsAppSyncService
             Id = conversationId,
             AccountId = accountId,
             Phone = phone,
-            DisplayName = string.IsNullOrWhiteSpace(Text(data, "pushName")) ? $"+{phone}" : Text(data, "pushName")
+            DisplayName = string.IsNullOrWhiteSpace(Text(data, "pushName")) ? $"+{phone}" : WhatsAppTextEncodingRepair.Repair(Text(data, "pushName"))
         };
         if (lead is not null)
         {
@@ -184,10 +184,12 @@ public sealed class WhatsAppSyncService
             Direction = fromMe ? WhatsAppMessageDirection.Outgoing : WhatsAppMessageDirection.Incoming,
             Status = fromMe ? ParseOutgoingStatus(data, deliveredAt, readAt) : WhatsAppMessageStatus.Received,
             Kind = Text(data, "kind"),
-            Body = Text(data, "text"),
-            FileName = Text(data, "fileName"),
+            Body = WhatsAppTextEncodingRepair.Repair(Text(data, "text")),
+            FileName = WhatsAppTextEncodingRepair.Repair(Text(data, "fileName")),
             MimeType = Text(data, "mimeType"),
-            PushName = Text(data, "pushName"),
+            MediaPath = Text(data, "mediaPath"),
+            MediaDownloadError = Text(data, "mediaDownloadError"),
+            PushName = WhatsAppTextEncodingRepair.Repair(Text(data, "pushName")),
             Timestamp = timestamp,
             DeliveredAt = deliveredAt,
             ReadAt = readAt,

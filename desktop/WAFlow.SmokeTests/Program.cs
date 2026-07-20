@@ -223,6 +223,7 @@ if (!string.IsNullOrWhiteSpace(workbookArgument))
 }
 
 var whatsappLead = (await repository.GetLeadAsync("lead_james"))!;
+Check(WhatsAppTextEncodingRepair.Repair("I鈥檒l always be here") == "I’ll always be here" && WhatsAppTextEncodingRepair.Repair("正常中文消息") == "正常中文消息", "WhatsApp UTF-8 mojibake repair is selective");
 whatsappLead.WhatsAppOptIn = true; whatsappLead.WhatsAppOptInAt = DateTimeOffset.Now; whatsappLead.WhatsAppOptInSource = "smoke-test";
 await repository.UpsertLeadAsync(whatsappLead);
 var whatsappContact = new WhatsAppContact { Id="primary:447700900123@s.whatsapp.net", AccountId="primary", Jid="447700900123@s.whatsapp.net", Phone="447700900123", DisplayName="James in WhatsApp", SavedName="James in WhatsApp", Source="history:recent" };
@@ -289,11 +290,20 @@ var mediaMessage = new WhatsAppMessage
 {
     Id="primary:wamid-media", ProviderMessageId="wamid-media", AccountId="primary", ConversationId=suffixConversation.Id,
     LeadId=suffixLead.Id, Phone=suffixConversation.Phone, Direction=WhatsAppMessageDirection.Outgoing, Status=WhatsAppMessageStatus.Sent,
-    Kind="document", FileName="price-list.xlsx", MimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", Timestamp=DateTimeOffset.Now
+    Kind="document", FileName="price-list.xlsx", MimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", MediaPath=Path.Combine(root, "price-list.xlsx"), Timestamp=DateTimeOffset.Now
 };
 await repository.UpsertWhatsAppMessageAsync(mediaMessage);
 var storedMedia = (await repository.GetWhatsAppMessagesAsync(suffixConversation.Id)).Single(message => message.Id == mediaMessage.Id);
-Check(storedMedia.Kind == "document" && storedMedia.FileName == "price-list.xlsx", "WhatsApp attachment metadata persists");
+Check(storedMedia.Kind == "document" && storedMedia.FileName == "price-list.xlsx" && storedMedia.MediaPath == mediaMessage.MediaPath, "WhatsApp attachment metadata and local media path persist");
+var repairDatabase = Path.Combine(root, "encoding-repair.db");
+var repairRepository = new LocalRepository(repairDatabase);
+await repairRepository.InitializeAsync();
+var repairLead = (await repairRepository.GetLeadAsync("lead_james"))!;
+var repairConversation = new WhatsAppConversation { Id="primary:encoding", AccountId="primary", Phone="14155550101", LeadId=repairLead.Id, DisplayName="Encoding", LastMessage="I鈥檒l send the file", LastMessageAt=DateTimeOffset.Now };
+await repairRepository.UpsertWhatsAppConversationAsync(repairConversation);
+await repairRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage { Id="primary:encoding", ProviderMessageId="encoding", AccountId="primary", ConversationId=repairConversation.Id, LeadId=repairLead.Id, Phone=repairConversation.Phone, Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received, Body="I鈥檒l send the file", Timestamp=DateTimeOffset.Now });
+await new LocalRepository(repairDatabase).InitializeAsync();
+Check((await repairRepository.GetWhatsAppMessagesAsync(repairConversation.Id)).Single().Body == "I’ll send the file", "existing WhatsApp mojibake is repaired during database upgrade");
 
 await using (var protocolClient = new WhatsAppBridgeClient())
 {
@@ -318,6 +328,10 @@ var campaign = new WhatsAppCampaign
 };
 var campaignPreview = await campaigns.PreviewAudienceAsync(campaign);
 Check(campaignPreview.Count == 1 && campaignPreview.Single().Eligible && campaignPreview.Single().PreviewMessage.Contains("Reusable water bottles"), "campaign opt-in audience and template preview");
+var importedNewLead = new Lead { Name="Imported new opportunity", PhoneE164="+14155550199", PhoneValid=true, Stage=LeadStage.New, WhatsAppOptIn=false };
+await repository.UpsertLeadAsync(importedNewLead);
+var importedAudience = await campaigns.PreviewAudienceAsync(new WhatsAppCampaign { Name="imported-new-check", SelectedLeadIds=[importedNewLead.Id], MessageTemplate="Hi {name}", StartsAt=DateTimeOffset.Now.AddHours(1) });
+Check(importedAudience.Single().Eligible && importedAudience.Single().Reason.Contains("未记录营销同意"), "new imported opportunities with valid numbers are selectable for campaign");
 await campaigns.SaveDraftAsync(campaign);
 var scheduledCount = await campaigns.ApproveAndScheduleAsync(campaign, "smoke-test");
 var campaignRecipients = await repository.GetCampaignRecipientsAsync(campaign.Id);
@@ -355,8 +369,8 @@ var safetyPassed = await campaigns.CheckSafetyValveAsync();
 var safetyStoppedCampaign = await repository.GetCampaignAsync(campaign.Id);
 var executionHistory = await campaigns.GetExecutionHistoryAsync();
 Check(!safetyPassed && safetyStoppedCampaign is { Status: CampaignStatus.SafetyStopped, SafetyStopFromIp: "198.51.100.30", SafetyStopToIp: "203.0.113.31" } && (await repository.GetCampaignAsync(secondAccountCampaign.Id))?.Status == CampaignStatus.SafetyStopped && safetyNotice?.Campaigns.Count == 2 && safetyNotice.Campaigns.Sum(item => item.Failed) == 1 && executionHistory.Single(item => item.Campaign.Id == campaign.Id).StopOrNext.Contains("已处理"), "IP change safety valve stops all active outreach across accounts and preserves execution position");
-await repository.SaveOnboardingStateAsync(new OnboardingState { Completed=true, GuideVersion=3, CompletedAt=DateTimeOffset.Now });
-Check((await repository.GetOnboardingStateAsync()) is { Completed: true, GuideVersion: 3 }, "API-only first-run onboarding completion persists");
+await repository.SaveOnboardingStateAsync(new OnboardingState { Completed=true, GuideVersion=4, CompletedAt=DateTimeOffset.Now });
+Check((await repository.GetOnboardingStateAsync()) is { Completed: true, GuideVersion: 4 }, "API-only first-run onboarding completion persists");
 
 await using (var embeddedBridge = new WhatsAppConnectionManager())
 {
@@ -387,14 +401,13 @@ var deepSeek = new DeepSeekService(repository, new FakeSecretStore("sk-test-reda
 await repository.SaveAppSettingsAsync(new AppSettings { DeepSeekBaseUrl="https://api.deepseek.com", DeepSeekModel="deepseek-chat" });
 var catalog = await deepSeek.DiscoverModelsAsync("https://api.deepseek.com");
 Check(catalog.Models.SequenceEqual(["deepseek-chat", "deepseek-reasoner"]), "AI provider model catalog is fetched and sorted");
-var salesProfile = new SalesProfile { CompanyName="WAFlow Test", Products=["Oak chair"], Advantages=["Flexible MOQ"], DefaultLanguage="en" };
-var analyzed = await deepSeek.AnalyzeLeadAsync((await repository.GetLeadAsync("lead_elena"))!, salesProfile);
+var analyzed = await deepSeek.AnalyzeLeadAsync((await repository.GetLeadAsync("lead_elena"))!);
 Check(analyzed.AnalysisStatus == AnalysisStatus.Succeeded && analyzed.Score == 88 && analyzed.Evidence.Count == 1, "DeepSeek structured analysis success");
-var generated = await deepSeek.GenerateDraftAsync(analyzed, salesProfile, "follow_up", "en", "");
+var generated = await deepSeek.GenerateDraftAsync(analyzed, "follow_up", "en", "");
 Check(generated.Body.StartsWith("Hi Elena") && generated.Status == DraftStatus.Draft, "DeepSeek structured draft success");
 try
 {
-    await deepSeek.AnalyzeLeadAsync((await repository.GetLeadAsync("lead_ahmed"))!, salesProfile);
+    await deepSeek.AnalyzeLeadAsync((await repository.GetLeadAsync("lead_ahmed"))!);
     Check(false, "DeepSeek invalid structure rejected");
 }
 catch (DeepSeekException error) { Check(error.Code == "invalid_structured_output" && error.Retryable, "DeepSeek invalid structure rejected"); }

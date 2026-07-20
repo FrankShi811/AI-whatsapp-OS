@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using WAFlow.Core.Infrastructure;
 
@@ -15,6 +16,7 @@ public sealed class WhatsAppBridgeException(string code, string message) : Excep
 
 public sealed class WhatsAppBridgeClient : IAsyncDisposable
 {
+    private static readonly UTF8Encoding Utf8NoBom = new(false);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pending = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private Process? _process;
@@ -44,6 +46,9 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardInputEncoding = Utf8NoBom,
+            StandardOutputEncoding = Utf8NoBom,
+            StandardErrorEncoding = Utf8NoBom,
             WorkingDirectory = launch.WorkingDirectory
         };
         foreach (var argument in launch.Arguments) start.ArgumentList.Add(argument);

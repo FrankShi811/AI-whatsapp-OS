@@ -39,13 +39,12 @@ public partial class DraftsView : UserControl, IRefreshableView
     private async void Generate_Click(object sender, RoutedEventArgs e)
     {
         if (LeadCombo.SelectedItem is not Lead lead) { MessageBox.Show("请先选择客户。", "AI Sales OS"); return; }
-        var profile = await _services.Repository.GetSalesProfileAsync() ?? new SalesProfile();
         GenerateButton.IsEnabled = false; GenerateButton.Content = "生成中…";
         try
         {
             var purpose = (PurposeCombo.SelectedItem as PurposeOption)?.Value ?? "first_contact";
             var language = LanguageCombo.Text.Trim();
-            _current = await _services.DeepSeek.GenerateDraftAsync(lead, profile, purpose, language, ExtraInstructionsBox.Text);
+            _current = await _services.DeepSeek.GenerateDraftAsync(lead, purpose, language, ExtraInstructionsBox.Text);
             Editor.Text = _current.Body; await RefreshAsync(); DraftList.SelectedItem = _drafts.FirstOrDefault(d => d.Id == _current.Id);
             DataChanged?.Invoke(this, EventArgs.Empty);
         }

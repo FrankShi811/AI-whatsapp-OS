@@ -23,15 +23,6 @@ public enum CampaignScheduleMode { Immediate, Scheduled }
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum CampaignIntervalUnit { Seconds, Minutes }
 
-public sealed class SalesProfile
-{
-    public string CompanyName { get; set; } = "";
-    public List<string> Products { get; set; } = [];
-    public List<string> Advantages { get; set; } = [];
-    public string DefaultLanguage { get; set; } = "en";
-    public List<string> TargetMarkets { get; set; } = [];
-}
-
 public sealed class Lead
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
@@ -145,6 +136,8 @@ public sealed class WhatsAppMessage
     public string Body { get; set; } = "";
     public string FileName { get; set; } = "";
     public string MimeType { get; set; } = "";
+    public string MediaPath { get; set; } = "";
+    public string MediaDownloadError { get; set; } = "";
     public string PushName { get; set; } = "";
     public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.Now;
     public DateTimeOffset? StatusUpdatedAt { get; set; }

@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using WAFlow.Core.Domain;
+using WAFlow.Core.Services;
 
 namespace WAFlow.Core.Infrastructure;
 
@@ -167,11 +168,92 @@ public sealed class LocalRepository
         await using var command = db.CreateCommand();
         command.CommandText = sql;
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await using (var removeLegacySalesProfile = db.CreateCommand())
+        {
+            removeLegacySalesProfile.CommandText = "DELETE FROM settings WHERE key='sales_profile'";
+            await removeLegacySalesProfile.ExecuteNonQueryAsync(cancellationToken);
+        }
         await SeedIfEmptyAsync(db, cancellationToken);
         await using var cleanup = await db.BeginTransactionAsync(cancellationToken);
         await RemoveDemoLeadsIfRealDataExistsInternalAsync(db, cleanup as SqliteTransaction, cancellationToken);
         await AlignLeadAiBaselineInternalAsync(db, cleanup as SqliteTransaction, cancellationToken);
+        await RepairWhatsAppTextEncodingInternalAsync(db, cleanup as SqliteTransaction, cancellationToken);
         await cleanup.CommitAsync(cancellationToken);
+    }
+
+    private static async Task RepairWhatsAppTextEncodingInternalAsync(SqliteConnection db, SqliteTransaction? transaction, CancellationToken cancellationToken)
+    {
+        var conversations = new List<WhatsAppConversation>();
+        await using (var select = db.CreateCommand())
+        {
+            select.Transaction = transaction;
+            select.CommandText = "SELECT data_json FROM whatsapp_conversations";
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<WhatsAppConversation>(reader.GetString(0)) is { } item) conversations.Add(item);
+        }
+        foreach (var item in conversations)
+        {
+            var displayName = WhatsAppTextEncodingRepair.Repair(item.DisplayName);
+            var lastMessage = WhatsAppTextEncodingRepair.Repair(item.LastMessage);
+            if (displayName == item.DisplayName && lastMessage == item.LastMessage) continue;
+            item.DisplayName = displayName;
+            item.LastMessage = lastMessage;
+            await using var update = db.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE whatsapp_conversations SET data_json=$json WHERE id=$id";
+            update.Parameters.AddWithValue("$id", item.Id);
+            update.Parameters.AddWithValue("$json", Json.Serialize(item));
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var contacts = new List<WhatsAppContact>();
+        await using (var select = db.CreateCommand())
+        {
+            select.Transaction = transaction;
+            select.CommandText = "SELECT data_json FROM whatsapp_contacts";
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<WhatsAppContact>(reader.GetString(0)) is { } item) contacts.Add(item);
+        }
+        foreach (var item in contacts)
+        {
+            var values = new[] { item.DisplayName, item.SavedName, item.NotifyName, item.VerifiedName, item.Username };
+            var repaired = values.Select(WhatsAppTextEncodingRepair.Repair).ToArray();
+            if (values.SequenceEqual(repaired, StringComparer.Ordinal)) continue;
+            item.DisplayName = repaired[0]; item.SavedName = repaired[1]; item.NotifyName = repaired[2]; item.VerifiedName = repaired[3]; item.Username = repaired[4];
+            await using var update = db.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE whatsapp_contacts SET display_name=$name,data_json=$json WHERE id=$id";
+            update.Parameters.AddWithValue("$id", item.Id);
+            update.Parameters.AddWithValue("$name", item.DisplayName);
+            update.Parameters.AddWithValue("$json", Json.Serialize(item));
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var messages = new List<WhatsAppMessage>();
+        await using (var select = db.CreateCommand())
+        {
+            select.Transaction = transaction;
+            select.CommandText = "SELECT data_json FROM whatsapp_messages";
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<WhatsAppMessage>(reader.GetString(0)) is { } item) messages.Add(item);
+        }
+        foreach (var item in messages)
+        {
+            var body = WhatsAppTextEncodingRepair.Repair(item.Body);
+            var fileName = WhatsAppTextEncodingRepair.Repair(item.FileName);
+            var pushName = WhatsAppTextEncodingRepair.Repair(item.PushName);
+            if (body == item.Body && fileName == item.FileName && pushName == item.PushName) continue;
+            item.Body = body; item.FileName = fileName; item.PushName = pushName;
+            await using var update = db.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE whatsapp_messages SET data_json=$json WHERE id=$id";
+            update.Parameters.AddWithValue("$id", item.Id);
+            update.Parameters.AddWithValue("$json", Json.Serialize(item));
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
     }
 
     private static async Task SeedIfEmptyAsync(SqliteConnection db, CancellationToken cancellationToken)
@@ -238,12 +320,6 @@ public sealed class LocalRepository
             if (changed) await UpsertLeadInternalAsync(db, lead, cancellationToken, transaction);
         }
     }
-
-    public async Task<SalesProfile?> GetSalesProfileAsync(CancellationToken cancellationToken = default) =>
-        await GetSettingAsync<SalesProfile>("sales_profile", cancellationToken);
-
-    public Task SaveSalesProfileAsync(SalesProfile profile, CancellationToken cancellationToken = default) =>
-        SaveSettingAsync("sales_profile", profile, cancellationToken);
 
     public async Task<AppSettings> GetAppSettingsAsync(CancellationToken cancellationToken = default) =>
         await GetSettingAsync<AppSettings>("app_settings", cancellationToken) ?? new AppSettings();
@@ -664,8 +740,15 @@ public sealed class LocalRepository
             await using var select = db.CreateCommand();
             select.CommandText = "SELECT data_json FROM whatsapp_messages WHERE id=$id";
             select.Parameters.AddWithValue("$id", message.Id);
-            if (Json.Deserialize<WhatsAppMessage>(await select.ExecuteScalarAsync(cancellationToken) as string) is { } existing && !CanAdvanceStatus(existing.Status, message.Status))
-                message.Status = existing.Status;
+            if (Json.Deserialize<WhatsAppMessage>(await select.ExecuteScalarAsync(cancellationToken) as string) is { } existing)
+            {
+                if (!CanAdvanceStatus(existing.Status, message.Status)) message.Status = existing.Status;
+                if (string.IsNullOrWhiteSpace(message.MediaPath))
+                {
+                    if (!string.IsNullOrWhiteSpace(existing.MediaPath)) message.MediaPath = existing.MediaPath;
+                    else if (string.IsNullOrWhiteSpace(message.MediaDownloadError) && !string.IsNullOrWhiteSpace(existing.MediaDownloadError)) message.MediaDownloadError = existing.MediaDownloadError;
+                }
+            }
             await using var update = db.CreateCommand();
             update.CommandText = "UPDATE whatsapp_messages SET status=$status,lead_id=$lead,data_json=$json WHERE id=$id";
             update.Parameters.AddWithValue("$id", message.Id); update.Parameters.AddWithValue("$status", message.Status.ToString()); update.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(message.LeadId) ? DBNull.Value : message.LeadId); update.Parameters.AddWithValue("$json", Json.Serialize(message));

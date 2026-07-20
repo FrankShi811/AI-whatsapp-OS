@@ -6,8 +6,6 @@ namespace WAFlow.Desktop;
 
 internal static class WindowsTaskbarIdentity
 {
-    internal const string AppUserModelId = "AI.Sales.OS.Desktop";
-
     private const uint WmSetIcon = 0x0080;
     private const int IconSmall = 0;
     private const int IconBig = 1;
@@ -18,10 +16,10 @@ internal static class WindowsTaskbarIdentity
 
     internal static void InitializeProcess()
     {
-        if (!OperatingSystem.IsWindows()) return;
-
-        var result = SetCurrentProcessExplicitAppUserModelID(AppUserModelId);
-        if (result < 0) Marshal.ThrowExceptionForHR(result);
+        // This is an unpackaged desktop EXE. Assigning an explicit AppUserModelID
+        // without a matching installed Start-menu shortcut makes Windows use its
+        // generic application-window glyph on the taskbar. Let Explorer derive
+        // identity from the executable and use the embedded multi-size icon.
     }
 
     internal static void ApplyWindowIcon(Window window)
@@ -67,9 +65,6 @@ internal static class WindowsTaskbarIdentity
             _smallIcon = IntPtr.Zero;
         }
     }
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern uint ExtractIconEx(

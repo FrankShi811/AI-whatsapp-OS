@@ -54,13 +54,12 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     private async void Analyze_Click(object sender, RoutedEventArgs e)
     {
         if (LeadGrid.SelectedItem is not Lead lead) return;
-        var profile = await _services.Repository.GetSalesProfileAsync() ?? new SalesProfile();
         lead.AnalysisTrigger = "manual";
         lead.AnalysisRequestedAt = DateTimeOffset.Now;
         AnalyzeButton.IsEnabled = false; AnalyzeButton.Content = "AI 分析中…";
         try
         {
-            await _services.DeepSeek.AnalyzeLeadAsync(lead, profile);
+            await _services.DeepSeek.AnalyzeLeadAsync(lead);
             await RefreshAsync(); DataChanged?.Invoke(this, EventArgs.Empty);
             MessageBox.Show("分析已完成，评分、证据和下一步动作已保存。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Information);
         }

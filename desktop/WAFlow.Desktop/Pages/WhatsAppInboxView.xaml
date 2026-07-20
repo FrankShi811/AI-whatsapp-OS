@@ -91,7 +91,12 @@
                                     <Grid Margin="14,6">
                                         <Border Background="{Binding BubbleBrush}" BorderBrush="{Binding BubbleBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="11,8" MaxWidth="520" HorizontalAlignment="{Binding Alignment}">
                                             <StackPanel>
-                                                <TextBlock Text="{Binding DisplayText}" TextWrapping="Wrap"/>
+                                                <Button Visibility="{Binding ImageVisibility}" Click="OpenMedia_Click" Background="Transparent" BorderThickness="0" Padding="0" HorizontalContentAlignment="Center" Cursor="Hand" ToolTip="点击用系统程序打开原图">
+                                                    <Image Source="{Binding MediaPreview}" MaxWidth="320" MaxHeight="260" Stretch="Uniform"/>
+                                                </Button>
+                                                <Button Visibility="{Binding FileVisibility}" Click="OpenMedia_Click" Content="{Binding MediaActionLabel}" Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left" Padding="12,7"/>
+                                                <TextBlock Text="{Binding TextContent}" Visibility="{Binding TextVisibility}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                                <TextBlock Text="{Binding MediaMissingText}" Visibility="{Binding MediaMissingVisibility}" TextWrapping="Wrap" Foreground="#9A6A12" FontSize="10" Margin="0,4,0,0"/>
                                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,0,0">
                                                     <TextBlock Text="{Binding TimeLabel}" Foreground="{StaticResource Muted}" FontSize="9"/>
                                                     <TextBlock Text="{Binding ReceiptGlyph}" Foreground="{Binding ReceiptBrush}" FontSize="11" FontWeight="SemiBold" Margin="5,-2,0,0" ToolTip="{Binding StatusDetailLabel}"/>
@@ -106,14 +111,14 @@
                     </Grid>
                     <Border Grid.Row="2" Padding="14" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                            <Button x:Name="AttachButton" Content="＋" ToolTip="发送图片、视频、音频或文件" Style="{StaticResource SecondaryButton}" Click="Attach_Click" Width="42" Margin="0,0,10,0" IsEnabled="False"/>
+                            <Button x:Name="AttachButton" Content="＋" ToolTip="添加图片、视频、音频或文件" Style="{StaticResource SecondaryButton}" Click="Attach_Click" Width="54" Height="54" Padding="0" FontSize="25" FontWeight="SemiBold" FontFamily="Segoe UI Symbol" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Focusable="False" Margin="0,0,12,0" IsEnabled="False"/>
                             <Grid Grid.Column="1"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                                <TextBox x:Name="ComposerBox" MinHeight="42" MaxHeight="110" AcceptsReturn="True" TextWrapping="Wrap" IsEnabled="False" PreviewKeyDown="ComposerBox_PreviewKeyDown" ToolTip="Enter 发送，Ctrl+Enter 换行"/>
+                                <TextBox x:Name="ComposerBox" MinHeight="54" MaxHeight="120" AcceptsReturn="True" TextWrapping="Wrap" IsEnabled="False" PreviewKeyDown="ComposerBox_PreviewKeyDown" ToolTip="Enter 发送，Ctrl+Enter 换行"/>
                                 <Border x:Name="AttachmentPanel" Grid.Row="1" Background="#EDF4F0" CornerRadius="7" Padding="8,5" Margin="0,6,0,0" Visibility="Collapsed">
                                     <DockPanel><Button Content="移除" DockPanel.Dock="Right" Click="ClearAttachment_Click" Padding="7,2" Margin="8,0,0,0"/><TextBlock x:Name="AttachmentText" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/></DockPanel>
                                 </Border>
                             </Grid>
-                            <Button x:Name="SendButton" Grid.Column="2" Content="发送" Style="{StaticResource PrimaryButton}" Click="Send_Click" Margin="10,0,0,0" IsEnabled="False"/>
+                            <Button x:Name="SendButton" Grid.Column="2" Content="发送" Style="{StaticResource PrimaryButton}" Click="Send_Click" Margin="10,0,0,0" MinWidth="68" Height="54" IsEnabled="False"/>
                         </Grid>
                     </Border>
                 </Grid>

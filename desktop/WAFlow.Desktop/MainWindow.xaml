@@ -50,7 +50,7 @@
                             <TextBlock x:Name="ProviderText" Text="AI API 未配置" Foreground="#8A6110" FontSize="11" FontWeight="SemiBold"/>
                         </Border>
                         <Button Content="使用引导" Style="{StaticResource SecondaryButton}" Click="ShowGuide_Click" Margin="0,0,8,0"/>
-                        <Button Content="企业与 AI 设置" Style="{StaticResource SecondaryButton}" Click="Settings_Click"/>
+                        <Button Content="API 对接" Style="{StaticResource SecondaryButton}" Click="Settings_Click"/>
                     </StackPanel>
                 </Grid>
             </Border>

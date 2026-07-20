@@ -10,6 +10,7 @@ import makeWASocket, {
   Browsers,
   BufferJSON,
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   initAuthCreds,
   proto
@@ -27,6 +28,7 @@ const state = {
   existingSession: false,
   contacts: new Map(),
   chats: new Map(),
+  mediaDownloads: new Map(),
   historyTotals: { contacts: 0, chats: 0, messages: 0 },
   syncQueue: Promise.resolve()
 }
@@ -299,6 +301,76 @@ function messageMimeType(message) {
   )
 }
 
+function messageFileLength(message) {
+  message = messageContent(message)
+  const value = message?.documentMessage?.fileLength
+    ?? message?.imageMessage?.fileLength
+    ?? message?.videoMessage?.fileLength
+    ?? message?.audioMessage?.fileLength
+    ?? message?.stickerMessage?.fileLength
+  const numeric = Number(value?.toString?.() ?? value)
+  return Number.isFinite(numeric) ? numeric : 0
+}
+
+const mediaExtensions = new Map(Object.entries({
+  'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif',
+  'video/mp4': '.mp4', 'video/3gpp': '.3gp', 'video/quicktime': '.mov',
+  'audio/mpeg': '.mp3', 'audio/mp4': '.m4a', 'audio/ogg': '.ogg', 'audio/wav': '.wav', 'audio/aac': '.aac',
+  'application/pdf': '.pdf', 'text/plain': '.txt', 'text/csv': '.csv', 'application/json': '.json',
+  'application/msword': '.doc', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'application/vnd.ms-excel': '.xls', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'application/vnd.ms-powerpoint': '.ppt', 'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+  'application/zip': '.zip', 'application/vnd.rar': '.rar', 'application/x-7z-compressed': '.7z'
+}))
+
+function safeMediaFileName(value) {
+  const safe = String(value ?? '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '').trim()
+  return (safe || 'media').slice(0, 120)
+}
+
+function fallbackMediaExtension(kind, mimeType) {
+  const normalizedMime = String(mimeType ?? '').split(';')[0].trim().toLowerCase()
+  return mediaExtensions.get(normalizedMime) ?? ({ image: '.jpg', video: '.mp4', audio: '.ogg', sticker: '.webp', document: '.bin' }[kind] ?? '.bin')
+}
+
+async function downloadMessageMedia(message, kind, fileName, mimeType) {
+  if (kind === 'text' || kind === 'unknown') return { mediaPath: '', mediaDownloadError: '' }
+  const announcedLength = messageFileLength(message.message)
+  if (announcedLength > 100 * 1024 * 1024) return { mediaPath: '', mediaDownloadError: '媒体超过 100MB，未自动下载' }
+
+  const messageId = safeMediaFileName(message?.key?.id ?? crypto.randomUUID())
+  const extension = path.extname(fileName || '') || fallbackMediaExtension(kind, mimeType)
+  const displayName = safeMediaFileName(fileName || `${kind}${extension}`)
+  const directory = path.join(process.env.LOCALAPPDATA || process.cwd(), 'WAFlow', 'whatsapp-media', safeMediaFileName(state.accountId))
+  const destination = path.join(directory, `${messageId}-${displayName}`)
+  const downloadKey = `${state.accountId}:${messageId}`
+
+  try {
+    const existing = await fs.stat(destination)
+    if (existing.isFile() && existing.size > 0) return { mediaPath: destination, mediaDownloadError: '' }
+  } catch { }
+
+  if (!state.mediaDownloads.has(downloadKey)) {
+    state.mediaDownloads.set(downloadKey, (async () => {
+      await fs.mkdir(directory, { recursive: true })
+      const context = state.socket?.updateMediaMessage
+        ? { logger, reuploadRequest: item => state.socket.updateMediaMessage(item) }
+        : undefined
+      const buffer = await downloadMediaMessage(message, 'buffer', {}, context)
+      if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw new Error('empty_media_download')
+      if (buffer.length > 100 * 1024 * 1024) throw new Error('media_exceeds_100mb')
+      const temporary = `${destination}.${process.pid}.tmp`
+      await fs.writeFile(temporary, buffer, { mode: 0o600 })
+      await fs.rm(destination, { force: true })
+      await fs.rename(temporary, destination)
+      return destination
+    })().finally(() => state.mediaDownloads.delete(downloadKey)))
+  }
+
+  try { return { mediaPath: await state.mediaDownloads.get(downloadKey), mediaDownloadError: '' } }
+  catch (error) { return { mediaPath: '', mediaDownloadError: safeError(error) } }
+}
+
 const mediaTypes = new Map(Object.entries({
   '.jpg': ['image', 'image/jpeg'], '.jpeg': ['image', 'image/jpeg'], '.png': ['image', 'image/png'], '.webp': ['image', 'image/webp'], '.gif': ['video', 'image/gif'],
   '.mp4': ['video', 'video/mp4'], '.3gp': ['video', 'video/3gpp'], '.mov': ['video', 'video/quicktime'],
@@ -404,6 +476,10 @@ async function normalizeMessage(message, source) {
   const sourceJid = message?.key?.remoteJid ?? ''
   const jid = await resolveDirectJid(message?.key)
   if (!shouldForward(jid)) return null
+  const kind = messageKind(message.message)
+  const fileName = messageFileName(message.message)
+  const mimeType = messageMimeType(message.message)
+  const media = await downloadMessageMedia(message, kind, fileName, mimeType)
   return {
     id: message.key.id ?? '',
     jid,
@@ -414,9 +490,10 @@ async function normalizeMessage(message, source) {
     pushName: message.pushName ?? '',
     timestamp: timestampToIso(message.messageTimestamp),
     text: messageText(message.message),
-    kind: messageKind(message.message),
-    fileName: messageFileName(message.message),
-    mimeType: messageMimeType(message.message),
+    kind,
+    fileName,
+    mimeType,
+    ...media,
     status: message.status ?? null,
     deliveredAt: latestReceiptTime(message.userReceipt, 'receiptTimestamp'),
     readAt: latestReceiptTime(message.userReceipt, 'readTimestamp', 'playedTimestamp'),
@@ -471,7 +548,17 @@ async function normalizeChats(chats, source) {
 }
 
 async function normalizeMessages(messages, source) {
-  const items = (await Promise.all((messages ?? []).map(message => normalizeMessage(message, source)))).filter(item => item?.phone && item?.id)
+  const input = messages ?? []
+  const normalized = new Array(input.length)
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(3, Math.max(1, input.length)) }, async () => {
+    while (cursor < input.length) {
+      const index = cursor++
+      normalized[index] = await normalizeMessage(input[index], source)
+    }
+  })
+  await Promise.all(workers)
+  const items = normalized.filter(item => item?.phone && item?.id)
   for (const item of items) {
     const contact = [...state.contacts.values()].find(value => value.phone === item.phone)
     if (!item.fromMe && item.pushName) rememberContact({ jid: item.jid, sourceJid: item.sourceJid, phone: item.phone, displayName: item.pushName, notifyName: item.pushName, source })

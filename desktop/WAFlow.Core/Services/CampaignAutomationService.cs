@@ -160,7 +160,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         if (campaign.SelectedLeadIds.Count == 0) throw new InvalidOperationException("请至少勾选 1 位客户后再建立发送任务。");
         var audience = await PreviewAudienceAsync(campaign, cancellationToken);
         var eligible = audience.Where(x => x.Eligible).ToList();
-        if (eligible.Count == 0) throw new InvalidOperationException("当前筛选没有可发送客户。客户必须号码有效、已记录 WhatsApp 营销同意且未退订。");
+        if (eligible.Count == 0) throw new InvalidOperationException("当前筛选没有可发送客户。请检查号码是否有效，以及客户是否已经退订。");
 
         var ip = await _publicIp.CheckAsync(campaign.AccountId, true, cancellationToken);
         if (!string.IsNullOrWhiteSpace(ip.Error) || string.IsNullOrWhiteSpace(ip.State.CurrentIp))
@@ -523,8 +523,8 @@ public sealed class CampaignAutomationService : IAsyncDisposable
     {
         if (!lead.PhoneValid) { reason = "号码无效"; return false; }
         if (lead.OptedOut) { reason = "客户已退订"; return false; }
-        if (!lead.WhatsAppOptIn) { reason = "未记录营销同意"; return false; }
-        reason = "已同意且号码有效"; return true;
+        reason = lead.WhatsAppOptIn ? "号码有效 · 已记录营销同意" : "号码有效 · 未记录营销同意";
+        return true;
     }
 
     private static void ValidateDraft(WhatsAppCampaign campaign)
