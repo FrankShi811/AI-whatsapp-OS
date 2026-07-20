@@ -17,6 +17,12 @@ public enum CampaignStatus { Draft, Scheduled, Running, Paused, Completed, Cance
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum CampaignRecipientStatus { Queued, Sending, Sent, Skipped, Failed, Cancelled }
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum CampaignScheduleMode { Immediate, Scheduled }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum CampaignIntervalUnit { Seconds, Minutes }
+
 public sealed class SalesProfile
 {
     public string CompanyName { get; set; } = "";
@@ -179,8 +185,14 @@ public sealed class WhatsAppCampaign
     public LeadStage? StageFilter { get; set; }
     public string TagFilter { get; set; } = "";
     public string OwnerFilter { get; set; } = "";
+    public string TemplateId { get; set; } = "";
     public string MessageTemplate { get; set; } = "Hi {name}, I'd like to follow up about {product}.";
+    public List<string> SelectedLeadIds { get; set; } = [];
+    public CampaignScheduleMode ScheduleMode { get; set; } = CampaignScheduleMode.Scheduled;
     public DateTimeOffset StartsAt { get; set; } = DateTimeOffset.Now.AddMinutes(5);
+    public int IntervalValue { get; set; }
+    public CampaignIntervalUnit IntervalUnit { get; set; } = CampaignIntervalUnit.Minutes;
+    // Kept for existing 1.7.x campaign JSON. New campaigns use IntervalValue + IntervalUnit.
     public int IntervalMinutes { get; set; } = 5;
     public int DailyLimit { get; set; } = 50;
     public CampaignStatus Status { get; set; } = CampaignStatus.Draft;
@@ -195,8 +207,21 @@ public sealed class WhatsAppCampaign
         CampaignStatus.Scheduled => "已排期", CampaignStatus.Running => "发送中", CampaignStatus.Paused => "已暂停",
         CampaignStatus.Completed => "已完成", CampaignStatus.Cancelled => "已取消", _ => "草稿"
     };
-    [JsonIgnore] public string ScheduleLabel => StartsAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm");
+    [JsonIgnore] public int EffectiveIntervalValue => IntervalValue > 0 ? IntervalValue : Math.Max(1, IntervalMinutes);
+    [JsonIgnore] public TimeSpan IntervalDelay => IntervalUnit == CampaignIntervalUnit.Seconds
+        ? TimeSpan.FromSeconds(EffectiveIntervalValue)
+        : TimeSpan.FromMinutes(EffectiveIntervalValue);
+    [JsonIgnore] public string ScheduleLabel => ScheduleMode == CampaignScheduleMode.Immediate ? "立即发送" : StartsAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm");
     [JsonIgnore] public bool IsEditable => Status == CampaignStatus.Draft;
+}
+
+public sealed class CampaignMessageTemplate
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Name { get; set; } = "";
+    public string Body { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
 }
 
 public sealed class CampaignRecipient
@@ -285,7 +310,7 @@ public sealed class DashboardSnapshot
     public Dictionary<string, int> Grades { get; set; } = new() { ["A"] = 0, ["B"] = 0, ["C"] = 0, ["D"] = 0 };
     public Dictionary<LeadStage, int> Stages { get; set; } = [];
     public int PendingFollowUps { get; set; }
-    public int ReadyDrafts { get; set; }
+    public int ActiveCampaigns { get; set; }
     public int FailedAnalyses { get; set; }
     public List<Lead> PriorityLeads { get; set; } = [];
     public string LastImportText { get; set; } = "暂无导入记录";
@@ -295,6 +320,13 @@ public sealed class AppSettings
 {
     public string DeepSeekBaseUrl { get; set; } = "https://api.deepseek.com";
     public string DeepSeekModel { get; set; } = "deepseek-chat";
+}
+
+public sealed class OnboardingState
+{
+    public bool Completed { get; set; }
+    public int GuideVersion { get; set; } = 1;
+    public DateTimeOffset? CompletedAt { get; set; }
 }
 
 public static class Labels

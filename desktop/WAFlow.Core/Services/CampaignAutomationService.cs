@@ -13,6 +13,12 @@ public sealed record CampaignAudienceItem(Lead Lead, bool Eligible, string Reaso
     public string EligibilityLabel => Eligible ? "可发送" : "已排除";
 }
 
+public sealed record CampaignTemplateField(string Key, string Label)
+{
+    public string Token => $"{{{Key}}}";
+    public string DisplayLabel => $"{Label}  {Token}";
+}
+
 public sealed class CampaignAutomationService : IAsyncDisposable
 {
     private readonly LocalRepository _repository;
@@ -31,7 +37,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         _bridge.EventReceived += Bridge_EventReceived;
     }
 
-    public async Task<List<CampaignAudienceItem>> PreviewAudienceAsync(WhatsAppCampaign campaign, CancellationToken cancellationToken = default)
+    public async Task<List<CampaignAudienceItem>> ListAudienceAsync(WhatsAppCampaign campaign, CancellationToken cancellationToken = default)
     {
         ValidateDraft(campaign);
         var leads = await _repository.GetLeadsAsync(cancellationToken: cancellationToken);
@@ -39,6 +45,43 @@ public sealed class CampaignAutomationService : IAsyncDisposable
             .Select(x => CreateAudienceItem(campaign, x))
             .OrderByDescending(x => x.Eligible).ThenByDescending(x => x.Lead.Score).ThenBy(x => x.DisplayName)
             .ToList();
+    }
+
+    public async Task<List<CampaignAudienceItem>> PreviewAudienceAsync(WhatsAppCampaign campaign, CancellationToken cancellationToken = default)
+    {
+        var selected = campaign.SelectedLeadIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (selected.Count == 0) return [];
+        return (await ListAudienceAsync(campaign, cancellationToken)).Where(item => selected.Contains(item.Lead.Id)).ToList();
+    }
+
+    public async Task<List<CampaignTemplateField>> GetTemplateFieldsAsync(CancellationToken cancellationToken = default)
+    {
+        var fields = CoreTemplateFields().ToDictionary(item => item.Key, StringComparer.OrdinalIgnoreCase);
+        foreach (var key in (await _repository.GetLeadsAsync(cancellationToken: cancellationToken))
+                     .SelectMany(lead => lead.CustomFields.Keys)
+                     .Where(key => !string.IsNullOrWhiteSpace(key)))
+            fields.TryAdd(key.Trim(), new CampaignTemplateField(key.Trim(), $"表格字段：{key.Trim()}"));
+        return fields.Values.OrderBy(field => field.Label, StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
+    public async Task<CampaignMessageTemplate> SaveMessageTemplateAsync(CampaignMessageTemplate template, CancellationToken cancellationToken = default)
+    {
+        template.Name = template.Name.Trim(); template.Body = template.Body.Trim();
+        if (string.IsNullOrWhiteSpace(template.Name)) throw new InvalidOperationException("请填写话术模板名称。");
+        if (string.IsNullOrWhiteSpace(template.Body)) throw new InvalidOperationException("请填写话术模板内容。");
+        if (template.Body.Length > 4096) throw new InvalidOperationException("WhatsApp 话术不能超过 4096 字符。");
+        await ValidateTemplateFieldsAsync(template.Body, cancellationToken);
+        await _repository.SaveCampaignMessageTemplateAsync(template, cancellationToken);
+        await _repository.LogEventAsync("campaign_template_saved", null, null, $"template_id={template.Id};name={template.Name}", cancellationToken);
+        CampaignChanged?.Invoke(this, EventArgs.Empty);
+        return template;
+    }
+
+    public async Task DeleteMessageTemplateAsync(CampaignMessageTemplate template, CancellationToken cancellationToken = default)
+    {
+        await _repository.DeleteCampaignMessageTemplateAsync(template.Id, cancellationToken);
+        await _repository.LogEventAsync("campaign_template_deleted", null, null, $"template_id={template.Id};name={template.Name}", cancellationToken);
+        CampaignChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private static CampaignAudienceItem CreateAudienceItem(WhatsAppCampaign campaign, Lead lead)
@@ -50,9 +93,11 @@ public sealed class CampaignAutomationService : IAsyncDisposable
     public async Task SaveDraftAsync(WhatsAppCampaign campaign, CancellationToken cancellationToken = default)
     {
         ValidateDraft(campaign);
+        await ValidateTemplateFieldsAsync(campaign.MessageTemplate, cancellationToken);
         var existing = await _repository.GetCampaignAsync(campaign.Id, cancellationToken);
         if (existing is not null && existing.Status != CampaignStatus.Draft)
             throw new InvalidOperationException("已排期的 Campaign 不能直接修改；请暂停或取消后新建。");
+        campaign.SelectedLeadIds = campaign.SelectedLeadIds.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         campaign.Status = CampaignStatus.Draft;
         await _repository.SaveCampaignAsync(campaign, cancellationToken);
         await _repository.LogEventAsync("campaign_draft_saved", null, null, $"campaign_id={campaign.Id};name={campaign.Name}", cancellationToken);
@@ -62,18 +107,24 @@ public sealed class CampaignAutomationService : IAsyncDisposable
     public async Task<int> ApproveAndScheduleAsync(WhatsAppCampaign campaign, string actor = "当前用户", CancellationToken cancellationToken = default)
     {
         ValidateDraft(campaign);
+        await ValidateTemplateFieldsAsync(campaign.MessageTemplate, cancellationToken);
+        if (campaign.SelectedLeadIds.Count == 0) throw new InvalidOperationException("请至少勾选 1 位客户后再建立发送任务。");
         var audience = await PreviewAudienceAsync(campaign, cancellationToken);
         var eligible = audience.Where(x => x.Eligible).ToList();
         if (eligible.Count == 0) throw new InvalidOperationException("当前筛选没有可发送客户。客户必须号码有效、已记录 WhatsApp 营销同意且未退订。");
 
-        var firstSendAt = campaign.StartsAt > DateTimeOffset.Now ? campaign.StartsAt : DateTimeOffset.Now.AddSeconds(10);
+        var now = DateTimeOffset.Now;
+        var firstSendAt = campaign.ScheduleMode == CampaignScheduleMode.Immediate
+            ? now.AddSeconds(2)
+            : campaign.StartsAt > now ? campaign.StartsAt : now.AddSeconds(2);
+        var interval = campaign.IntervalDelay;
         var recipients = eligible.Select((item, index) => new CampaignRecipient
         {
             Id = $"{campaign.Id}:{item.Lead.Id}", CampaignId = campaign.Id, LeadId = item.Lead.Id,
             AccountId = campaign.AccountId, Phone = item.Lead.PhoneE164, DisplayName = item.DisplayName,
             RenderedMessage = item.PreviewMessage, Status = CampaignRecipientStatus.Queued,
-            ScheduledAt = firstSendAt.AddMinutes((long)index * campaign.IntervalMinutes),
-            NextAttemptAt = firstSendAt.AddMinutes((long)index * campaign.IntervalMinutes)
+            ScheduledAt = firstSendAt.AddTicks(interval.Ticks * index),
+            NextAttemptAt = firstSendAt.AddTicks(interval.Ticks * index)
         }).ToList();
 
         campaign.StartsAt = firstSendAt;
@@ -83,7 +134,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         campaign.PauseReason = "";
         await _repository.SaveCampaignAsync(campaign, cancellationToken);
         await _repository.ReplaceCampaignRecipientsAsync(campaign.Id, recipients, cancellationToken);
-        await _repository.LogEventAsync("campaign_approved", null, null, $"campaign_id={campaign.Id};recipients={recipients.Count};interval={campaign.IntervalMinutes};daily_limit={campaign.DailyLimit}", cancellationToken);
+        await _repository.LogEventAsync("campaign_approved", null, null, $"campaign_id={campaign.Id};mode={campaign.ScheduleMode};recipients={recipients.Count};interval={campaign.EffectiveIntervalValue};unit={campaign.IntervalUnit};daily_limit={campaign.DailyLimit}", cancellationToken);
         CampaignChanged?.Invoke(this, EventArgs.Empty);
         return recipients.Count;
     }
@@ -265,10 +316,34 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         {
             ["name"] = lead.Name, ["company"] = lead.Company, ["country"] = lead.Country,
             ["product"] = lead.ProductInterest, ["owner"] = lead.Owner, ["grade"] = lead.Grade,
-            ["stage"] = Labels.Stage(lead.Stage), ["phone"] = lead.PhoneE164
+            ["stage"] = Labels.Stage(lead.Stage), ["phone"] = lead.PhoneE164, ["email"] = lead.Email,
+            ["language"] = lead.PreferredLanguage, ["order_value"] = lead.EstimatedOrderValue.ToString("0.##"),
+            ["currency"] = lead.Currency, ["score"] = lead.Score.ToString(), ["tags"] = string.Join(", ", lead.Tags),
+            ["profile_summary"] = lead.ProfileSummary, ["customer_segment"] = lead.CustomerSegment,
+            ["next_action"] = lead.NextAction, ["latest_message"] = lead.LatestMessage, ["source"] = lead.Source
         };
         foreach (var pair in lead.CustomFields) fields[pair.Key] = pair.Value;
-        return Regex.Replace(template, "\\{([^{}]+)\\}", match => fields.TryGetValue(match.Groups[1].Value.Trim(), out var value) ? value : match.Value, RegexOptions.CultureInvariant);
+        return Regex.Replace(template, "\\{([^{}]+)\\}", match => fields.TryGetValue(match.Groups[1].Value.Trim(), out var value) ? value : "", RegexOptions.CultureInvariant);
+    }
+
+    public static IReadOnlyList<CampaignTemplateField> CoreTemplateFields() =>
+    [
+        new("name", "姓名"), new("company", "公司"), new("country", "国家 / 地区"), new("phone", "WhatsApp 号码"),
+        new("email", "邮箱"), new("language", "客户语言"), new("product", "产品兴趣"), new("order_value", "预计订单金额"),
+        new("currency", "币种"), new("owner", "负责人"), new("grade", "商机等级"), new("stage", "跟进阶段"),
+        new("score", "商机评分"), new("tags", "标签"), new("profile_summary", "客户画像"), new("customer_segment", "客户分组"),
+        new("next_action", "下一步建议"), new("latest_message", "最近消息"), new("source", "客户来源")
+    ];
+
+    private async Task ValidateTemplateFieldsAsync(string template, CancellationToken cancellationToken)
+    {
+        var available = (await GetTemplateFieldsAsync(cancellationToken)).Select(field => field.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unknown = Regex.Matches(template, "\\{([^{}]+)\\}")
+            .Select(match => match.Groups[1].Value.Trim())
+            .Where(key => !available.Contains(key))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (unknown.Count > 0) throw new InvalidOperationException($"话术包含不存在的客户字段：{string.Join("、", unknown)}。请从“插入客户字段”列表选择。");
     }
 
     private static bool MatchesFilter(WhatsAppCampaign campaign, Lead lead) =>
@@ -290,7 +365,11 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         if (string.IsNullOrWhiteSpace(campaign.Name)) throw new InvalidOperationException("请填写 Campaign 名称。");
         if (string.IsNullOrWhiteSpace(campaign.MessageTemplate)) throw new InvalidOperationException("请填写发送话术。");
         if (campaign.MessageTemplate.Length > 4096) throw new InvalidOperationException("WhatsApp 话术不能超过 4096 字符。");
-        if (campaign.IntervalMinutes is < 1 or > 1440) throw new InvalidOperationException("发送间隔必须在 1–1440 分钟之间。");
+        var interval = campaign.EffectiveIntervalValue;
+        if (campaign.IntervalUnit == CampaignIntervalUnit.Seconds && interval is < 10 or > 3600)
+            throw new InvalidOperationException("按秒发送时，间隔必须在 10–3600 秒之间。过密发送不会让个人账号更安全。");
+        if (campaign.IntervalUnit == CampaignIntervalUnit.Minutes && interval is < 1 or > 1440)
+            throw new InvalidOperationException("按分钟发送时，间隔必须在 1–1440 分钟之间。");
         if (campaign.DailyLimit is < 1 or > 1000) throw new InvalidOperationException("每日上限必须在 1–1000 之间。");
     }
 

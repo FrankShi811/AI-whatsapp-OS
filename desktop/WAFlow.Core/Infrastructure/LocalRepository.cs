@@ -207,6 +207,31 @@ public sealed class LocalRepository
     public Task SaveAppSettingsAsync(AppSettings settings, CancellationToken cancellationToken = default) =>
         SaveSettingAsync("app_settings", settings, cancellationToken);
 
+    public async Task<OnboardingState> GetOnboardingStateAsync(CancellationToken cancellationToken = default) =>
+        await GetSettingAsync<OnboardingState>("onboarding_state", cancellationToken) ?? new OnboardingState();
+
+    public Task SaveOnboardingStateAsync(OnboardingState state, CancellationToken cancellationToken = default) =>
+        SaveSettingAsync("onboarding_state", state, cancellationToken);
+
+    public async Task<List<CampaignMessageTemplate>> GetCampaignMessageTemplatesAsync(CancellationToken cancellationToken = default) =>
+        await GetSettingAsync<List<CampaignMessageTemplate>>("campaign_message_templates", cancellationToken) ?? [];
+
+    public async Task SaveCampaignMessageTemplateAsync(CampaignMessageTemplate template, CancellationToken cancellationToken = default)
+    {
+        var templates = await GetCampaignMessageTemplatesAsync(cancellationToken);
+        var existing = templates.FindIndex(item => item.Id.Equals(template.Id, StringComparison.OrdinalIgnoreCase));
+        template.UpdatedAt = DateTimeOffset.Now;
+        if (existing >= 0) templates[existing] = template; else templates.Add(template);
+        await SaveSettingAsync("campaign_message_templates", templates.OrderByDescending(item => item.UpdatedAt).ToList(), cancellationToken);
+    }
+
+    public async Task DeleteCampaignMessageTemplateAsync(string id, CancellationToken cancellationToken = default)
+    {
+        var templates = await GetCampaignMessageTemplatesAsync(cancellationToken);
+        templates.RemoveAll(item => item.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
+        await SaveSettingAsync("campaign_message_templates", templates, cancellationToken);
+    }
+
     public async Task<WhatsAppIpState?> GetWhatsAppIpStateAsync(string accountId, CancellationToken cancellationToken = default) =>
         await GetSettingAsync<WhatsAppIpState>($"whatsapp_ip_state:{accountId}", cancellationToken);
 
@@ -817,7 +842,7 @@ public sealed class LocalRepository
     public async Task<DashboardSnapshot> GetDashboardAsync(CancellationToken cancellationToken = default)
     {
         var leads = await GetLeadsAsync(cancellationToken: cancellationToken);
-        var drafts = await GetDraftsAsync(cancellationToken: cancellationToken);
+        var campaigns = await GetCampaignsAsync(null, cancellationToken);
         var lastImport = await GetLastImportTextAsync(cancellationToken);
         return new DashboardSnapshot
         {
@@ -825,7 +850,7 @@ public sealed class LocalRepository
             Grades = new[] { "A", "B", "C", "D" }.ToDictionary(x => x, x => leads.Count(l => l.Grade == x)),
             Stages = Enum.GetValues<LeadStage>().ToDictionary(x => x, x => leads.Count(l => l.Stage == x)),
             PendingFollowUps = leads.Count(l => l.NextFollowUpAt is not null && l.NextFollowUpAt <= DateTimeOffset.Now.AddDays(1)),
-            ReadyDrafts = drafts.Count(d => d.Status == DraftStatus.Approved),
+            ActiveCampaigns = campaigns.Count(item => item.Status is CampaignStatus.Scheduled or CampaignStatus.Running or CampaignStatus.Paused),
             FailedAnalyses = leads.Count(l => l.AnalysisStatus == AnalysisStatus.RetryableFailed),
             PriorityLeads = leads.Where(l => l.Grade is "A" or "B").Take(5).ToList(),
             LastImportText = lastImport

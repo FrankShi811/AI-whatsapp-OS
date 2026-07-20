@@ -24,9 +24,8 @@
                     <Button x:Name="IntelligenceButton" Tag="intelligence" Click="Navigate_Click" Content="✦   商机智能" Style="{StaticResource NavButton}"/>
                     <Button x:Name="CustomersButton" Tag="customers" Click="Navigate_Click" Content="◎   客户列表" Style="{StaticResource NavButton}"/>
                     <Button x:Name="InboxButton" Tag="inbox" Click="Navigate_Click" Content="◉   WhatsApp Inbox" Style="{StaticResource NavButton}"/>
-                    <Button x:Name="DraftsButton" Tag="drafts" Click="Navigate_Click" Content="✎   WhatsApp 草稿" Style="{StaticResource NavButton}"/>
+                    <Button x:Name="BroadcastButton" Tag="broadcast" Click="Navigate_Click" Content="⚙   WhatsApp 自动化群发" Style="{StaticResource NavButton}"/>
                     <Border Height="1" Background="#29463B" Margin="8,16"/>
-                    <Button x:Name="CampaignsButton" Tag="campaigns" Click="Navigate_Click" Content="⚙   Campaign Automation" Style="{StaticResource NavButton}"/>
                     <Button IsEnabled="False" Content="◫   Analytics · 后续" Style="{StaticResource NavButton}" Opacity="0.5"/>
                 </StackPanel>
                 <Border Grid.Row="3" Background="#17372C" CornerRadius="10" Padding="12">
@@ -50,11 +49,43 @@
                         <Border x:Name="ProviderBadge" Background="{StaticResource WarningSoft}" CornerRadius="12" Padding="10,5" Margin="0,0,12,0">
                             <TextBlock x:Name="ProviderText" Text="DeepSeek 未配置" Foreground="#8A6110" FontSize="11" FontWeight="SemiBold"/>
                         </Border>
+                        <Button Content="使用引导" Style="{StaticResource SecondaryButton}" Click="ShowGuide_Click" Margin="0,0,8,0"/>
                         <Button Content="企业与 AI 设置" Style="{StaticResource SecondaryButton}" Click="Settings_Click"/>
                     </StackPanel>
                 </Grid>
             </Border>
             <ContentControl x:Name="ContentHost" Grid.Row="1"/>
+        </Grid>
+
+        <Grid x:Name="OnboardingOverlay" Grid.ColumnSpan="2" Panel.ZIndex="100" Background="#C9001510" Visibility="Collapsed">
+            <Border Width="660" MaxHeight="610" Background="White" BorderBrush="#CFE1D9" BorderThickness="1" CornerRadius="18" Padding="30,26" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal">
+                            <Border Width="46" Height="46" Background="#F1F7F4" CornerRadius="12" Padding="5"><Image Source="/AISalesOS;component/Assets/AI-Sales-OS.png" Stretch="Uniform"/></Border>
+                            <StackPanel Margin="12,0,0,0" VerticalAlignment="Center"><TextBlock Text="AI Sales OS 首次使用引导" FontWeight="Bold" FontSize="18"/><TextBlock x:Name="OnboardingStepText" Text="第 1 / 5 步" Foreground="{StaticResource Primary}" FontSize="11" Margin="0,3,0,0"/></StackPanel>
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="稍后再看" Style="{StaticResource SecondaryButton}" Click="SkipGuide_Click" VerticalAlignment="Top"/>
+                    </Grid>
+                    <TextBlock Grid.Row="1" x:Name="OnboardingTitle" Text="欢迎使用 AI Sales OS" FontWeight="Bold" FontSize="25" Margin="0,25,0,0"/>
+                    <TextBlock Grid.Row="2" x:Name="OnboardingBody" TextWrapping="Wrap" FontSize="14" LineHeight="23" Foreground="#314A41" Margin="0,12,0,0"/>
+                    <Border Grid.Row="3" Background="#EDF6F1" BorderBrush="#D2E8DD" BorderThickness="1" CornerRadius="11" Padding="16" Margin="0,18,0,20">
+                        <StackPanel>
+                            <TextBlock x:Name="OnboardingTarget" FontWeight="SemiBold" Foreground="#12684F"/>
+                            <TextBlock x:Name="OnboardingTips" TextWrapping="Wrap" LineHeight="21" Foreground="#48675B" Margin="0,7,0,0"/>
+                            <Button x:Name="OnboardingSettingsButton" Content="现在打开企业与 AI 设置" Style="{StaticResource PrimaryButton}" Click="OnboardingSettings_Click" HorizontalAlignment="Left" Margin="0,13,0,0" Visibility="Collapsed"/>
+                        </StackPanel>
+                    </Border>
+                    <Grid Grid.Row="4">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <TextBlock Text="所有客户和任务数据默认保存在本机 SQLite。" Foreground="{StaticResource Muted}" FontSize="10" VerticalAlignment="Center"/>
+                        <Button Grid.Column="1" x:Name="OnboardingBackButton" Content="上一步" Style="{StaticResource SecondaryButton}" Click="OnboardingBack_Click"/>
+                        <Button Grid.Column="3" x:Name="OnboardingNextButton" Content="下一步" Style="{StaticResource PrimaryButton}" Click="OnboardingNext_Click" MinWidth="100"/>
+                    </Grid>
+                </Grid>
+            </Border>
         </Grid>
     </Grid>
 </Window>

@@ -1,19 +1,20 @@
 # AI Sales OS Windows 原生版
 
-直接双击 `AI Sales OS.exe` 运行。当前版本为 1.7.0，主要数据继续保存在 `%LOCALAPPDATA%\WAFlow\waflow.db`，因此升级后仍会读取原有客户、账号、Campaign 和设置。
+直接双击 `AI Sales OS.exe` 运行。当前版本为 1.8.0，主要数据继续保存在 `%LOCALAPPDATA%\WAFlow\waflow.db`，因此升级后仍会读取原有客户、账号、群发任务和设置。
 
 这是 WPF/.NET 8 自包含单文件 EXE，不是 Electron、Tauri 或 WebView 套壳，不启动 localhost HTTP 服务。最终用户无需安装 Node.js、npm、浏览器或 .NET Runtime；WhatsApp 桥接程序已作为 Windows EXE 嵌入主程序。
 
 ## 主要能力
 
-- 原生 Dashboard、商机智能、客户列表、WhatsApp 草稿、WhatsApp Inbox 和 Campaign Automation。
+- 原生 Dashboard、商机智能、客户列表、WhatsApp Inbox 和 WhatsApp 自动化群发。
 - 多个个人 WhatsApp 账号扫码登录；账号的会话、消息与 Campaign 队列相互隔离。
 - Inbox 接收手机提供的历史同步包、会话和 WhatsApp 联系人，支持按姓名或号码实时搜索；电话或 WhatsApp 原表字段会与会话号码安全关联，客户侧栏与客户列表双向联动。
 - 对话区按“自己发送的绿色气泡靠右、客户消息白色气泡靠左”显示；Enter 发送、Ctrl+Enter 换行，并支持不超过 100MB 的常见图片、视频、音频、Office、PDF 和压缩文件。
 - 发出消息显示发送中、服务器已接收、已送达、已读或失败状态；单双灰勾和双蓝勾与 WhatsApp 回执联动，并保存发送、送达和已读时间。
 - Inbox 每 60 秒检测本机公网出口 IP，显示 IP 与大致位置；IP 变化会留存审计记录并提醒检查 VPN、代理或网络切换。
 - 会话按最新消息自动排序；右键可置顶或取消置顶，并通过已连接的个人 WhatsApp 会话同步到手机端。
-- Campaign 支持受众筛选、动态字段、北京时间排期、发送间隔、每日上限、暂停/恢复、失败重试和发送审计。
+- WhatsApp 自动化群发支持持久话术模板、客户/商机/导入表格动态字段、客户单选或多选、即时或北京时间定时任务、按秒或分钟间隔、每日上限、暂停/恢复和发送审计。
+- 首次启动显示五步蒙层引导，介绍企业资料、客户导入、WhatsApp 连接、营销同意和自动化群发；右上角“使用引导”可随时重新打开。
 - 导入时只需选择文件和工作表，不再逐列映射；原表每一列都按原表头保存，常用字段自动联动到 CRM。
 - 不同客户可以拥有不同维度；客户列表按原始列顺序横向显示，长表头不会竖排，双击客户可逐项编辑全部系统字段和原表维度。
 - `.xlsx`、UTF-8/GB18030 CSV 单文件资源保护上限为 200MB，不设固定行数上限；大批量数据在后台解析并按批次写入 SQLite。

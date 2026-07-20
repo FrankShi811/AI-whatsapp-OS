@@ -14,7 +14,7 @@ public partial class DashboardView : UserControl, IRefreshableView
         var data = await _services.Repository.GetDashboardAsync();
         TotalLeadsText.Text = data.TotalLeads.ToString();
         HighValueText.Text = (data.Grades.GetValueOrDefault("A") + data.Grades.GetValueOrDefault("B")).ToString();
-        FollowUpsText.Text = data.PendingFollowUps.ToString(); ApprovedDraftsText.Text = data.ReadyDrafts.ToString();
+        FollowUpsText.Text = data.PendingFollowUps.ToString(); ActiveCampaignsText.Text = data.ActiveCampaigns.ToString();
         LastImportText.Text = data.LastImportText;
         SetGrade("A", GradeAText, GradeABar); SetGrade("B", GradeBText, GradeBBar); SetGrade("C", GradeCText, GradeCBar); SetGrade("D", GradeDText, GradeDBar);
         var maximum = Math.Max(1, data.Stages.Values.DefaultIfEmpty(0).Max());

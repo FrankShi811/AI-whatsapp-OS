@@ -302,21 +302,22 @@ await using var campaigns = new CampaignAutomationService(repository, campaignBr
 var campaign = new WhatsAppCampaign
 {
     Name="UK opt-in follow-up", TagFilter="UK", MessageTemplate="Hi {name}, following up about {product} for {company}.",
-    StartsAt=DateTimeOffset.Now.AddMinutes(10), IntervalMinutes=3, DailyLimit=25
+    SelectedLeadIds=[whatsappLead.Id], ScheduleMode=CampaignScheduleMode.Immediate,
+    StartsAt=DateTimeOffset.Now.AddMinutes(10), IntervalValue=30, IntervalUnit=CampaignIntervalUnit.Seconds, IntervalMinutes=1, DailyLimit=25
 };
 var campaignPreview = await campaigns.PreviewAudienceAsync(campaign);
 Check(campaignPreview.Count == 1 && campaignPreview.Single().Eligible && campaignPreview.Single().PreviewMessage.Contains("Reusable water bottles"), "campaign opt-in audience and template preview");
 await campaigns.SaveDraftAsync(campaign);
 var scheduledCount = await campaigns.ApproveAndScheduleAsync(campaign, "smoke-test");
 var campaignRecipients = await repository.GetCampaignRecipientsAsync(campaign.Id);
-Check(scheduledCount == 1 && campaignRecipients.Single().Status == CampaignRecipientStatus.Queued && (await repository.GetCampaignAsync(campaign.Id))?.Status == CampaignStatus.Scheduled, "campaign approval creates durable queue");
+Check(scheduledCount == 1 && campaignRecipients.Single().Status == CampaignRecipientStatus.Queued && campaignRecipients.Single().ScheduledAt <= DateTimeOffset.Now.AddSeconds(10) && (await repository.GetCampaignAsync(campaign.Id))?.Status == CampaignStatus.Scheduled, "immediate campaign approval creates durable queue");
 var uncertainRecipient = campaignRecipients.Single(); uncertainRecipient.Status = CampaignRecipientStatus.Sending;
 await repository.SaveCampaignRecipientAsync(uncertainRecipient);
 await repository.RecoverInterruptedCampaignRecipientsAsync();
 Check((await repository.GetCampaignRecipientsAsync(campaign.Id)).Single().Status == CampaignRecipientStatus.Failed, "campaign uncertain send is never auto-retried");
 whatsappLead.OptedOut = true;
 await repository.UpsertLeadAsync(whatsappLead);
-var optedOutPreview = await campaigns.PreviewAudienceAsync(new WhatsAppCampaign { Name="opt-out-check", TagFilter="UK", MessageTemplate="Hi {name}", StartsAt=DateTimeOffset.Now.AddHours(1) });
+var optedOutPreview = await campaigns.PreviewAudienceAsync(new WhatsAppCampaign { Name="opt-out-check", TagFilter="UK", SelectedLeadIds=[whatsappLead.Id], MessageTemplate="Hi {name}", StartsAt=DateTimeOffset.Now.AddHours(1) });
 Check(optedOutPreview.Single().Eligible == false && optedOutPreview.Single().Reason == "客户已退订", "campaign opt-out exclusion rechecked");
 whatsappLead.OptedOut = false;
 await repository.UpsertLeadAsync(whatsappLead);
@@ -327,6 +328,13 @@ Check((await repository.GetCampaignAsync(campaign.Id))?.Status == CampaignStatus
 var secondAccountCampaign = new WhatsAppCampaign { AccountId="personal_test", Name="second account draft", MessageTemplate="Hi {name}", StartsAt=DateTimeOffset.Now.AddHours(1) };
 await campaigns.SaveDraftAsync(secondAccountCampaign);
 Check((await repository.GetCampaignsAsync("personal_test")).Single().AccountId == "personal_test" && (await repository.GetCampaignsAsync(null)).Count == 2, "campaign queues isolated by WhatsApp account");
+whatsappLead.CustomFields["采购周期"] = "Quarterly";
+await repository.UpsertLeadAsync(whatsappLead);
+var templateFields = await campaigns.GetTemplateFieldsAsync();
+var savedTemplate = await campaigns.SaveMessageTemplateAsync(new CampaignMessageTemplate { Name="custom field follow-up", Body="Hi {name}, next {采购周期}." });
+Check(templateFields.Any(field => field.Key == "采购周期") && CampaignAutomationService.RenderTemplate(savedTemplate.Body, whatsappLead).Contains("Quarterly") && (await repository.GetCampaignMessageTemplatesAsync()).Any(item => item.Id == savedTemplate.Id), "campaign templates use imported custom fields and persist");
+await repository.SaveOnboardingStateAsync(new OnboardingState { Completed=true, GuideVersion=1, CompletedAt=DateTimeOffset.Now });
+Check((await repository.GetOnboardingStateAsync()).Completed, "first-run onboarding completion persists");
 
 await using (var embeddedBridge = new WhatsAppConnectionManager())
 {

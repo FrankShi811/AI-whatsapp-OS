@@ -5,7 +5,7 @@
 ## 运行时结构
 
 - `WAFlow.Desktop`：保留的内部项目名；产物程序集为 `AISalesOS.exe`，提供全部 WPF 原生界面。
-- `WAFlow.Core`：保留的内部核心模块名，包含 SQLite、Excel/CSV、评分、DeepSeek、WhatsApp 多账号和持久 Campaign 调度。
+- `WAFlow.Core`：保留的内部核心模块名，包含 SQLite、Excel/CSV、评分、DeepSeek、WhatsApp 多账号和持久群发任务调度。
 - `WAFlow.WhatsApp.Bridge.exe`：内嵌 Node SEA Windows EXE，通过标准输入输出 JSON-RPC 与主程序通信，不开放本地 HTTP 端口。
 - `WAFlow.SmokeTests`：离线核心测试；DeepSeek 使用模拟响应，不访问真实账号或客户。
 
@@ -25,6 +25,6 @@ cd "D:\whatsapp 自动化"
 
 - AI 仅调用用户配置的 DeepSeek HTTPS API；失败时保留原始客户数据并标记可重试。
 - DeepSeek API Key 和 WhatsApp 会话加密密钥保存在 Windows 凭据管理器。
-- Campaign 必须人工批准，发送前再次检查账号连接、E.164 号码、营销同意、退订状态、消息内容和每日上限。
+- 群发任务必须人工批准，发送前再次检查账号连接、E.164 号码、营销同意、退订状态、消息内容和每日上限；发送间隔不作为规避平台风控的承诺。
 - 默认只允许个人会话；群组、状态和频道不会进入自动发送队列。
 - 非官方个人账号协议存在限制或封号风险，程序不实现规避检测的随机化、指纹或代理功能。
