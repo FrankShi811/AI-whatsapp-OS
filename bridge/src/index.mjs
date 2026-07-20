@@ -144,6 +144,38 @@ async function useEncryptedAuthState(folder, key) {
   }
 }
 
+function isUnreadableAuthState(error) {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return message.startsWith('auth_state_decrypt_failed:') || message.startsWith('legacy_auth_state_migration_failed:')
+}
+
+async function recoverUnreadableAuthState(error) {
+  const reason = safeError(error)
+  const suffix = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
+  const backupDir = `${state.sessionDir}.unreadable-${suffix}`
+  await fs.rename(state.sessionDir, backupDir)
+  await fs.mkdir(state.sessionDir, { recursive: true })
+  state.existingSession = false
+  const data = {
+    reason: 'local_session_unreadable',
+    detail: reason,
+    backupName: path.basename(backupDir),
+    requiresQr: true
+  }
+  emit({ type: 'event', event: 'auth_recovery', accountId: state.accountId, data })
+  return data
+}
+
+async function loadAuthStateWithRecovery() {
+  try {
+    return { ...(await useEncryptedAuthState(state.sessionDir, state.authKey)), recovered: false, recovery: null }
+  } catch (error) {
+    if (!isUnreadableAuthState(error)) throw error
+    const recovery = await recoverUnreadableAuthState(error)
+    return { ...(await useEncryptedAuthState(state.sessionDir, state.authKey)), recovered: true, recovery }
+  }
+}
+
 function emit(payload) {
   process.stdout.write(`${JSON.stringify(payload)}\n`)
 }
@@ -385,8 +417,22 @@ async function normalizeMessage(message, source) {
     kind: messageKind(message.message),
     fileName: messageFileName(message.message),
     mimeType: messageMimeType(message.message),
+    status: message.status ?? null,
+    deliveredAt: latestReceiptTime(message.userReceipt, 'receiptTimestamp'),
+    readAt: latestReceiptTime(message.userReceipt, 'readTimestamp', 'playedTimestamp'),
     source
   }
+}
+
+function latestReceiptTime(receipts, ...fields) {
+  let latest = null
+  for (const receipt of receipts ?? []) for (const field of fields) {
+    const value = receipt?.[field]
+    if (value == null) continue
+    const numeric = Number(value?.toString?.() ?? value)
+    if (Number.isFinite(numeric) && (latest == null || numeric > latest)) latest = numeric
+  }
+  return latest == null ? '' : timestampToIso(latest)
 }
 
 function rememberContact(contact) {
@@ -509,7 +555,7 @@ async function connect() {
   state.manualDisconnect = false
   await fs.mkdir(state.sessionDir, { recursive: true })
   if (!state.authKey) throw new Error('session_encryption_key_missing')
-  const { state: auth, saveCreds } = await useEncryptedAuthState(state.sessionDir, state.authKey)
+  const { state: auth, saveCreds } = await loadAuthStateWithRecovery()
   state.existingSession = Boolean(auth.creds.registered && (auth.creds.accountSyncCounter ?? 0) > 0)
   state.contacts.clear()
   state.chats.clear()
@@ -586,9 +632,31 @@ async function connect() {
     for (const update of updates ?? []) {
       const jid = await resolveDirectJid(update.key)
       if (!shouldForward(jid)) continue
+      const numericStatus = update.update?.status ?? null
       emit({
         type: 'event', event: 'message_status', accountId: state.accountId,
-        data: { id: update.key.id ?? '', jid, status: update.update?.status ?? null }
+        data: {
+          id: update.key.id ?? '', jid, status: numericStatus,
+          statusAt: new Date().toISOString(),
+          deliveredAt: Number(numericStatus) >= 3 ? new Date().toISOString() : '',
+          readAt: Number(numericStatus) >= 4 ? new Date().toISOString() : '',
+          failureReason: Number(numericStatus) === 0 ? 'WhatsApp 返回发送错误' : ''
+        }
+      })
+    }
+  })
+  socket.ev.on('message-receipt.update', async updates => {
+    for (const update of updates ?? []) {
+      const jid = await resolveDirectJid(update.key)
+      if (!shouldForward(jid)) continue
+      const deliveredAt = update.receipt?.receiptTimestamp == null ? '' : timestampToIso(update.receipt.receiptTimestamp)
+      const readValue = update.receipt?.readTimestamp ?? update.receipt?.playedTimestamp
+      const readAt = readValue == null ? '' : timestampToIso(readValue)
+      const status = readAt ? 4 : deliveredAt ? 3 : null
+      if (status == null) continue
+      emit({
+        type: 'event', event: 'message_status', accountId: state.accountId,
+        data: { id: update.key.id ?? '', jid, status, statusAt: new Date().toISOString(), deliveredAt, readAt, failureReason: '' }
       })
     }
   })
@@ -626,7 +694,7 @@ async function handle(command) {
   try {
     switch (command.command) {
       case 'ping':
-        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.3.0', connection: state.connection })
+        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.4.0', connection: state.connection })
         return
       case 'initialize': {
         state.accountId = validateAccountId(command.accountId ?? 'default')
@@ -640,6 +708,12 @@ async function handle(command) {
         await connect()
         reply(requestId, true, { state: state.connection })
         return
+      case 'validate_session': {
+        if (!state.sessionDir || !state.authKey) throw new Error('bridge_not_initialized')
+        const result = await loadAuthStateWithRecovery()
+        reply(requestId, true, { recovered: result.recovered, recovery: result.recovery })
+        return
+      }
       case 'disconnect':
         state.manualDisconnect = true
         await closeSocket()
@@ -661,7 +735,7 @@ async function handle(command) {
         const jid = command.jid ? String(command.jid) : jidFromPhone(command.phone)
         if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
         const result = await state.socket.sendMessage(jid, { text })
-        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString() })
+        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString(), status: result?.status ?? 2 })
         return
       }
       case 'send_media': {
@@ -670,7 +744,7 @@ async function handle(command) {
         if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
         const media = await buildMediaMessage(command.path, command.caption)
         const result = await state.socket.sendMessage(jid, media.payload)
-        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString(), kind: media.kind, mimeType: media.mimeType, fileName: media.fileName })
+        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString(), status: result?.status ?? 2, kind: media.kind, mimeType: media.mimeType, fileName: media.fileName })
         return
       }
       case 'set_chat_pin': {
@@ -710,4 +784,4 @@ lines.on('close', async () => {
   process.exit(0)
 })
 
-emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.3.0' } })
+emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.4.0' } })

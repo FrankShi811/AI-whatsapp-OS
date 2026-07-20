@@ -155,6 +155,8 @@ public sealed class WhatsAppSyncService
         if (string.IsNullOrWhiteSpace(phone) || string.IsNullOrWhiteSpace(providerId)) return;
         var fromMe = Bool(data, "fromMe");
         var timestamp = DateTimeOffset.TryParse(Text(data, "timestamp"), out var parsed) ? parsed : DateTimeOffset.Now;
+        var deliveredAt = ParseTimestamp(data, "deliveredAt");
+        var readAt = ParseTimestamp(data, "readAt");
         var source = Text(data, "source");
         var historical = source.StartsWith("history:", StringComparison.OrdinalIgnoreCase);
         var lead = await _repository.GetLeadByPhoneAsync(phone);
@@ -180,13 +182,16 @@ public sealed class WhatsAppSyncService
             LeadId = lead?.Id ?? "",
             Phone = phone,
             Direction = fromMe ? WhatsAppMessageDirection.Outgoing : WhatsAppMessageDirection.Incoming,
-            Status = fromMe ? WhatsAppMessageStatus.Sent : WhatsAppMessageStatus.Received,
+            Status = fromMe ? ParseOutgoingStatus(data, deliveredAt, readAt) : WhatsAppMessageStatus.Received,
             Kind = Text(data, "kind"),
             Body = Text(data, "text"),
             FileName = Text(data, "fileName"),
             MimeType = Text(data, "mimeType"),
             PushName = Text(data, "pushName"),
             Timestamp = timestamp,
+            DeliveredAt = deliveredAt,
+            ReadAt = readAt,
+            StatusUpdatedAt = readAt ?? deliveredAt,
             Source = source
         };
         var inserted = await _repository.UpsertWhatsAppMessageAsync(message);
@@ -219,13 +224,42 @@ public sealed class WhatsAppSyncService
             3 => WhatsAppMessageStatus.Delivered,
             >= 4 => WhatsAppMessageStatus.Read
         };
-        var message = await _repository.UpdateWhatsAppMessageStatusAsync(string.IsNullOrWhiteSpace(e.AccountId) ? "primary" : e.AccountId, providerId, status);
-        if (message is null || string.IsNullOrWhiteSpace(message.LeadId) || message.Direction != WhatsAppMessageDirection.Outgoing) return;
+        var statusAt = ParseTimestamp(e.Data, "statusAt") ?? DateTimeOffset.Now;
+        var deliveredAt = ParseTimestamp(e.Data, "deliveredAt");
+        var readAt = ParseTimestamp(e.Data, "readAt");
+        var message = await _repository.UpdateWhatsAppMessageStatusAsync(
+            string.IsNullOrWhiteSpace(e.AccountId) ? "primary" : e.AccountId,
+            providerId,
+            status,
+            statusAt,
+            deliveredAt,
+            readAt,
+            Text(e.Data, "failureReason"));
+        if (message is null) return;
+        MessageSynchronized?.Invoke(this, message);
+        if (string.IsNullOrWhiteSpace(message.LeadId) || message.Direction != WhatsAppMessageDirection.Outgoing) return;
         var lead = await _repository.GetLeadAsync(message.LeadId);
         if (lead is null || !LeadConnectionStatus.ApplyFromMessage(lead, message)) return;
         await _repository.UpsertLeadAsync(lead);
-        MessageSynchronized?.Invoke(this, message);
     }
+
+    private static WhatsAppMessageStatus ParseOutgoingStatus(JsonElement data, DateTimeOffset? deliveredAt, DateTimeOffset? readAt)
+    {
+        if (readAt is not null) return WhatsAppMessageStatus.Read;
+        if (deliveredAt is not null) return WhatsAppMessageStatus.Delivered;
+        if (!data.TryGetProperty("status", out var statusElement) || !statusElement.TryGetInt32(out var numeric)) return WhatsAppMessageStatus.Sent;
+        return numeric switch
+        {
+            <= 0 => WhatsAppMessageStatus.Failed,
+            1 => WhatsAppMessageStatus.Pending,
+            2 => WhatsAppMessageStatus.Sent,
+            3 => WhatsAppMessageStatus.Delivered,
+            >= 4 => WhatsAppMessageStatus.Read
+        };
+    }
+
+    private static DateTimeOffset? ParseTimestamp(JsonElement data, string name) =>
+        DateTimeOffset.TryParse(Text(data, name), out var timestamp) ? timestamp : null;
 
     private static string Text(JsonElement data, string name) => data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";
     private static bool Bool(JsonElement data, string name) => data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;

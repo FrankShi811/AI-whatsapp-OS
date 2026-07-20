@@ -246,6 +246,19 @@ await repository.UpsertWhatsAppMessageAsync(outgoingStatus);
 outgoingStatus.Status = WhatsAppMessageStatus.Pending;
 await repository.UpsertWhatsAppMessageAsync(outgoingStatus);
 Check((await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single(x => x.Id == outgoingStatus.Id).Status == WhatsAppMessageStatus.Sent, "WhatsApp status cannot regress on duplicate event");
+var deliveredAt = DateTimeOffset.Now.AddSeconds(2);
+var readAt = deliveredAt.AddSeconds(3);
+await repository.UpdateWhatsAppMessageStatusAsync("primary", "wamid-out", WhatsAppMessageStatus.Delivered, deliveredAt, deliveredAt);
+await repository.UpdateWhatsAppMessageStatusAsync("primary", "wamid-out", WhatsAppMessageStatus.Read, readAt, deliveredAt, readAt);
+var receiptedMessage = (await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single(x => x.Id == outgoingStatus.Id);
+Check(receiptedMessage.Status == WhatsAppMessageStatus.Read && receiptedMessage.DeliveredAt == deliveredAt && receiptedMessage.ReadAt == readAt, "WhatsApp delivered/read receipt times persist");
+
+var ipHandler = new IpMonitorHandler();
+var ipMonitor = new PublicIpMonitor(repository, new HttpClient(ipHandler) { Timeout=TimeSpan.FromSeconds(2) });
+var firstIp = await ipMonitor.CheckAsync("primary");
+var changedIp = await ipMonitor.CheckAsync("primary");
+var storedIp = await repository.GetWhatsAppIpStateAsync("primary");
+Check(!firstIp.Changed && changedIp.Changed && storedIp?.PreviousIp == "198.51.100.10" && storedIp.CurrentIp == "203.0.113.20", "WhatsApp public IP baseline and change persist");
 
 var suffixLead = new Lead
 {
@@ -389,5 +402,20 @@ sealed class QueueHandler(IEnumerable<string> responses) : HttpMessageHandler
         Requests.Add((request.RequestUri!.ToString(), request.Headers.Authorization?.ToString() ?? ""));
         _ = await request.Content!.ReadAsStringAsync(cancellationToken);
         return new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent(_responses.Dequeue(), Encoding.UTF8, "application/json") };
+    }
+}
+
+sealed class IpMonitorHandler : HttpMessageHandler
+{
+    private int _ipCalls;
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var uri = request.RequestUri!.ToString();
+        string json;
+        if (uri.Contains("api64.ipify.org", StringComparison.OrdinalIgnoreCase))
+            json = System.Text.Json.JsonSerializer.Serialize(new { ip = ++_ipCalls == 1 ? "198.51.100.10" : "203.0.113.20" });
+        else
+            json = System.Text.Json.JsonSerializer.Serialize(new { success=true, country_code="US", country="United States", region="California", city="Los Angeles", connection=new { isp="Example ISP" } });
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent(json, Encoding.UTF8, "application/json") });
     }
 }

@@ -136,7 +136,28 @@ public sealed class WhatsAppMessage
     public string MimeType { get; set; } = "";
     public string PushName { get; set; } = "";
     public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.Now;
+    public DateTimeOffset? StatusUpdatedAt { get; set; }
+    public DateTimeOffset? DeliveredAt { get; set; }
+    public DateTimeOffset? ReadAt { get; set; }
+    public DateTimeOffset? FailedAt { get; set; }
+    public string FailureReason { get; set; } = "";
     public string Source { get; set; } = "notify";
+}
+
+public sealed class WhatsAppIpState
+{
+    public string AccountId { get; set; } = "primary";
+    public string CurrentIp { get; set; } = "";
+    public string PreviousIp { get; set; } = "";
+    public string CountryCode { get; set; } = "";
+    public string Country { get; set; } = "";
+    public string Region { get; set; } = "";
+    public string City { get; set; } = "";
+    public string Isp { get; set; } = "";
+    public DateTimeOffset? LastCheckedAt { get; set; }
+    public DateTimeOffset? ChangedAt { get; set; }
+
+    [JsonIgnore] public string LocationLabel => string.Join(" · ", new[] { Country, Region, City }.Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.CurrentCultureIgnoreCase));
 }
 
 public sealed class WhatsAppAccount

@@ -13,6 +13,7 @@ public sealed class AppServices
     public DeepSeekService DeepSeek { get; }
     public WhatsAppConnectionManager WhatsApp { get; }
     public WhatsAppSyncService WhatsAppSync { get; }
+    public PublicIpMonitor PublicIp { get; }
     public CampaignAutomationService Campaigns { get; }
 
     public AppServices(LocalRepository? repository = null)
@@ -24,6 +25,7 @@ public sealed class AppServices
         DeepSeek = new DeepSeekService(Repository, Secrets);
         WhatsApp = new WhatsAppConnectionManager();
         WhatsAppSync = new WhatsAppSyncService(Repository, WhatsApp);
+        PublicIp = new PublicIpMonitor(Repository);
         Campaigns = new CampaignAutomationService(Repository, WhatsApp);
     }
 

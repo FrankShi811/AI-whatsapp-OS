@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
@@ -34,6 +35,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private int _persistedConversationCount;
     private int _contactCount;
     private readonly HashSet<string> _automaticSyncRequested = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _warnedIpChanges = new(StringComparer.OrdinalIgnoreCase);
+    private readonly DispatcherTimer _ipTimer = new() { Interval = TimeSpan.FromSeconds(60) };
+    private bool _checkingIp;
 
     private string CurrentAccountId => (AccountCombo.SelectedItem as WhatsAppAccount)?.Id ?? "primary";
 
@@ -52,6 +56,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         _services.WhatsApp.EventReceived += WhatsApp_EventReceived;
         _services.WhatsAppSync.MessageSynchronized += (_, _) => Dispatcher.InvokeAsync(() => DataChanged?.Invoke(this, EventArgs.Empty));
         _services.WhatsAppSync.SynchronizationChanged += WhatsAppSync_SynchronizationChanged;
+        _ipTimer.Tick += async (_, _) => await RefreshPublicIpAsync();
+        Loaded += async (_, _) => { _ipTimer.Start(); await RefreshPublicIpAsync(); };
+        Unloaded += (_, _) => _ipTimer.Stop();
     }
 
     public async Task RefreshAsync()
@@ -120,6 +127,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         if (_switchingAccount || AccountCombo.SelectedItem is not WhatsAppAccount) return;
         _services.WhatsApp.SetActiveAccount(CurrentAccountId); _conversations.Clear(); ConversationList.SelectedItem = null; ClearLead();
         await RefreshAsync();
+        await RefreshPublicIpAsync();
     }
 
     private async void AddAccount_Click(object sender, RoutedEventArgs e)
@@ -138,6 +146,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     {
         SetConnectionText("正在启动本地桥…", false);
         ConnectButton.IsEnabled = false;
+        _ = RefreshPublicIpAsync();
         try
         {
             await _services.WhatsApp.ConnectAsync(CurrentAccountId);
@@ -211,9 +220,69 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         finally { _refreshScheduled = false; }
     }
 
+    private async Task RefreshPublicIpAsync()
+    {
+        if (_checkingIp) return;
+        var accountId = CurrentAccountId;
+        _checkingIp = true;
+        try
+        {
+            var result = await _services.PublicIp.CheckAsync(accountId);
+            if (!accountId.Equals(CurrentAccountId, StringComparison.OrdinalIgnoreCase)) return;
+            if (!string.IsNullOrWhiteSpace(result.Error))
+            {
+                IpStatusText.Text = $"公网 IP：{result.Error} · 60 秒后重试";
+                IpStatusDot.Foreground = (Brush)FindResource("Muted");
+                IpStatusBorder.Background = new SolidColorBrush(Color.FromRgb(237, 244, 240));
+                return;
+            }
+            var state = result.State;
+            var location = string.IsNullOrWhiteSpace(state.LocationLabel) ? "位置未知" : state.LocationLabel;
+            var recentlyChanged = !string.IsNullOrWhiteSpace(state.PreviousIp)
+                && !state.PreviousIp.Equals(state.CurrentIp, StringComparison.OrdinalIgnoreCase)
+                && state.ChangedAt >= DateTimeOffset.Now.AddHours(-24);
+            IpStatusText.Text = recentlyChanged
+                ? $"公网 IP 已变化：{state.PreviousIp} → {state.CurrentIp} · {location} · 每 60 秒监测"
+                : $"公网 IP：{state.CurrentIp} · {location} · 每 60 秒监测";
+            IpStatusDot.Foreground = new SolidColorBrush(recentlyChanged ? Color.FromRgb(183, 57, 57) : Color.FromRgb(15, 143, 104));
+            IpStatusText.Foreground = new SolidColorBrush(recentlyChanged ? Color.FromRgb(168, 58, 47) : Color.FromRgb(69, 92, 81));
+            IpStatusBorder.Background = (Brush)FindResource(recentlyChanged ? "DangerSoft" : "SuccessSoft");
+            if (result.Changed)
+            {
+                var warningKey = $"{accountId}|{state.PreviousIp}|{state.CurrentIp}|{state.ChangedAt:O}";
+                if (_warnedIpChanges.Add(warningKey))
+                    MessageBox.Show($"检测到本机公网出口 IP 发生变化：\n{state.PreviousIp} → {state.CurrentIp}\n当前位置：{location}\n\nIP 变化不等于封号，但频繁跨地区切换、VPN/代理跳变可能增加异常登录风险。建议先暂停自动化并确认网络环境。", "WhatsApp 网络风险提醒", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+        finally { _checkingIp = false; }
+    }
+
+    private void UpdateVisibleMessageStatus(JsonElement data)
+    {
+        var id = Text(data, "id");
+        if (string.IsNullOrWhiteSpace(id)) return;
+        var numeric = data.TryGetProperty("status", out var statusElement) && statusElement.TryGetInt32(out var parsed) ? parsed : -1;
+        if (numeric < 0) return;
+        var status = StatusFromNumeric(numeric);
+        foreach (var conversation in _conversations)
+        {
+            var message = conversation.Messages.FirstOrDefault(item => item.Id == id);
+            if (message is null) continue;
+            message.UpdateStatus(status, ParseTime(data, "statusAt") ?? DateTimeOffset.Now, ParseTime(data, "deliveredAt"), ParseTime(data, "readAt"), Text(data, "failureReason"));
+            break;
+        }
+    }
+
     private void HandleBridgeEvent(WhatsAppBridgeEvent e)
     {
         if (!string.IsNullOrWhiteSpace(e.AccountId) && !e.AccountId.Equals(CurrentAccountId, StringComparison.OrdinalIgnoreCase)) return;
+        if (e.Name == "auth_recovery")
+        {
+            SetConnectionText("请重新扫码", false);
+            QrHintText.Text = "旧登录凭据已损坏或密钥不匹配，软件已安全备份旧会话。请扫描新二维码重新登录。";
+            MessageBox.Show("旧 WhatsApp 登录凭据无法解密，已安全备份并创建新会话。接下来请重新扫码；客户和历史消息数据库不会被删除。", "WhatsApp 会话已恢复", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         if (e.Name == "qr" && e.Data.TryGetProperty("dataUrl", out var dataUrl))
         {
             QrImage.Source = DecodeDataUrl(dataUrl.GetString() ?? "");
@@ -242,6 +311,11 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             }
             return;
         }
+        if (e.Name == "message_status")
+        {
+            UpdateVisibleMessageStatus(e.Data);
+            return;
+        }
         if (e.Name != "message") return;
         var phone = Text(e.Data, "phone");
         if (string.IsNullOrWhiteSpace(phone)) return;
@@ -261,7 +335,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             conversation = new ConversationItem(string.IsNullOrWhiteSpace(e.AccountId) ? "primary" : e.AccountId, phone, preferredName, Text(e.Data, "jid")) { LeadId = linkedLead?.Id ?? "" };
             _conversations.Insert(0, conversation);
         }
-        if (!conversation.Messages.Any(x => x.Id == messageId)) conversation.Messages.Add(new MessageItem(messageId, text, timestamp, fromMe, kind, fileName));
+        if (!conversation.Messages.Any(x => x.Id == messageId))
+            conversation.Messages.Add(new MessageItem(messageId, text, timestamp, fromMe, kind, fileName, ParseMessageStatus(e.Data, fromMe), ParseTime(e.Data, "statusAt"), ParseTime(e.Data, "deliveredAt"), ParseTime(e.Data, "readAt"), Text(e.Data, "failureReason")));
         conversation.LastMessage = MessagePreview(text, kind, fileName);
         conversation.LastAt = timestamp;
         if (!fromMe && ConversationList.SelectedItem != conversation) conversation.Unread++;
@@ -303,7 +378,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         ChatNumberText.Text = string.IsNullOrWhiteSpace(conversation.Phone) ? "WhatsApp 尚未提供该联系人的电话号码" : $"+{conversation.Phone}";
         var persistedMessages = string.IsNullOrWhiteSpace(conversation.Phone) ? [] : await _services.Repository.GetWhatsAppMessagesAsync(conversation.Id, 2000);
         foreach (var message in persistedMessages)
-            if (!conversation.Messages.Any(x => x.Id == message.ProviderMessageId)) conversation.Messages.Add(new MessageItem(message.ProviderMessageId, message.Body, message.Timestamp, message.Direction == WhatsAppMessageDirection.Outgoing, message.Kind, message.FileName));
+            if (!conversation.Messages.Any(x => x.Id == message.ProviderMessageId))
+                conversation.Messages.Add(new MessageItem(message.ProviderMessageId, message.Body, message.Timestamp, message.Direction == WhatsAppMessageDirection.Outgoing, message.Kind, message.FileName, message.Status, message.StatusUpdatedAt, message.DeliveredAt, message.ReadAt, message.FailureReason));
         MessageList.ItemsSource = conversation.Messages;
         if (_connected) { QrPanel.Visibility = Visibility.Collapsed; MessageList.Visibility = Visibility.Visible; }
         SaveLeadButton.IsEnabled = !string.IsNullOrWhiteSpace(conversation.Phone);
@@ -426,6 +502,16 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         if (_currentLead?.OptedOut == true) { MessageBox.Show("客户已退订，禁止发送。", "WhatsApp", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
 
         _sending = true;
+        var pendingId = $"local-{Guid.NewGuid():N}";
+        var pendingTimestamp = DateTimeOffset.Now;
+        var pendingKind = string.IsNullOrWhiteSpace(attachmentPath) ? "text" : "document";
+        var pendingFileName = string.IsNullOrWhiteSpace(attachmentPath) ? "" : Path.GetFileName(attachmentPath);
+        var pendingMessage = new MessageItem(pendingId, text, pendingTimestamp, true, pendingKind, pendingFileName, WhatsAppMessageStatus.Pending, pendingTimestamp);
+        conversation.Messages.Add(pendingMessage);
+        conversation.LastMessage = MessagePreview(text, pendingKind, pendingFileName);
+        conversation.LastAt = pendingTimestamp;
+        ReorderConversations(conversation);
+        ScrollMessages(conversation);
         UpdateComposerState();
         try
         {
@@ -437,7 +523,16 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             var kind = result.TryGetProperty("kind", out var kindElement) ? kindElement.GetString() ?? "text" : "text";
             var fileName = result.TryGetProperty("fileName", out var fileNameElement) ? fileNameElement.GetString() ?? "" : "";
             var mimeType = result.TryGetProperty("mimeType", out var mimeElement) ? mimeElement.GetString() ?? "" : "";
-            if (!conversation.Messages.Any(x => x.Id == id)) conversation.Messages.Add(new MessageItem(id, text, timestamp, true, kind, fileName));
+            var numericStatus = result.TryGetProperty("status", out var statusElement) && statusElement.TryGetInt32(out var parsedStatus) ? parsedStatus : 2;
+            var status = StatusFromNumeric(numericStatus);
+            var existing = conversation.Messages.FirstOrDefault(item => item.Id == id && !ReferenceEquals(item, pendingMessage));
+            if (existing is not null)
+            {
+                conversation.Messages.Remove(pendingMessage);
+                pendingMessage = existing;
+            }
+            else pendingMessage.UpdateTransport(id, timestamp, kind, fileName);
+            pendingMessage.UpdateStatus(status, DateTimeOffset.Now, status is WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read ? DateTimeOffset.Now : null, status == WhatsAppMessageStatus.Read ? DateTimeOffset.Now : null, "");
             conversation.LastMessage = MessagePreview(text, kind, fileName);
             conversation.LastAt = timestamp;
             ComposerBox.Clear();
@@ -458,8 +553,12 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             {
                 Id = $"{conversation.AccountId}:{id}", ProviderMessageId = id, AccountId = conversation.AccountId,
                 ConversationId = conversation.Id, LeadId = _currentLead?.Id ?? conversation.LeadId, Phone = conversation.Phone,
-                Direction = WhatsAppMessageDirection.Outgoing, Status = WhatsAppMessageStatus.Sent, Kind = kind,
-                Body = text, FileName = fileName, MimeType = mimeType, Timestamp = timestamp, Source = "desktop"
+                Direction = WhatsAppMessageDirection.Outgoing, Status = status, Kind = kind,
+                Body = text, FileName = fileName, MimeType = mimeType, Timestamp = timestamp,
+                StatusUpdatedAt = DateTimeOffset.Now,
+                DeliveredAt = status is WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read ? DateTimeOffset.Now : null,
+                ReadAt = status == WhatsAppMessageStatus.Read ? DateTimeOffset.Now : null,
+                Source = "desktop"
             };
             await _services.Repository.UpsertWhatsAppMessageAsync(storedMessage);
             ReorderConversations(conversation);
@@ -473,9 +572,14 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         }
         catch (TimeoutException)
         {
+            pendingMessage.UpdateStatus(WhatsAppMessageStatus.Pending, DateTimeOffset.Now, null, null, "等待 WhatsApp 回执，发送状态待确认");
             MessageBox.Show("手机端可能已经发送成功，但本机未及时收到确认。请先等待会话同步，不要立即重复发送。", "发送状态待确认", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        catch (Exception error) { MessageBox.Show(error.Message, "发送失败", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        catch (Exception error)
+        {
+            pendingMessage.UpdateStatus(WhatsAppMessageStatus.Failed, DateTimeOffset.Now, null, null, error.Message);
+            MessageBox.Show(error.Message, "发送失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
         finally { _sending = false; UpdateComposerState(); }
     }
 
@@ -636,7 +740,23 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         var image = new BitmapImage(); image.BeginInit(); image.CacheOption = BitmapCacheOption.OnLoad; image.StreamSource = stream; image.EndInit(); image.Freeze(); return image;
     }
 
-    private static string Text(JsonElement data, string name) => data.TryGetProperty(name, out var value) ? value.GetString() ?? "" : "";
+    private static WhatsAppMessageStatus ParseMessageStatus(JsonElement data, bool fromMe)
+    {
+        if (!fromMe) return WhatsAppMessageStatus.Received;
+        if (ParseTime(data, "readAt") is not null) return WhatsAppMessageStatus.Read;
+        if (ParseTime(data, "deliveredAt") is not null) return WhatsAppMessageStatus.Delivered;
+        return data.TryGetProperty("status", out var value) && value.TryGetInt32(out var numeric) ? StatusFromNumeric(numeric) : WhatsAppMessageStatus.Sent;
+    }
+    private static WhatsAppMessageStatus StatusFromNumeric(int numeric) => numeric switch
+    {
+        <= 0 => WhatsAppMessageStatus.Failed,
+        1 => WhatsAppMessageStatus.Pending,
+        2 => WhatsAppMessageStatus.Sent,
+        3 => WhatsAppMessageStatus.Delivered,
+        >= 4 => WhatsAppMessageStatus.Read
+    };
+    private static DateTimeOffset? ParseTime(JsonElement data, string name) => DateTimeOffset.TryParse(Text(data, name), out var value) ? value : null;
+    private static string Text(JsonElement data, string name) => data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";
     private static bool Bool(JsonElement data, string name) => data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
     private static string PhaseLabel(string phase) => phase switch
     {
@@ -669,12 +789,106 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         private void OnPropertyChanged(string? name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
-    private sealed record MessageItem(string Id, string Text, DateTimeOffset Timestamp, bool FromMe, string Kind = "text", string FileName = "")
+    private sealed class MessageItem : INotifyPropertyChanged
     {
+        public MessageItem(
+            string id,
+            string text,
+            DateTimeOffset timestamp,
+            bool fromMe,
+            string kind = "text",
+            string fileName = "",
+            WhatsAppMessageStatus status = WhatsAppMessageStatus.Received,
+            DateTimeOffset? statusUpdatedAt = null,
+            DateTimeOffset? deliveredAt = null,
+            DateTimeOffset? readAt = null,
+            string failureReason = "")
+        {
+            Id = id; Text = text; Timestamp = timestamp; FromMe = fromMe; Kind = kind; FileName = fileName;
+            Status = status; StatusUpdatedAt = statusUpdatedAt; DeliveredAt = deliveredAt; ReadAt = readAt; FailureReason = failureReason;
+        }
+
+        public string Id { get; private set; }
+        public string Text { get; }
+        public DateTimeOffset Timestamp { get; private set; }
+        public bool FromMe { get; }
+        public string Kind { get; private set; }
+        public string FileName { get; private set; }
+        public WhatsAppMessageStatus Status { get; private set; }
+        public DateTimeOffset? StatusUpdatedAt { get; private set; }
+        public DateTimeOffset? DeliveredAt { get; private set; }
+        public DateTimeOffset? ReadAt { get; private set; }
+        public string FailureReason { get; private set; }
         public string DisplayText => MessagePreview(Text, Kind, FileName);
         public string TimeLabel => Timestamp.LocalDateTime.ToString("MM-dd HH:mm");
         public HorizontalAlignment Alignment => FromMe ? HorizontalAlignment.Right : HorizontalAlignment.Left;
         public Brush BubbleBrush => new SolidColorBrush(FromMe ? Color.FromRgb(220,248,233) : Colors.White);
         public Brush BubbleBorderBrush => new SolidColorBrush(FromMe ? Color.FromRgb(190,232,211) : Color.FromRgb(223,230,226));
+        public Visibility OutgoingStatusVisibility => FromMe ? Visibility.Visible : Visibility.Collapsed;
+        public string ReceiptGlyph => !FromMe ? "" : Status switch
+        {
+            WhatsAppMessageStatus.Pending => "…",
+            WhatsAppMessageStatus.Sent => "✓",
+            WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read => "✓✓",
+            WhatsAppMessageStatus.Failed => "!",
+            _ => ""
+        };
+        public Brush ReceiptBrush => new SolidColorBrush(Status switch
+        {
+            WhatsAppMessageStatus.Read => Color.FromRgb(31, 142, 213),
+            WhatsAppMessageStatus.Failed => Color.FromRgb(183, 57, 57),
+            WhatsAppMessageStatus.Delivered => Color.FromRgb(89, 105, 97),
+            _ => Color.FromRgb(104, 118, 111)
+        });
+        public string StatusDetailLabel => !FromMe ? "" : Status switch
+        {
+            WhatsAppMessageStatus.Pending when !string.IsNullOrWhiteSpace(FailureReason) => $"状态待确认 · 发送 {At(Timestamp)}",
+            WhatsAppMessageStatus.Pending => $"发送中 · {At(Timestamp)}",
+            WhatsAppMessageStatus.Sent => $"发送 {At(Timestamp)} · 尚未送达",
+            WhatsAppMessageStatus.Delivered => $"发送 {At(Timestamp)} · 送达 {At(DeliveredAt ?? StatusUpdatedAt)}",
+            WhatsAppMessageStatus.Read => $"发送 {At(Timestamp)} · 送达 {At(DeliveredAt)} · 已读 {At(ReadAt ?? StatusUpdatedAt)}",
+            WhatsAppMessageStatus.Failed => $"发送失败 {At(StatusUpdatedAt ?? Timestamp)}{(string.IsNullOrWhiteSpace(FailureReason) ? "" : $" · {ShortReason(FailureReason)}")}",
+            _ => $"发送 {At(Timestamp)}"
+        };
+
+        public void UpdateTransport(string id, DateTimeOffset timestamp, string kind, string fileName)
+        {
+            Id = id; Timestamp = timestamp; Kind = kind; FileName = fileName;
+            NotifyAll();
+        }
+
+        public void UpdateStatus(WhatsAppMessageStatus status, DateTimeOffset? statusAt, DateTimeOffset? deliveredAt, DateTimeOffset? readAt, string failureReason)
+        {
+            if (CanAdvance(Status, status)) Status = status;
+            if (statusAt is not null && (StatusUpdatedAt is null || statusAt > StatusUpdatedAt)) StatusUpdatedAt = statusAt;
+            if (deliveredAt is not null && (DeliveredAt is null || deliveredAt < DeliveredAt)) DeliveredAt = deliveredAt;
+            if (readAt is not null && (ReadAt is null || readAt < ReadAt)) ReadAt = readAt;
+            if (Status == WhatsAppMessageStatus.Read && DeliveredAt is null) DeliveredAt = ReadAt ?? StatusUpdatedAt;
+            if (!string.IsNullOrWhiteSpace(failureReason)) FailureReason = failureReason;
+            NotifyAll();
+        }
+
+        private static bool CanAdvance(WhatsAppMessageStatus current, WhatsAppMessageStatus next)
+        {
+            if (current == next) return true;
+            if (next == WhatsAppMessageStatus.Failed) return current == WhatsAppMessageStatus.Pending;
+            if (current == WhatsAppMessageStatus.Failed) return next is WhatsAppMessageStatus.Sent or WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read;
+            static int Rank(WhatsAppMessageStatus value) => value switch
+            {
+                WhatsAppMessageStatus.Pending => 0, WhatsAppMessageStatus.Sent => 1,
+                WhatsAppMessageStatus.Delivered => 2, WhatsAppMessageStatus.Read => 3,
+                WhatsAppMessageStatus.Received => 3, _ => -1
+            };
+            return Rank(next) >= Rank(current);
+        }
+
+        private static string At(DateTimeOffset? value) => value is null ? "--" : value.Value.LocalDateTime.ToString("MM-dd HH:mm");
+        private static string ShortReason(string value) => value.Length <= 60 ? value : value[..60] + "…";
+        private void NotifyAll()
+        {
+            foreach (var name in new[] { nameof(Id), nameof(DisplayText), nameof(TimeLabel), nameof(ReceiptGlyph), nameof(ReceiptBrush), nameof(StatusDetailLabel) })
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
+        public event PropertyChangedEventHandler? PropertyChanged;
     }
 }

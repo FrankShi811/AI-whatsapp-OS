@@ -207,6 +207,12 @@ public sealed class LocalRepository
     public Task SaveAppSettingsAsync(AppSettings settings, CancellationToken cancellationToken = default) =>
         SaveSettingAsync("app_settings", settings, cancellationToken);
 
+    public async Task<WhatsAppIpState?> GetWhatsAppIpStateAsync(string accountId, CancellationToken cancellationToken = default) =>
+        await GetSettingAsync<WhatsAppIpState>($"whatsapp_ip_state:{accountId}", cancellationToken);
+
+    public Task SaveWhatsAppIpStateAsync(WhatsAppIpState state, CancellationToken cancellationToken = default) =>
+        SaveSettingAsync($"whatsapp_ip_state:{state.AccountId}", state, cancellationToken);
+
     public async Task<List<WhatsAppAccount>> GetWhatsAppAccountsAsync(CancellationToken cancellationToken = default) =>
         await GetSettingAsync<List<WhatsAppAccount>>("whatsapp_accounts", cancellationToken) ?? [new WhatsAppAccount()];
 
@@ -612,7 +618,15 @@ public sealed class LocalRepository
         return items;
     }
 
-    public async Task<WhatsAppMessage?> UpdateWhatsAppMessageStatusAsync(string accountId, string providerMessageId, WhatsAppMessageStatus status, CancellationToken cancellationToken = default)
+    public async Task<WhatsAppMessage?> UpdateWhatsAppMessageStatusAsync(
+        string accountId,
+        string providerMessageId,
+        WhatsAppMessageStatus status,
+        DateTimeOffset? statusAt = null,
+        DateTimeOffset? deliveredAt = null,
+        DateTimeOffset? readAt = null,
+        string failureReason = "",
+        CancellationToken cancellationToken = default)
     {
         await using var db = Open(); await db.OpenAsync(cancellationToken);
         await using var select = db.CreateCommand();
@@ -623,11 +637,20 @@ public sealed class LocalRepository
         var id = reader.GetString(0); var message = Json.Deserialize<WhatsAppMessage>(reader.GetString(1));
         await reader.DisposeAsync();
         if (message is null) return null;
-        if (!CanAdvanceStatus(message.Status, status)) return message;
-        message.Status = status;
+        var canAdvance = CanAdvanceStatus(message.Status, status);
+        if (canAdvance) message.Status = status;
+        if (statusAt is not null && (message.StatusUpdatedAt is null || statusAt > message.StatusUpdatedAt)) message.StatusUpdatedAt = statusAt;
+        if (deliveredAt is not null && (message.DeliveredAt is null || deliveredAt < message.DeliveredAt)) message.DeliveredAt = deliveredAt;
+        if (readAt is not null && (message.ReadAt is null || readAt < message.ReadAt)) message.ReadAt = readAt;
+        if (message.Status == WhatsAppMessageStatus.Read && message.DeliveredAt is null) message.DeliveredAt = message.ReadAt ?? statusAt;
+        if (status == WhatsAppMessageStatus.Failed && canAdvance)
+        {
+            message.FailedAt = statusAt ?? DateTimeOffset.Now;
+            if (!string.IsNullOrWhiteSpace(failureReason)) message.FailureReason = failureReason;
+        }
         await using var update = db.CreateCommand();
         update.CommandText = "UPDATE whatsapp_messages SET status=$status,data_json=$json WHERE id=$id";
-        update.Parameters.AddWithValue("$status", status.ToString()); update.Parameters.AddWithValue("$json", Json.Serialize(message)); update.Parameters.AddWithValue("$id", id);
+        update.Parameters.AddWithValue("$status", message.Status.ToString()); update.Parameters.AddWithValue("$json", Json.Serialize(message)); update.Parameters.AddWithValue("$id", id);
         await update.ExecuteNonQueryAsync(cancellationToken);
         return message;
     }

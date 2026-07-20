@@ -8,6 +8,12 @@
             <StackPanel>
                 <TextBlock Text="WhatsApp Inbox" Style="{StaticResource PageTitle}"/>
                 <TextBlock Text="个人账号实验连接器 · QR 多设备会话 · 非官方协议，账号风险由用户承担" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
+                <Border x:Name="IpStatusBorder" Background="#EDF4F0" CornerRadius="8" Padding="9,5" Margin="0,8,0,0" HorizontalAlignment="Left" ToolTip="监测本机连接 WhatsApp 时使用的公网出口 IP；每 60 秒检测一次。">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="●" x:Name="IpStatusDot" Foreground="{StaticResource Muted}" FontSize="9" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <TextBlock x:Name="IpStatusText" Text="公网 IP：检测中…" Foreground="{StaticResource Muted}" FontSize="11"/>
+                    </StackPanel>
+                </Border>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                 <ComboBox x:Name="AccountCombo" Width="145" DisplayMemberPath="DisplayLabel" SelectionChanged="AccountCombo_SelectionChanged" Margin="0,0,8,0"/>
@@ -82,7 +88,18 @@
                             </ListBox.ItemContainerStyle>
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid Margin="14,6"><Border Background="{Binding BubbleBrush}" BorderBrush="{Binding BubbleBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="11,8" MaxWidth="520" HorizontalAlignment="{Binding Alignment}"><StackPanel><TextBlock Text="{Binding DisplayText}" TextWrapping="Wrap"/><TextBlock Text="{Binding TimeLabel}" Foreground="{StaticResource Muted}" FontSize="9" HorizontalAlignment="Right" Margin="0,4,0,0"/></StackPanel></Border></Grid>
+                                    <Grid Margin="14,6">
+                                        <Border Background="{Binding BubbleBrush}" BorderBrush="{Binding BubbleBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="11,8" MaxWidth="520" HorizontalAlignment="{Binding Alignment}">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding DisplayText}" TextWrapping="Wrap"/>
+                                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,0,0">
+                                                    <TextBlock Text="{Binding TimeLabel}" Foreground="{StaticResource Muted}" FontSize="9"/>
+                                                    <TextBlock Text="{Binding ReceiptGlyph}" Foreground="{Binding ReceiptBrush}" FontSize="11" FontWeight="SemiBold" Margin="5,-2,0,0" ToolTip="{Binding StatusDetailLabel}"/>
+                                                </StackPanel>
+                                                <TextBlock Text="{Binding StatusDetailLabel}" Visibility="{Binding OutgoingStatusVisibility}" Foreground="{Binding ReceiptBrush}" FontSize="9" HorizontalAlignment="Right" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
