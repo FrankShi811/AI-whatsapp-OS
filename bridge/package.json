@@ -1,0 +1,26 @@
+{
+  "name": "waflow-whatsapp-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Experimental local WhatsApp multi-device bridge for the native AI Sales OS desktop app.",
+  "main": "src/index.mjs",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "build:exe": "node scripts/build-sea.mjs",
+    "smoke:exe": "node scripts/smoke.mjs dist/WAFlow.WhatsApp.Bridge.exe"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc13",
+    "pino": "10.3.1",
+    "qrcode": "1.5.4"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "0.38.4",
+    "postject": "1.0.0-alpha.6"
+  }
+}

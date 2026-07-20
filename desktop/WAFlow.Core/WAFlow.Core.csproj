@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>1.2.2</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="ClosedXML" Version="0.104.2" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.19" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('..\..\bridge\dist\WAFlow.WhatsApp.Bridge.exe')">
+    <EmbeddedResource Include="..\..\bridge\dist\WAFlow.WhatsApp.Bridge.exe" LogicalName="WAFlow.WhatsApp.Bridge.exe" />
+  </ItemGroup>
+</Project>

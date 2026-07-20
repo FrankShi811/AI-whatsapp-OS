@@ -1,0 +1,32 @@
+{
+  "main": "D:\\whatsapp 自动化\\bridge\\scripts\\sea-bootstrap.cjs",
+  "output": "D:\\whatsapp 自动化\\bridge\\dist\\waflow-bridge.blob",
+  "disableExperimentalSEAWarning": true,
+  "useSnapshot": false,
+  "useCodeCache": false,
+  "assets": {
+    "manifest.json": "D:\\whatsapp 自动化\\bridge\\dist\\sea-manifest.json",
+    "bridge/10.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\10.index.mjs",
+    "bridge/124.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\124.index.mjs",
+    "bridge/14.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\14.index.mjs",
+    "bridge/160.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\160.index.mjs",
+    "bridge/169.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\169.index.mjs",
+    "bridge/239.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\239.index.mjs",
+    "bridge/251.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\251.index.mjs",
+    "bridge/345.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\345.index.mjs",
+    "bridge/391.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\391.index.mjs",
+    "bridge/407.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\407.index.mjs",
+    "bridge/461.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\461.index.mjs",
+    "bridge/519.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\519.index.mjs",
+    "bridge/604.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\604.index.mjs",
+    "bridge/663.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\663.index.mjs",
+    "bridge/667.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\667.index.mjs",
+    "bridge/778.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\778.index.mjs",
+    "bridge/870.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\870.index.mjs",
+    "bridge/94.index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\94.index.mjs",
+    "bridge/THIRD_PARTY_LICENSES.txt": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\THIRD_PARTY_LICENSES.txt",
+    "bridge/index.mjs": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\index.mjs",
+    "bridge/worker.js": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\worker.js",
+    "bridge/worker1.js": "D:\\whatsapp 自动化\\bridge\\dist\\ncc\\worker1.js"
+  }
+}

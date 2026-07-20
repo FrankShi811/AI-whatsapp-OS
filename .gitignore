@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+**/node_modules/
+bridge/dist/ncc/
+bridge/dist/WAFlow.WhatsApp.Bridge.exe
+outputs/
+work/
+*.exe
+*.db
+*.db-shm
+*.db-wal
+*.log
+.vs/
+.idea/

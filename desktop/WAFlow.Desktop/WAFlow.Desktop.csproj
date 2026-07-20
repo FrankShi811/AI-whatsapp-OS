@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>AISalesOS</AssemblyName>
+    <AssemblyTitle>AI Sales OS</AssemblyTitle>
+    <RootNamespace>WAFlow.Desktop</RootNamespace>
+    <Version>1.2.2</Version>
+    <Title>AI Sales OS</Title>
+    <Product>AI Sales OS</Product>
+    <Company>AI Sales OS</Company>
+    <Description>AI-driven WhatsApp sales intelligence and campaign automation</Description>
+    <ApplicationIcon>Assets\AI-Sales-OS.ico</ApplicationIcon>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>embedded</DebugType>
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\WAFlow.Core\WAFlow.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\AI-Sales-OS.ico" />
+    <Resource Include="Assets\AI-Sales-OS.png" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,60 @@
+<Window x:Class="WAFlow.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AI Sales OS · WhatsApp 销售智能" Width="1280" Height="720" MinWidth="1120" MinHeight="680"
+        Icon="/AISalesOS;component/Assets/AI-Sales-OS.ico"
+        WindowStartupLocation="CenterScreen" WindowState="Maximized"
+        WindowStyle="SingleBorderWindow" ResizeMode="CanResize" Background="{StaticResource Canvas}">
+    <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="226"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <Border Grid.Column="0" Background="{StaticResource Sidebar}">
+            <Grid Margin="18,20">
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="28"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <StackPanel Orientation="Horizontal">
+                    <Border Width="40" Height="40" Background="#F4F8FF" CornerRadius="10" Padding="4">
+                        <Image Source="/AISalesOS;component/Assets/AI-Sales-OS.png" Stretch="Uniform"/>
+                    </Border>
+                    <StackPanel Margin="11,0,0,0" VerticalAlignment="Center">
+                        <TextBlock Text="AI Sales OS" Foreground="White" FontWeight="Bold" FontSize="16"/>
+                        <TextBlock Text="Lead Intelligence" Foreground="#8FB5A7" FontSize="10"/>
+                    </StackPanel>
+                </StackPanel>
+                <StackPanel Grid.Row="2">
+                    <Button x:Name="DashboardButton" Tag="dashboard" Click="Navigate_Click" Content="▦   Dashboard" Style="{StaticResource NavButton}"/>
+                    <Button x:Name="IntelligenceButton" Tag="intelligence" Click="Navigate_Click" Content="✦   商机智能" Style="{StaticResource NavButton}"/>
+                    <Button x:Name="CustomersButton" Tag="customers" Click="Navigate_Click" Content="◎   客户列表" Style="{StaticResource NavButton}"/>
+                    <Button x:Name="InboxButton" Tag="inbox" Click="Navigate_Click" Content="◉   WhatsApp Inbox" Style="{StaticResource NavButton}"/>
+                    <Button x:Name="DraftsButton" Tag="drafts" Click="Navigate_Click" Content="✎   WhatsApp 草稿" Style="{StaticResource NavButton}"/>
+                    <Border Height="1" Background="#29463B" Margin="8,16"/>
+                    <Button x:Name="CampaignsButton" Tag="campaigns" Click="Navigate_Click" Content="⚙   Campaign Automation" Style="{StaticResource NavButton}"/>
+                    <Button IsEnabled="False" Content="◫   Analytics · 后续" Style="{StaticResource NavButton}" Opacity="0.5"/>
+                </StackPanel>
+                <Border Grid.Row="3" Background="#17372C" CornerRadius="10" Padding="12">
+                    <StackPanel>
+                        <TextBlock Text="●  本地原生模式" Foreground="#7BE0BE" FontSize="12" FontWeight="SemiBold"/>
+                        <TextBlock Text="SQLite · QR Bridge · 无本地 HTTP" Foreground="#88A99D" FontSize="10" Margin="0,5,0,0"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions><RowDefinition Height="68"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+            <Border Background="White" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+                <Grid Margin="28,0">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock x:Name="TopTitle" Text="Dashboard" FontSize="15" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="TopSubtitle" Text="全球买家商机总览" Foreground="{StaticResource Muted}" FontSize="11"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border x:Name="ProviderBadge" Background="{StaticResource WarningSoft}" CornerRadius="12" Padding="10,5" Margin="0,0,12,0">
+                            <TextBlock x:Name="ProviderText" Text="DeepSeek 未配置" Foreground="#8A6110" FontSize="11" FontWeight="SemiBold"/>
+                        </Border>
+                        <Button Content="企业与 AI 设置" Style="{StaticResource SecondaryButton}" Click="Settings_Click"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+            <ContentControl x:Name="ContentHost" Grid.Row="1"/>
+        </Grid>
+    </Grid>
+</Window>

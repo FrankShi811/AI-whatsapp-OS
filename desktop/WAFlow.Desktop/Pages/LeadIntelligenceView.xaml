@@ -1,0 +1,68 @@
+<UserControl x:Class="WAFlow.Desktop.Pages.LeadIntelligenceView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Margin="28,26,28,28">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <Grid>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <StackPanel><TextBlock Text="Lead Intelligence" Style="{StaticResource PageTitle}"/><TextBlock Text="规则评分提供基线，DeepSeek 分析提供证据、画像和策略。" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/></StackPanel>
+            <Button Grid.Column="1" Content="＋ 导入 Excel / CSV" Style="{StaticResource PrimaryButton}" Click="Import_Click" VerticalAlignment="Center"/>
+        </Grid>
+        <Border Grid.Row="1" Style="{StaticResource Card}" Padding="14" Margin="0,20,0,14">
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="150"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBox x:Name="SearchBox" ToolTip="搜索姓名、公司或号码" Margin="0,0,10,0" KeyDown="SearchBox_KeyDown"/>
+                <ComboBox x:Name="GradeFilter" Grid.Column="1" SelectionChanged="GradeFilter_SelectionChanged" Margin="0,0,10,0"/>
+                <Button Grid.Column="2" Content="刷新" Style="{StaticResource SecondaryButton}" Click="Refresh_Click"/>
+            </Grid>
+        </Border>
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="1.6*" MinWidth="600"/><ColumnDefinition Width="390"/></Grid.ColumnDefinitions>
+            <DataGrid x:Name="LeadGrid" IsReadOnly="True" SelectionChanged="LeadGrid_SelectionChanged" Margin="0,0,14,0">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="客户" Binding="{Binding DisplayName}" Width="1.25*"/>
+                    <DataGridTextColumn Header="公司" Binding="{Binding Company}" Width="1.25*"/>
+                    <DataGridTextColumn Header="市场" Binding="{Binding Country}" Width="*"/>
+                    <DataGridTextColumn Header="等级" Binding="{Binding Grade}" Width="58"/>
+                    <DataGridTextColumn Header="评分" Binding="{Binding Score}" Width="58"/>
+                    <DataGridTextColumn Header="阶段" Binding="{Binding StageLabel}" Width="90"/>
+                    <DataGridTextColumn Header="分析" Binding="{Binding AnalysisStateLabel}" Width="80"/>
+                </DataGrid.Columns>
+            </DataGrid>
+            <Border Grid.Column="1" Style="{StaticResource Card}" Padding="0">
+                <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <Border Padding="20,18" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <StackPanel><TextBlock x:Name="LeadNameText" Text="选择一个商机" FontSize="18" FontWeight="Bold"/><TextBlock x:Name="CompanyText" Foreground="{StaticResource Muted}" Margin="0,3,0,0"/></StackPanel>
+                            <Border Grid.Column="1" x:Name="GradeBadge" Background="{StaticResource SuccessSoft}" CornerRadius="18" Width="42" Height="42"><TextBlock x:Name="GradeText" Text="—" FontSize="18" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+                        </Grid>
+                    </Border>
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"><StackPanel Margin="20">
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                            <StackPanel><TextBlock Text="阶段" Style="{StaticResource LabelText}"/><TextBlock x:Name="StageText" Text="—" FontWeight="SemiBold" Margin="0,3,0,0"/></StackPanel>
+                            <StackPanel Grid.Column="1"><TextBlock Text="预估订单" Style="{StaticResource LabelText}"/><TextBlock x:Name="AmountText" Text="—" FontWeight="SemiBold" Margin="0,3,0,0"/></StackPanel>
+                        </Grid>
+                        <Border Height="1" Background="{StaticResource Line}" Margin="0,16"/>
+                        <TextBlock Text="AI 客户画像" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock x:Name="ProfileText" Text="尚未分析" Foreground="#425049" LineHeight="21" Margin="0,8,0,0"/>
+                        <TextBlock Text="下一步动作" Style="{StaticResource SectionTitle}" Margin="0,18,0,0"/>
+                        <Border Background="{StaticResource SuccessSoft}" CornerRadius="8" Padding="12" Margin="0,8,0,0"><TextBlock x:Name="NextActionText" Text="—" Foreground="#155F49" LineHeight="20"/></Border>
+                        <TextBlock Text="评分证据" Style="{StaticResource SectionTitle}" Margin="0,18,0,0"/>
+                        <ItemsControl x:Name="FactorItems" Margin="0,8,0,0"><ItemsControl.ItemTemplate><DataTemplate>
+                            <Grid Margin="0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="120"/><ColumnDefinition Width="*"/><ColumnDefinition Width="48"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding Label}" Foreground="{StaticResource Muted}" FontSize="11" VerticalAlignment="Center"/>
+                                <ProgressBar Grid.Column="1" Height="7" Maximum="100" Value="{Binding Percent, Mode=OneWay}" Foreground="{StaticResource Primary}" Background="#E7EEEA" BorderThickness="0" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="2" Text="{Binding Value}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold"/>
+                            </Grid>
+                        </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                        <TextBlock Text="风险提示" Style="{StaticResource SectionTitle}" Margin="0,18,0,0"/>
+                        <ItemsControl x:Name="RiskItems" Margin="0,6,0,0"><ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding StringFormat=• {0}}" Foreground="#8A4E29" Margin="0,3"/></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                        <TextBlock x:Name="AnalysisErrorText" Foreground="#B23636" Margin="0,12,0,0"/>
+                    </StackPanel></ScrollViewer>
+                    <Border Grid.Row="2" Padding="16" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
+                        <Button x:Name="AnalyzeButton" Content="使用 DeepSeek 分析 / 重试" Style="{StaticResource PrimaryButton}" Click="Analyze_Click" HorizontalAlignment="Stretch"/>
+                    </Border>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>
