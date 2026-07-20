@@ -61,6 +61,16 @@ Check(LeadScoringService.GradeFromScore(39) == "D", "score boundary D=39");
 
 var phone = PhoneNormalizer.Normalize("07700 900123", "United Kingdom");
 Check(phone.Valid && phone.E164 == "+447700900123" && phone.CountryInferred, "E.164 country inference");
+var alreadyInternationalUsPhone = PhoneNormalizer.Normalize("13373224256", "美国");
+Check(alreadyInternationalUsPhone.Valid && alreadyInternationalUsPhone.E164 == "+13373224256", "country inference does not duplicate an existing country code");
+Check(PhoneIdentity.IsMatch("+113373224256", "+13373224256"), "legacy duplicated country code still matches WhatsApp number by complete suffix");
+var customPhoneLead = new Lead { Name="custom phone", CustomFields=new Dictionary<string, string> { ["WhatsApp号码"]="1-337-322-4256" } };
+Check(PhoneIdentity.FindUniqueLead([customPhoneLead], "+13373224256")?.Id == customPhoneLead.Id, "WhatsApp custom column participates in customer matching");
+var ambiguousPhoneMatch = PhoneIdentity.FindUniqueLead([
+    new Lead { Name="first", PhoneE164="+11234567890" },
+    new Lead { Name="second", PhoneE164="+21234567890" }
+], "1234567890");
+Check(ambiguousPhoneMatch is null, "ambiguous suffix phone matches fail closed");
 var badPhone = PhoneNormalizer.Normalize("12345", "Unknown");
 Check(!badPhone.Valid, "invalid phone risk");
 var wa = PhoneNormalizer.BuildWaMeUrl("+44 7700 900123", "Hello Elena & team");
@@ -236,6 +246,43 @@ await repository.UpsertWhatsAppMessageAsync(outgoingStatus);
 outgoingStatus.Status = WhatsAppMessageStatus.Pending;
 await repository.UpsertWhatsAppMessageAsync(outgoingStatus);
 Check((await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single(x => x.Id == outgoingStatus.Id).Status == WhatsAppMessageStatus.Sent, "WhatsApp status cannot regress on duplicate event");
+
+var suffixLead = new Lead
+{
+    Name="softsam", Country="美国", PhoneE164="+113373224256", PhoneValid=true,
+    CustomFields=new Dictionary<string, string> { ["电话"]="13373224256" }
+};
+await repository.UpsertLeadAsync(suffixLead);
+var suffixConversation = new WhatsAppConversation
+{
+    Id="primary:13373224256", AccountId="primary", Phone="13373224256", DisplayName="RI", LastMessage="Sure will",
+    LastMessageAt=DateTimeOffset.Now, IsPinned=true, PinnedAt=DateTimeOffset.Now
+};
+await repository.UpsertWhatsAppConversationAsync(suffixConversation);
+await repository.SynchronizeLeadConnectionsFromInboxAsync([suffixLead]);
+var linkedSuffixConversation = await repository.GetWhatsAppConversationAsync("primary", "13373224256");
+Check(linkedSuffixConversation?.LeadId == suffixLead.Id && linkedSuffixConversation.DisplayName == "softsam", "phone suffix match links CRM sidebar and prefers customer-list name");
+Check(linkedSuffixConversation?.IsPinned == true && linkedSuffixConversation.PinnedAt is not null, "WhatsApp pinned conversation state persists");
+var mediaMessage = new WhatsAppMessage
+{
+    Id="primary:wamid-media", ProviderMessageId="wamid-media", AccountId="primary", ConversationId=suffixConversation.Id,
+    LeadId=suffixLead.Id, Phone=suffixConversation.Phone, Direction=WhatsAppMessageDirection.Outgoing, Status=WhatsAppMessageStatus.Sent,
+    Kind="document", FileName="price-list.xlsx", MimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", Timestamp=DateTimeOffset.Now
+};
+await repository.UpsertWhatsAppMessageAsync(mediaMessage);
+var storedMedia = (await repository.GetWhatsAppMessagesAsync(suffixConversation.Id)).Single(message => message.Id == mediaMessage.Id);
+Check(storedMedia.Kind == "document" && storedMedia.FileName == "price-list.xlsx", "WhatsApp attachment metadata persists");
+
+await using (var protocolClient = new WhatsAppBridgeClient())
+{
+    var protocolEventReceived = false;
+    protocolClient.EventReceived += (_, bridgeEvent) => protocolEventReceived |= bridgeEvent.Name == "protocol_after_noise";
+    var protocolLines = "Contaminating library output\n{\"type\":\"event\",\"event\":\"protocol_after_noise\",\"accountId\":\"primary\",\"data\":{}}\n";
+    using var protocolStream = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes(protocolLines)));
+    var readerMethod = typeof(WhatsAppBridgeClient).GetMethod("ReadOutputAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    await (Task)readerMethod.Invoke(protocolClient, [protocolStream, CancellationToken.None])!;
+    Check(protocolEventReceived && protocolClient.LastBridgeError.Contains("安全忽略"), "non-JSON bridge stdout no longer breaks successful send receipts");
+}
 
 var campaignBridge = new WhatsAppConnectionManager();
 await using var campaigns = new CampaignAutomationService(repository, campaignBridge);

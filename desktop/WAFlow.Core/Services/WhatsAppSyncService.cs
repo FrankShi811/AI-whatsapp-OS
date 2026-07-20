@@ -105,7 +105,7 @@ public sealed class WhatsAppSyncService
             conversation.LeadId = lead.Id;
             conversation.DisplayName = lead.DisplayName;
         }
-        else if (!string.IsNullOrWhiteSpace(displayName) && (string.IsNullOrWhiteSpace(conversation.DisplayName) || conversation.DisplayName == $"+{phone}"))
+        else if (!string.IsNullOrWhiteSpace(displayName) && displayName != $"+{phone}")
         {
             conversation.DisplayName = displayName;
         }
@@ -127,7 +127,7 @@ public sealed class WhatsAppSyncService
             conversation.LeadId = lead.Id;
             conversation.DisplayName = lead.DisplayName;
         }
-        else if (!string.IsNullOrWhiteSpace(displayName) && (string.IsNullOrWhiteSpace(conversation.DisplayName) || conversation.DisplayName == $"+{phone}"))
+        else if (!string.IsNullOrWhiteSpace(displayName) && displayName != $"+{phone}")
         {
             conversation.DisplayName = displayName;
         }
@@ -139,6 +139,11 @@ public sealed class WhatsAppSyncService
         }
         if (data.TryGetProperty("unreadCount", out var unread) && unread.ValueKind == JsonValueKind.Number && unread.TryGetInt32(out var unreadCount))
             conversation.UnreadCount = Math.Max(0, unreadCount);
+        if (data.TryGetProperty("pinned", out var pinned) && pinned.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            conversation.IsPinned = pinned.GetBoolean();
+            conversation.PinnedAt = conversation.IsPinned && DateTimeOffset.TryParse(Text(data, "pinnedAt"), out var pinnedAt) ? pinnedAt : null;
+        }
         if (string.IsNullOrWhiteSpace(conversation.DisplayName)) conversation.DisplayName = $"+{phone}";
         await _repository.UpsertWhatsAppConversationAsync(conversation);
     }
@@ -178,6 +183,8 @@ public sealed class WhatsAppSyncService
             Status = fromMe ? WhatsAppMessageStatus.Sent : WhatsAppMessageStatus.Received,
             Kind = Text(data, "kind"),
             Body = Text(data, "text"),
+            FileName = Text(data, "fileName"),
+            MimeType = Text(data, "mimeType"),
             PushName = Text(data, "pushName"),
             Timestamp = timestamp,
             Source = source

@@ -33,7 +33,8 @@ public static partial class PhoneNormalizer
             var key = (country ?? "").Trim();
             if (!CountryCodes.TryGetValue(key, out var prefix)) return new(raw, digits, false, false, "country_code_required");
             digits = digits.TrimStart('0');
-            digits = prefix + digits;
+            if (!digits.StartsWith(prefix, StringComparison.Ordinal) || digits.Length < 8)
+                digits = prefix + digits;
             inferred = true;
         }
         var valid = digits.Length is >= 8 and <= 15 && digits[0] != '0';

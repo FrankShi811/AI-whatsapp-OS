@@ -36,6 +36,10 @@ public sealed class WhatsAppConnectionManager : IAsyncDisposable
     public Task<JsonElement> LogoutAsync(CancellationToken cancellationToken = default) => GetClient(ActiveAccountId).LogoutAsync(cancellationToken);
     public Task<JsonElement> SendTextAsync(string phone, string text, CancellationToken cancellationToken = default) => SendTextAsync(ActiveAccountId, phone, text, cancellationToken);
     public Task<JsonElement> SendTextAsync(string accountId, string phone, string text, CancellationToken cancellationToken = default) => GetClient(accountId).SendTextAsync(phone, text, cancellationToken);
+    public Task<JsonElement> SendMediaAsync(string phone, string path, string caption = "", CancellationToken cancellationToken = default) => SendMediaAsync(ActiveAccountId, phone, path, caption, cancellationToken);
+    public Task<JsonElement> SendMediaAsync(string accountId, string phone, string path, string caption, CancellationToken cancellationToken = default) => GetClient(accountId).SendMediaAsync(phone, path, caption, cancellationToken);
+    public Task<JsonElement> SetChatPinnedAsync(string phone, bool pinned, CancellationToken cancellationToken = default) => SetChatPinnedAsync(ActiveAccountId, phone, pinned, cancellationToken);
+    public Task<JsonElement> SetChatPinnedAsync(string accountId, string phone, bool pinned, CancellationToken cancellationToken = default) => GetClient(accountId).SetChatPinnedAsync(phone, pinned, cancellationToken);
     public Task<JsonElement> SyncNowAsync(CancellationToken cancellationToken = default) => GetClient(ActiveAccountId).SyncNowAsync(cancellationToken);
 
     private WhatsAppBridgeClient GetClient(string accountId)

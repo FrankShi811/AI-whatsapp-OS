@@ -409,20 +409,21 @@ public sealed class LocalRepository
 
     public async Task<Lead?> GetLeadByPhoneAsync(string phone, CancellationToken cancellationToken = default)
     {
-        var digits = new string(phone.Where(char.IsDigit).ToArray());
+        var digits = Services.PhoneIdentity.Digits(phone);
         if (digits.Length == 0) return null;
         await using var db = Open(); await db.OpenAsync(cancellationToken);
         await using var command = db.CreateCommand();
         command.CommandText = "SELECT data_json FROM leads WHERE phone_e164=$phone LIMIT 1";
         command.Parameters.AddWithValue("$phone", "+" + digits);
-        return Json.Deserialize<Lead>(await command.ExecuteScalarAsync(cancellationToken) as string);
+        var exact = Json.Deserialize<Lead>(await command.ExecuteScalarAsync(cancellationToken) as string);
+        if (exact is not null) return exact;
+        return Services.PhoneIdentity.FindUniqueLead(await GetLeadsAsync(cancellationToken: cancellationToken), digits);
     }
 
     public async Task<int> SynchronizeLeadConnectionsFromInboxAsync(IReadOnlyList<Lead> leads, CancellationToken cancellationToken = default)
     {
         var byPhone = leads
-            .Where(lead => !string.IsNullOrWhiteSpace(lead.PhoneE164))
-            .Select(lead => (Phone: new string(lead.PhoneE164.Where(char.IsDigit).ToArray()), Lead: lead))
+            .SelectMany(lead => Services.PhoneIdentity.LeadPhoneCandidates(lead).Select(phone => (Phone: phone, Lead: lead)))
             .Where(item => item.Phone.Length > 0)
             .GroupBy(item => item.Phone, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First().Lead, StringComparer.OrdinalIgnoreCase);
@@ -444,20 +445,6 @@ public sealed class LocalRepository
             while (await reader.ReadAsync(cancellationToken))
                 if (Json.Deserialize<WhatsAppConversation>(reader.GetString(0)) is { } item) conversations.Add(item);
         }
-        foreach (var conversation in conversations)
-        {
-            var digits = new string(conversation.Phone.Where(char.IsDigit).ToArray());
-            if (!byPhone.TryGetValue(digits, out var lead)) continue;
-            conversation.LeadId = lead.Id;
-            linked.Add(lead.Id);
-            if (!latestConversations.TryGetValue(lead.Id, out var previous) || conversation.LastMessageAt > previous.LastMessageAt) latestConversations[lead.Id] = conversation;
-            await using var update = db.CreateCommand();
-            update.Transaction = transaction as SqliteTransaction;
-            update.CommandText = "UPDATE whatsapp_conversations SET lead_id=$lead,data_json=$json WHERE id=$id";
-            update.Parameters.AddWithValue("$lead", lead.Id); update.Parameters.AddWithValue("$json", Json.Serialize(conversation)); update.Parameters.AddWithValue("$id", conversation.Id);
-            await update.ExecuteNonQueryAsync(cancellationToken);
-        }
-
         var messages = new List<WhatsAppMessage>();
         await using (var select = db.CreateCommand())
         {
@@ -467,10 +454,28 @@ public sealed class LocalRepository
             while (await reader.ReadAsync(cancellationToken))
                 if (Json.Deserialize<WhatsAppMessage>(reader.GetString(0)) is { } item) messages.Add(item);
         }
+        var resolvedPhones = conversations.Select(item => item.Phone).Concat(messages.Select(item => item.Phone))
+            .Select(Services.PhoneIdentity.Digits).Where(value => value.Length > 0).Distinct(StringComparer.Ordinal)
+            .ToDictionary(value => value, value => byPhone.TryGetValue(value, out var exactLead) ? exactLead : Services.PhoneIdentity.FindUniqueLead(leads, value), StringComparer.Ordinal);
+        foreach (var conversation in conversations)
+        {
+            var digits = Services.PhoneIdentity.Digits(conversation.Phone);
+            if (!resolvedPhones.TryGetValue(digits, out var lead) || lead is null) continue;
+            conversation.LeadId = lead.Id;
+            if (!string.IsNullOrWhiteSpace(lead.DisplayName)) conversation.DisplayName = lead.DisplayName;
+            linked.Add(lead.Id);
+            if (!latestConversations.TryGetValue(lead.Id, out var previous) || conversation.LastMessageAt > previous.LastMessageAt) latestConversations[lead.Id] = conversation;
+            await using var update = db.CreateCommand();
+            update.Transaction = transaction as SqliteTransaction;
+            update.CommandText = "UPDATE whatsapp_conversations SET lead_id=$lead,data_json=$json WHERE id=$id";
+            update.Parameters.AddWithValue("$lead", lead.Id); update.Parameters.AddWithValue("$json", Json.Serialize(conversation)); update.Parameters.AddWithValue("$id", conversation.Id);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         foreach (var message in messages)
         {
-            var digits = new string(message.Phone.Where(char.IsDigit).ToArray());
-            if (!byPhone.TryGetValue(digits, out var lead)) continue;
+            var digits = Services.PhoneIdentity.Digits(message.Phone);
+            if (!resolvedPhones.TryGetValue(digits, out var lead) || lead is null) continue;
             message.LeadId = lead.Id;
             linked.Add(lead.Id);
             if (!latestMessages.TryGetValue(lead.Id, out var previous) || message.Timestamp > previous.Timestamp) latestMessages[lead.Id] = message;

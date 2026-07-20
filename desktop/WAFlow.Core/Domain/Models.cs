@@ -95,6 +95,8 @@ public sealed class WhatsAppConversation
     public string LastMessage { get; set; } = "";
     public DateTimeOffset LastMessageAt { get; set; }
     public int UnreadCount { get; set; }
+    public bool IsPinned { get; set; }
+    public DateTimeOffset? PinnedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
 
     [JsonIgnore] public string LastTimeLabel => LastMessageAt == default ? "" : LastMessageAt.LocalDateTime.ToString("MM-dd HH:mm");
@@ -130,6 +132,8 @@ public sealed class WhatsAppMessage
     public WhatsAppMessageStatus Status { get; set; }
     public string Kind { get; set; } = "text";
     public string Body { get; set; } = "";
+    public string FileName { get; set; } = "";
+    public string MimeType { get; set; } = "";
     public string PushName { get; set; } = "";
     public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.Now;
     public string Source { get; set; } = "notify";

@@ -85,6 +85,10 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     }
     public Task<JsonElement> SendTextAsync(string phone, string text, CancellationToken cancellationToken = default) =>
         SendCommandAsync("send_text", new { phone, text }, cancellationToken);
+    public Task<JsonElement> SendMediaAsync(string phone, string path, string caption, CancellationToken cancellationToken = default) =>
+        SendCommandAsync("send_media", new { phone, path, caption }, cancellationToken);
+    public Task<JsonElement> SetChatPinnedAsync(string phone, bool pinned, CancellationToken cancellationToken = default) =>
+        SendCommandAsync("set_chat_pin", new { phone, pinned }, cancellationToken);
     public Task<JsonElement> SyncNowAsync(CancellationToken cancellationToken = default) =>
         SendCommandAsync("sync_now", null, cancellationToken);
 
@@ -120,9 +124,18 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
             while (!cancellationToken.IsCancellationRequested && await output.ReadLineAsync(cancellationToken) is { } line)
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
-                using var document = JsonDocument.Parse(line);
+                JsonDocument document;
+                try { document = JsonDocument.Parse(line); }
+                catch (JsonException)
+                {
+                    LastBridgeError = "桥接进程产生了一行非协议输出，已安全忽略。";
+                    continue;
+                }
+                using (document)
+                {
                 var root = document.RootElement;
-                var type = root.GetProperty("type").GetString();
+                if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("type", out var typeElement)) continue;
+                var type = typeElement.GetString();
                 if (type == "response")
                 {
                     var requestId = root.GetProperty("requestId").GetString() ?? "";
@@ -138,13 +151,14 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
                     continue;
                 }
                 if (type != "event") continue;
-                var eventName = root.GetProperty("event").GetString() ?? "unknown";
+                var eventName = root.TryGetProperty("event", out var eventElement) ? eventElement.GetString() ?? "unknown" : "unknown";
                 if (eventName == "ready") _ready.TrySetResult();
                 var accountId = root.TryGetProperty("accountId", out var account) ? account.GetString() ?? "" : "";
                 var data = root.TryGetProperty("data", out var dataElement) ? dataElement.Clone() : default;
                 if (eventName == "connection" && data.ValueKind == JsonValueKind.Object && data.TryGetProperty("state", out var state))
                     ConnectionState = state.GetString() ?? "disconnected";
                 EventReceived?.Invoke(this, new WhatsAppBridgeEvent(eventName, accountId, data));
+                }
             }
         }
         catch (OperationCanceledException) { }

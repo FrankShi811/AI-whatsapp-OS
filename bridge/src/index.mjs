@@ -185,7 +185,8 @@ function jidFromPhone(phone) {
 function timestampToIso(value) {
   if (value == null) return new Date().toISOString()
   const seconds = typeof value === 'number' ? value : Number(value?.toString?.() ?? value)
-  return Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : new Date().toISOString()
+  if (!Number.isFinite(seconds)) return new Date().toISOString()
+  return new Date(Math.abs(seconds) >= 1_000_000_000_000 ? seconds : seconds * 1000).toISOString()
 }
 
 function phoneFromJid(jid) {
@@ -211,10 +212,18 @@ function emitItems(event, items, source = 'live', extra = {}, chunkSize = 100) {
   }
 }
 
+function messageContent(message) {
+  if (!message) return null
+  if (message.ephemeralMessage?.message) return messageContent(message.ephemeralMessage.message)
+  if (message.viewOnceMessage?.message) return messageContent(message.viewOnceMessage.message)
+  if (message.viewOnceMessageV2?.message) return messageContent(message.viewOnceMessageV2.message)
+  if (message.documentWithCaptionMessage?.message) return messageContent(message.documentWithCaptionMessage.message)
+  return message
+}
+
 function messageText(message) {
+  message = messageContent(message)
   if (!message) return ''
-  if (message.ephemeralMessage?.message) return messageText(message.ephemeralMessage.message)
-  if (message.viewOnceMessage?.message) return messageText(message.viewOnceMessage.message)
   return message.conversation
     ?? message.extendedTextMessage?.text
     ?? message.imageMessage?.caption
@@ -227,6 +236,7 @@ function messageText(message) {
 }
 
 function messageKind(message) {
+  message = messageContent(message)
   if (!message) return 'unknown'
   if (message.imageMessage) return 'image'
   if (message.videoMessage) return 'video'
@@ -234,6 +244,56 @@ function messageKind(message) {
   if (message.documentMessage) return 'document'
   if (message.stickerMessage) return 'sticker'
   return 'text'
+}
+
+function messageFileName(message) {
+  message = messageContent(message)
+  return firstNonEmpty(
+    message?.documentMessage?.fileName,
+    message?.imageMessage?.fileName,
+    message?.videoMessage?.fileName,
+    message?.audioMessage?.fileName
+  )
+}
+
+function messageMimeType(message) {
+  message = messageContent(message)
+  return firstNonEmpty(
+    message?.documentMessage?.mimetype,
+    message?.imageMessage?.mimetype,
+    message?.videoMessage?.mimetype,
+    message?.audioMessage?.mimetype,
+    message?.stickerMessage?.mimetype
+  )
+}
+
+const mediaTypes = new Map(Object.entries({
+  '.jpg': ['image', 'image/jpeg'], '.jpeg': ['image', 'image/jpeg'], '.png': ['image', 'image/png'], '.webp': ['image', 'image/webp'], '.gif': ['video', 'image/gif'],
+  '.mp4': ['video', 'video/mp4'], '.3gp': ['video', 'video/3gpp'], '.mov': ['video', 'video/quicktime'],
+  '.mp3': ['audio', 'audio/mpeg'], '.m4a': ['audio', 'audio/mp4'], '.ogg': ['audio', 'audio/ogg'], '.opus': ['audio', 'audio/ogg; codecs=opus'], '.wav': ['audio', 'audio/wav'], '.aac': ['audio', 'audio/aac'],
+  '.pdf': ['document', 'application/pdf'], '.txt': ['document', 'text/plain'], '.csv': ['document', 'text/csv'], '.json': ['document', 'application/json'],
+  '.doc': ['document', 'application/msword'], '.docx': ['document', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  '.xls': ['document', 'application/vnd.ms-excel'], '.xlsx': ['document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  '.ppt': ['document', 'application/vnd.ms-powerpoint'], '.pptx': ['document', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+  '.zip': ['document', 'application/zip'], '.rar': ['document', 'application/vnd.rar'], '.7z': ['document', 'application/x-7z-compressed']
+}))
+
+async function buildMediaMessage(filePath, caption) {
+  const resolved = path.resolve(String(filePath ?? ''))
+  const info = await fs.stat(resolved)
+  if (!info.isFile()) throw new Error('attachment_is_not_a_file')
+  if (info.size <= 0 || info.size > 100 * 1024 * 1024) throw new Error('attachment_size_must_be_between_1_byte_and_100mb')
+  const fileName = path.basename(resolved)
+  const extension = path.extname(fileName).toLowerCase()
+  const mediaType = mediaTypes.get(extension)
+  if (!mediaType) throw new Error('unsupported_attachment_type')
+  const [kind, mimeType] = mediaType
+  const data = await fs.readFile(resolved)
+  const safeCaption = String(caption ?? '').trim().slice(0, 1024)
+  if (kind === 'image') return { payload: { image: data, mimetype: mimeType, caption: safeCaption }, kind, mimeType, fileName }
+  if (kind === 'video') return { payload: { video: data, mimetype: mimeType, caption: safeCaption }, kind, mimeType, fileName }
+  if (kind === 'audio') return { payload: { audio: data, mimetype: mimeType, ptt: false }, kind, mimeType, fileName }
+  return { payload: { document: data, mimetype: mimeType, fileName, caption: safeCaption }, kind, mimeType, fileName }
 }
 
 function shouldForward(jid) {
@@ -295,11 +355,15 @@ async function normalizeChat(chat, source = 'live') {
     jid,
     sourceJid,
     phone,
-    displayName: firstNonEmpty(chat?.name, chat?.displayName, cachedContact?.displayName, `+${phone}`),
+    displayName: firstNonEmpty(cachedContact?.savedName, cachedContact?.displayName, chat?.name, chat?.displayName, `+${phone}`),
     lastMessage: embedded ? messageText(embedded.message) : '',
     lastMessageAt: timestamp == null ? '' : timestampToIso(timestamp),
     unreadCount: Number.isFinite(Number(chat?.unreadCount)) ? Number(chat.unreadCount) : null,
     archived: Boolean(chat?.archived),
+    ...(chat?.pinned !== undefined && chat?.pinned !== null ? {
+      pinned: Number(chat.pinned) > 0,
+      pinnedAt: Number(chat.pinned) > 0 ? timestampToIso(chat.pinned) : ''
+    } : {}),
     source
   }
 }
@@ -319,6 +383,8 @@ async function normalizeMessage(message, source) {
     timestamp: timestampToIso(message.messageTimestamp),
     text: messageText(message.message),
     kind: messageKind(message.message),
+    fileName: messageFileName(message.message),
+    mimeType: messageMimeType(message.message),
     source
   }
 }
@@ -372,7 +438,8 @@ async function forwardMessage(message, source) {
   const data = await normalizeMessage(message, source)
   if (!data?.phone || !data.id) return
   if (!data.fromMe && data.pushName) rememberContact({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: data.pushName, notifyName: data.pushName, source })
-  rememberChat({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: data.pushName || `+${data.phone}`, lastMessage: data.text || `[${data.kind}]`, lastMessageAt: data.timestamp, unreadCount: null, source })
+  const contact = [...state.contacts.values()].find(value => value.phone === data.phone)
+  rememberChat({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: contact?.displayName || data.pushName || `+${data.phone}`, lastMessage: data.text || `[${data.kind}]`, lastMessageAt: data.timestamp, unreadCount: null, source })
   emit({
     type: 'event',
     event: 'message',
@@ -559,7 +626,7 @@ async function handle(command) {
   try {
     switch (command.command) {
       case 'ping':
-        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.2.0', connection: state.connection })
+        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.3.0', connection: state.connection })
         return
       case 'initialize': {
         state.accountId = validateAccountId(command.accountId ?? 'default')
@@ -597,6 +664,26 @@ async function handle(command) {
         reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString() })
         return
       }
+      case 'send_media': {
+        if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
+        const jid = command.jid ? String(command.jid) : jidFromPhone(command.phone)
+        if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
+        const media = await buildMediaMessage(command.path, command.caption)
+        const result = await state.socket.sendMessage(jid, media.payload)
+        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString(), kind: media.kind, mimeType: media.mimeType, fileName: media.fileName })
+        return
+      }
+      case 'set_chat_pin': {
+        if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
+        const jid = command.jid ? String(command.jid) : jidFromPhone(command.phone)
+        if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
+        const pinned = Boolean(command.pinned)
+        await state.socket.chatModify({ pin: pinned }, jid)
+        const chat = state.chats.get(phoneFromJid(jid))
+        if (chat) rememberChat({ ...chat, pinned, pinnedAt: pinned ? new Date().toISOString() : '' })
+        reply(requestId, true, { jid, pinned })
+        return
+      }
       case 'sync_now': {
         if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
         enqueueSync(manualSync, 'manual')
@@ -623,4 +710,4 @@ lines.on('close', async () => {
   process.exit(0)
 })
 
-emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.2.0' } })
+emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.3.0' } })
