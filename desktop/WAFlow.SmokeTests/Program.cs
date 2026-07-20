@@ -17,6 +17,24 @@ await repository.InitializeAsync();
 var scorer = new LeadScoringService();
 var imports = new ImportService(repository, scorer);
 
+if (args.Length >= 3 && args[0] == "--database-reimport")
+{
+    var upgradeRepository = new LocalRepository(args[2]);
+    await upgradeRepository.InitializeAsync();
+    var upgradeImports = new ImportService(upgradeRepository, scorer);
+    var realParsed = upgradeImports.Parse(args[1]);
+    var sherrySheet = realParsed.Sheets.FirstOrDefault(sheet => sheet.Name == "\u5ba2\u6237\u603b\u8868\uff08Sherry3\uff09") ?? realParsed.Sheets[0];
+    var realPreview = await upgradeImports.BuildPreviewAsync(sherrySheet, upgradeImports.SuggestMapping(sherrySheet));
+    var realCommit = await upgradeImports.CommitAsync(Path.GetFileName(args[1]), realPreview, allowStageChange:true, allowOwnerChange:true);
+    await upgradeRepository.RemoveDemoLeadsIfRealDataExistsAsync();
+    var leads = await upgradeRepository.GetLeadsAsync();
+    Check(realCommit.Failed == 0 && realCommit.Created + realCommit.Updated == 540, "existing partial database reimport processes all 540 rows");
+    Check(leads.Count == 533, "existing partial database upgrades to all unique workbook customers without demos");
+    Console.WriteLine($"RESULT total={realCommit.Total} created={realCommit.Created} updated={realCommit.Updated} invalid={realCommit.InvalidPhones} failed={realCommit.Failed} leads={leads.Count}");
+    try { File.Delete(database); Directory.Delete(root, true); } catch { }
+    return failures.Count == 0 ? 0 : 1;
+}
+
 if (args.Length >= 2 && args[0] == "--workbook-only")
 {
     var realParsed = imports.Parse(args[1]);
@@ -53,6 +71,8 @@ var csvPath = Path.Combine(root, "sample.csv");
 await File.WriteAllTextAsync(csvPath, "客户姓名,公司名称,国家,WhatsApp号码,意向产品,预计订单额,阶段,备注,门店数量,采购周期\r\nNew Buyer,North Star,United Kingdom,07700900999,Oak chair,12000,new,=HYPERLINK(\"bad\"),12,Quarterly\r\nElena Duplicate,Nordline Living,Italy,+393491234567,DC-18,26000,won,Needs quote,28,Monthly", new UTF8Encoding(true));
 var parsed = imports.Parse(csvPath);
 Check(parsed.Sheets.Count == 1 && parsed.Sheets[0].Rows.Count == 2, "CSV parser rows");
+using (var writerHandle = new FileStream(csvPath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
+    Check(imports.Parse(csvPath).Sheets.Single().Rows.Count == 2, "spreadsheet can be imported while another process holds a write handle");
 Check(parsed.Sheets[0].SanitizedFormulaCount >= 1 && parsed.Sheets[0].Rows[0]["备注"].StartsWith("'="), "formula injection sanitization");
 var mapping = imports.SuggestMapping(parsed.Sheets[0]);
 Check(mapping.Any(m => m.Target == ImportField.WhatsApp) && mapping.Any(m => m.Target == ImportField.Name), "bilingual field mapping");
@@ -91,6 +111,40 @@ Check(directCommit.Failed == 0 && directLead.CustomFields.Count == directSheet.H
 directLead.CustomFields["任意业务维度"] = "人工修改后的值";
 await repository.UpsertLeadAsync(directLead);
 Check((await repository.GetLeadAsync(directLead.Id))?.CustomFields.GetValueOrDefault("任意业务维度") == "人工修改后的值", "manual custom-dimension edits persist");
+
+const string protectedNameHeader = "buyer_nickname";
+const string protectedStageHeader = "\u8ddf\u8fdb\u9636\u6bb5\uff08\u6bcf\u5468\u66f4\u65b0\uff09";
+const string protectedDetailHeader = "\u8be6\u60c5\u8bb0\u5f55";
+const string protectedBusinessHeader = "\u5ba2\u6237\u751f\u610f\u6a21\u5f0f";
+const string protectedConnectionHeader = "\u5efa\u8054\u60c5\u51b5";
+var protectedLead = new Lead
+{
+    Name="Protected Name", Company="Old Company", Country="US", PhoneE164="+14155550124", PhoneValid=true,
+    Email="old@example.com", Stage=LeadStage.Negotiation, LatestMessage="human detail record",
+    CustomFields=new Dictionary<string, string>
+    {
+        [protectedNameHeader]="Protected Name", [protectedStageHeader]="old follow-up", [protectedDetailHeader]="old detail",
+        [protectedBusinessHeader]="old business", [protectedConnectionHeader]="old connection", ["overwrite"]="old", ["remove me"]="old"
+    }
+};
+await repository.UpsertLeadAsync(protectedLead);
+var replacementSheet = new ImportSheet
+{
+    Name="replacement",
+    Headers=[protectedNameHeader,"\u516c\u53f8\u540d\u79f0","\u7535\u8bdd","\u90ae\u7bb1","\u9636\u6bb5","\u5907\u6ce8",protectedStageHeader,protectedDetailHeader,protectedBusinessHeader,protectedConnectionHeader,"overwrite","new field"],
+    Rows=[new Dictionary<string, string>
+    {
+        [protectedNameHeader]="Changed Name", ["\u516c\u53f8\u540d\u79f0"]="New Company", ["\u7535\u8bdd"]="+14155550124", ["\u90ae\u7bb1"]="",
+        ["\u9636\u6bb5"]="lost", ["\u5907\u6ce8"]="replacement note", [protectedStageHeader]="new follow-up", [protectedDetailHeader]="new detail",
+        [protectedBusinessHeader]="new business", [protectedConnectionHeader]="new connection", ["overwrite"]="", ["new field"]="fresh"
+    }]
+};
+var replacementPreview = await imports.BuildPreviewAsync(replacementSheet, imports.SuggestMapping(replacementSheet));
+await imports.CommitAsync("replacement.xlsx", replacementPreview, allowStageChange:true, allowOwnerChange:true);
+var protectedUpdated = (await repository.GetLeadAsync(protectedLead.Id))!;
+Check(protectedUpdated.Name == "Protected Name" && protectedUpdated.Stage == LeadStage.Negotiation && protectedUpdated.LatestMessage == "human detail record", "duplicate import preserves customer name, stage and detail record");
+Check(protectedUpdated.CustomFields[protectedStageHeader] == "old follow-up" && protectedUpdated.CustomFields[protectedDetailHeader] == "old detail" && protectedUpdated.CustomFields[protectedBusinessHeader] == "old business" && protectedUpdated.CustomFields[protectedConnectionHeader] == "old connection", "duplicate import preserves protected business dimensions");
+Check(protectedUpdated.Company == "New Company" && protectedUpdated.Email == "" && protectedUpdated.CustomFields["overwrite"] == "" && protectedUpdated.CustomFields["new field"] == "fresh" && !protectedUpdated.CustomFields.ContainsKey("remove me"), "duplicate import replaces every unprotected field including blanks and removes stale dimensions");
 
 var riskyPhoneSheet = new ImportSheet
 {
@@ -163,6 +217,9 @@ Check((await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single().Stat
 await repository.MarkWhatsAppConversationReadAsync(conversation.Id);
 Check((await repository.GetWhatsAppConversationsAsync()).Single(x => x.Id == conversation.Id).UnreadCount == 0, "WhatsApp conversation unread persistence");
 Check((await repository.GetLeadAsync("lead_james"))?.WhatsAppOptIn == true, "WhatsApp opt-in audit fields persisted");
+await repository.SynchronizeLeadConnectionsFromInboxAsync([whatsappLead]);
+var connectionLead = await repository.GetLeadAsync("lead_james");
+Check(connectionLead?.CustomFields.Values.Any(value => value.Contains("\u5ba2\u6237\u5df2\u56de\u590d")) == true, "WhatsApp Inbox synchronizes latest connection status to customer dimensions");
 var whatsappAccounts = await repository.GetWhatsAppAccountsAsync();
 whatsappAccounts.Add(new WhatsAppAccount { Id="personal_test", Name="Personal Test" });
 await repository.SaveWhatsAppAccountsAsync(whatsappAccounts);
@@ -244,6 +301,19 @@ try
 }
 catch (DeepSeekException error) { Check(error.Code == "invalid_structured_output" && error.Retryable, "DeepSeek invalid structure rejected"); }
 Check(handler.Requests.All(x => x.Authorization == "Bearer sk-test-redacted" && x.Uri == "https://api.deepseek.com/chat/completions"), "DeepSeek request contract and server-side key");
+
+var lifecycleRoot = Path.Combine(root, "lifecycle");
+var lifecycleRepository = new LocalRepository(Path.Combine(lifecycleRoot, "lifecycle.db"));
+await lifecycleRepository.InitializeAsync();
+var lifecycleLead = new Lead { Id="real-customer", Name="Real Customer", PhoneE164="+14155550999", PhoneValid=true };
+await lifecycleRepository.UpsertLeadAsync(lifecycleLead);
+var lifecycleConversation = new WhatsAppConversation { Id="primary:14155550999", AccountId="primary", Phone="14155550999", LeadId=lifecycleLead.Id, DisplayName=lifecycleLead.Name, LastMessage="hello", LastMessageAt=DateTimeOffset.Now };
+await lifecycleRepository.UpsertWhatsAppConversationAsync(lifecycleConversation);
+await lifecycleRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage { Id="primary:lifecycle", ProviderMessageId="lifecycle", AccountId="primary", ConversationId=lifecycleConversation.Id, LeadId=lifecycleLead.Id, Phone=lifecycleConversation.Phone, Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received, Body="hello" });
+await lifecycleRepository.InitializeAsync();
+Check((await lifecycleRepository.GetLeadsAsync()).Select(lead => lead.Id).SequenceEqual([lifecycleLead.Id]), "demo customers are removed automatically once real customer data exists");
+Check(await lifecycleRepository.DeleteLeadAsync(lifecycleLead.Id) && await lifecycleRepository.GetLeadAsync(lifecycleLead.Id) is null, "customer can be deleted manually");
+Check((await lifecycleRepository.GetWhatsAppConversationsAsync()).Single().LeadId == "" && (await lifecycleRepository.GetWhatsAppMessagesAsync(lifecycleConversation.Id)).Single().LeadId == "", "customer deletion retains WhatsApp history and removes customer links");
 
 try { File.Delete(database); Directory.Delete(root, true); } catch { }
 Console.WriteLine(failures.Count == 0 ? "\nAI Sales OS native core smoke tests passed." : $"\n{failures.Count} smoke test(s) failed.");

@@ -79,8 +79,7 @@ public sealed class WhatsAppSyncService
         await _repository.UpsertWhatsAppConversationAsync(conversation);
         if (lead is not null && inserted)
         {
-            lead.LastContactAt = timestamp;
-            if (!fromMe) lead.LatestMessage = message.Body;
+            LeadConnectionStatus.ApplyFromMessage(lead, message);
             await _repository.UpsertLeadAsync(lead);
             await _repository.LogEventAsync(fromMe ? "whatsapp_message_sent" : "whatsapp_message_received", lead.Id, null, $"message_id={providerId}; account={accountId}");
         }
@@ -100,7 +99,12 @@ public sealed class WhatsAppSyncService
             3 => WhatsAppMessageStatus.Delivered,
             >= 4 => WhatsAppMessageStatus.Read
         };
-        await _repository.UpdateWhatsAppMessageStatusAsync(string.IsNullOrWhiteSpace(e.AccountId) ? "primary" : e.AccountId, providerId, status);
+        var message = await _repository.UpdateWhatsAppMessageStatusAsync(string.IsNullOrWhiteSpace(e.AccountId) ? "primary" : e.AccountId, providerId, status);
+        if (message is null || string.IsNullOrWhiteSpace(message.LeadId) || message.Direction != WhatsAppMessageDirection.Outgoing) return;
+        var lead = await _repository.GetLeadAsync(message.LeadId);
+        if (lead is null || !LeadConnectionStatus.ApplyFromMessage(lead, message)) return;
+        await _repository.UpsertLeadAsync(lead);
+        MessageSynchronized?.Invoke(this, message);
     }
 
     private static string Text(JsonElement data, string name) => data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";

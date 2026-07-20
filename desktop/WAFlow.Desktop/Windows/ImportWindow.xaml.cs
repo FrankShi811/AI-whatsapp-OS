@@ -54,14 +54,20 @@ public partial class ImportWindow : Window
                 .ToList();
             var fileName = Path.GetFileName(_parsed.FilePath);
             var progress = CreateProgress();
-            var result = await Task.Run(async () =>
+            var outcome = await Task.Run(async () =>
             {
                 var preview = await _services.Imports.BuildPreviewAsync(sheet, mapping, progress);
-                return await _services.Imports.CommitAsync(fileName, preview, allowStageChange:true, allowOwnerChange:true, progress);
+                var commit = await _services.Imports.CommitAsync(fileName, preview, allowStageChange:true, allowOwnerChange:true, progress);
+                var demosRemoved = commit.Created + commit.Updated > 0
+                    ? await _services.Repository.RemoveDemoLeadsIfRealDataExistsAsync()
+                    : 0;
+                return (Commit: commit, DemosRemoved: demosRemoved);
             });
+            var result = outcome.Commit;
+            var cleanupText = outcome.DemosRemoved > 0 ? $"\n\u5df2\u81ea\u52a8\u6e05\u7406 {outcome.DemosRemoved} \u6761\u6f14\u793a\u5ba2\u6237\u3002" : "";
 
             MessageBox.Show(
-                $"导入完成\n处理 {result.Total:N0} 行 · 新建 {result.Created:N0} · 更新 {result.Updated:N0}\n号码风险 {result.InvalidPhones:N0} · 失败 {result.Failed:N0}\n\n原工作表的 {sheet.Headers.Count} 列已全部保留为客户维度。",
+                $"\u5bfc\u5165\u5b8c\u6210\n\u5904\u7406 {result.Total:N0} \u884c \u00b7 \u65b0\u5efa {result.Created:N0} \u00b7 \u66f4\u65b0 {result.Updated:N0}\n\u53f7\u7801\u98ce\u9669 {result.InvalidPhones:N0} \u00b7 \u5931\u8d25 {result.Failed:N0}\n\n\u539f\u5de5\u4f5c\u8868\u7684 {sheet.Headers.Count} \u5217\u5df2\u5168\u90e8\u4fdd\u7559\u4e3a\u5ba2\u6237\u7ef4\u5ea6\u3002{cleanupText}",
                 "AI Sales OS", MessageBoxButton.OK, result.Failed > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
             DialogResult = true;
         }

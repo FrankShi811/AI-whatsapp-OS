@@ -109,6 +109,30 @@ public partial class CustomerEditWindow : Window
         }
     }
 
+    private async void Delete_Click(object sender, RoutedEventArgs e)
+    {
+        var displayName = string.IsNullOrWhiteSpace(_lead.DisplayName) ? _lead.Id : _lead.DisplayName;
+        var message = $"\u786e\u5b9a\u5220\u9664\u5ba2\u6237 \u201c{displayName}\u201d \u5417\uff1f\n\n\u5ba2\u6237\u8d44\u6599\u3001AI \u5206\u6790\u3001\u8349\u7a3f\u548c\u672a\u53d1\u9001\u7684 Campaign \u4efb\u52a1\u5c06\u88ab\u5220\u9664\uff1bWhatsApp \u4f1a\u8bdd\u4e0e\u6d88\u606f\u5386\u53f2\u4f1a\u4fdd\u7559\uff0c\u4f46\u4e0d\u518d\u5173\u8054\u8be5\u5ba2\u6237\u3002";
+        if (MessageBox.Show(message, "AI Sales OS", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+
+        DeleteButton.IsEnabled = false;
+        SaveButton.IsEnabled = false;
+        try
+        {
+            if (!await _services.Repository.DeleteLeadAsync(_lead.Id))
+            {
+                MessageBox.Show("\u8be5\u5ba2\u6237\u5df2\u4e0d\u5b58\u5728\u3002", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            DialogResult = true;
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(error.Message, "\u5220\u9664\u5931\u8d25", MessageBoxButton.OK, MessageBoxImage.Warning);
+            DeleteButton.IsEnabled = true;
+            SaveButton.IsEnabled = true;
+        }
+    }
+
     private static decimal ParseAmount(string text)
     {
         var value = text.Trim().Replace(",", "");

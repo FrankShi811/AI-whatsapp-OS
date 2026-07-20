@@ -90,6 +90,7 @@
 
         <Border Grid.Row="2" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="24,14">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="DeleteButton" Content="&#x5220;&#x9664;&#x8BE5;&#x5BA2;&#x6237;" Click="Delete_Click" Margin="0,0,18,0" Padding="18,9" Background="#FEECEC" Foreground="#B42318" BorderBrush="#F4B8B3"/>
                 <Button Content="取消" IsCancel="True" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0"/>
                 <Button x:Name="SaveButton" Content="保存并同步" Style="{StaticResource PrimaryButton}" Click="Save_Click"/>
             </StackPanel>

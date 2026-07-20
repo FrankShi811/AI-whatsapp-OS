@@ -178,7 +178,7 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        try { if (IsRunning) await DisconnectAsync(); } catch { }
+        try { if (IsRunning) await DisconnectAsync().WaitAsync(TimeSpan.FromSeconds(2)); } catch { }
         _lifetime?.Cancel();
         if (_process is { HasExited: false })
         {

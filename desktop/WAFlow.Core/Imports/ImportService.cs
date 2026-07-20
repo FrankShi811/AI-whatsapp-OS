@@ -32,7 +32,8 @@ public sealed class ImportService
         if (file.Length > MaxBytes) throw new InvalidDataException("文件超过 200MB 资源保护上限。");
         var extension = file.Extension.ToLowerInvariant();
         if (extension is not (".xlsx" or ".csv")) throw new InvalidDataException("仅支持 .xlsx 或 .csv 文件。");
-        var result = extension == ".xlsx" ? ParseXlsx(filePath) : ParseCsv(filePath);
+        using var snapshot = OpenSharedReadSnapshot(filePath, file.Length);
+        var result = extension == ".xlsx" ? ParseXlsx(snapshot) : ParseCsv(snapshot);
         result.FilePath = filePath;
         if (result.Sheets.Count == 0) throw new InvalidDataException("文件中没有非空工作表或数据行。");
         return result;
@@ -60,7 +61,7 @@ public sealed class ImportService
         var existing = await _repository.GetLeadsAsync(cancellationToken: cancellationToken);
         var byPhone = existing.Where(l => l.PhoneValid && !string.IsNullOrWhiteSpace(l.PhoneE164)).ToDictionary(l => l.PhoneE164, StringComparer.OrdinalIgnoreCase);
         var byIdentity = existing
-            .Select(lead => (Key: BuildImportIdentity(lead.CustomFields), Lead: lead))
+            .Select(lead => (Key: BuildImportIdentity(lead.CustomFields, lead.Name), Lead: lead))
             .Where(item => item.Key is not null)
             .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() == 1)
@@ -74,7 +75,7 @@ public sealed class ImportService
             foreach (var pair in coreMap)
             {
                 var value = sheet.Rows[i].GetValueOrDefault(pair.Key, "").Trim();
-                if (!string.IsNullOrWhiteSpace(value)) values[pair.Value] = value;
+                values[pair.Value] = value;
             }
             var customValues = customHeaders.ToDictionary(header => header, header => sheet.Rows[i].GetValueOrDefault(header, "").Trim(), StringComparer.OrdinalIgnoreCase);
             if (string.IsNullOrWhiteSpace(values.GetValueOrDefault(ImportField.Name)) && string.IsNullOrWhiteSpace(values.GetValueOrDefault(ImportField.Company)))
@@ -127,7 +128,7 @@ public sealed class ImportService
         return output;
     }
 
-    private static string? BuildImportIdentity(IReadOnlyDictionary<string, string> fields)
+    private static string? BuildImportIdentity(IReadOnlyDictionary<string, string> fields, string? fallbackName = null)
     {
         foreach (var pair in fields)
         {
@@ -135,7 +136,9 @@ public sealed class ImportService
             var normalized = new string(pair.Value.Trim().ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
             if (normalized.Length >= 2) return "name:" + normalized;
         }
-        return null;
+        if (string.IsNullOrWhiteSpace(fallbackName)) return null;
+        var fallback = new string(fallbackName.Trim().ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
+        return fallback.Length >= 2 ? "name:" + fallback : null;
     }
 
     public async Task<ImportCommitResult> CommitAsync(string fileName, IReadOnlyList<ImportPreviewRow> preview, bool allowStageChange, bool allowOwnerChange, IProgress<ImportProgress>? progress = null, CancellationToken cancellationToken = default)
@@ -155,24 +158,27 @@ public sealed class ImportService
                 if (row.DuplicateRowNumber is int duplicateRow && importedRows.TryGetValue(duplicateRow, out var importedLead))
                 {
                     lead = importedLead;
-                    ApplyNonEmpty(lead, row.Values, row.CustomValues, row.PhoneE164, row.PhoneValid, allowStageChange, allowOwnerChange, isNew:false);
+                    ApplyImportedValues(lead, row.Values, row.CustomValues, row.PhoneE164, row.PhoneValid, allowStageChange, allowOwnerChange, isNew:false);
                     updated++;
                 }
                 else if (row.IsDuplicate)
                 {
                     if (!existing.TryGetValue(row.DuplicateLeadId, out lead!)) throw new InvalidOperationException("重复客户已不存在。");
-                    ApplyNonEmpty(lead, row.Values, row.CustomValues, row.PhoneE164, row.PhoneValid, allowStageChange, allowOwnerChange, isNew:false);
+                    ApplyImportedValues(lead, row.Values, row.CustomValues, row.PhoneE164, row.PhoneValid, allowStageChange, allowOwnerChange, isNew:false);
                     updated++;
                 }
                 else
                 {
                     lead = new Lead();
-                    ApplyNonEmpty(lead, row.Values, row.CustomValues, row.PhoneE164, row.PhoneValid, true, true, isNew:true);
+                    ApplyImportedValues(lead, row.Values, row.CustomValues, row.PhoneE164, row.PhoneValid, true, true, isNew:true);
                     created++;
                 }
                 _scorer.Score(lead);
-                lead.ProfileSummary = "已完成规则评分，等待 DeepSeek 分析。";
-                lead.NextAction = row.PhoneValid ? "运行 DeepSeek 分析并准备人工审核话术。" : "核对 WhatsApp 号码后再触达。";
+                if (!row.IsDuplicate && row.DuplicateRowNumber is null)
+                {
+                    lead.ProfileSummary = "\u5df2\u5b8c\u6210\u89c4\u5219\u8bc4\u5206\uff0c\u7b49\u5f85 DeepSeek \u5206\u6790\u3002";
+                    lead.NextAction = row.PhoneValid ? "\u8fd0\u884c DeepSeek \u5206\u6790\u5e76\u51c6\u5907\u4eba\u5de5\u5ba1\u6838\u8bdd\u672f\u3002" : "\u6838\u5bf9 WhatsApp \u53f7\u7801\u540e\u518d\u89e6\u8fbe\u3002";
+                }
                 importedRows[row.RowNumber] = lead;
                 pending[lead.Id] = lead;
             }
@@ -181,6 +187,8 @@ public sealed class ImportService
         }
         var writeProgress = new Progress<int>(completed => progress?.Report(new("正在分批写入本地数据库", completed, pending.Count)));
         await _repository.UpsertLeadsAsync(pending.Values.ToList(), WriteBatchSize, writeProgress, cancellationToken);
+        progress?.Report(new("\u6b63\u5728\u540c\u6b65 WhatsApp Inbox \u5efa\u8054\u60c5\u51b5", 0, pending.Count));
+        await _repository.SynchronizeLeadConnectionsFromInboxAsync(pending.Values.ToList(), cancellationToken);
         var invalid = preview.Count(x => !x.PhoneValid);
         await _repository.SaveImportSummaryAsync(fileName, preview.Count, created, updated, invalid, cancellationToken);
         await _repository.LogEventAsync("import_committed", null, null, $"{fileName}; total={preview.Count}; created={created}; updated={updated}; invalid={invalid}", cancellationToken);
@@ -199,35 +207,66 @@ public sealed class ImportService
         void Add(ImportField field, string label, string current) { if (values.TryGetValue(field, out var value) && value.Length > 0 && value != current) changes.Add(label); }
     }
 
-    private static void ApplyNonEmpty(Lead lead, IReadOnlyDictionary<ImportField, string> values, IReadOnlyDictionary<string, string> customValues, string phone, bool phoneValid, bool allowStageChange, bool allowOwnerChange, bool isNew)
+    private static void ApplyImportedValues(Lead lead, IReadOnlyDictionary<ImportField, string> values, IReadOnlyDictionary<string, string> customValues, string phone, bool phoneValid, bool allowStageChange, bool allowOwnerChange, bool isNew)
     {
-        Set(ImportField.Name, x => lead.Name = x); Set(ImportField.Company, x => lead.Company = x); Set(ImportField.Country, x => lead.Country = x);
-        Set(ImportField.Email, x => lead.Email = x); Set(ImportField.ProductInterest, x => lead.ProductInterest = x); Set(ImportField.Source, x => lead.Source = x);
-        if (values.TryGetValue(ImportField.WhatsApp, out var rawPhone) && rawPhone.Length > 0) { lead.PhoneE164 = phone; lead.PhoneValid = phoneValid; }
-        if (values.TryGetValue(ImportField.EstimatedOrderValue, out var amount) && decimal.TryParse(amount.Replace(",", ""), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsedAmount)) lead.EstimatedOrderValue = Math.Max(0, parsedAmount);
+        if (isNew) SetExact(ImportField.Name, x => lead.Name = x);
+        SetExact(ImportField.Company, x => lead.Company = x); SetExact(ImportField.Country, x => lead.Country = x);
+        SetExact(ImportField.Email, x => lead.Email = x); SetExact(ImportField.ProductInterest, x => lead.ProductInterest = x); SetExact(ImportField.Source, x => lead.Source = x);
+        if (values.ContainsKey(ImportField.WhatsApp)) { lead.PhoneE164 = phone; lead.PhoneValid = phoneValid; }
+        if (values.TryGetValue(ImportField.EstimatedOrderValue, out var amount))
+            lead.EstimatedOrderValue = decimal.TryParse(amount.Replace(",", ""), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsedAmount) ? Math.Max(0, parsedAmount) : 0;
         if (values.TryGetValue(ImportField.CompanyScale, out var scale)) lead.CompanyScale = LeadScoringService.ParseSignal(scale);
         if (values.TryGetValue(ImportField.PurchasePower, out var power)) lead.PurchasePower = LeadScoringService.ParseSignal(power);
         if (values.TryGetValue(ImportField.ExplicitDemand, out var explicitDemand)) lead.ExplicitDemand = ParseBool(explicitDemand);
         if (values.TryGetValue(ImportField.Tags, out var tags)) lead.Tags = tags.Split([',','，',';','；','|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct().ToList();
-        if (allowStageChange && values.TryGetValue(ImportField.Stage, out var stage)) lead.Stage = StageParser.Parse(stage);
-        if (allowOwnerChange) Set(ImportField.Owner, x => lead.Owner = x);
-        foreach (var pair in customValues)
-        {
-            var existingKey = lead.CustomFields.Keys.FirstOrDefault(x => x.Equals(pair.Key, StringComparison.OrdinalIgnoreCase));
-            var key = existingKey ?? pair.Key;
-            if (isNew || !string.IsNullOrWhiteSpace(pair.Value)) lead.CustomFields[key] = pair.Value;
-        }
-        lead.RegisteredOrConsulted = lead.RegisteredOrConsulted || lead.ExplicitDemand || !string.IsNullOrWhiteSpace(lead.ProductInterest);
-        Set(ImportField.Notes, x => lead.LatestMessage = x);
+        if (isNew && allowStageChange && values.TryGetValue(ImportField.Stage, out var stage)) lead.Stage = StageParser.Parse(stage);
+        if (allowOwnerChange) SetExact(ImportField.Owner, x => lead.Owner = x);
+        ReplaceCustomDimensions(lead, customValues, isNew);
+        lead.RegisteredOrConsulted = lead.ExplicitDemand || !string.IsNullOrWhiteSpace(lead.ProductInterest);
+        if (isNew) SetExact(ImportField.Notes, x => lead.LatestMessage = x);
         return;
-        void Set(ImportField field, Action<string> apply) { if (values.TryGetValue(field, out var value) && !string.IsNullOrWhiteSpace(value)) apply(value.Trim()); }
+        void SetExact(ImportField field, Action<string> apply) { if (values.TryGetValue(field, out var value)) apply(value.Trim()); }
+    }
+
+    private static void ReplaceCustomDimensions(Lead lead, IReadOnlyDictionary<string, string> incoming, bool isNew)
+    {
+        if (isNew)
+        {
+            lead.CustomFields = incoming.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+            return;
+        }
+
+        var protectedValues = lead.CustomFields
+            .Where(pair => IsProtectedDimension(pair.Key))
+            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+        lead.CustomFields.Clear();
+        foreach (var pair in incoming)
+        {
+            var retained = protectedValues.FirstOrDefault(item => item.Key.Equals(pair.Key, StringComparison.OrdinalIgnoreCase));
+            lead.CustomFields[pair.Key] = retained.Key is not null && !string.IsNullOrWhiteSpace(retained.Value) ? retained.Value : pair.Value;
+        }
+        foreach (var pair in protectedValues)
+            if (!lead.CustomFields.Keys.Any(key => key.Equals(pair.Key, StringComparison.OrdinalIgnoreCase)))
+                lead.CustomFields[pair.Key] = pair.Value;
+    }
+
+    internal static bool IsProtectedDimension(string header)
+    {
+        if (FieldAliases.Suggest(header) is ImportField.Name or ImportField.Stage) return true;
+        var normalized = new string(header.Where(char.IsLetterOrDigit).ToArray());
+        return normalized.Contains("\u8be6\u60c5\u8bb0\u5f55", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("\u8be6\u7ec6\u8bb0\u5f55", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("\u5ba2\u6237\u751f\u610f\u6a21\u5f0f", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("\u751f\u610f\u6a21\u5f0f", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("\u5546\u4e1a\u6a21\u5f0f", StringComparison.OrdinalIgnoreCase)
+            || LeadConnectionStatus.IsDimension(header);
     }
 
     private static bool ParseBool(string value) => value.Trim().ToLowerInvariant() is "1" or "true" or "yes" or "y" or "是" or "有" or "明确";
 
-    private static ParsedImport ParseCsv(string filePath)
+    private static ParsedImport ParseCsv(MemoryStream snapshot)
     {
-        var bytes = File.ReadAllBytes(filePath);
+        var bytes = snapshot.ToArray();
         string text;
         try { text = new UTF8Encoding(false, true).GetString(bytes); }
         catch (DecoderFallbackException) { text = Encoding.GetEncoding("GB18030").GetString(bytes); }
@@ -242,11 +281,14 @@ public sealed class ImportService
         return new ParsedImport { PreferredSheetName = sheet?.Name ?? "", Sheets = sheet is null ? [] : [sheet] };
     }
 
-    private static ParsedImport ParseXlsx(string filePath)
+    private static ParsedImport ParseXlsx(MemoryStream snapshot)
     {
-        if (File.ReadAllBytes(filePath).Take(2).SequenceEqual(new byte[] { 0x50, 0x4B }) is false) throw new InvalidDataException("扩展名为 .xlsx，但文件内容不是有效的 XLSX。");
-        AssertSafeXlsx(filePath);
-        using var workbook = new XLWorkbook(filePath);
+        snapshot.Position = 0;
+        if (snapshot.ReadByte() != 0x50 || snapshot.ReadByte() != 0x4B) throw new InvalidDataException("\u6269\u5c55\u540d\u4e3a .xlsx\uff0c\u4f46\u6587\u4ef6\u5185\u5bb9\u4e0d\u662f\u6709\u6548\u7684 XLSX\u3002");
+        AssertSafeXlsx(snapshot);
+        var preferredSheetName = ReadActiveSheetName(snapshot) ?? "";
+        snapshot.Position = 0;
+        using var workbook = new XLWorkbook(snapshot);
         var sheets = new List<ImportSheet>();
         foreach (var worksheet in workbook.Worksheets)
         {
@@ -266,13 +308,13 @@ public sealed class ImportService
             }
             if (BuildSheet(worksheet.Name, matrix) is { } parsed) { parsed.SanitizedFormulaCount += formulaCount; sheets.Add(parsed); }
         }
-        return new ParsedImport { PreferredSheetName = ReadActiveSheetName(filePath) ?? "", Sheets = sheets };
+        return new ParsedImport { PreferredSheetName = preferredSheetName, Sheets = sheets };
     }
 
-    private static string? ReadActiveSheetName(string filePath)
+    private static string? ReadActiveSheetName(Stream snapshot)
     {
-        using var stream = File.OpenRead(filePath);
-        using var archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen:false);
+        snapshot.Position = 0;
+        using var archive = new ZipArchive(snapshot, ZipArchiveMode.Read, leaveOpen:true);
         var entry = archive.GetEntry("xl/workbook.xml");
         if (entry is null) return null;
         using var entryStream = entry.Open();
@@ -283,10 +325,10 @@ public sealed class ImportService
         return activeTab >= 0 && activeTab < sheets.Count ? (string?)sheets[activeTab].Attribute("name") : null;
     }
 
-    private static void AssertSafeXlsx(string filePath)
+    private static void AssertSafeXlsx(Stream snapshot)
     {
-        using var stream = File.OpenRead(filePath);
-        using var archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen:false);
+        snapshot.Position = 0;
+        using var archive = new ZipArchive(snapshot, ZipArchiveMode.Read, leaveOpen:true);
         if (archive.Entries.Count is 0 or > 2000) throw new InvalidDataException("XLSX 压缩包条目数量异常。");
         long compressed = 0; long uncompressed = 0;
         foreach (var entry in archive.Entries)
@@ -294,6 +336,35 @@ public sealed class ImportService
             compressed += Math.Max(0, entry.CompressedLength); uncompressed += Math.Max(0, entry.Length);
             if (uncompressed > 512L * 1024 * 1024 || uncompressed / (double)Math.Max(1, compressed) > 200d) throw new InvalidDataException("XLSX 解压体积或压缩比超过资源保护上限。");
         }
+    }
+
+    private static MemoryStream OpenSharedReadSnapshot(string filePath, long expectedLength)
+    {
+        IOException? lastError = null;
+        for (var attempt = 1; attempt <= 4; attempt++)
+        {
+            try
+            {
+                using var source = new FileStream(
+                    filePath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete,
+                    bufferSize: 128 * 1024,
+                    FileOptions.SequentialScan);
+                var snapshot = new MemoryStream((int)Math.Min(Math.Max(expectedLength, 0), int.MaxValue));
+                source.CopyTo(snapshot);
+                snapshot.Position = 0;
+                return snapshot;
+            }
+            catch (IOException error)
+            {
+                lastError = error;
+                if (attempt == 4) break;
+                Thread.Sleep(150 * attempt);
+            }
+        }
+        throw new IOException("\u65e0\u6cd5\u8bfb\u53d6\u8868\u683c\u3002\u8bf7\u7b49\u5f85 WPS/Excel \u4fdd\u5b58\u5b8c\u6210\u540e\u91cd\u8bd5\uff1b\u8868\u683c\u4fdd\u6301\u6253\u5f00\u4e0d\u5f71\u54cd\u5bfc\u5165\u3002", lastError);
     }
 
     private static ImportSheet? BuildSheet(string name, IReadOnlyList<List<string>> matrix)
