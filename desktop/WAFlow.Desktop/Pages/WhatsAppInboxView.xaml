@@ -98,7 +98,7 @@
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <Button x:Name="AttachButton" Content="＋" ToolTip="发送图片、视频、音频或文件" Style="{StaticResource SecondaryButton}" Click="Attach_Click" Width="42" Margin="0,0,10,0" IsEnabled="False"/>
                             <Grid Grid.Column="1"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                                <TextBox x:Name="ComposerBox" MinHeight="42" MaxHeight="110" AcceptsReturn="True" TextWrapping="Wrap" IsEnabled="False" PreviewKeyDown="ComposerBox_PreviewKeyDown" TextChanged="ComposerBox_TextChanged" ToolTip="Enter 发送，Ctrl+Enter 换行"/>
+                                <TextBox x:Name="ComposerBox" MinHeight="42" MaxHeight="110" AcceptsReturn="True" TextWrapping="Wrap" IsEnabled="False" PreviewKeyDown="ComposerBox_PreviewKeyDown" ToolTip="Enter 发送，Ctrl+Enter 换行"/>
                                 <Border x:Name="AttachmentPanel" Grid.Row="1" Background="#EDF4F0" CornerRadius="7" Padding="8,5" Margin="0,6,0,0" Visibility="Collapsed">
                                     <DockPanel><Button Content="移除" DockPanel.Dock="Right" Click="ClearAttachment_Click" Padding="7,2" Margin="8,0,0,0"/><TextBlock x:Name="AttachmentText" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/></DockPanel>
                                 </Border>

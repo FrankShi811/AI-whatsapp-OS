@@ -43,6 +43,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     {
         InitializeComponent();
         _services = services;
+        // TextChanged may fire while InitializeComponent is still connecting named
+        // controls. Wire it only after the complete visual tree is available.
+        ComposerBox.TextChanged += ComposerBox_TextChanged;
         ConversationList.ItemsSource = _conversations;
         AccountCombo.ItemsSource = _accounts;
         StageCombo.ItemsSource = Enum.GetValues<LeadStage>().Select(x => new StageOption(Labels.Stage(x), x)).ToList();
