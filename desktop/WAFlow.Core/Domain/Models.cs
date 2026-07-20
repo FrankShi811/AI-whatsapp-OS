@@ -12,7 +12,7 @@ public enum AnalysisStatus { NotRun, Running, Succeeded, RetryableFailed }
 public enum DraftStatus { Draft, Approved, Superseded }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum CampaignStatus { Draft, Scheduled, Running, Paused, Completed, Cancelled }
+public enum CampaignStatus { Draft, Scheduled, Running, Paused, SafetyStopped, Completed, Cancelled }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum CampaignRecipientStatus { Queued, Sending, Sent, Skipped, Failed, Cancelled }
@@ -197,6 +197,11 @@ public sealed class WhatsAppCampaign
     public int DailyLimit { get; set; } = 50;
     public CampaignStatus Status { get; set; } = CampaignStatus.Draft;
     public string PauseReason { get; set; } = "";
+    public string BaselinePublicIp { get; set; } = "";
+    public string SafetyStopFromIp { get; set; } = "";
+    public string SafetyStopToIp { get; set; } = "";
+    public string SafetyStopPosition { get; set; } = "";
+    public DateTimeOffset? SafetyStoppedAt { get; set; }
     public DateTimeOffset? ApprovedAt { get; set; }
     public string ApprovedBy { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
@@ -205,6 +210,7 @@ public sealed class WhatsAppCampaign
     [JsonIgnore] public string StatusLabel => Status switch
     {
         CampaignStatus.Scheduled => "已排期", CampaignStatus.Running => "发送中", CampaignStatus.Paused => "已暂停",
+        CampaignStatus.SafetyStopped => "IP 安全停止",
         CampaignStatus.Completed => "已完成", CampaignStatus.Cancelled => "已取消", _ => "草稿"
     };
     [JsonIgnore] public int EffectiveIntervalValue => IntervalValue > 0 ? IntervalValue : Math.Max(1, IntervalMinutes);

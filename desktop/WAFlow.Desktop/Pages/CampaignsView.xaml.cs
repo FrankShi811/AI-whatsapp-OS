@@ -18,6 +18,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
     private readonly ObservableCollection<WhatsAppAccount> _accounts = [];
     private readonly ObservableCollection<CampaignMessageTemplate> _templates = [];
     private readonly ObservableCollection<CampaignTemplateField> _fields = [];
+    private readonly ObservableCollection<CampaignExecutionSummary> _history = [];
     private WhatsAppCampaign? _current;
     private CampaignMessageTemplate? _currentTemplate;
     private bool _loading;
@@ -33,6 +34,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
         AccountBox.ItemsSource = _accounts;
         SavedTemplateBox.ItemsSource = _templates;
         FieldBox.ItemsSource = _fields;
+        HistoryGrid.ItemsSource = _history;
         ScheduleModeBox.ItemsSource = new[]
         {
             new Choice<CampaignScheduleMode>("即时任务 · 批准后立即开始", CampaignScheduleMode.Immediate),
@@ -72,10 +74,12 @@ public partial class CampaignsView : UserControl, IRefreshableView
             var loaded = await _services.Repository.GetCampaignsAsync(null);
             _campaigns.Clear(); foreach (var campaign in loaded) _campaigns.Add(campaign);
             CampaignCountText.Text = loaded.Count.ToString(CultureInfo.InvariantCulture);
-            ActiveCountText.Text = loaded.Count(item => item.Status is CampaignStatus.Scheduled or CampaignStatus.Running).ToString(CultureInfo.InvariantCulture);
+            ActiveCountText.Text = loaded.Count(item => item.Status is CampaignStatus.Scheduled or CampaignStatus.Running or CampaignStatus.SafetyStopped).ToString(CultureInfo.InvariantCulture);
             var sent = 0;
             foreach (var campaign in loaded) sent += (await _services.Repository.GetCampaignRecipientsAsync(campaign.Id)).Count(item => item.Status == CampaignRecipientStatus.Sent);
             SentCountText.Text = sent.ToString(CultureInfo.InvariantCulture);
+            var history = await _services.Campaigns.GetExecutionHistoryAsync();
+            _history.Clear(); foreach (var item in history) _history.Add(item);
             UpdateConnectionState();
 
             if (selectedCampaignId is not null && loaded.FirstOrDefault(item => item.Id == selectedCampaignId) is { } selected)
@@ -218,7 +222,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
         if (_current is null) return;
         try
         {
-            if (_current.Status == CampaignStatus.Paused) await _services.Campaigns.ResumeAsync(_current);
+            if (_current.Status is CampaignStatus.Paused or CampaignStatus.SafetyStopped) await _services.Campaigns.ResumeAsync(_current);
             else await _services.Campaigns.PauseAsync(_current);
             await RefreshAsync();
         }
@@ -356,9 +360,9 @@ public partial class CampaignsView : UserControl, IRefreshableView
         PreviewButton.IsEnabled = editable;
         SaveButton.IsEnabled = editable;
         ApproveButton.IsEnabled = editable;
-        PauseResumeButton.IsEnabled = campaign.Status is CampaignStatus.Scheduled or CampaignStatus.Running or CampaignStatus.Paused;
-        PauseResumeButton.Content = campaign.Status == CampaignStatus.Paused ? "继续" : "暂停";
-        CancelButton.IsEnabled = campaign.Status is CampaignStatus.Scheduled or CampaignStatus.Running or CampaignStatus.Paused;
+        PauseResumeButton.IsEnabled = campaign.Status is CampaignStatus.Scheduled or CampaignStatus.Running or CampaignStatus.Paused or CampaignStatus.SafetyStopped;
+        PauseResumeButton.Content = campaign.Status is CampaignStatus.Paused or CampaignStatus.SafetyStopped ? "确认网络并继续" : "暂停";
+        CancelButton.IsEnabled = campaign.Status is CampaignStatus.Scheduled or CampaignStatus.Running or CampaignStatus.Paused or CampaignStatus.SafetyStopped;
         CampaignStateText.Text = campaign.StatusLabel + (campaign.ApprovedAt is null ? "" : $" · {campaign.ApprovedBy} 已批准");
         PauseReasonText.Text = campaign.PauseReason;
         EditHintText.Text = editable ? "保存模板，勾选客户并预览，再批准建立自动发送任务。" : "发送话术和客户快照已锁定；暂停不会改变已生成的队列。";
@@ -410,6 +414,15 @@ public partial class CampaignsView : UserControl, IRefreshableView
     private void AudienceGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (AudienceGrid.SelectedItem is AudienceRow row) SelectedPreviewText.Text = CampaignAutomationService.RenderTemplate(TemplateBox.Text, row.Lead);
+    }
+
+    private async void HistoryGrid_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (HistoryGrid.SelectedItem is not CampaignExecutionSummary summary) return;
+        if (_campaigns.FirstOrDefault(item => item.Id == summary.Campaign.Id) is not { } campaign) return;
+        CampaignTabs.SelectedIndex = 0;
+        CampaignList.SelectedItem = campaign;
+        await LoadCampaignAsync(campaign);
     }
 
     private void UpdateSelectionSummary()

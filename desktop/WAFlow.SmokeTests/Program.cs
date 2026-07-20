@@ -256,7 +256,7 @@ Check(receiptedMessage.Status == WhatsAppMessageStatus.Read && receiptedMessage.
 var ipHandler = new IpMonitorHandler();
 var ipMonitor = new PublicIpMonitor(repository, new HttpClient(ipHandler) { Timeout=TimeSpan.FromSeconds(2) });
 var firstIp = await ipMonitor.CheckAsync("primary");
-var changedIp = await ipMonitor.CheckAsync("primary");
+var changedIp = await ipMonitor.CheckAsync("primary", true);
 var storedIp = await repository.GetWhatsAppIpStateAsync("primary");
 Check(!firstIp.Changed && changedIp.Changed && storedIp?.PreviousIp == "198.51.100.10" && storedIp.CurrentIp == "203.0.113.20", "WhatsApp public IP baseline and change persist");
 
@@ -298,7 +298,9 @@ await using (var protocolClient = new WhatsAppBridgeClient())
 }
 
 var campaignBridge = new WhatsAppConnectionManager();
-await using var campaigns = new CampaignAutomationService(repository, campaignBridge);
+var campaignIpHandler = new MutableIpMonitorHandler("198.51.100.30");
+var campaignIpMonitor = new PublicIpMonitor(repository, new HttpClient(campaignIpHandler) { Timeout=TimeSpan.FromSeconds(2) });
+await using var campaigns = new CampaignAutomationService(repository, campaignBridge, campaignIpMonitor);
 var campaign = new WhatsAppCampaign
 {
     Name="UK opt-in follow-up", TagFilter="UK", MessageTemplate="Hi {name}, following up about {product} for {company}.",
@@ -310,7 +312,7 @@ Check(campaignPreview.Count == 1 && campaignPreview.Single().Eligible && campaig
 await campaigns.SaveDraftAsync(campaign);
 var scheduledCount = await campaigns.ApproveAndScheduleAsync(campaign, "smoke-test");
 var campaignRecipients = await repository.GetCampaignRecipientsAsync(campaign.Id);
-Check(scheduledCount == 1 && campaignRecipients.Single().Status == CampaignRecipientStatus.Queued && campaignRecipients.Single().ScheduledAt <= DateTimeOffset.Now.AddSeconds(10) && (await repository.GetCampaignAsync(campaign.Id))?.Status == CampaignStatus.Scheduled, "immediate campaign approval creates durable queue");
+Check(scheduledCount == 1 && campaignRecipients.Single().Status == CampaignRecipientStatus.Queued && campaignRecipients.Single().ScheduledAt <= DateTimeOffset.Now.AddSeconds(10) && (await repository.GetCampaignAsync(campaign.Id)) is { Status: CampaignStatus.Scheduled, BaselinePublicIp: "198.51.100.30" }, "immediate campaign approval creates durable queue with IP baseline");
 var uncertainRecipient = campaignRecipients.Single(); uncertainRecipient.Status = CampaignRecipientStatus.Sending;
 await repository.SaveCampaignRecipientAsync(uncertainRecipient);
 await repository.RecoverInterruptedCampaignRecipientsAsync();
@@ -328,13 +330,24 @@ Check((await repository.GetCampaignAsync(campaign.Id))?.Status == CampaignStatus
 var secondAccountCampaign = new WhatsAppCampaign { AccountId="personal_test", Name="second account draft", MessageTemplate="Hi {name}", StartsAt=DateTimeOffset.Now.AddHours(1) };
 await campaigns.SaveDraftAsync(secondAccountCampaign);
 Check((await repository.GetCampaignsAsync("personal_test")).Single().AccountId == "personal_test" && (await repository.GetCampaignsAsync(null)).Count == 2, "campaign queues isolated by WhatsApp account");
+secondAccountCampaign.SelectedLeadIds = [whatsappLead.Id];
+secondAccountCampaign.ScheduleMode = CampaignScheduleMode.Immediate;
+await campaigns.ApproveAndScheduleAsync(secondAccountCampaign, "smoke-test");
 whatsappLead.CustomFields["采购周期"] = "Quarterly";
+whatsappLead.CustomFields["name"] = "must-not-override-core-name";
 await repository.UpsertLeadAsync(whatsappLead);
 var templateFields = await campaigns.GetTemplateFieldsAsync();
 var savedTemplate = await campaigns.SaveMessageTemplateAsync(new CampaignMessageTemplate { Name="custom field follow-up", Body="Hi {name}, next {采购周期}." });
-Check(templateFields.Any(field => field.Key == "采购周期") && CampaignAutomationService.RenderTemplate(savedTemplate.Body, whatsappLead).Contains("Quarterly") && (await repository.GetCampaignMessageTemplatesAsync()).Any(item => item.Id == savedTemplate.Id), "campaign templates use imported custom fields and persist");
-await repository.SaveOnboardingStateAsync(new OnboardingState { Completed=true, GuideVersion=1, CompletedAt=DateTimeOffset.Now });
-Check((await repository.GetOnboardingStateAsync()).Completed, "first-run onboarding completion persists");
+Check(templateFields.Any(field => field.Key == "采购周期" && field.Source.Contains("客户列表")) && CampaignAutomationService.RenderTemplate(savedTemplate.Body, whatsappLead) == $"Hi {whatsappLead.Name}, next Quarterly." && (await repository.GetCampaignMessageTemplatesAsync()).Any(item => item.Id == savedTemplate.Id), "campaign templates use the same authoritative CRM field catalog and preserve imported fields");
+CampaignSafetyStoppedEventArgs? safetyNotice = null;
+campaigns.SafetyStopped += (_, args) => safetyNotice = args;
+campaignIpHandler.CurrentIp = "203.0.113.31";
+var safetyPassed = await campaigns.CheckSafetyValveAsync();
+var safetyStoppedCampaign = await repository.GetCampaignAsync(campaign.Id);
+var executionHistory = await campaigns.GetExecutionHistoryAsync();
+Check(!safetyPassed && safetyStoppedCampaign is { Status: CampaignStatus.SafetyStopped, SafetyStopFromIp: "198.51.100.30", SafetyStopToIp: "203.0.113.31" } && (await repository.GetCampaignAsync(secondAccountCampaign.Id))?.Status == CampaignStatus.SafetyStopped && safetyNotice?.Campaigns.Count == 2 && safetyNotice.Campaigns.Sum(item => item.Failed) == 1 && executionHistory.Single(item => item.Campaign.Id == campaign.Id).StopOrNext.Contains("已处理"), "IP change safety valve stops all active outreach across accounts and preserves execution position");
+await repository.SaveOnboardingStateAsync(new OnboardingState { Completed=true, GuideVersion=2, CompletedAt=DateTimeOffset.Now });
+Check((await repository.GetOnboardingStateAsync()) is { Completed: true, GuideVersion: 2 }, "API-only first-run onboarding completion persists");
 
 await using (var embeddedBridge = new WhatsAppConnectionManager())
 {
@@ -424,6 +437,19 @@ sealed class IpMonitorHandler : HttpMessageHandler
             json = System.Text.Json.JsonSerializer.Serialize(new { ip = ++_ipCalls == 1 ? "198.51.100.10" : "203.0.113.20" });
         else
             json = System.Text.Json.JsonSerializer.Serialize(new { success=true, country_code="US", country="United States", region="California", city="Los Angeles", connection=new { isp="Example ISP" } });
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent(json, Encoding.UTF8, "application/json") });
+    }
+}
+
+sealed class MutableIpMonitorHandler(string initialIp) : HttpMessageHandler
+{
+    public string CurrentIp { get; set; } = initialIp;
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var uri = request.RequestUri!.ToString();
+        var json = uri.Contains("api64.ipify.org", StringComparison.OrdinalIgnoreCase)
+            ? System.Text.Json.JsonSerializer.Serialize(new { ip = CurrentIp })
+            : System.Text.Json.JsonSerializer.Serialize(new { success=true, country_code="US", country="United States", region="Virginia", city="Ashburn", connection=new { isp="Example ISP" } });
         return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent(json, Encoding.UTF8, "application/json") });
     }
 }

@@ -13,27 +13,68 @@ public sealed record CampaignAudienceItem(Lead Lead, bool Eligible, string Reaso
     public string EligibilityLabel => Eligible ? "可发送" : "已排除";
 }
 
-public sealed record CampaignTemplateField(string Key, string Label)
+public sealed record CampaignTemplateField(string Key, string Label, string Source)
 {
     public string Token => $"{{{Key}}}";
-    public string DisplayLabel => $"{Label}  {Token}";
+    public string DisplayLabel => $"{Source} · {Label}  {Token}";
+}
+
+public sealed record CampaignExecutionSummary(
+    WhatsAppCampaign Campaign,
+    int Total,
+    int Sent,
+    int Failed,
+    int Skipped,
+    int Cancelled,
+    int Queued,
+    string NextPosition)
+{
+    public string Name => Campaign.Name;
+    public string AccountId => Campaign.AccountId;
+    public string Status => Campaign.StatusLabel;
+    public string Trigger => Campaign.ScheduleLabel;
+    public string Progress => $"{Sent + Failed + Skipped + Cancelled} / {Total}";
+    public string SuccessRate
+    {
+        get
+        {
+            var attempted = Sent + Failed;
+            return attempted == 0 ? "—" : $"{Sent * 100d / attempted:0.#}%";
+        }
+    }
+    public string StopOrNext => !string.IsNullOrWhiteSpace(Campaign.SafetyStopPosition)
+        ? Campaign.SafetyStopPosition
+        : NextPosition;
+    public string Updated => Campaign.UpdatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss");
+    public string Detail => string.IsNullOrWhiteSpace(Campaign.PauseReason) ? "—" : Campaign.PauseReason;
+}
+
+public sealed class CampaignSafetyStoppedEventArgs : EventArgs
+{
+    public required string PreviousIp { get; init; }
+    public required string CurrentIp { get; init; }
+    public required IReadOnlyList<CampaignExecutionSummary> Campaigns { get; init; }
 }
 
 public sealed class CampaignAutomationService : IAsyncDisposable
 {
     private readonly LocalRepository _repository;
     private readonly WhatsAppConnectionManager _bridge;
+    private readonly PublicIpMonitor _publicIp;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private CancellationTokenSource? _lifetime;
     private Task? _worker;
+    private Task? _safetyWorker;
     private readonly Dictionary<string, DateTimeOffset> _lastConnectAttempts = new(StringComparer.OrdinalIgnoreCase);
 
     public event EventHandler? CampaignChanged;
+    public event EventHandler<CampaignSafetyStoppedEventArgs>? SafetyStopped;
 
-    public CampaignAutomationService(LocalRepository repository, WhatsAppConnectionManager bridge)
+    public CampaignAutomationService(LocalRepository repository, WhatsAppConnectionManager bridge, PublicIpMonitor publicIp)
     {
         _repository = repository;
         _bridge = bridge;
+        _publicIp = publicIp;
         _bridge.EventReceived += Bridge_EventReceived;
     }
 
@@ -60,8 +101,16 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         foreach (var key in (await _repository.GetLeadsAsync(cancellationToken: cancellationToken))
                      .SelectMany(lead => lead.CustomFields.Keys)
                      .Where(key => !string.IsNullOrWhiteSpace(key)))
-            fields.TryAdd(key.Trim(), new CampaignTemplateField(key.Trim(), $"表格字段：{key.Trim()}"));
+            fields.TryAdd(key.Trim(), new CampaignTemplateField(key.Trim(), key.Trim(), "导入表格 / 客户列表"));
         return fields.Values.OrderBy(field => field.Label, StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
+    public async Task<List<CampaignExecutionSummary>> GetExecutionHistoryAsync(CancellationToken cancellationToken = default)
+    {
+        var result = new List<CampaignExecutionSummary>();
+        foreach (var campaign in (await _repository.GetCampaignsAsync(null, cancellationToken)).Where(item => item.ApprovedAt is not null || item.Status != CampaignStatus.Draft))
+            result.Add(await BuildExecutionSummaryAsync(campaign, cancellationToken));
+        return result.OrderByDescending(item => item.Campaign.UpdatedAt).ToList();
     }
 
     public async Task<CampaignMessageTemplate> SaveMessageTemplateAsync(CampaignMessageTemplate template, CancellationToken cancellationToken = default)
@@ -113,6 +162,10 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         var eligible = audience.Where(x => x.Eligible).ToList();
         if (eligible.Count == 0) throw new InvalidOperationException("当前筛选没有可发送客户。客户必须号码有效、已记录 WhatsApp 营销同意且未退订。");
 
+        var ip = await _publicIp.CheckAsync(campaign.AccountId, true, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(ip.Error) || string.IsNullOrWhiteSpace(ip.State.CurrentIp))
+            throw new InvalidOperationException("无法取得当前公网 IP，安全阀门未能建立基线，因此没有创建发送任务。请检查网络后重试。");
+
         var now = DateTimeOffset.Now;
         var firstSendAt = campaign.ScheduleMode == CampaignScheduleMode.Immediate
             ? now.AddSeconds(2)
@@ -132,6 +185,11 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         campaign.ApprovedAt = DateTimeOffset.Now;
         campaign.ApprovedBy = actor;
         campaign.PauseReason = "";
+        campaign.BaselinePublicIp = ip.State.CurrentIp;
+        campaign.SafetyStopFromIp = "";
+        campaign.SafetyStopToIp = "";
+        campaign.SafetyStopPosition = "";
+        campaign.SafetyStoppedAt = null;
         await _repository.SaveCampaignAsync(campaign, cancellationToken);
         await _repository.ReplaceCampaignRecipientsAsync(campaign.Id, recipients, cancellationToken);
         await _repository.LogEventAsync("campaign_approved", null, null, $"campaign_id={campaign.Id};mode={campaign.ScheduleMode};recipients={recipients.Count};interval={campaign.EffectiveIntervalValue};unit={campaign.IntervalUnit};daily_limit={campaign.DailyLimit}", cancellationToken);
@@ -150,7 +208,11 @@ public sealed class CampaignAutomationService : IAsyncDisposable
 
     public async Task ResumeAsync(WhatsAppCampaign campaign, CancellationToken cancellationToken = default)
     {
-        if (campaign.Status != CampaignStatus.Paused) throw new InvalidOperationException("只有已暂停的 Campaign 可以继续。");
+        if (campaign.Status is not (CampaignStatus.Paused or CampaignStatus.SafetyStopped)) throw new InvalidOperationException("只有已暂停或被安全阀门停止的 Campaign 可以继续。");
+        var ip = await _publicIp.CheckAsync(campaign.AccountId, true, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(ip.Error) || string.IsNullOrWhiteSpace(ip.State.CurrentIp))
+            throw new InvalidOperationException("无法验证当前公网 IP，任务仍保持停止。请检查网络后重试。");
+        campaign.BaselinePublicIp = ip.State.CurrentIp;
         campaign.Status = CampaignStatus.Scheduled; campaign.PauseReason = "";
         await _repository.SaveCampaignAsync(campaign, cancellationToken);
         await _repository.LogEventAsync("campaign_resumed", null, null, $"campaign_id={campaign.Id}", cancellationToken);
@@ -187,6 +249,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         await _repository.RecoverInterruptedCampaignRecipientsAsync(cancellationToken);
         _lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _worker = Task.Run(() => RunAsync(_lifetime.Token), CancellationToken.None);
+        _safetyWorker = Task.Run(() => RunSafetyMonitorAsync(_lifetime.Token), CancellationToken.None);
     }
 
     private async Task RunAsync(CancellationToken cancellationToken)
@@ -197,6 +260,41 @@ public sealed class CampaignAutomationService : IAsyncDisposable
             while (await timer.WaitForNextTickAsync(cancellationToken)) await ProcessNextAsync(cancellationToken);
         }
         catch (OperationCanceledException) { }
+    }
+
+    private async Task RunSafetyMonitorAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken)) await CheckSafetyValveAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    public async Task<bool> CheckSafetyValveAsync(CancellationToken cancellationToken = default)
+    {
+        var active = await _repository.GetActiveCampaignsAsync(cancellationToken);
+        foreach (var accountGroup in active.GroupBy(item => item.AccountId, StringComparer.OrdinalIgnoreCase))
+        {
+            var result = await _publicIp.CheckAsync(accountGroup.Key, true, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(result.Error) || string.IsNullOrWhiteSpace(result.State.CurrentIp)) continue;
+            foreach (var campaign in accountGroup)
+            {
+                if (string.IsNullOrWhiteSpace(campaign.BaselinePublicIp))
+                {
+                    campaign.BaselinePublicIp = result.State.CurrentIp;
+                    await _repository.SaveCampaignAsync(campaign, cancellationToken);
+                    continue;
+                }
+                if (!campaign.BaselinePublicIp.Equals(result.State.CurrentIp, StringComparison.OrdinalIgnoreCase))
+                {
+                    await StopAllForIpChangeAsync(campaign.BaselinePublicIp, result.State.CurrentIp, false, cancellationToken);
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     private async Task ProcessNextAsync(CancellationToken cancellationToken)
@@ -221,6 +319,8 @@ public sealed class CampaignAutomationService : IAsyncDisposable
                 return;
             }
             var eligibleLead = lead!;
+
+            if (!await EnsureCampaignIpSafeAsync(campaign, cancellationToken)) return;
 
             var sentToday = await _repository.CountCampaignMessagesSentAsync(campaign.AccountId, BeijingDayStart(DateTimeOffset.Now), cancellationToken);
             if (sentToday >= campaign.DailyLimit)
@@ -288,6 +388,73 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         return _bridge.IsConnectedFor(accountId);
     }
 
+    private async Task<bool> EnsureCampaignIpSafeAsync(WhatsAppCampaign campaign, CancellationToken cancellationToken)
+    {
+        var result = await _publicIp.CheckAsync(campaign.AccountId, true, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(result.Error) || string.IsNullOrWhiteSpace(result.State.CurrentIp)) return true;
+        if (string.IsNullOrWhiteSpace(campaign.BaselinePublicIp))
+        {
+            campaign.BaselinePublicIp = result.State.CurrentIp;
+            await _repository.SaveCampaignAsync(campaign, cancellationToken);
+            return true;
+        }
+        if (campaign.BaselinePublicIp.Equals(result.State.CurrentIp, StringComparison.OrdinalIgnoreCase)) return true;
+        await StopAllForIpChangeAsync(campaign.BaselinePublicIp, result.State.CurrentIp, true, cancellationToken);
+        return false;
+    }
+
+    private async Task StopAllForIpChangeAsync(string previousIp, string currentIp, bool sendLockAlreadyHeld, CancellationToken cancellationToken)
+    {
+        if (!sendLockAlreadyHeld) await _sendLock.WaitAsync(cancellationToken);
+        List<CampaignExecutionSummary> summaries;
+        try
+        {
+            var active = await _repository.GetActiveCampaignsAsync(cancellationToken);
+            if (active.Count == 0) return;
+            foreach (var campaign in active)
+            {
+                var recipients = await _repository.GetCampaignRecipientsAsync(campaign.Id, cancellationToken);
+                var terminal = recipients.Count(item => IsTerminal(item.Status));
+                var next = recipients.FirstOrDefault(item => item.Status is CampaignRecipientStatus.Queued or CampaignRecipientStatus.Sending);
+                campaign.Status = CampaignStatus.SafetyStopped;
+                campaign.PauseReason = $"公网 IP 从 {previousIp} 变化为 {currentIp}，安全阀门已停止所有自动触达。";
+                campaign.SafetyStopFromIp = previousIp;
+                campaign.SafetyStopToIp = currentIp;
+                campaign.SafetyStoppedAt = DateTimeOffset.Now;
+                campaign.SafetyStopPosition = next is null
+                    ? $"已处理 {terminal}/{recipients.Count}"
+                    : $"第 {terminal + 1}/{recipients.Count} 位前停止 · {next.DisplayName}";
+                await _repository.SaveCampaignAsync(campaign, cancellationToken);
+            }
+            summaries = [];
+            foreach (var campaign in active) summaries.Add(await BuildExecutionSummaryAsync(campaign, cancellationToken));
+            await _repository.LogEventAsync("campaign_ip_safety_stop", null, null, $"from={previousIp};to={currentIp};campaigns={summaries.Count};sent={summaries.Sum(item => item.Sent)};failed={summaries.Sum(item => item.Failed)}", cancellationToken);
+        }
+        finally { if (!sendLockAlreadyHeld) _sendLock.Release(); }
+
+        CampaignChanged?.Invoke(this, EventArgs.Empty);
+        SafetyStopped?.Invoke(this, new CampaignSafetyStoppedEventArgs { PreviousIp = previousIp, CurrentIp = currentIp, Campaigns = summaries });
+    }
+
+    private async Task<CampaignExecutionSummary> BuildExecutionSummaryAsync(WhatsAppCampaign campaign, CancellationToken cancellationToken)
+    {
+        var recipients = await _repository.GetCampaignRecipientsAsync(campaign.Id, cancellationToken);
+        var next = recipients.FirstOrDefault(item => item.Status is CampaignRecipientStatus.Queued or CampaignRecipientStatus.Sending);
+        var terminal = recipients.Count(item => IsTerminal(item.Status));
+        var nextPosition = next is null ? "—" : $"第 {terminal + 1}/{recipients.Count} 位 · {next.DisplayName}";
+        return new CampaignExecutionSummary(
+            campaign,
+            recipients.Count,
+            recipients.Count(item => item.Status == CampaignRecipientStatus.Sent),
+            recipients.Count(item => item.Status == CampaignRecipientStatus.Failed),
+            recipients.Count(item => item.Status == CampaignRecipientStatus.Skipped),
+            recipients.Count(item => item.Status == CampaignRecipientStatus.Cancelled),
+            recipients.Count(item => item.Status is CampaignRecipientStatus.Queued or CampaignRecipientStatus.Sending),
+            nextPosition);
+    }
+
+    private static bool IsTerminal(CampaignRecipientStatus status) => status is CampaignRecipientStatus.Sent or CampaignRecipientStatus.Failed or CampaignRecipientStatus.Skipped or CampaignRecipientStatus.Cancelled;
+
     private async Task CompleteCampaignIfFinishedAsync(WhatsAppCampaign campaign, CancellationToken cancellationToken)
     {
         var recipients = await _repository.GetCampaignRecipientsAsync(campaign.Id, cancellationToken);
@@ -322,17 +489,17 @@ public sealed class CampaignAutomationService : IAsyncDisposable
             ["profile_summary"] = lead.ProfileSummary, ["customer_segment"] = lead.CustomerSegment,
             ["next_action"] = lead.NextAction, ["latest_message"] = lead.LatestMessage, ["source"] = lead.Source
         };
-        foreach (var pair in lead.CustomFields) fields[pair.Key] = pair.Value;
+        foreach (var pair in lead.CustomFields) fields.TryAdd(pair.Key, pair.Value);
         return Regex.Replace(template, "\\{([^{}]+)\\}", match => fields.TryGetValue(match.Groups[1].Value.Trim(), out var value) ? value : "", RegexOptions.CultureInvariant);
     }
 
     public static IReadOnlyList<CampaignTemplateField> CoreTemplateFields() =>
     [
-        new("name", "姓名"), new("company", "公司"), new("country", "国家 / 地区"), new("phone", "WhatsApp 号码"),
-        new("email", "邮箱"), new("language", "客户语言"), new("product", "产品兴趣"), new("order_value", "预计订单金额"),
-        new("currency", "币种"), new("owner", "负责人"), new("grade", "商机等级"), new("stage", "跟进阶段"),
-        new("score", "商机评分"), new("tags", "标签"), new("profile_summary", "客户画像"), new("customer_segment", "客户分组"),
-        new("next_action", "下一步建议"), new("latest_message", "最近消息"), new("source", "客户来源")
+        new("name", "姓名", "客户列表"), new("company", "公司", "客户列表"), new("country", "国家 / 地区", "客户列表"), new("phone", "WhatsApp 号码", "客户列表"),
+        new("email", "邮箱", "客户列表"), new("language", "客户语言", "客户列表"), new("product", "产品兴趣", "客户列表"), new("order_value", "预计订单金额", "客户列表"),
+        new("currency", "币种", "客户列表"), new("owner", "负责人", "客户列表"), new("tags", "标签", "客户列表"), new("source", "客户来源", "客户列表"),
+        new("grade", "商机等级", "商机智能"), new("stage", "跟进阶段", "商机智能"), new("score", "商机评分", "商机智能"), new("profile_summary", "客户画像", "商机智能"),
+        new("customer_segment", "客户分组", "商机智能"), new("next_action", "下一步建议", "商机智能"), new("latest_message", "最近消息", "商机智能")
     ];
 
     private async Task ValidateTemplateFieldsAsync(string template, CancellationToken cancellationToken)
@@ -405,6 +572,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         _bridge.EventReceived -= Bridge_EventReceived;
         _lifetime?.Cancel();
         if (_worker is not null) try { await _worker; } catch (OperationCanceledException) { }
+        if (_safetyWorker is not null) try { await _safetyWorker; } catch (OperationCanceledException) { }
         _lifetime?.Dispose(); _sendLock.Dispose();
     }
 }

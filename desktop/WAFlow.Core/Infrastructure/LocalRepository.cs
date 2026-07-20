@@ -839,6 +839,11 @@ public sealed class LocalRepository
         }
     }
 
+    public async Task<List<WhatsAppCampaign>> GetActiveCampaignsAsync(CancellationToken cancellationToken = default) =>
+        (await GetCampaignsAsync(null, cancellationToken))
+        .Where(campaign => campaign.Status is CampaignStatus.Scheduled or CampaignStatus.Running)
+        .ToList();
+
     public async Task<DashboardSnapshot> GetDashboardAsync(CancellationToken cancellationToken = default)
     {
         var leads = await GetLeadsAsync(cancellationToken: cancellationToken);
@@ -850,7 +855,7 @@ public sealed class LocalRepository
             Grades = new[] { "A", "B", "C", "D" }.ToDictionary(x => x, x => leads.Count(l => l.Grade == x)),
             Stages = Enum.GetValues<LeadStage>().ToDictionary(x => x, x => leads.Count(l => l.Stage == x)),
             PendingFollowUps = leads.Count(l => l.NextFollowUpAt is not null && l.NextFollowUpAt <= DateTimeOffset.Now.AddDays(1)),
-            ActiveCampaigns = campaigns.Count(item => item.Status is CampaignStatus.Scheduled or CampaignStatus.Running or CampaignStatus.Paused),
+            ActiveCampaigns = campaigns.Count(item => item.Status is CampaignStatus.Scheduled or CampaignStatus.Running or CampaignStatus.Paused or CampaignStatus.SafetyStopped),
             FailedAnalyses = leads.Count(l => l.AnalysisStatus == AnalysisStatus.RetryableFailed),
             PriorityLeads = leads.Where(l => l.Grade is "A" or "B").Take(5).ToList(),
             LastImportText = lastImport

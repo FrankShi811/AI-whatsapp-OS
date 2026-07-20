@@ -21,13 +21,18 @@ public sealed class PublicIpMonitor
         _client = client ?? SharedClient;
     }
 
-    public async Task<PublicIpCheckResult> CheckAsync(string accountId, CancellationToken cancellationToken = default)
+    public async Task<PublicIpCheckResult> CheckAsync(string accountId, CancellationToken cancellationToken = default) =>
+        await CheckAsync(accountId, false, cancellationToken);
+
+    public async Task<PublicIpCheckResult> CheckAsync(string accountId, bool forceRefresh, CancellationToken cancellationToken = default)
     {
         accountId = string.IsNullOrWhiteSpace(accountId) ? "primary" : accountId.Trim();
         await _gate.WaitAsync(cancellationToken);
         try
         {
             var state = await _repository.GetWhatsAppIpStateAsync(accountId, cancellationToken) ?? new WhatsAppIpState { AccountId = accountId };
+            if (!forceRefresh && !string.IsNullOrWhiteSpace(state.CurrentIp) && state.LastCheckedAt is { } checkedAt && DateTimeOffset.Now - checkedAt < TimeSpan.FromSeconds(8))
+                return new PublicIpCheckResult(state, false);
             try
             {
                 var currentIp = await GetCurrentIpAsync(cancellationToken);

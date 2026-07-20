@@ -15,12 +15,14 @@
         <Grid Grid.Row="1" Margin="0,14,0,12">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
             <Border Grid.Column="0" Style="{StaticResource Card}" Padding="13" Margin="0,0,7,0"><StackPanel><TextBlock Text="发送任务" Style="{StaticResource LabelText}"/><TextBlock x:Name="CampaignCountText" Text="0" FontSize="20" FontWeight="Bold"/></StackPanel></Border>
-            <Border Grid.Column="1" Style="{StaticResource Card}" Padding="13" Margin="0,0,7,0"><StackPanel><TextBlock Text="运行 / 排期" Style="{StaticResource LabelText}"/><TextBlock x:Name="ActiveCountText" Text="0" FontSize="20" FontWeight="Bold" Foreground="{StaticResource Primary}"/></StackPanel></Border>
+            <Border Grid.Column="1" Style="{StaticResource Card}" Padding="13" Margin="0,0,7,0"><StackPanel><TextBlock Text="运行 / 排期 / 安全停止" Style="{StaticResource LabelText}"/><TextBlock x:Name="ActiveCountText" Text="0" FontSize="20" FontWeight="Bold" Foreground="{StaticResource Primary}"/></StackPanel></Border>
             <Border Grid.Column="2" Style="{StaticResource Card}" Padding="13" Margin="0,0,7,0"><StackPanel><TextBlock Text="已发送" Style="{StaticResource LabelText}"/><TextBlock x:Name="SentCountText" Text="0" FontSize="20" FontWeight="Bold"/></StackPanel></Border>
             <Border Grid.Column="3" Style="{StaticResource Card}" Padding="13"><StackPanel><TextBlock Text="WhatsApp 连接" Style="{StaticResource LabelText}"/><TextBlock x:Name="ConnectionText" Text="未连接" FontSize="14" FontWeight="SemiBold" Foreground="#A15C16" Margin="0,3,0,0"/></StackPanel></Border>
         </Grid>
 
-        <Grid Grid.Row="2">
+        <TabControl Grid.Row="2" x:Name="CampaignTabs">
+        <TabItem Header="任务设置">
+        <Grid Margin="0,8,0,0">
             <Grid.ColumnDefinitions><ColumnDefinition Width="220"/><ColumnDefinition Width="10"/><ColumnDefinition Width="1.05*"/><ColumnDefinition Width="10"/><ColumnDefinition Width="1.2*"/></Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Style="{StaticResource Card}" Padding="0">
@@ -57,7 +59,7 @@
                         <TextBlock Text="话术内容" Style="{StaticResource LabelText}"/>
                         <TextBox x:Name="TemplateBox" AcceptsReturn="True" TextWrapping="Wrap" Height="105" VerticalContentAlignment="Top" Margin="0,4,0,6"/>
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="6"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                            <ComboBox x:Name="FieldBox" DisplayMemberPath="DisplayLabel" ToolTip="字段来自客户列表、商机数据和导入表格的自定义列"/>
+                            <ComboBox x:Name="FieldBox" DisplayMemberPath="DisplayLabel" ToolTip="只提供客户列表、商机智能和已导入表格中真实存在的字段"/>
                             <Button Grid.Column="2" Content="插入客户字段" Style="{StaticResource SecondaryButton}" Click="InsertField_Click" Padding="11,5"/>
                         </Grid>
                         <TextBlock Text="群发时会为每位客户生成独立文本；空值会替换为空，不会把字段符号直接发给客户。" Foreground="{StaticResource Muted}" FontSize="9" Margin="0,5,0,6" TextWrapping="Wrap"/>
@@ -83,7 +85,7 @@
                         </Grid>
 
                         <Border Background="{StaticResource WarningSoft}" CornerRadius="8" Padding="10" Margin="0,12,0,11">
-                            <TextBlock Text="发送间隔只是节奏控制，不能规避 WhatsApp 风控。仅会向号码有效、已记录营销同意且未退订的客户发送；非官方个人号连接仍可能被限制或封号。" Foreground="#7A5610" FontSize="9" TextWrapping="Wrap"/>
+                            <TextBlock Text="发送间隔只是节奏控制，不能规避 WhatsApp 风控。任务批准时会记录公网 IP，运行中每 10 秒及每次发送前核对；IP 不一致会立即停止所有自动触达。仅会向号码有效、已记录营销同意且未退订的客户发送。" Foreground="#7A5610" FontSize="9" TextWrapping="Wrap"/>
                         </Border>
 
                         <WrapPanel>
@@ -131,5 +133,35 @@
                 </Grid>
             </Border>
         </Grid>
+        </TabItem>
+        <TabItem Header="发送历史与质量">
+            <Border Style="{StaticResource Card}" Padding="0" Margin="0,8,0,0">
+                <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <Border Background="#F2F8F5" Padding="15,12" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+                        <StackPanel><TextBlock Text="任务发送历史" FontSize="15" FontWeight="SemiBold"/><TextBlock Text="统计每次任务的成功、失败、跳过、取消、待发送、完成进度和成功率；IP 安全停止会保留停止位置。" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,4,0,0"/></StackPanel>
+                    </Border>
+                    <DataGrid x:Name="HistoryGrid" Grid.Row="1" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="True" RowHeight="42" MouseDoubleClick="HistoryGrid_MouseDoubleClick" HeadersVisibility="Column" HorizontalScrollBarVisibility="Auto">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="任务" Binding="{Binding Name}" Width="180"/>
+                            <DataGridTextColumn Header="账号" Binding="{Binding AccountId}" Width="105"/>
+                            <DataGridTextColumn Header="触发时间" Binding="{Binding Trigger}" Width="135"/>
+                            <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="92"/>
+                            <DataGridTextColumn Header="总数" Binding="{Binding Total}" Width="58"/>
+                            <DataGridTextColumn Header="成功" Binding="{Binding Sent}" Width="58"/>
+                            <DataGridTextColumn Header="失败" Binding="{Binding Failed}" Width="58"/>
+                            <DataGridTextColumn Header="跳过" Binding="{Binding Skipped}" Width="58"/>
+                            <DataGridTextColumn Header="取消" Binding="{Binding Cancelled}" Width="58"/>
+                            <DataGridTextColumn Header="待发送" Binding="{Binding Queued}" Width="68"/>
+                            <DataGridTextColumn Header="完成进度" Binding="{Binding Progress}" Width="82"/>
+                            <DataGridTextColumn Header="发送成功率" Binding="{Binding SuccessRate}" Width="88"/>
+                            <DataGridTextColumn Header="停止 / 下一位置" Binding="{Binding StopOrNext}" Width="210"/>
+                            <DataGridTextColumn Header="原因" Binding="{Binding Detail}" Width="280"/>
+                            <DataGridTextColumn Header="最后更新" Binding="{Binding Updated}" Width="145"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </Border>
+        </TabItem>
+        </TabControl>
     </Grid>
 </UserControl>

@@ -26,7 +26,7 @@ public sealed class AppServices
         WhatsApp = new WhatsAppConnectionManager();
         WhatsAppSync = new WhatsAppSyncService(Repository, WhatsApp);
         PublicIp = new PublicIpMonitor(Repository);
-        Campaigns = new CampaignAutomationService(Repository, WhatsApp);
+        Campaigns = new CampaignAutomationService(Repository, WhatsApp, PublicIp);
     }
 
     public Task InitializeAsync(CancellationToken cancellationToken = default) => Repository.InitializeAsync(cancellationToken);
