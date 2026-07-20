@@ -42,13 +42,6 @@
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                                <Setter Property="ContextMenu">
-                                    <Setter.Value>
-                                        <ContextMenu>
-                                            <MenuItem Header="{Binding PinActionLabel}" CommandParameter="{Binding}" Click="PinConversation_Click"/>
-                                        </ContextMenu>
-                                    </Setter.Value>
-                                </Setter>
                             </Style>
                         </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>

@@ -493,7 +493,16 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private void ConversationList_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (ItemsControl.ContainerFromElement(ConversationList, e.OriginalSource as DependencyObject) is ListBoxItem item)
+        {
             item.IsSelected = true;
+            if (item.DataContext is ConversationItem conversation)
+            {
+                var action = new MenuItem { Header = conversation.PinActionLabel, CommandParameter = conversation };
+                action.Click += PinConversation_Click;
+                item.ContextMenu = new ContextMenu();
+                item.ContextMenu.Items.Add(action);
+            }
+        }
     }
 
     private async void PinConversation_Click(object sender, RoutedEventArgs e)

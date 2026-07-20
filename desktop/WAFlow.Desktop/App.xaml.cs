@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Threading;
+using System.IO;
 using WAFlow.Core;
 
 namespace WAFlow.Desktop;
@@ -24,6 +25,7 @@ public partial class App : Application
         }
         catch (Exception error)
         {
+            LogException("startup", error);
             MessageBox.Show($"AI Sales OS 初始化失败：\n{error.Message}", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }
@@ -31,8 +33,24 @@ public partial class App : Application
 
     private static void OnUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
+        LogException("dispatcher", e.Exception);
         MessageBox.Show($"操作失败：\n{e.Exception.Message}", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Error);
         e.Handled = true;
+    }
+
+    private static void LogException(string area, Exception error)
+    {
+        try
+        {
+            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AI Sales OS", "logs");
+            Directory.CreateDirectory(directory);
+            var entry = $"[{DateTimeOffset.Now:O}] {area}{Environment.NewLine}{error}{Environment.NewLine}{Environment.NewLine}";
+            File.AppendAllText(Path.Combine(directory, "app-errors.log"), entry);
+        }
+        catch
+        {
+            // Logging must never hide the original application error.
+        }
     }
 
     protected override void OnExit(ExitEventArgs e)
