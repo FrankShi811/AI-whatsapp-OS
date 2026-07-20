@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.IO.Compression;
 using System.Text;
+using System.Xml.Linq;
 using ClosedXML.Excel;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Infrastructure;
@@ -52,12 +53,20 @@ public sealed class ImportService
     {
         var selected = mapping.Where(m => m.Target != ImportField.Ignore).ToList();
         var coreMap = selected.Where(m => m.Target != ImportField.Custom).ToDictionary(m => m.Header, m => m.Target);
-        var customHeaders = selected.Where(m => m.Target == ImportField.Custom).Select(m => m.Header).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        if (!coreMap.ContainsValue(ImportField.Name) && !coreMap.ContainsValue(ImportField.Company)) throw new InvalidDataException("至少需要映射“客户姓名”或“公司名称”。");
+        // Every source column is retained under its original header. Recognized columns are
+        // additionally projected into CRM core fields so the rest of the product can use them.
+        var customHeaders = sheet.Headers.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         progress?.Report(new("正在读取已有客户", 0, sheet.Rows.Count));
         var existing = await _repository.GetLeadsAsync(cancellationToken: cancellationToken);
         var byPhone = existing.Where(l => l.PhoneValid && !string.IsNullOrWhiteSpace(l.PhoneE164)).ToDictionary(l => l.PhoneE164, StringComparer.OrdinalIgnoreCase);
+        var byIdentity = existing
+            .Select(lead => (Key: BuildImportIdentity(lead.CustomFields), Lead: lead))
+            .Where(item => item.Key is not null)
+            .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() == 1)
+            .ToDictionary(group => group.Key, group => group.Single().Lead, StringComparer.OrdinalIgnoreCase);
         var incomingByPhone = new Dictionary<string, ImportPreviewRow>(StringComparer.OrdinalIgnoreCase);
+        var incomingByIdentity = new Dictionary<string, ImportPreviewRow>(StringComparer.OrdinalIgnoreCase);
         var output = new List<ImportPreviewRow>(sheet.Rows.Count);
         for (var i = 0; i < sheet.Rows.Count; i++)
         {
@@ -68,33 +77,65 @@ public sealed class ImportService
                 if (!string.IsNullOrWhiteSpace(value)) values[pair.Value] = value;
             }
             var customValues = customHeaders.ToDictionary(header => header, header => sheet.Rows[i].GetValueOrDefault(header, "").Trim(), StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(values.GetValueOrDefault(ImportField.Name)) && string.IsNullOrWhiteSpace(values.GetValueOrDefault(ImportField.Company)))
+            {
+                var fallback = customHeaders
+                    .Select(header => customValues.GetValueOrDefault(header, ""))
+                    .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 160)
+                    ?? $"导入行 {i + 2}";
+                values[ImportField.Name] = fallback;
+            }
             var country = values.GetValueOrDefault(ImportField.Country, "");
-            var normalized = PhoneNormalizer.Normalize(values.GetValueOrDefault(ImportField.WhatsApp, ""), country);
+            var rawPhone = values.GetValueOrDefault(ImportField.WhatsApp, "");
+            var normalized = PhoneNormalizer.Normalize(rawPhone, country);
             var item = new ImportPreviewRow
             {
                 RowNumber = i + 2, Values = values, CustomValues = customValues, Name = values.GetValueOrDefault(ImportField.Name, ""),
                 Company = values.GetValueOrDefault(ImportField.Company, ""), Country = country,
-                PhoneE164 = normalized.E164, PhoneValid = normalized.Valid
+                PhoneE164 = normalized.Valid ? normalized.E164 : rawPhone, PhoneValid = normalized.Valid
             };
-            if (string.IsNullOrWhiteSpace(item.Name) && string.IsNullOrWhiteSpace(item.Company)) item.Errors.Add("姓名和公司不能同时为空");
-            if (!normalized.Valid) item.Warnings.Add(normalized.Reason == "country_code_required" ? "号码缺少国家区号，且国家字段无法推断" : "WhatsApp 号码格式无效");
-            if (!string.IsNullOrWhiteSpace(item.PhoneE164) && byPhone.TryGetValue(item.PhoneE164, out var duplicate))
+            var importIdentity = BuildImportIdentity(customValues);
+            if (!normalized.Valid) item.Warnings.Add(string.IsNullOrWhiteSpace(values.GetValueOrDefault(ImportField.WhatsApp))
+                ? "未提供 WhatsApp 号码"
+                : normalized.Reason == "country_code_required" ? "号码缺少国家区号，且国家字段无法推断" : "WhatsApp 号码格式无效");
+            if (item.PhoneValid && byPhone.TryGetValue(item.PhoneE164, out var duplicate))
             {
                 item.IsDuplicate = true; item.DuplicateLeadId = duplicate.Id; item.Changes = BuildChanges(duplicate, values, customValues, normalized);
             }
-            else if (!string.IsNullOrWhiteSpace(item.PhoneE164) && incomingByPhone.TryGetValue(item.PhoneE164, out var importDuplicate))
+            else if (importIdentity is not null && byIdentity.TryGetValue(importIdentity, out duplicate))
+            {
+                item.IsDuplicate = true; item.DuplicateLeadId = duplicate.Id; item.Changes = BuildChanges(duplicate, values, customValues, normalized);
+            }
+            else if (item.PhoneValid && incomingByPhone.TryGetValue(item.PhoneE164, out var importDuplicate))
             {
                 item.IsDuplicate = true; item.DuplicateRowNumber = importDuplicate.RowNumber;
                 item.Changes = $"与导入表第 {importDuplicate.RowNumber} 行号码重复；将合并到同一客户";
             }
-            else if (!string.IsNullOrWhiteSpace(item.PhoneE164))
+            else if (importIdentity is not null && incomingByIdentity.TryGetValue(importIdentity, out importDuplicate))
             {
-                incomingByPhone[item.PhoneE164] = item;
+                item.IsDuplicate = true; item.DuplicateRowNumber = importDuplicate.RowNumber;
+                item.Changes = $"与导入表第 {importDuplicate.RowNumber} 行客户标识重复；将合并到同一客户";
+            }
+            else
+            {
+                if (item.PhoneValid) incomingByPhone[item.PhoneE164] = item;
+                if (importIdentity is not null) incomingByIdentity[importIdentity] = item;
             }
             output.Add(item);
             if ((i + 1) % 250 == 0 || i + 1 == sheet.Rows.Count) progress?.Report(new("正在生成重复与风险预览", i + 1, sheet.Rows.Count));
         }
         return output;
+    }
+
+    private static string? BuildImportIdentity(IReadOnlyDictionary<string, string> fields)
+    {
+        foreach (var pair in fields)
+        {
+            if (FieldAliases.Suggest(pair.Key) != ImportField.Name || string.IsNullOrWhiteSpace(pair.Value)) continue;
+            var normalized = new string(pair.Value.Trim().ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
+            if (normalized.Length >= 2) return "name:" + normalized;
+        }
+        return null;
     }
 
     public async Task<ImportCommitResult> CommitAsync(string fileName, IReadOnlyList<ImportPreviewRow> preview, bool allowStageChange, bool allowOwnerChange, IProgress<ImportProgress>? progress = null, CancellationToken cancellationToken = default)
@@ -198,7 +239,7 @@ public sealed class ImportService
                 matrix[row][column] = Sanitize(matrix[row][column], ref sanitized);
         var sheet = BuildSheet("CSV", matrix);
         if (sheet is not null) sheet.SanitizedFormulaCount = sanitized;
-        return new ParsedImport { Sheets = sheet is null ? [] : [sheet] };
+        return new ParsedImport { PreferredSheetName = sheet?.Name ?? "", Sheets = sheet is null ? [] : [sheet] };
     }
 
     private static ParsedImport ParseXlsx(string filePath)
@@ -225,7 +266,21 @@ public sealed class ImportService
             }
             if (BuildSheet(worksheet.Name, matrix) is { } parsed) { parsed.SanitizedFormulaCount += formulaCount; sheets.Add(parsed); }
         }
-        return new ParsedImport { Sheets = sheets };
+        return new ParsedImport { PreferredSheetName = ReadActiveSheetName(filePath) ?? "", Sheets = sheets };
+    }
+
+    private static string? ReadActiveSheetName(string filePath)
+    {
+        using var stream = File.OpenRead(filePath);
+        using var archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen:false);
+        var entry = archive.GetEntry("xl/workbook.xml");
+        if (entry is null) return null;
+        using var entryStream = entry.Open();
+        var document = XDocument.Load(entryStream);
+        XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        var activeTab = (int?)document.Descendants(ns + "workbookView").FirstOrDefault()?.Attribute("activeTab") ?? 0;
+        var sheets = document.Descendants(ns + "sheet").ToList();
+        return activeTab >= 0 && activeTab < sheets.Count ? (string?)sheets[activeTab].Attribute("name") : null;
     }
 
     private static void AssertSafeXlsx(string filePath)
@@ -274,10 +329,10 @@ internal static class FieldAliases
 {
     private static readonly Dictionary<ImportField, string[]> Aliases = new()
     {
-        [ImportField.Name]=["name","fullname","contactname","buyername","姓名","联系人","客户姓名","买家姓名"],
+        [ImportField.Name]=["name","fullname","contactname","buyername","buyernickname","姓名","联系人","客户姓名","买家姓名","买家昵称"],
         [ImportField.Company]=["company","companyname","business","organization","公司","公司名称","企业名称"],
         [ImportField.Country]=["country","market","region","国家","国家地区","市场","地区"],
-        [ImportField.WhatsApp]=["whatsapp","whatsappnumber","whatsapp号码","phone","mobile","tel","电话号码","手机号","手机","联系电话","号码"],
+        [ImportField.WhatsApp]=["whatsapp","whatsappnumber","whatsapp号码","phone","mobile","tel","电话","电话号码","手机号","手机","联系电话","号码"],
         [ImportField.Email]=["email","emailaddress","mail","邮箱","电子邮箱"],
         [ImportField.ProductInterest]=["productinterest","interestedproduct","product","sku","产品兴趣","意向产品","产品","询盘产品"],
         [ImportField.EstimatedOrderValue]=["estimatedordervalue","estimatedvalue","ordervalue","dealvalue","budget","采购金额","订单金额","预计订单额","预计金额","预算"],
@@ -285,16 +340,22 @@ internal static class FieldAliases
         [ImportField.PurchasePower]=["purchasepower","buyingpower","采购能力","购买力"],
         [ImportField.ExplicitDemand]=["explicitdemand","demand","requirement","明确需求","需求","采购需求"],
         [ImportField.Source]=["source","leadsource","channel","来源","线索来源","渠道"],
-        [ImportField.Owner]=["owner","assignee","salesowner","负责人","销售负责人","跟进人"],
-        [ImportField.Stage]=["stage","leadstage","status","阶段","商机阶段","状态"],
+        [ImportField.Owner]=["owner","现owner","currentowner","assignee","salesowner","负责人","销售负责人","跟进人"],
+        [ImportField.Stage]=["stage","leadstage","status","阶段","商机阶段","跟进阶段","状态"],
         [ImportField.Tags]=["tags","tag","labels","标签","客户标签"],
         [ImportField.Notes]=["notes","note","remark","comments","备注","说明"]
     };
     private static readonly Dictionary<string, ImportField> Lookup = Aliases.SelectMany(p => p.Value.Select(v => (key: Normalize(v), p.Key))).ToDictionary(x => x.key, x => x.Key);
     public static ImportField Suggest(string header)
     {
-        if (Lookup.TryGetValue(Normalize(header), out var field)) return field;
+        var normalized = Normalize(header);
+        if (Lookup.TryGetValue(normalized, out var field)) return field;
         foreach (var segment in header.Split(['/','|','｜',':','：'])) if (Lookup.TryGetValue(Normalize(segment), out field)) return field;
+        var prefix = Lookup
+            .Where(pair => pair.Key.Length >= 3 && normalized.StartsWith(pair.Key, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(pair => pair.Key.Length)
+            .FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(prefix.Key)) return prefix.Value;
         return ImportField.Custom;
     }
     private static string Normalize(string value) => new(value.Trim().ToLowerInvariant().Where(c => !char.IsWhiteSpace(c) && !"_-./\\()（）[]【】".Contains(c)).ToArray());

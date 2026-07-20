@@ -1,0 +1,98 @@
+<Window x:Class="WAFlow.Desktop.Windows.CustomerEditWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AI Sales OS · 编辑客户" Icon="/AISalesOS;component/Assets/AI-Sales-OS.ico"
+        Width="980" Height="760" MinWidth="820" MinHeight="620"
+        WindowStartupLocation="CenterOwner" WindowStyle="SingleBorderWindow" ResizeMode="CanResize">
+    <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+
+        <Border Background="White" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="24,18">
+            <StackPanel>
+                <TextBlock Text="编辑客户全部资料" FontSize="22" FontWeight="Bold"/>
+                <TextBlock Text="系统字段用于搜索、评分和 WhatsApp；原表维度逐列保留，可逐项修改。" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="24,20">
+            <StackPanel>
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="系统字段" Style="{StaticResource SectionTitle}" Margin="0,0,0,14"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="110"/><ColumnDefinition Width="*"/><ColumnDefinition Width="24"/><ColumnDefinition Width="110"/><ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Text="客户名称" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="NameBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,10"/>
+                            <TextBlock Grid.Row="0" Grid.Column="3" Text="公司" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="CompanyBox" Grid.Row="0" Grid.Column="4" Margin="0,0,0,10"/>
+
+                            <TextBlock Grid.Row="1" Text="国家 / 地区" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="CountryBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,10"/>
+                            <TextBlock Grid.Row="1" Grid.Column="3" Text="WhatsApp" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="PhoneBox" Grid.Row="1" Grid.Column="4" Margin="0,0,0,10"/>
+
+                            <TextBlock Grid.Row="2" Text="邮箱" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="EmailBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,10"/>
+                            <TextBlock Grid.Row="2" Grid.Column="3" Text="负责人" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="OwnerBox" Grid.Row="2" Grid.Column="4" Margin="0,0,0,10"/>
+
+                            <TextBlock Grid.Row="3" Text="销售语言" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="LanguageBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,10"/>
+                            <TextBlock Grid.Row="3" Grid.Column="3" Text="商机阶段" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><ComboBox x:Name="StageBox" Grid.Row="3" Grid.Column="4" Margin="0,0,0,10" DisplayMemberPath="Label"/>
+
+                            <TextBlock Grid.Row="4" Text="意向产品" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="ProductBox" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="4" Margin="0,0,0,10"/>
+
+                            <TextBlock Grid.Row="5" Text="预计订单额" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="AmountBox" Grid.Row="5" Grid.Column="1" Margin="0,0,0,10"/>
+                            <TextBlock Grid.Row="5" Grid.Column="3" Text="币种" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="CurrencyBox" Grid.Row="5" Grid.Column="4" Margin="0,0,0,10"/>
+
+                            <TextBlock Grid.Row="6" Text="来源" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="SourceBox" Grid.Row="6" Grid.Column="1" Margin="0,0,0,10"/>
+                            <TextBlock Grid.Row="6" Grid.Column="3" Text="标签" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="TagsBox" Grid.Row="6" Grid.Column="4" Margin="0,0,0,10" ToolTip="用逗号、分号或竖线分隔"/>
+
+                            <TextBlock Grid.Row="7" Text="联系权限" Style="{StaticResource LabelText}" VerticalAlignment="Center"/>
+                            <StackPanel Grid.Row="7" Grid.Column="1" Grid.ColumnSpan="4" Orientation="Horizontal">
+                                <CheckBox x:Name="OptInCheck" Content="已同意 WhatsApp 营销联系" Margin="0,0,28,0" VerticalAlignment="Center"/>
+                                <CheckBox x:Name="OptedOutCheck" Content="已退订" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Grid>
+                        <TextBlock Text="备注 / 最新沟通" Style="{StaticResource LabelText}" Margin="0,15,0,5"/>
+                        <TextBox x:Name="NotesBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="82" VerticalContentAlignment="Top"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
+                    <StackPanel>
+                        <TextBlock Text="原表全部维度" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Text="这里按上传表格的原始列名逐项显示。修改后保存，客户列表中的对应单元格会同步更新。" Foreground="{StaticResource Muted}" Margin="0,5,0,14"/>
+                        <ItemsControl x:Name="OriginalDimensions">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,0,0,9">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="270"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding Header}" ToolTip="{Binding Header}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                                        <TextBox Grid.Column="1" Text="{Binding Value, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap" VerticalContentAlignment="Top"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <Border Background="#F8FBF9" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,8,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="220"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <TextBox x:Name="NewDimensionNameBox" ToolTip="新维度名称" Margin="0,0,8,0"/>
+                                <TextBox x:Name="NewDimensionValueBox" Grid.Column="1" ToolTip="新维度值" Margin="0,0,8,0"/>
+                                <Button Grid.Column="2" Content="新增维度" Style="{StaticResource SecondaryButton}" Click="AddDimension_Click"/>
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <Border Grid.Row="2" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="24,14">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="取消" IsCancel="True" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0"/>
+                <Button x:Name="SaveButton" Content="保存并同步" Style="{StaticResource PrimaryButton}" Click="Save_Click"/>
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

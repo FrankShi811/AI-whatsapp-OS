@@ -19,6 +19,7 @@ public sealed class ImportSheet
 public sealed class ParsedImport
 {
     public string FilePath { get; set; } = "";
+    public string PreferredSheetName { get; set; } = "";
     public List<ImportSheet> Sheets { get; set; } = [];
 }
 

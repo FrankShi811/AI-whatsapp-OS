@@ -3,6 +3,8 @@
 **/node_modules/
 bridge/dist/ncc/
 bridge/dist/WAFlow.WhatsApp.Bridge.exe
+bridge/dist/sea-manifest.json
+bridge/dist/waflow-bridge.blob
 outputs/
 work/
 *.exe

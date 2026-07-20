@@ -17,6 +17,25 @@ await repository.InitializeAsync();
 var scorer = new LeadScoringService();
 var imports = new ImportService(repository, scorer);
 
+if (args.Length >= 2 && args[0] == "--workbook-only")
+{
+    var realParsed = imports.Parse(args[1]);
+    var sherrySheet = realParsed.Sheets.FirstOrDefault(sheet => sheet.Name == "客户总表（Sherry3）") ?? realParsed.Sheets[0];
+    Check(realParsed.PreferredSheetName == "客户总表（Sherry3）", "provided SP workbook active sheet selected by default");
+    Check(sherrySheet.Rows.Count == 540 && sherrySheet.Headers.Count == 31, "provided SP workbook shape parsed");
+    var realMapping = imports.SuggestMapping(sherrySheet);
+    Check(realMapping.Any(row => row.Target == ImportField.Name) && realMapping.Any(row => row.Target == ImportField.WhatsApp), "provided SP workbook core fields inferred");
+    var realPreview = await imports.BuildPreviewAsync(sherrySheet, realMapping);
+    Check(realPreview.All(row => row.Errors.Count == 0), "provided SP workbook has no mandatory-field failures");
+    var realCommit = await imports.CommitAsync(Path.GetFileName(args[1]), realPreview, allowStageChange:true, allowOwnerChange:true);
+    var luis = (await repository.GetLeadsAsync("Luis Luis Exposito")).FirstOrDefault();
+    Check(realCommit.Failed == 0 && realCommit.Created + realCommit.Updated == sherrySheet.Rows.Count, "provided SP workbook imports every row without mapping failures");
+    Check(luis is not null && luis.CustomFields.Count == sherrySheet.Headers.Count, "provided SP workbook keeps all 31 original dimensions");
+    Console.WriteLine($"RESULT total={realCommit.Total} created={realCommit.Created} updated={realCommit.Updated} invalid={realCommit.InvalidPhones} failed={realCommit.Failed}");
+    try { File.Delete(database); Directory.Delete(root, true); } catch { }
+    return failures.Count == 0 ? 0 : 1;
+}
+
 Check(LeadScoringService.GradeFromScore(80) == "A", "score boundary A=80");
 Check(LeadScoringService.GradeFromScore(79) == "B", "score boundary B=79");
 Check(LeadScoringService.GradeFromScore(40) == "C", "score boundary C=40");
@@ -46,8 +65,61 @@ var elena = await repository.GetLeadAsync("lead_elena");
 Check(elena?.Stage == WAFlow.Core.Domain.LeadStage.Negotiation, "duplicate stage protected by default");
 var newBuyer = (await repository.GetLeadsAsync("New Buyer")).Single();
 Check(newBuyer.CustomFields.GetValueOrDefault("门店数量") == "12" && newBuyer.CustomFields.GetValueOrDefault("采购周期") == "Quarterly", "custom dimensions persisted on lead");
+Check(newBuyer.CustomFields.Count == parsed.Sheets[0].Headers.Count && newBuyer.CustomFields.GetValueOrDefault("客户姓名") == "New Buyer", "every original spreadsheet column persisted");
 var dashboard = await repository.GetDashboardAsync();
 Check(dashboard.TotalLeads == 6, "SQLite persisted seed plus imported lead");
+
+var buyerHeader = "buyer_nickname\n累计GMV≥10w，且近一年GMV≥10000";
+var directSheet = new ImportSheet
+{
+    Name = "direct",
+    Headers = [buyerHeader, "现Owner", "电话", "国家/邮箱", "任意业务维度"],
+    Rows = [new Dictionary<string, string>
+    {
+        [buyerHeader] = "direct_buyer_01", ["现Owner"] = "Daisy", ["电话"] = "+14155552671",
+        ["国家/邮箱"] = "美国", ["任意业务维度"] = "原样保留"
+    }]
+};
+var directMapping = imports.SuggestMapping(directSheet);
+Check(directMapping.Single(x => x.Header == buyerHeader).Target == ImportField.Name &&
+      directMapping.Single(x => x.Header == "现Owner").Target == ImportField.Owner &&
+      directMapping.Single(x => x.Header == "电话").Target == ImportField.WhatsApp, "long and mixed-language headers inferred without manual mapping");
+var directPreview = await imports.BuildPreviewAsync(directSheet, directMapping);
+var directCommit = await imports.CommitAsync("direct.xlsx", directPreview, allowStageChange:true, allowOwnerChange:true);
+var directLead = (await repository.GetLeadsAsync("direct_buyer_01")).Single();
+Check(directCommit.Failed == 0 && directLead.CustomFields.Count == directSheet.Headers.Count && directLead.Owner == "Daisy", "direct import retains every source dimension and links core fields");
+directLead.CustomFields["任意业务维度"] = "人工修改后的值";
+await repository.UpsertLeadAsync(directLead);
+Check((await repository.GetLeadAsync(directLead.Id))?.CustomFields.GetValueOrDefault("任意业务维度") == "人工修改后的值", "manual custom-dimension edits persist");
+
+var riskyPhoneSheet = new ImportSheet
+{
+    Name="risky-phone", Headers=["buyer_nickname", "电话", "国家"],
+    Rows=[new Dictionary<string, string> { ["buyer_nickname"]="risky_buyer", ["电话"]="0", ["国家"]="美国" }]
+};
+var riskyPhonePreview = await imports.BuildPreviewAsync(riskyPhoneSheet, imports.SuggestMapping(riskyPhoneSheet));
+Check(!riskyPhonePreview.Single().PhoneValid && riskyPhonePreview.Single().PhoneE164 == "0", "invalid phone keeps the original cell value instead of a misleading partial E.164 value");
+
+var legacyLead = new Lead { Name="Legacy mapped name", CustomFields=new Dictionary<string, string> { [buyerHeader]="legacy_buyer_01" } };
+await repository.UpsertLeadAsync(legacyLead);
+var legacySheet = new ImportSheet
+{
+    Name="legacy-reimport", Headers=[buyerHeader, "电话", "任意业务维度"],
+    Rows=[new Dictionary<string, string> { [buyerHeader]="legacy_buyer_01", ["电话"]="+14155550123", ["任意业务维度"]="补全后数据" }]
+};
+var legacyPreview = await imports.BuildPreviewAsync(legacySheet, imports.SuggestMapping(legacySheet));
+var legacyCommit = await imports.CommitAsync("legacy-reimport.xlsx", legacyPreview, allowStageChange:true, allowOwnerChange:true);
+var legacyUpdated = await repository.GetLeadAsync(legacyLead.Id);
+Check(legacyPreview.Single().IsDuplicate && legacyCommit.Updated == 1 && legacyUpdated?.CustomFields.Count == 3, "fixed importer upgrades earlier partial rows instead of duplicating them");
+
+var arbitrarySheet = new ImportSheet
+{
+    Name = "arbitrary",
+    Headers = ["唯一编号", "完全自由的维度"],
+    Rows = [new Dictionary<string, string> { ["唯一编号"] = "SP-ONLY-001", ["完全自由的维度"] = "也可以导入" }]
+};
+var arbitraryPreview = await imports.BuildPreviewAsync(arbitrarySheet, imports.SuggestMapping(arbitrarySheet));
+Check(arbitraryPreview.Single().Errors.Count == 0 && arbitraryPreview.Single().Name == "SP-ONLY-001", "table with no standard CRM columns still imports directly");
 
 const int largeRowCount = 12_000;
 var largeCsvPath = Path.Combine(root, "large.csv");
@@ -63,6 +135,19 @@ var largeCommit = await imports.CommitAsync("large.csv", largePreview, allowStag
 Check(largeCommit.Created == largeRowCount && largeCommit.Failed == 0, "12,000-row batched SQLite import");
 var lastBulkLead = (await repository.GetLeadsAsync("Bulk 11999")).Single();
 Check(lastBulkLead.CustomFields.GetValueOrDefault("行业") == "Retail", "large import custom dimensions persisted");
+
+var workbookArgument = args.SkipWhile(value => value != "--workbook").Skip(1).FirstOrDefault();
+if (!string.IsNullOrWhiteSpace(workbookArgument))
+{
+    var realParsed = imports.Parse(workbookArgument);
+    var sherrySheet = realParsed.Sheets.FirstOrDefault(sheet => sheet.Name == "客户总表（Sherry3）") ?? realParsed.Sheets[0];
+    Check(sherrySheet.Rows.Count == 540 && sherrySheet.Headers.Count == 31, "provided SP workbook shape parsed");
+    var realPreview = await imports.BuildPreviewAsync(sherrySheet, imports.SuggestMapping(sherrySheet));
+    var realCommit = await imports.CommitAsync(Path.GetFileName(workbookArgument), realPreview, allowStageChange:true, allowOwnerChange:true);
+    var luis = (await repository.GetLeadsAsync("Luis Luis Exposito")).FirstOrDefault();
+    Check(realCommit.Failed == 0 && realCommit.Created + realCommit.Updated == sherrySheet.Rows.Count, "provided SP workbook imports every row without mapping failures");
+    Check(luis is not null && luis.CustomFields.Count == sherrySheet.Headers.Count, "provided SP workbook keeps all 31 original dimensions");
+}
 
 var whatsappLead = (await repository.GetLeadAsync("lead_james"))!;
 whatsappLead.WhatsAppOptIn = true; whatsappLead.WhatsAppOptInAt = DateTimeOffset.Now; whatsappLead.WhatsAppOptInSource = "smoke-test";

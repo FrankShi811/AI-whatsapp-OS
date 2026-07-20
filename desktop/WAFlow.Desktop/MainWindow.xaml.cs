@@ -30,6 +30,7 @@ public partial class MainWindow : Window
         _intelligence.ImportRequested += OpenImport;
         _intelligence.DataChanged += async (_, _) => await RefreshAllAsync();
         _customers.ImportRequested += OpenImport;
+        _customers.DataChanged += async (_, _) => await RefreshAllAsync();
         _inbox.DataChanged += async (_, _) => await RefreshAllAsync();
         _drafts.DataChanged += async (_, _) => await RefreshAllAsync();
         Loaded += MainWindow_Loaded;
