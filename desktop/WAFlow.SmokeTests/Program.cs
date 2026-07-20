@@ -206,6 +206,12 @@ if (!string.IsNullOrWhiteSpace(workbookArgument))
 var whatsappLead = (await repository.GetLeadAsync("lead_james"))!;
 whatsappLead.WhatsAppOptIn = true; whatsappLead.WhatsAppOptInAt = DateTimeOffset.Now; whatsappLead.WhatsAppOptInSource = "smoke-test";
 await repository.UpsertLeadAsync(whatsappLead);
+var whatsappContact = new WhatsAppContact { Id="primary:447700900123@s.whatsapp.net", AccountId="primary", Jid="447700900123@s.whatsapp.net", Phone="447700900123", DisplayName="James in WhatsApp", SavedName="James in WhatsApp", Source="history:recent" };
+await repository.UpsertWhatsAppContactAsync(whatsappContact);
+whatsappContact.NotifyName = "James updated";
+await repository.UpsertWhatsAppContactAsync(whatsappContact);
+var storedContact = (await repository.GetWhatsAppContactsAsync()).Single(x => x.Id == whatsappContact.Id);
+Check(storedContact.Phone == "447700900123" && storedContact.NotifyName == "James updated", "WhatsApp contact history is persisted and updated idempotently");
 var conversation = new WhatsAppConversation { Id="primary:447700900123", AccountId="primary", Phone="447700900123", LeadId=whatsappLead.Id, DisplayName=whatsappLead.DisplayName, LastMessage="Hello", LastMessageAt=DateTimeOffset.Now, UnreadCount=1 };
 await repository.UpsertWhatsAppConversationAsync(conversation);
 var whatsappMessage = new WhatsAppMessage { Id="primary:wamid-smoke", ProviderMessageId="wamid-smoke", AccountId="primary", ConversationId=conversation.Id, LeadId=whatsappLead.Id, Phone=conversation.Phone, Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received, Body="Hello", Timestamp=DateTimeOffset.Now };

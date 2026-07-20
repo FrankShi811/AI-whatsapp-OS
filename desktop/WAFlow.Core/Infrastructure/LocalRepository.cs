@@ -110,6 +110,18 @@ public sealed class LocalRepository
             );
             CREATE INDEX IF NOT EXISTS ix_whatsapp_conversations_recent ON whatsapp_conversations(account_id, last_message_at DESC);
             CREATE INDEX IF NOT EXISTS ix_whatsapp_conversations_lead ON whatsapp_conversations(lead_id, last_message_at DESC);
+            CREATE TABLE IF NOT EXISTS whatsapp_contacts (
+              id TEXT PRIMARY KEY,
+              account_id TEXT NOT NULL,
+              jid TEXT NOT NULL,
+              phone TEXT NOT NULL,
+              display_name TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL,
+              UNIQUE(account_id, jid)
+            );
+            CREATE INDEX IF NOT EXISTS ix_whatsapp_contacts_search ON whatsapp_contacts(account_id, display_name COLLATE NOCASE);
+            CREATE INDEX IF NOT EXISTS ix_whatsapp_contacts_phone ON whatsapp_contacts(account_id, phone) WHERE phone <> '';
             CREATE TABLE IF NOT EXISTS whatsapp_messages (
               id TEXT PRIMARY KEY,
               provider_message_id TEXT NOT NULL,
@@ -504,6 +516,39 @@ public sealed class LocalRepository
         command.CommandText = "SELECT data_json FROM whatsapp_conversations WHERE account_id=$account AND phone=$phone LIMIT 1";
         command.Parameters.AddWithValue("$account", accountId); command.Parameters.AddWithValue("$phone", new string(phone.Where(char.IsDigit).ToArray()));
         return Json.Deserialize<WhatsAppConversation>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task<List<WhatsAppContact>> GetWhatsAppContactsAsync(string accountId = "primary", CancellationToken cancellationToken = default)
+    {
+        var items = new List<WhatsAppContact>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM whatsapp_contacts WHERE account_id=$account ORDER BY display_name COLLATE NOCASE, updated_at DESC";
+        command.Parameters.AddWithValue("$account", accountId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken)) if (Json.Deserialize<WhatsAppContact>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task UpsertWhatsAppContactAsync(WhatsAppContact contact, CancellationToken cancellationToken = default)
+    {
+        contact.AccountId = string.IsNullOrWhiteSpace(contact.AccountId) ? "primary" : contact.AccountId;
+        contact.Jid = contact.Jid.Trim();
+        if (string.IsNullOrWhiteSpace(contact.Id)) contact.Id = $"{contact.AccountId}:{contact.Jid}";
+        contact.Phone = new string(contact.Phone.Where(char.IsDigit).ToArray());
+        contact.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO whatsapp_contacts(id,account_id,jid,phone,display_name,updated_at,data_json)
+            VALUES($id,$account,$jid,$phone,$name,$updated,$json)
+            ON CONFLICT DO UPDATE SET phone=excluded.phone,display_name=excluded.display_name,updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", contact.Id); command.Parameters.AddWithValue("$account", contact.AccountId);
+        command.Parameters.AddWithValue("$jid", contact.Jid); command.Parameters.AddWithValue("$phone", contact.Phone);
+        command.Parameters.AddWithValue("$name", contact.DisplayName); command.Parameters.AddWithValue("$updated", contact.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(contact));
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task UpsertWhatsAppConversationAsync(WhatsAppConversation conversation, CancellationToken cancellationToken = default)

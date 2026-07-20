@@ -85,6 +85,8 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     }
     public Task<JsonElement> SendTextAsync(string phone, string text, CancellationToken cancellationToken = default) =>
         SendCommandAsync("send_text", new { phone, text }, cancellationToken);
+    public Task<JsonElement> SyncNowAsync(CancellationToken cancellationToken = default) =>
+        SendCommandAsync("sync_now", null, cancellationToken);
 
     private async Task<JsonElement> SendCommandAsync(string command, object? payload, CancellationToken cancellationToken)
     {

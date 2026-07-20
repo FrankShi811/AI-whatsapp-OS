@@ -36,6 +36,7 @@ public sealed class WhatsAppConnectionManager : IAsyncDisposable
     public Task<JsonElement> LogoutAsync(CancellationToken cancellationToken = default) => GetClient(ActiveAccountId).LogoutAsync(cancellationToken);
     public Task<JsonElement> SendTextAsync(string phone, string text, CancellationToken cancellationToken = default) => SendTextAsync(ActiveAccountId, phone, text, cancellationToken);
     public Task<JsonElement> SendTextAsync(string accountId, string phone, string text, CancellationToken cancellationToken = default) => GetClient(accountId).SendTextAsync(phone, text, cancellationToken);
+    public Task<JsonElement> SyncNowAsync(CancellationToken cancellationToken = default) => GetClient(ActiveAccountId).SyncNowAsync(cancellationToken);
 
     private WhatsAppBridgeClient GetClient(string accountId)
     {

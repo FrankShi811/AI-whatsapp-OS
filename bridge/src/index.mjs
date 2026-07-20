@@ -6,6 +6,7 @@ import process from 'node:process'
 import QRCode from 'qrcode'
 import pino from 'pino'
 import makeWASocket, {
+  ALL_WA_PATCH_NAMES,
   Browsers,
   BufferJSON,
   DisconnectReason,
@@ -22,7 +23,12 @@ const state = {
   connection: 'idle',
   reconnectTimer: null,
   manualDisconnect: false,
-  authKey: null
+  authKey: null,
+  existingSession: false,
+  contacts: new Map(),
+  chats: new Map(),
+  historyTotals: { contacts: 0, chats: 0, messages: 0 },
+  syncQueue: Promise.resolve()
 }
 
 const authFileLocks = new Map()
@@ -151,6 +157,13 @@ function safeError(error) {
   return message.replace(/Bearer\s+[^\s]+/gi, 'Bearer [REDACTED]').slice(0, 1000)
 }
 
+function enqueueSync(action, phase) {
+  state.syncQueue = state.syncQueue
+    .then(action)
+    .catch(error => emit({ type: 'event', event: 'sync_status', accountId: state.accountId, data: { state: 'failed', phase, error: safeError(error) } }))
+  return state.syncQueue
+}
+
 function validateAccountId(value) {
   const normalized = String(value ?? '').trim()
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(normalized)) throw new Error('invalid_account_id')
@@ -173,6 +186,29 @@ function timestampToIso(value) {
   if (value == null) return new Date().toISOString()
   const seconds = typeof value === 'number' ? value : Number(value?.toString?.() ?? value)
   return Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : new Date().toISOString()
+}
+
+function phoneFromJid(jid) {
+  return String(jid ?? '').endsWith('@s.whatsapp.net') ? String(jid).split('@')[0].split(':')[0].replace(/\D/g, '') : ''
+}
+
+function firstNonEmpty(...values) {
+  return values.map(value => String(value ?? '').trim()).find(Boolean) ?? ''
+}
+
+function syncTypeName(value) {
+  const names = ['initial_bootstrap', 'initial_status', 'full', 'recent', 'push_name', 'non_blocking_data', 'on_demand']
+  const numeric = Number(value)
+  return Number.isInteger(numeric) && names[numeric] ? names[numeric] : String(value ?? 'unknown')
+}
+
+function emitItems(event, items, source = 'live', extra = {}, chunkSize = 100) {
+  for (let offset = 0; offset < items.length; offset += chunkSize) {
+    emit({
+      type: 'event', event, accountId: state.accountId,
+      data: { items: items.slice(offset, offset + chunkSize), source, ...extra }
+    })
+  }
 }
 
 function messageText(message) {
@@ -217,28 +253,176 @@ async function resolveDirectJid(key) {
   catch { return lid }
 }
 
-async function forwardMessage(message, source) {
+async function resolveUserJid(...values) {
+  const candidates = values.flat().filter(Boolean).map(value => String(value))
+  const phoneJid = candidates.find(value => value.endsWith('@s.whatsapp.net'))
+  if (phoneJid) return phoneJid
+  const lid = candidates.find(value => value.endsWith('@lid'))
+  if (!lid) return ''
+  try { return await state.socket?.signalRepository?.lidMapping?.getPNForLID(lid) ?? lid }
+  catch { return lid }
+}
+
+async function normalizeContact(contact, source = 'live') {
+  const sourceJid = String(contact?.id ?? contact?.lid ?? contact?.phoneNumber ?? '')
+  const jid = await resolveUserJid(contact?.phoneNumber, contact?.id, contact?.lid)
+  if (!shouldForward(jid || sourceJid)) return null
+  const phone = phoneFromJid(jid)
+  const displayName = firstNonEmpty(contact?.name, contact?.notify, contact?.verifiedName, contact?.username, phone ? `+${phone}` : sourceJid)
+  return {
+    jid: jid || sourceJid,
+    sourceJid,
+    phone,
+    displayName,
+    savedName: String(contact?.name ?? ''),
+    notifyName: String(contact?.notify ?? ''),
+    verifiedName: String(contact?.verifiedName ?? ''),
+    username: String(contact?.username ?? ''),
+    source
+  }
+}
+
+async function normalizeChat(chat, source = 'live') {
+  const sourceJid = String(chat?.id ?? chat?.lidJid ?? chat?.pnJid ?? '')
+  const jid = await resolveUserJid(chat?.pnJid, chat?.id, chat?.lidJid)
+  if (!shouldForward(jid || sourceJid)) return null
+  const phone = phoneFromJid(jid)
+  if (!phone) return null
+  const cachedContact = [...state.contacts.values()].find(item => item.phone === phone || item.jid === jid || item.sourceJid === sourceJid)
+  const embedded = chat?.messages?.[0]?.message
+  const timestamp = chat?.conversationTimestamp ?? chat?.lastMsgTimestamp ?? chat?.lastMessageRecvTimestamp
+  return {
+    jid,
+    sourceJid,
+    phone,
+    displayName: firstNonEmpty(chat?.name, chat?.displayName, cachedContact?.displayName, `+${phone}`),
+    lastMessage: embedded ? messageText(embedded.message) : '',
+    lastMessageAt: timestamp == null ? '' : timestampToIso(timestamp),
+    unreadCount: Number.isFinite(Number(chat?.unreadCount)) ? Number(chat.unreadCount) : null,
+    archived: Boolean(chat?.archived),
+    source
+  }
+}
+
+async function normalizeMessage(message, source) {
   const sourceJid = message?.key?.remoteJid ?? ''
   const jid = await resolveDirectJid(message?.key)
-  if (!shouldForward(jid)) return
+  if (!shouldForward(jid)) return null
+  return {
+    id: message.key.id ?? '',
+    jid,
+    sourceJid,
+    phone: phoneFromJid(jid),
+    fromMe: Boolean(message.key.fromMe),
+    participant: message.key.participant ?? '',
+    pushName: message.pushName ?? '',
+    timestamp: timestampToIso(message.messageTimestamp),
+    text: messageText(message.message),
+    kind: messageKind(message.message),
+    source
+  }
+}
+
+function rememberContact(contact) {
+  if (!contact) return
+  const key = contact.sourceJid || contact.jid || contact.phone
+  const existing = state.contacts.get(key) ?? {}
+  const merged = { ...existing }
+  for (const [name, value] of Object.entries(contact)) if (value !== '' && value != null) merged[name] = value
+  merged.displayName = firstNonEmpty(merged.savedName, merged.notifyName, merged.verifiedName, merged.username, merged.displayName, merged.phone ? `+${merged.phone}` : key)
+  state.contacts.set(key, merged)
+}
+
+function rememberChat(chat) {
+  if (!chat) return
+  const key = chat.phone || chat.jid
+  const existing = state.chats.get(key) ?? {}
+  state.chats.set(key, {
+    ...existing,
+    ...chat,
+    displayName: chat.displayName || existing.displayName || `+${chat.phone}`,
+    lastMessage: chat.lastMessage || existing.lastMessage || '',
+    lastMessageAt: chat.lastMessageAt || existing.lastMessageAt || ''
+  })
+}
+
+async function normalizeContacts(contacts, source) {
+  const items = (await Promise.all((contacts ?? []).map(contact => normalizeContact(contact, source)))).filter(Boolean)
+  for (const item of items) rememberContact(item)
+  return items
+}
+
+async function normalizeChats(chats, source) {
+  const items = (await Promise.all((chats ?? []).map(chat => normalizeChat(chat, source)))).filter(Boolean)
+  for (const item of items) rememberChat(item)
+  return items
+}
+
+async function normalizeMessages(messages, source) {
+  const items = (await Promise.all((messages ?? []).map(message => normalizeMessage(message, source)))).filter(item => item?.phone && item?.id)
+  for (const item of items) {
+    const contact = [...state.contacts.values()].find(value => value.phone === item.phone)
+    if (!item.fromMe && item.pushName) rememberContact({ jid: item.jid, sourceJid: item.sourceJid, phone: item.phone, displayName: item.pushName, notifyName: item.pushName, source })
+    rememberChat({ jid: item.jid, sourceJid: item.sourceJid, phone: item.phone, displayName: contact?.displayName || item.pushName || `+${item.phone}`, lastMessage: item.text || `[${item.kind}]`, lastMessageAt: item.timestamp, unreadCount: null, source })
+  }
+  return items
+}
+
+async function forwardMessage(message, source) {
+  const data = await normalizeMessage(message, source)
+  if (!data?.phone || !data.id) return
+  if (!data.fromMe && data.pushName) rememberContact({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: data.pushName, notifyName: data.pushName, source })
+  rememberChat({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: data.pushName || `+${data.phone}`, lastMessage: data.text || `[${data.kind}]`, lastMessageAt: data.timestamp, unreadCount: null, source })
   emit({
     type: 'event',
     event: 'message',
     accountId: state.accountId,
+    data
+  })
+}
+
+async function handleHistorySync(update) {
+  const phase = syncTypeName(update?.syncType)
+  emit({ type: 'event', event: 'sync_status', accountId: state.accountId, data: { state: 'syncing', phase, progress: update?.progress ?? null } })
+  const contacts = await normalizeContacts(update?.contacts, `history:${phase}`)
+  const chats = await normalizeChats(update?.chats, `history:${phase}`)
+  const messages = await normalizeMessages(update?.messages, `history:${phase}`)
+  state.historyTotals.contacts += contacts.length
+  state.historyTotals.chats += chats.length
+  state.historyTotals.messages += messages.length
+  emitItems('contacts_upsert', contacts, `history:${phase}`)
+  emitItems('chats_upsert', chats, `history:${phase}`)
+  emitItems('messages_history', messages, `history:${phase}`)
+  emit({
+    type: 'event', event: 'sync_status', accountId: state.accountId,
     data: {
-      id: message.key.id ?? '',
-      jid,
-      sourceJid,
-      phone: jid.endsWith('@s.whatsapp.net') ? jid.split('@')[0] : '',
-      fromMe: Boolean(message.key.fromMe),
-      participant: message.key.participant ?? '',
-      pushName: message.pushName ?? '',
-      timestamp: timestampToIso(message.messageTimestamp),
-      text: messageText(message.message),
-      kind: messageKind(message.message),
-      source
+      state: update?.isLatest ? 'complete' : 'syncing', phase, progress: update?.progress ?? null,
+      contacts: state.contacts.size, chats: state.chats.size, messages: state.historyTotals.messages,
+      isLatest: Boolean(update?.isLatest)
     }
   })
+}
+
+async function emitCachedSnapshot(source = 'manual') {
+  const contacts = [...state.contacts.values()]
+  const chats = [...state.chats.values()]
+  emitItems('contacts_upsert', contacts, source)
+  emitItems('chats_upsert', chats, source)
+  return { contacts: contacts.length, chats: chats.length }
+}
+
+async function manualSync() {
+  emit({ type: 'event', event: 'sync_status', accountId: state.accountId, data: { state: 'syncing', phase: 'app_state', progress: null } })
+  try {
+    await state.socket?.resyncAppState?.(ALL_WA_PATCH_NAMES, false)
+    const counts = await emitCachedSnapshot('manual')
+    emit({
+      type: 'event', event: 'sync_status', accountId: state.accountId,
+      data: { state: 'complete', phase: 'app_state', progress: 100, ...counts, messages: state.historyTotals.messages, existingSession: state.existingSession }
+    })
+  } catch (error) {
+    emit({ type: 'event', event: 'sync_status', accountId: state.accountId, data: { state: 'failed', phase: 'app_state', error: safeError(error), existingSession: state.existingSession } })
+  }
 }
 
 async function closeSocket() {
@@ -259,6 +443,10 @@ async function connect() {
   await fs.mkdir(state.sessionDir, { recursive: true })
   if (!state.authKey) throw new Error('session_encryption_key_missing')
   const { state: auth, saveCreds } = await useEncryptedAuthState(state.sessionDir, state.authKey)
+  state.existingSession = Boolean(auth.creds.registered && (auth.creds.accountSyncCounter ?? 0) > 0)
+  state.contacts.clear()
+  state.chats.clear()
+  state.historyTotals = { contacts: 0, chats: 0, messages: 0 }
   const { version } = await fetchLatestBaileysVersion()
   const socket = makeWASocket({
     auth,
@@ -268,6 +456,7 @@ async function connect() {
     printQRInTerminal: false,
     markOnlineOnConnect: false,
     syncFullHistory: true,
+    shouldSyncHistoryMessage: () => true,
     generateHighQualityLinkPreview: false
   })
   state.socket = socket
@@ -275,8 +464,56 @@ async function connect() {
   emit({ type: 'event', event: 'connection', accountId: state.accountId, data: { state: 'connecting' } })
 
   socket.ev.on('creds.update', saveCreds)
-  socket.ev.on('messages.upsert', async update => {
-    for (const message of update.messages ?? []) await forwardMessage(message, update.type ?? 'notify')
+  socket.ev.on('messages.upsert', update => {
+    enqueueSync(async () => {
+      for (const message of update.messages ?? []) await forwardMessage(message, update.type ?? 'notify')
+    }, 'messages')
+  })
+  socket.ev.on('messaging-history.set', update => {
+    enqueueSync(() => handleHistorySync(update), 'history')
+  })
+  socket.ev.on('messaging-history.status', update => {
+    enqueueSync(async () => {
+      emit({ type: 'event', event: 'sync_status', accountId: state.accountId, data: { state: update.status === 'complete' ? 'complete' : 'paused', phase: syncTypeName(update.syncType), progress: update.explicit ? 100 : null, explicit: update.explicit, contacts: state.contacts.size, chats: state.chats.size, messages: state.historyTotals.messages } })
+    }, 'history_status')
+  })
+  socket.ev.on('contacts.upsert', contacts => {
+    enqueueSync(async () => {
+      const items = await normalizeContacts(contacts, 'live')
+      emitItems('contacts_upsert', items, 'live')
+    }, 'contacts')
+  })
+  socket.ev.on('contacts.update', contacts => {
+    enqueueSync(async () => {
+      const items = await normalizeContacts(contacts, 'live_update')
+      emitItems('contacts_upsert', items, 'live_update')
+    }, 'contacts')
+  })
+  socket.ev.on('chats.upsert', chats => {
+    enqueueSync(async () => {
+      const items = await normalizeChats(chats, 'live')
+      emitItems('chats_upsert', items, 'live')
+    }, 'chats')
+  })
+  socket.ev.on('chats.update', chats => {
+    enqueueSync(async () => {
+      const items = await normalizeChats(chats, 'live_update')
+      emitItems('chats_upsert', items, 'live_update')
+    }, 'chats')
+  })
+  socket.ev.on('lid-mapping.update', mapping => {
+    enqueueSync(async () => {
+      const lid = String(mapping?.lid ?? '')
+      const jid = String(mapping?.pn ?? '')
+      const phone = phoneFromJid(jid)
+      if (!lid || !phone) return
+      const contacts = [...state.contacts.values()].filter(item => item.jid === lid || item.sourceJid === lid)
+      for (const item of contacts) rememberContact({ ...item, jid, phone, source: 'lid_mapping' })
+      const chats = [...state.chats.values()].filter(item => item.jid === lid || item.sourceJid === lid)
+      for (const item of chats) rememberChat({ ...item, jid, phone, source: 'lid_mapping' })
+      emitItems('contacts_upsert', contacts.map(item => ({ ...item, jid, phone, source: 'lid_mapping' })), 'lid_mapping')
+      emitItems('chats_upsert', chats.map(item => ({ ...item, jid, phone, source: 'lid_mapping' })), 'lid_mapping')
+    }, 'lid_mapping')
   })
   socket.ev.on('messages.update', async updates => {
     for (const update of updates ?? []) {
@@ -297,7 +534,7 @@ async function connect() {
       state.connection = 'connected'
       emit({
         type: 'event', event: 'connection', accountId: state.accountId,
-        data: { state: 'connected', user: socket.user?.id ?? '', name: socket.user?.name ?? '' }
+        data: { state: 'connected', user: socket.user?.id ?? '', name: socket.user?.name ?? '', existingSession: state.existingSession }
       })
       return
     }
@@ -322,7 +559,7 @@ async function handle(command) {
   try {
     switch (command.command) {
       case 'ping':
-        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.1.0', connection: state.connection })
+        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.2.0', connection: state.connection })
         return
       case 'initialize': {
         state.accountId = validateAccountId(command.accountId ?? 'default')
@@ -360,6 +597,12 @@ async function handle(command) {
         reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString() })
         return
       }
+      case 'sync_now': {
+        if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
+        enqueueSync(manualSync, 'manual')
+        reply(requestId, true, { state: 'started', existingSession: state.existingSession, contacts: state.contacts.size, chats: state.chats.size })
+        return
+      }
       default:
         throw new Error('unknown_command')
     }
@@ -380,4 +623,4 @@ lines.on('close', async () => {
   process.exit(0)
 })
 
-emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.1.0' } })
+emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.2.0' } })

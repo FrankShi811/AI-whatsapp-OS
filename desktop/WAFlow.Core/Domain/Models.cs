@@ -100,6 +100,24 @@ public sealed class WhatsAppConversation
     [JsonIgnore] public string LastTimeLabel => LastMessageAt == default ? "" : LastMessageAt.LocalDateTime.ToString("MM-dd HH:mm");
 }
 
+public sealed class WhatsAppContact
+{
+    public string Id { get; set; } = "";
+    public string AccountId { get; set; } = "primary";
+    public string Jid { get; set; } = "";
+    public string SourceJid { get; set; } = "";
+    public string Phone { get; set; } = "";
+    public string DisplayName { get; set; } = "";
+    public string SavedName { get; set; } = "";
+    public string NotifyName { get; set; } = "";
+    public string VerifiedName { get; set; } = "";
+    public string Username { get; set; } = "";
+    public string Source { get; set; } = "live";
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
+
+    [JsonIgnore] public string SearchText => string.Join(' ', new[] { DisplayName, SavedName, NotifyName, VerifiedName, Username, Phone, Jid }.Where(value => !string.IsNullOrWhiteSpace(value)));
+}
+
 public sealed class WhatsAppMessage
 {
     public string Id { get; set; } = "";
