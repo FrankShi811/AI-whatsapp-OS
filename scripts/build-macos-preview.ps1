@@ -70,7 +70,7 @@ foreach ($target in $targets) {
       --outputDir $velopackOutput --channel $channel --runtime $target.Rid `
       --packAuthors 'AI Sales OS' --packTitle 'AI Sales OS' `
       --releaseNotes (Join-Path $root "docs\releases\v$Version.md") `
-      --instReadme (Join-Path $root 'docs\MACOS_NATIVE_PORT.md') --instLocation Either
+      --instReadme (Join-Path $root 'docs\MACOS_NATIVE_PORT.md')
     if ($LASTEXITCODE -ne 0) { throw "Velopack macOS $($target.Rid) package creation failed." }
 
     $portable = Get-ChildItem -LiteralPath $velopackOutput -File -Filter '*.zip' | Sort-Object Length -Descending | Select-Object -First 1
