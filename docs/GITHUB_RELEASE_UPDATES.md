@@ -54,8 +54,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-velopack-release.ps1 `
 
 1. 将仓库连接为 Git remote，并确保 GitHub Actions 可运行。
 2. 更新两个 `.csproj` 的 `Version` 和 `docs/releases/vX.Y.Z.md`。
-3. 提交并推送代码。
-4. 创建并推送标签：
+3. 提交并推送到 `main`。工作流会读取 `.csproj` 版本号并创建/更新对应 Release，无需在本机保存 GitHub Token。
+4. 如需手动走标签发布，也可以创建并推送标签：
 
 ```powershell
 git tag v1.16.0
