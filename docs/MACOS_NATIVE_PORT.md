@@ -1,6 +1,6 @@
 # AI Sales OS macOS 真原生迁移与交付说明
 
-## 当前结论（1.16.0）
+## 当前结论（1.16.1）
 
 Windows 主客户端仍是原生 WPF。仓库现已新增独立的 `WAFlow.Mac` Avalonia 原生客户端，复用 `WAFlow.Core` 的 SQLite、客户、评分、会话历史、Campaign 和设置契约，并使用 macOS Keychain 保存 API Key。它不是 Electron、WebView 或 HTTP 网页壳。
 

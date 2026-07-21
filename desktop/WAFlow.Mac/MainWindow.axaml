@@ -35,7 +35,7 @@
                 HorizontalContentAlignment="Stretch" ToolTip.Tip="查看版本、更新日志并安装新版本">
           <StackPanel Spacing="4">
             <TextBlock x:Name="UpdateHeadlineText" Text="macOS 原生测试版" Foreground="#75E0C0" FontWeight="SemiBold" />
-            <TextBlock x:Name="VersionText" Text="版本 1.16.0 · 本地数据" Foreground="#A7C9C0" FontSize="12" />
+            <TextBlock x:Name="VersionText" Text="版本 1.16.1 · 本地数据" Foreground="#A7C9C0" FontSize="12" />
           </StackPanel>
         </Button>
       </Grid>

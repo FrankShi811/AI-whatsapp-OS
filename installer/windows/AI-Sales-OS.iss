@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "1.16.0"
+  #define MyAppVersion "1.16.1"
 #endif
 #ifndef VelopackSetupPath
   #error VelopackSetupPath is required

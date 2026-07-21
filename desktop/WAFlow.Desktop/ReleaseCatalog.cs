@@ -13,12 +13,18 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("1.16.1", "2026-07-21", "跨平台自动更新正式验证",
+        [
+            "完成 GitHub Release 首次发布与后续版本更新链路验证。",
+            "Windows、Apple Silicon 和 Intel 分别使用独立 Velopack 更新通道。",
+            "内置开源中文 PDF 字体，避免不同电脑缺少系统字体导致报告导出失败。"
+        ], true),
         new("1.16.0", "2026-07-21", "GitHub Release 自动更新",
         [
             "启动自动检查 GitHub Release，发现新版本后在后台自动下载。",
             "左下角版本中心显示当前版本、最新版本、更新日志和下载状态。",
             "用户确认后自动安装并重启，应用升级不覆盖本地客户数据、WhatsApp 账号或配置。"
-        ], true),
+        ]),
         new("1.15.0", "2026-07-21", "版本中心、WhatsApp 建群与安装交付",
         [
             "左下角改为当前版本入口，可随时查看版本更新历史。",
