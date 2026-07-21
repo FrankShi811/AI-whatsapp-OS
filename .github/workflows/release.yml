@@ -33,8 +33,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: bridge/package-lock.json
+
+      - name: Install pnpm
+        shell: pwsh
+        run: npm install --global pnpm@10.14.0
 
       - name: Resolve version
         shell: pwsh
@@ -51,7 +53,7 @@ jobs:
           "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install Bridge dependencies
-        run: npm ci --prefix bridge
+        run: pnpm --dir bridge install --frozen-lockfile
 
       - name: Install Inno Setup for Chinese installer
         shell: pwsh
