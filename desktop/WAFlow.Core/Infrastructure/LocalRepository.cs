@@ -51,7 +51,7 @@ public sealed class LocalRepository
               data_json TEXT NOT NULL
             );
             DROP INDEX IF EXISTS ux_leads_phone;
-            CREATE UNIQUE INDEX IF NOT EXISTS ux_leads_phone ON leads(phone_e164) WHERE phone_valid=1 AND phone_e164 <> '';
+            CREATE INDEX IF NOT EXISTS ix_leads_phone ON leads(phone_e164) WHERE phone_valid=1 AND phone_e164 <> '';
             CREATE INDEX IF NOT EXISTS ix_leads_filters ON leads(grade, stage, owner, updated_at DESC);
             CREATE TABLE IF NOT EXISTS analysis_runs (
               id TEXT PRIMARY KEY,
@@ -64,6 +64,35 @@ public sealed class LocalRepository
               updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS ix_analysis_lead ON analysis_runs(lead_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS customer_analysis_reports (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              ai_model TEXT NOT NULL,
+              source_snapshot TEXT NOT NULL,
+              report_json TEXT NOT NULL,
+              created_time TEXT NOT NULL,
+              version INTEGER NOT NULL,
+              export_history TEXT NOT NULL,
+              status TEXT NOT NULL,
+              error TEXT NOT NULL,
+              updated_time TEXT NOT NULL,
+              UNIQUE(customer_id, version)
+            );
+            CREATE INDEX IF NOT EXISTS ix_customer_analysis_reports_customer ON customer_analysis_reports(customer_id, version DESC);
+            CREATE INDEX IF NOT EXISTS ix_customer_analysis_reports_recent ON customer_analysis_reports(created_time DESC);
+            CREATE TABLE IF NOT EXISTS customer_analysis_report_steps (
+              id TEXT PRIMARY KEY,
+              report_id TEXT NOT NULL REFERENCES customer_analysis_reports(id) ON DELETE CASCADE,
+              step_key TEXT NOT NULL,
+              sequence INTEGER NOT NULL,
+              status TEXT NOT NULL,
+              result_json TEXT NOT NULL,
+              error TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(report_id, step_key)
+            );
+            CREATE INDEX IF NOT EXISTS ix_customer_analysis_steps_report ON customer_analysis_report_steps(report_id, sequence);
             CREATE TABLE IF NOT EXISTS drafts (
               id TEXT PRIMARY KEY,
               lead_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
@@ -290,28 +319,21 @@ public sealed class LocalRepository
         foreach (var lead in leads)
         {
             var changed = false;
-            if (lead.AnalysisStatus == AnalysisStatus.Succeeded && !lead.AiScoreApplied)
+            var hasCurrentV2Score = lead.HasCurrentAiScore;
+            var hasLegacyOrUntrustedScore = !hasCurrentV2Score &&
+                (lead.AiScoreApplied || lead.AnalysisStatus == AnalysisStatus.Succeeded || lead.Score != 0 || lead.Grade != "D" ||
+                 lead.AnalysisContractVersion != 0 || lead.BaseProfileScore != 0 || lead.BehaviorSignalScore != 0 ||
+                 lead.ScoreBreakdown.Count > 0 || lead.ScoreReasons.Count > 0 || lead.ScoreFactors.Count > 0 || lead.BehaviorSignals.Count > 0);
+            if (hasLegacyOrUntrustedScore)
             {
-                lead.AiScoreApplied = true;
-                lead.LastAnalyzedAt ??= lead.UpdatedAt;
+                LeadScoringService.ResetToAiBaseline(lead, "等待 Lead Intelligence V2 分析", "请使用当前 AI 模型运行 V2 分析。");
+                lead.AnalysisStatus = AnalysisStatus.NotRun;
+                lead.AnalysisError = "旧评分契约已停用；客户原始资料与历史分析记录均已保留，请运行 V2 分析。";
+                lead.LastAnalyzedAt = null;
                 changed = true;
             }
-            else if (!lead.AiScoreApplied)
+            else if (!hasCurrentV2Score)
             {
-                if (lead.Score != 0 || lead.Grade != "D" || lead.ScoreBreakdown.Count > 0 || lead.ScoreReasons.Count > 0)
-                {
-                    lead.Score = 0;
-                    lead.Grade = "D";
-                    lead.ScoreBreakdown = [];
-                    lead.ScoreReasons = [];
-                    lead.AnalysisConfidence = 0;
-                    lead.Evidence = [];
-                    lead.Risks = [];
-                    lead.ProfileSummary = "等待 AI 分析";
-                    lead.CustomerSegment = "未分析";
-                    lead.NextAction = "等待客户回复或手动运行 AI 分析";
-                    changed = true;
-                }
                 if (lead.AnalysisStatus == AnalysisStatus.Running)
                 {
                     lead.AnalysisStatus = AnalysisStatus.Queued;
@@ -427,6 +449,23 @@ public sealed class LocalRepository
         await db.OpenAsync(cancellationToken);
         await using var transaction = await db.BeginTransactionAsync(cancellationToken);
         var deleted = await DeleteLeadInternalAsync(db, transaction as SqliteTransaction, leadId, "customer_deleted", cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return deleted;
+    }
+
+    public async Task<int> DeleteLeadsAsync(IEnumerable<string> leadIds, CancellationToken cancellationToken = default)
+    {
+        var ids = leadIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (ids.Count == 0) return 0;
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var transaction = await db.BeginTransactionAsync(cancellationToken);
+        var deleted = 0;
+        foreach (var leadId in ids)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await DeleteLeadInternalAsync(db, transaction as SqliteTransaction, leadId, "customers_bulk_deleted", cancellationToken)) deleted++;
+        }
         await transaction.CommitAsync(cancellationToken);
         return deleted;
     }
@@ -566,10 +605,14 @@ public sealed class LocalRepository
         if (digits.Length == 0) return null;
         await using var db = Open(); await db.OpenAsync(cancellationToken);
         await using var command = db.CreateCommand();
-        command.CommandText = "SELECT data_json FROM leads WHERE phone_e164=$phone LIMIT 1";
+        command.CommandText = "SELECT data_json FROM leads WHERE phone_e164=$phone LIMIT 2";
         command.Parameters.AddWithValue("$phone", "+" + digits);
-        var exact = Json.Deserialize<Lead>(await command.ExecuteScalarAsync(cancellationToken) as string);
-        if (exact is not null) return exact;
+        var exact = new List<Lead>();
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            while (await reader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<Lead>(reader.GetString(0)) is { } lead) exact.Add(lead);
+        if (exact.Count == 1) return exact[0];
+        if (exact.Count > 1) return null;
         return Services.PhoneIdentity.FindUniqueLead(await GetLeadsAsync(cancellationToken: cancellationToken), digits);
     }
 
@@ -579,7 +622,9 @@ public sealed class LocalRepository
             .SelectMany(lead => Services.PhoneIdentity.LeadPhoneCandidates(lead).Select(phone => (Phone: phone, Lead: lead)))
             .Where(item => item.Phone.Length > 0)
             .GroupBy(item => item.Phone, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First().Lead, StringComparer.OrdinalIgnoreCase);
+            .Select(group => new { group.Key, Leads = group.Select(item => item.Lead).DistinctBy(lead => lead.Id).ToList() })
+            .Where(group => group.Leads.Count == 1)
+            .ToDictionary(group => group.Key, group => group.Leads[0], StringComparer.OrdinalIgnoreCase);
         if (byPhone.Count == 0) return 0;
 
         await using var db = Open();
@@ -750,6 +795,17 @@ public sealed class LocalRepository
                     if (!string.IsNullOrWhiteSpace(existing.MediaPath)) message.MediaPath = existing.MediaPath;
                     else if (string.IsNullOrWhiteSpace(message.MediaDownloadError) && !string.IsNullOrWhiteSpace(existing.MediaDownloadError)) message.MediaDownloadError = existing.MediaDownloadError;
                 }
+                if (string.IsNullOrWhiteSpace(message.QuotedMessageId))
+                {
+                    message.QuotedMessageId = existing.QuotedMessageId;
+                    message.QuotedFromMe = existing.QuotedFromMe;
+                }
+                if (string.IsNullOrWhiteSpace(message.QuotedText)) message.QuotedText = existing.QuotedText;
+                if (existing.IsRevoked)
+                {
+                    message.IsRevoked = true;
+                    message.RevokedAt ??= existing.RevokedAt;
+                }
             }
             await using var update = db.CreateCommand();
             update.CommandText = "UPDATE whatsapp_messages SET status=$status,lead_id=$lead,data_json=$json WHERE id=$id";
@@ -757,6 +813,30 @@ public sealed class LocalRepository
             await update.ExecuteNonQueryAsync(cancellationToken);
         }
         return inserted;
+    }
+
+    public async Task<WhatsAppMessage?> MarkWhatsAppMessageRevokedAsync(
+        string accountId,
+        string providerMessageId,
+        DateTimeOffset? revokedAt = null,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var select = db.CreateCommand();
+        select.CommandText = "SELECT id,data_json FROM whatsapp_messages WHERE account_id=$account AND provider_message_id=$provider LIMIT 1";
+        select.Parameters.AddWithValue("$account", accountId); select.Parameters.AddWithValue("$provider", providerMessageId);
+        await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return null;
+        var id = reader.GetString(0); var message = Json.Deserialize<WhatsAppMessage>(reader.GetString(1));
+        await reader.DisposeAsync();
+        if (message is null) return null;
+        message.IsRevoked = true;
+        message.RevokedAt ??= revokedAt ?? DateTimeOffset.Now;
+        await using var update = db.CreateCommand();
+        update.CommandText = "UPDATE whatsapp_messages SET data_json=$json WHERE id=$id";
+        update.Parameters.AddWithValue("$json", Json.Serialize(message)); update.Parameters.AddWithValue("$id", id);
+        await update.ExecuteNonQueryAsync(cancellationToken);
+        return message;
     }
 
     public async Task<List<WhatsAppMessage>> GetWhatsAppMessagesAsync(string conversationId, int limit = 500, CancellationToken cancellationToken = default)
@@ -781,7 +861,7 @@ public sealed class LocalRepository
         command.CommandText = "SELECT data_json FROM whatsapp_messages WHERE lead_id=$lead OR ($phone <> '' AND phone=$phone) ORDER BY timestamp DESC LIMIT $limit";
         command.Parameters.AddWithValue("$lead", lead.Id);
         command.Parameters.AddWithValue("$phone", phone);
-        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 200));
+        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 5000));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken)) if (Json.Deserialize<WhatsAppMessage>(reader.GetString(0)) is { } item) items.Add(item);
         items.Reverse();
@@ -993,16 +1073,32 @@ public sealed class LocalRepository
     {
         var leads = await GetLeadsAsync(cancellationToken: cancellationToken);
         var campaigns = await GetCampaignsAsync(null, cancellationToken);
+        var recipients = new List<CampaignRecipient>();
+        foreach (var campaign in campaigns) recipients.AddRange(await GetCampaignRecipientsAsync(campaign.Id, cancellationToken));
         var lastImport = await GetLastImportTextAsync(cancellationToken);
         return new DashboardSnapshot
         {
             TotalLeads = leads.Count,
-            Grades = new[] { "A", "B", "C", "D" }.ToDictionary(x => x, x => leads.Count(l => l.Grade == x)),
+            Grades = new[] { "A", "B", "C", "D" }.ToDictionary(
+                grade => grade,
+                grade => leads.Count(lead => (lead.HasCurrentAiScore ? lead.Grade : "D") == grade)),
             Stages = Enum.GetValues<LeadStage>().ToDictionary(x => x, x => leads.Count(l => l.Stage == x)),
             PendingFollowUps = leads.Count(l => l.NextFollowUpAt is not null && l.NextFollowUpAt <= DateTimeOffset.Now.AddDays(1)),
             ActiveCampaigns = campaigns.Count(item => item.Status is CampaignStatus.Scheduled or CampaignStatus.Running or CampaignStatus.Paused or CampaignStatus.SafetyStopped),
             FailedAnalyses = leads.Count(l => l.AnalysisStatus == AnalysisStatus.RetryableFailed),
-            PriorityLeads = leads.Where(l => l.Grade is "A" or "B").Take(5).ToList(),
+            AnalyzedLeads = leads.Count(l => l.HasCurrentAiScore),
+            QueuedAnalyses = leads.Count(l => l.AnalysisStatus is AnalysisStatus.Queued or AnalysisStatus.Running),
+            CampaignSent = recipients.Count(item => item.Status == CampaignRecipientStatus.Sent),
+            CampaignFailed = recipients.Count(item => item.Status == CampaignRecipientStatus.Failed),
+            CampaignQueued = recipients.Count(item => item.Status is CampaignRecipientStatus.Queued or CampaignRecipientStatus.Sending),
+            SafetyStoppedCampaigns = campaigns.Count(item => item.Status == CampaignStatus.SafetyStopped),
+            PriorityLeads = leads
+                .Where(lead => lead.HasCurrentAiScore && lead.Grade is "A" or "B")
+                .OrderBy(lead => lead.Grade == "A" ? 0 : 1)
+                .ThenByDescending(lead => lead.Score)
+                .ThenBy(lead => lead.NextFollowUpAt ?? DateTimeOffset.MaxValue)
+                .Take(8)
+                .ToList(),
             LastImportText = lastImport
         };
     }
@@ -1016,6 +1112,145 @@ public sealed class LocalRepository
         if (!await reader.ReadAsync(cancellationToken)) return "暂无导入记录";
         var time = DateTimeOffset.TryParse(reader.GetString(5), out var parsed) ? parsed.LocalDateTime.ToString("MM-dd HH:mm") : "";
         return $"{reader.GetString(0)} · {reader.GetInt32(1)} 行 · 新建 {reader.GetInt32(2)} · 更新 {reader.GetInt32(3)} · 号码风险 {reader.GetInt32(4)} · {time}";
+    }
+
+    public async Task<List<CustomerHistoryEvent>> GetCustomerHistoryAsync(string leadId, CancellationToken cancellationToken = default)
+    {
+        var items = new List<CustomerHistoryEvent>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT event_type,detail,created_at FROM audit_events WHERE lead_id=$lead ORDER BY created_at";
+        command.Parameters.AddWithValue("$lead", leadId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            items.Add(new CustomerHistoryEvent
+            {
+                Type = reader.GetString(0), Detail = reader.GetString(1),
+                CreatedAt = DateTimeOffset.TryParse(reader.GetString(2), out var at) ? at : DateTimeOffset.MinValue
+            });
+        return items;
+    }
+
+    public async Task<List<LeadAnalysisRunSnapshot>> GetLeadAnalysisHistoryAsync(string leadId, CancellationToken cancellationToken = default)
+    {
+        var items = new List<LeadAnalysisRunSnapshot>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT status,model,error,result_json,created_at FROM analysis_runs WHERE lead_id=$lead ORDER BY created_at";
+        command.Parameters.AddWithValue("$lead", leadId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            items.Add(new LeadAnalysisRunSnapshot
+            {
+                Status = reader.GetString(0), Model = reader.GetString(1), Error = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                Result = reader.IsDBNull(3) ? null : Json.Deserialize<LeadAnalysis>(reader.GetString(3)),
+                CreatedAt = DateTimeOffset.TryParse(reader.GetString(4), out var at) ? at : DateTimeOffset.MinValue
+            });
+        return items;
+    }
+
+    public async Task<int> GetNextCustomerReportVersionAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT COALESCE(MAX(version),0)+1 FROM customer_analysis_reports WHERE customer_id=$customer";
+        command.Parameters.AddWithValue("$customer", customerId);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+    }
+
+    public async Task SaveCustomerAnalysisReportAsync(CustomerAnalysisReport report, CancellationToken cancellationToken = default)
+    {
+        report.UpdatedTime = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO customer_analysis_reports(id,customer_id,ai_model,source_snapshot,report_json,created_time,version,export_history,status,error,updated_time)
+            VALUES($id,$customer,$model,$snapshot,$report,$created,$version,$exports,$status,$error,$updated)
+            ON CONFLICT(id) DO UPDATE SET ai_model=excluded.ai_model,source_snapshot=excluded.source_snapshot,report_json=excluded.report_json,
+              export_history=excluded.export_history,status=excluded.status,error=excluded.error,updated_time=excluded.updated_time
+            """;
+        command.Parameters.AddWithValue("$id", report.Id); command.Parameters.AddWithValue("$customer", report.CustomerId);
+        command.Parameters.AddWithValue("$model", report.AiModel); command.Parameters.AddWithValue("$snapshot", Json.Serialize(report.SourceSnapshot));
+        command.Parameters.AddWithValue("$report", Json.Serialize(report.Report)); command.Parameters.AddWithValue("$created", report.CreatedTime.ToString("O"));
+        command.Parameters.AddWithValue("$version", report.Version); command.Parameters.AddWithValue("$exports", Json.Serialize(report.ExportHistory));
+        command.Parameters.AddWithValue("$status", report.Status.ToString()); command.Parameters.AddWithValue("$error", report.Error);
+        command.Parameters.AddWithValue("$updated", report.UpdatedTime.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<CustomerAnalysisReport?> GetCustomerAnalysisReportAsync(string reportId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT id,customer_id,ai_model,source_snapshot,report_json,created_time,version,export_history,status,error,updated_time FROM customer_analysis_reports WHERE id=$id";
+        command.Parameters.AddWithValue("$id", reportId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadCustomerAnalysisReport(reader) : null;
+    }
+
+    public async Task<List<CustomerAnalysisReport>> GetCustomerAnalysisReportsAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        var items = new List<CustomerAnalysisReport>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT id,customer_id,ai_model,source_snapshot,report_json,created_time,version,export_history,status,error,updated_time FROM customer_analysis_reports WHERE customer_id=$customer ORDER BY version DESC";
+        command.Parameters.AddWithValue("$customer", customerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken)) items.Add(ReadCustomerAnalysisReport(reader));
+        return items;
+    }
+
+    private static CustomerAnalysisReport ReadCustomerAnalysisReport(SqliteDataReader reader)
+    {
+        var status = Enum.TryParse<CustomerReportStatus>(reader.GetString(8), out var parsedStatus) ? parsedStatus : CustomerReportStatus.RetryableFailed;
+        return new CustomerAnalysisReport
+        {
+            Id = reader.GetString(0), CustomerId = reader.GetString(1), AiModel = reader.GetString(2),
+            SourceSnapshot = Json.Deserialize<CustomerIntelligenceSourceSnapshot>(reader.GetString(3)) ?? new(),
+            Report = Json.Deserialize<CustomerIntelligenceReportContent>(reader.GetString(4)) ?? new(),
+            CreatedTime = DateTimeOffset.TryParse(reader.GetString(5), out var created) ? created : DateTimeOffset.MinValue,
+            Version = reader.GetInt32(6), ExportHistory = Json.Deserialize<List<CustomerReportExportRecord>>(reader.GetString(7)) ?? [],
+            Status = status, Error = reader.GetString(9), UpdatedTime = DateTimeOffset.TryParse(reader.GetString(10), out var updated) ? updated : DateTimeOffset.MinValue,
+            CustomerName = (Json.Deserialize<CustomerIntelligenceSourceSnapshot>(reader.GetString(3))?.Lead.DisplayName) ?? ""
+        };
+    }
+
+    public async Task SaveCustomerAnalysisStepAsync(CustomerAnalysisReportStep step, CancellationToken cancellationToken = default)
+    {
+        step.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO customer_analysis_report_steps(id,report_id,step_key,sequence,status,result_json,error,created_at,updated_at)
+            VALUES($id,$report,$key,$sequence,$status,$result,$error,$created,$updated)
+            ON CONFLICT(report_id,step_key) DO UPDATE SET status=excluded.status,result_json=excluded.result_json,error=excluded.error,updated_at=excluded.updated_at
+            """;
+        command.Parameters.AddWithValue("$id", step.Id); command.Parameters.AddWithValue("$report", step.ReportId);
+        command.Parameters.AddWithValue("$key", step.StepKey); command.Parameters.AddWithValue("$sequence", step.Sequence);
+        command.Parameters.AddWithValue("$status", step.Status.ToString()); command.Parameters.AddWithValue("$result", step.ResultJson);
+        command.Parameters.AddWithValue("$error", step.Error); command.Parameters.AddWithValue("$created", step.CreatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$updated", step.UpdatedAt.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<CustomerAnalysisReportStep>> GetCustomerAnalysisStepsAsync(string reportId, CancellationToken cancellationToken = default)
+    {
+        var items = new List<CustomerAnalysisReportStep>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT id,report_id,step_key,sequence,status,result_json,error,created_at,updated_at FROM customer_analysis_report_steps WHERE report_id=$report ORDER BY sequence";
+        command.Parameters.AddWithValue("$report", reportId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            items.Add(new CustomerAnalysisReportStep
+            {
+                Id = reader.GetString(0), ReportId = reader.GetString(1), StepKey = reader.GetString(2), Sequence = reader.GetInt32(3),
+                Status = Enum.TryParse<CustomerReportStepStatus>(reader.GetString(4), out var status) ? status : CustomerReportStepStatus.RetryableFailed,
+                ResultJson = reader.GetString(5), Error = reader.GetString(6),
+                CreatedAt = DateTimeOffset.TryParse(reader.GetString(7), out var created) ? created : DateTimeOffset.MinValue,
+                UpdatedAt = DateTimeOffset.TryParse(reader.GetString(8), out var updated) ? updated : DateTimeOffset.MinValue
+            });
+        return items;
     }
 
     public async Task SaveAnalysisRunAsync(string id, string leadId, string status, string model, LeadAnalysis? result, string? error, CancellationToken cancellationToken = default)

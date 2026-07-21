@@ -438,7 +438,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
         var connected = _services.WhatsApp.IsConnectedFor(accountId);
         var state = _services.WhatsApp.ConnectionStateFor(accountId);
         ConnectionText.Text = connected ? "已连接" : state switch { "connecting" => "连接中 / 等待扫码", "logged_out" => "登录已失效", _ => "未连接" };
-        ConnectionText.Foreground = connected ? (System.Windows.Media.Brush)FindResource("Primary") : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(161, 92, 22));
+        ConnectionText.Foreground = (System.Windows.Media.Brush)FindResource(connected ? "Success" : "Warning");
     }
 
     private static DateTimeOffset ParseBeijing(string value)

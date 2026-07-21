@@ -1,52 +1,66 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Services;
+using WAFlow.Desktop.Controls;
 using WAFlow.Desktop.Pages;
+using WAFlow.Desktop.Updates;
 using WAFlow.Desktop.Windows;
 
 namespace WAFlow.Desktop;
 
 public partial class MainWindow : Window
 {
-    private const int CurrentGuideVersion = 4;
     private readonly AppServices _services;
+    private readonly IApplicationUpdateService _updates;
     private readonly DashboardView _dashboard;
     private readonly LeadIntelligenceView _intelligence;
     private readonly CustomersView _customers;
     private readonly WhatsAppInboxView _inbox;
     private readonly CampaignsView _campaigns;
+    private readonly AnalyticsView _analytics;
     private Button? _activeButton;
-    private int _onboardingStep;
-    private static readonly GuideStep[] GuideSteps =
-    [
-        new("欢迎使用 AI Sales OS", "这是一套本地原生的 WhatsApp 商机管理与销售自动化工具。客户资料、任务和同步消息默认保存在当前电脑，不需要启动本地网页服务。", "先认识左侧主导航", "Dashboard 查看销售脉搏；商机智能用于评分与 AI 建议；客户列表保存所有原表字段；WhatsApp Inbox 管理会话；自动化群发建立逐人发送任务。"),
-        new("完成 API 对接", "填写 DeepSeek 或兼容接口的 Base URL 与 API Key，系统会自动拉取全部可用模型，选择一个即可开始使用 AI 分析。", "首次必需：配置 API 并选择模型", "API Key 只写入 Windows 凭据管理器；模型目录和当前选择保存在本机。首次进入不需要填写任何企业资料。", true),
-        new("导入并维护客户数据", "在客户列表或商机智能页面点击“导入客户”。Excel / CSV 的每一列都会保留，表格自定义列也可以成为群发话术字段。", "建议先导入客户并检查号码", "新导入且号码有效的客户默认可在群发任务中选择；号码无效或已经退订的客户会被强制排除。"),
-        new("连接 WhatsApp Inbox", "进入 WhatsApp Inbox，选择个人账号并扫描二维码。连接后会同步联系人、历史消息和客户侧栏资料。", "必须连接：WhatsApp Inbox", "群发运行时会每 10 秒并在每次发送前核对公网 IP；与任务基线不一致时立即停止所有自动触达，但仍无法保证个人账号不会被限制。"),
-        new("建立自动化群发任务", "先保存话术模板并插入客户字段，再单选或多选客户，选择即时或北京时间定时任务，设置逐条发送间隔，预览后人工批准。", "开始使用：WhatsApp 自动化群发", "每位客户会生成独立文本快照。发送间隔只是节奏控制，不能规避 WhatsApp 风控；任务运行期间请保持软件开启且账号已连接。")
-    ];
+    private OnboardingState _onboardingState = new();
+    private bool _onboardingReady;
+    private string _currentPage = "dashboard";
 
-    public MainWindow(AppServices services)
+    public MainWindow(AppServices services, IApplicationUpdateService updates)
     {
         InitializeComponent();
+        SidebarVersionText.Text = $"当前版本  v{ReleaseCatalog.CurrentVersion}";
         _services = services;
+        _updates = updates;
         _dashboard = new DashboardView(services);
         _intelligence = new LeadIntelligenceView(services);
         _customers = new CustomersView(services);
         _inbox = new WhatsAppInboxView(services);
         _campaigns = new CampaignsView(services);
+        _analytics = new AnalyticsView(services);
+        _dashboard.NavigateRequested += Dashboard_NavigateRequested;
         _intelligence.ImportRequested += OpenImport;
         _intelligence.DataChanged += async (_, _) => await RefreshAllAsync();
         _customers.ImportRequested += OpenImport;
         _customers.DataChanged += async (_, _) => await RefreshAllAsync();
         _inbox.DataChanged += async (_, _) => await RefreshAllAsync();
         _campaigns.DataChanged += async (_, _) => await RefreshAllAsync();
+        _analytics.DataChanged += async (_, _) => await RefreshAllAsync();
         _services.Campaigns.SafetyStopped += Campaigns_SafetyStopped;
         _services.LeadAutomation.AnalysisChanged += LeadAutomation_AnalysisChanged;
+        _updates.StateChanged += Updates_StateChanged;
+        ApplyUpdateState(_updates.State);
+        OnboardingGuide.CloseRequested += OnboardingGuide_CloseRequested;
+        OnboardingGuide.FinishedRequested += OnboardingGuide_FinishedRequested;
+        OnboardingGuide.SettingsRequested += OnboardingGuide_SettingsRequested;
+        OnboardingGuide.GlobalRequested += OnboardingGuide_GlobalRequested;
         Loaded += MainWindow_Loaded;
     }
+
+    private void VersionHistory_Click(object sender, RoutedEventArgs e) =>
+        new VersionHistoryWindow(_updates) { Owner = this }.ShowDialog();
 
     protected override void OnSourceInitialized(EventArgs e)
     {
@@ -59,15 +73,71 @@ public partial class MainWindow : Window
         WindowsTaskbarIdentity.ReleaseWindowIcon();
         _services.Campaigns.SafetyStopped -= Campaigns_SafetyStopped;
         _services.LeadAutomation.AnalysisChanged -= LeadAutomation_AnalysisChanged;
+        _updates.StateChanged -= Updates_StateChanged;
+        OnboardingGuide.CloseRequested -= OnboardingGuide_CloseRequested;
+        OnboardingGuide.FinishedRequested -= OnboardingGuide_FinishedRequested;
+        OnboardingGuide.SettingsRequested -= OnboardingGuide_SettingsRequested;
+        OnboardingGuide.GlobalRequested -= OnboardingGuide_GlobalRequested;
         base.OnClosed(e);
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         await UpdateProviderStateAsync();
+        await UpdateThemeStateAsync();
         await NavigateAsync("dashboard", DashboardButton);
-        var onboarding = await _services.Repository.GetOnboardingStateAsync();
-        if (!onboarding.Completed || onboarding.GuideVersion < CurrentGuideVersion) ShowGuide(0);
+        _onboardingState = await _services.Repository.GetOnboardingStateAsync();
+        _onboardingReady = true;
+        if (!_onboardingState.Completed || _onboardingState.GuideVersion < GuideCatalog.GlobalGuideVersion)
+            OnboardingGuide.ShowGuide(GuideCatalog.Global);
+        else
+            await ShowModuleGuideIfNeededAsync(_currentPage);
+        _ = _updates.CheckAndDownloadAsync();
+    }
+
+    private void Updates_StateChanged(object? sender, ApplicationUpdateState state) =>
+        _ = Dispatcher.InvokeAsync(() => ApplyUpdateState(state));
+
+    private void ApplyUpdateState(ApplicationUpdateState state)
+    {
+        SidebarUpdateIcon.Foreground = (Brush)FindResource("Success");
+        VersionButton.ToolTip = "查看版本与更新";
+        switch (state.Stage)
+        {
+            case ApplicationUpdateStage.Checking:
+                SidebarUpdateIcon.Text = "◌";
+                SidebarVersionText.Text = $"当前版本  v{state.CurrentVersion}";
+                SidebarUpdateText.Text = "正在检查 GitHub Release…";
+                break;
+            case ApplicationUpdateStage.Downloading:
+                SidebarUpdateIcon.Text = "↓";
+                SidebarVersionText.Text = $"正在下载  v{state.LatestVersion}";
+                SidebarUpdateText.Text = $"下载进度 {state.DownloadProgress}%";
+                break;
+            case ApplicationUpdateStage.ReadyToInstall:
+                SidebarUpdateIcon.Text = "●";
+                SidebarUpdateIcon.Foreground = (Brush)FindResource("Warning");
+                SidebarVersionText.Text = $"新版本  v{state.LatestVersion}";
+                SidebarUpdateText.Text = "已下载 · 点击安装并重启";
+                VersionButton.ToolTip = "更新已下载，点击安装并重启";
+                break;
+            case ApplicationUpdateStage.Failed:
+                SidebarUpdateIcon.Text = "!";
+                SidebarUpdateIcon.Foreground = (Brush)FindResource("Danger");
+                SidebarVersionText.Text = $"当前版本  v{state.CurrentVersion}";
+                SidebarUpdateText.Text = "检查失败 · 点击查看详情";
+                break;
+            case ApplicationUpdateStage.Disabled:
+                SidebarUpdateIcon.Text = "↻";
+                SidebarVersionText.Text = $"当前版本  v{state.CurrentVersion}";
+                SidebarUpdateText.Text = state.Message;
+                break;
+            default:
+                SidebarUpdateIcon.Text = "✓";
+                SidebarVersionText.Text = $"当前版本  v{state.CurrentVersion}";
+                SidebarUpdateText.Text = state.Stage == ApplicationUpdateStage.UpToDate ? "已是最新版本" : "启动后自动检查更新";
+                break;
+        }
     }
 
     private async void Navigate_Click(object sender, RoutedEventArgs e)
@@ -75,20 +145,55 @@ public partial class MainWindow : Window
         if (sender is Button button && button.Tag is string page) await NavigateAsync(page, button);
     }
 
+    private async void Dashboard_NavigateRequested(object? sender, string page)
+    {
+        var button = page switch
+        {
+            "intelligence" => IntelligenceButton,
+            "inbox" => InboxButton,
+            "broadcast" => BroadcastButton,
+            "customers" => CustomersButton,
+            "analytics" => AnalyticsButton,
+            _ => DashboardButton
+        };
+        await NavigateAsync(page, button);
+    }
+
     private async Task NavigateAsync(string page, Button button)
     {
-        if (_activeButton is not null) { _activeButton.Background = System.Windows.Media.Brushes.Transparent; _activeButton.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(201, 219, 212)); }
-        _activeButton = button; button.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(31, 77, 61)); button.Foreground = System.Windows.Media.Brushes.White;
+        _currentPage = page;
+        if (_activeButton is not null)
+        {
+            _activeButton.Background = Brushes.Transparent;
+            _activeButton.Foreground = (Brush)FindResource("SidebarText");
+            _activeButton.BorderBrush = Brushes.Transparent;
+            _activeButton.FontWeight = FontWeights.Medium;
+        }
+        _activeButton = button;
+        button.Background = (Brush)FindResource("SidebarActive");
+        button.Foreground = Brushes.White;
+        button.BorderBrush = (Brush)FindResource("Primary");
+        button.FontWeight = FontWeights.SemiBold;
         (object Content, string Title, string Subtitle) target = page switch
         {
-            "intelligence" => ((object)_intelligence, "商机智能", "评分证据、客户画像与下一步动作"),
-            "customers" => ((object)_customers, "客户列表", "搜索、标签、阶段、等级和负责人筛选"),
-            "inbox" => ((object)_inbox, "WhatsApp Inbox", "个人账号二维码连接、会话和客户资料联动"),
-            "broadcast" => ((object)_campaigns, "WhatsApp 自动化群发", "动态字段话术、客户选择、即时 / 定时任务与发送审计"),
-            _ => ((object)_dashboard, "Dashboard", "全球买家商机总览")
+            "intelligence" => ((object)_intelligence, "商机智能", "AI 评分证据、客户画像与下一步决策"),
+            "customers" => ((object)_customers, "客户列表", "统一客户数据、动态字段与批量运营"),
+            "inbox" => ((object)_inbox, "WhatsApp Inbox", "会话、客户资料与 AI 销售信号实时联动"),
+            "broadcast" => ((object)_campaigns, "WhatsApp 自动化群发", "动态话术、精准受众、发送节奏与安全审计"),
+            "analytics" => ((object)_analytics, "客户智能分析", "全量客户数据、AI 商业判断、报告版本与管理层导出"),
+            _ => ((object)_dashboard, "Dashboard", "今天最值得推进的商机与动作")
         };
-        ContentHost.Content = target.Content; TopTitle.Text = target.Title; TopSubtitle.Text = target.Subtitle;
+        ContentHost.Opacity = 0;
+        ContentHost.RenderTransform = new TranslateTransform(0, 8);
+        ContentHost.Content = target.Content;
+        TopTitle.Text = target.Title;
+        TopSubtitle.Text = target.Subtitle;
+        PageGuideButton.ToolTip = $"查看“{target.Title}”的功能介绍和操作步骤";
         if (ContentHost.Content is IRefreshableView view) await view.RefreshAsync();
+        var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
+        ContentHost.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180)) { EasingFunction = easing });
+        ((TranslateTransform)ContentHost.RenderTransform).BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(8, 0, TimeSpan.FromMilliseconds(220)) { EasingFunction = easing });
+        if (_onboardingReady && !OnboardingGuide.IsOpen) await ShowModuleGuideIfNeededAsync(page);
     }
 
     private async void Settings_Click(object sender, RoutedEventArgs e)
@@ -99,50 +204,80 @@ public partial class MainWindow : Window
     private async Task OpenSettingsAsync()
     {
         var window = new SettingsWindow(_services) { Owner = this };
-        if (window.ShowDialog() == true) { await UpdateProviderStateAsync(); await RefreshAllAsync(); }
+        var saved = window.ShowDialog() == true;
+        _onboardingState = await _services.Repository.GetOnboardingStateAsync();
+        if (saved) { await UpdateProviderStateAsync(); await RefreshAllAsync(); }
     }
 
-    private void ShowGuide_Click(object sender, RoutedEventArgs e) => ShowGuide(0);
+    private void ShowGuide_Click(object sender, RoutedEventArgs e) => OnboardingGuide.ShowGuide(GuideCatalog.ForModule(_currentPage));
 
-    private void ShowGuide(int step)
+    private async Task ShowModuleGuideIfNeededAsync(string page)
     {
-        _onboardingStep = Math.Clamp(step, 0, GuideSteps.Length - 1);
-        var item = GuideSteps[_onboardingStep];
-        OnboardingStepText.Text = $"第 {_onboardingStep + 1} / {GuideSteps.Length} 步";
-        OnboardingTitle.Text = item.Title;
-        OnboardingBody.Text = item.Body;
-        OnboardingTarget.Text = item.Target;
-        OnboardingTips.Text = item.Tips;
-        OnboardingSettingsButton.Visibility = item.ShowSettings ? Visibility.Visible : Visibility.Collapsed;
-        OnboardingBackButton.IsEnabled = _onboardingStep > 0;
-        OnboardingNextButton.Content = _onboardingStep == GuideSteps.Length - 1 ? "完成并开始使用" : "下一步";
-        OnboardingOverlay.Visibility = Visibility.Visible;
+        if (!_onboardingReady || OnboardingGuide.IsOpen) return;
+        var seen = _onboardingState.ModuleGuideVersion >= GuideCatalog.ModuleGuideVersion &&
+                   (_onboardingState.SeenModuleGuides ?? []).Any(key => key.Equals(page, StringComparison.OrdinalIgnoreCase));
+        if (!seen) OnboardingGuide.ShowGuide(GuideCatalog.ForModule(page));
+        await Task.CompletedTask;
     }
 
-    private void SkipGuide_Click(object sender, RoutedEventArgs e) => OnboardingOverlay.Visibility = Visibility.Collapsed;
-
-    private void OnboardingBack_Click(object sender, RoutedEventArgs e) => ShowGuide(_onboardingStep - 1);
-
-    private async void OnboardingNext_Click(object sender, RoutedEventArgs e)
+    private async Task MarkModuleGuideSeenAsync(string key)
     {
-        if (_onboardingStep < GuideSteps.Length - 1) { ShowGuide(_onboardingStep + 1); return; }
-        if (!_services.DeepSeek.HasApiKey())
+        if (_onboardingState.ModuleGuideVersion < GuideCatalog.ModuleGuideVersion)
         {
-            MessageBox.Show("请先配置 DeepSeek 或兼容 AI 接口的 API Key，并从自动拉取的列表中选择模型，再结束首次使用引导。", "需要配置 AI API", MessageBoxButton.OK, MessageBoxImage.Information);
-            await OpenSettingsAsync();
-            if (!_services.DeepSeek.HasApiKey()) return;
+            _onboardingState.ModuleGuideVersion = GuideCatalog.ModuleGuideVersion;
+            _onboardingState.SeenModuleGuides = [];
         }
-        await _services.Repository.SaveOnboardingStateAsync(new OnboardingState { Completed = true, GuideVersion = CurrentGuideVersion, CompletedAt = DateTimeOffset.Now });
-        OnboardingOverlay.Visibility = Visibility.Collapsed;
+        _onboardingState.SeenModuleGuides ??= [];
+        if (!_onboardingState.SeenModuleGuides.Any(item => item.Equals(key, StringComparison.OrdinalIgnoreCase)))
+            _onboardingState.SeenModuleGuides.Add(key);
+        await _services.Repository.SaveOnboardingStateAsync(_onboardingState);
     }
 
-    private async void OnboardingSettings_Click(object sender, RoutedEventArgs e)
+    private async Task CloseGuideAsync()
     {
-        OnboardingOverlay.Visibility = Visibility.Collapsed;
-        await OpenSettingsAsync();
-        OnboardingOverlay.Visibility = Visibility.Visible;
-        ShowGuide(_onboardingStep);
+        var definition = OnboardingGuide.CurrentDefinition;
+        OnboardingGuide.HideGuide();
+        if (definition is { IsGlobal: false })
+            await MarkModuleGuideSeenAsync(definition.Key);
+        else
+            await ShowModuleGuideIfNeededAsync(_currentPage);
     }
+
+    private async void OnboardingGuide_CloseRequested(object? sender, EventArgs e) => await CloseGuideAsync();
+
+    private async void OnboardingGuide_FinishedRequested(object? sender, EventArgs e)
+    {
+        if (OnboardingGuide.CurrentDefinition is not { } definition) return;
+        if (definition.IsGlobal)
+        {
+            if (!_services.DeepSeek.HasApiKey())
+            {
+                MessageBox.Show("请先配置 DeepSeek 或兼容 AI 接口的 API Key，并从自动拉取的列表中选择模型，再结束首次使用引导。", "需要配置 AI API", MessageBoxButton.OK, MessageBoxImage.Information);
+                await OpenSettingsAsync();
+                if (!_services.DeepSeek.HasApiKey()) return;
+            }
+            _onboardingState.Completed = true;
+            _onboardingState.GuideVersion = GuideCatalog.GlobalGuideVersion;
+            _onboardingState.CompletedAt = DateTimeOffset.Now;
+            await _services.Repository.SaveOnboardingStateAsync(_onboardingState);
+            OnboardingGuide.HideGuide();
+            await ShowModuleGuideIfNeededAsync(_currentPage);
+            return;
+        }
+        await MarkModuleGuideSeenAsync(definition.Key);
+        OnboardingGuide.HideGuide();
+    }
+
+    private async void OnboardingGuide_SettingsRequested(object? sender, EventArgs e)
+    {
+        var definition = OnboardingGuide.CurrentDefinition;
+        var step = OnboardingGuide.CurrentStepIndex;
+        OnboardingGuide.HideGuide();
+        await OpenSettingsAsync();
+        if (definition is not null) OnboardingGuide.ShowGuide(definition, step);
+    }
+
+    private void OnboardingGuide_GlobalRequested(object? sender, EventArgs e) => OnboardingGuide.ShowGuide(GuideCatalog.Global);
 
     private async void OpenImport(object? sender, EventArgs e)
     {
@@ -156,7 +291,87 @@ public partial class MainWindow : Window
         var settings = await _services.Repository.GetAppSettingsAsync();
         ProviderText.Text = configured ? $"AI 已配置 · {settings.DeepSeekModel}" : "AI API 未配置";
         ProviderBadge.Background = (System.Windows.Media.Brush)FindResource(configured ? "SuccessSoft" : "WarningSoft");
-        ProviderText.Foreground = new System.Windows.Media.SolidColorBrush(configured ? System.Windows.Media.Color.FromRgb(15, 112, 79) : System.Windows.Media.Color.FromRgb(138, 97, 16));
+        ProviderText.Foreground = (Brush)FindResource(configured ? "Success" : "Warning");
+    }
+
+    private async Task UpdateThemeStateAsync()
+    {
+        var settings = await _services.Repository.GetAppSettingsAsync();
+        ThemeText.Text = ThemeManager.Glyph(settings.ThemeMode);
+        ThemeButton.ToolTip = $"当前：{ThemeManager.Label(settings.ThemeMode)}；点击切换";
+    }
+
+    private async void Theme_Click(object sender, RoutedEventArgs e)
+    {
+        var settings = await _services.Repository.GetAppSettingsAsync();
+        settings.ThemeMode = ThemeManager.Next(settings.ThemeMode);
+        await _services.Repository.SaveAppSettingsAsync(settings);
+        ThemeManager.Apply(settings.ThemeMode);
+        await UpdateThemeStateAsync();
+    }
+
+    private void CommandButton_Click(object sender, RoutedEventArgs e) => ToggleCommandOverlay(true);
+
+    private void ToggleCommandOverlay(bool show)
+    {
+        CommandOverlay.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (!show) return;
+        CommandOverlay.Opacity = 0;
+        CommandOverlay.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(130)));
+    }
+
+    private void CommandOverlay_MouseDown(object sender, MouseButtonEventArgs e) => ToggleCommandOverlay(false);
+
+    private void CommandPanel_MouseDown(object sender, MouseButtonEventArgs e) => e.Handled = true;
+
+    private async void QuickAction_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string action }) return;
+        ToggleCommandOverlay(false);
+        switch (action)
+        {
+            case "import": OpenImport(this, EventArgs.Empty); break;
+            case "intelligence": await NavigateAsync(action, IntelligenceButton); break;
+            case "inbox": await NavigateAsync(action, InboxButton); break;
+            case "broadcast": await NavigateAsync(action, BroadcastButton); break;
+            case "analytics": await NavigateAsync(action, AnalyticsButton); break;
+        }
+    }
+
+    private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape && OnboardingGuide.IsOpen)
+        {
+            await CloseGuideAsync();
+            e.Handled = true;
+            return;
+        }
+        if (e.Key == Key.Escape && CommandOverlay.Visibility == Visibility.Visible)
+        {
+            ToggleCommandOverlay(false);
+            e.Handled = true;
+            return;
+        }
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && e.Key == Key.K)
+        {
+            ToggleCommandOverlay(CommandOverlay.Visibility != Visibility.Visible);
+            e.Handled = true;
+            return;
+        }
+        if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) return;
+        var target = e.Key switch
+        {
+            Key.D1 => ("dashboard", DashboardButton),
+            Key.D2 => ("intelligence", IntelligenceButton),
+            Key.D3 => ("customers", CustomersButton),
+            Key.D4 => ("inbox", InboxButton),
+            Key.D5 => ("broadcast", BroadcastButton),
+            Key.D6 => ("analytics", AnalyticsButton),
+            _ => ((string Page, Button Button)?)null
+        };
+        if (target is null) return;
+        await NavigateAsync(target.Value.Page, target.Value.Button);
+        e.Handled = true;
     }
 
     private void LeadAutomation_AnalysisChanged(object? sender, LeadAnalysisAutomationEventArgs e)
@@ -170,7 +385,7 @@ public partial class MainWindow : Window
 
     private async Task RefreshAllAsync()
     {
-        await _dashboard.RefreshAsync(); await _intelligence.RefreshAsync(); await _customers.RefreshAsync(); await _inbox.RefreshAsync(); await _campaigns.RefreshAsync();
+        await _dashboard.RefreshAsync(); await _intelligence.RefreshAsync(); await _customers.RefreshAsync(); await _inbox.RefreshAsync(); await _campaigns.RefreshAsync(); await _analytics.RefreshAsync();
     }
 
     private void Campaigns_SafetyStopped(object? sender, CampaignSafetyStoppedEventArgs e)
@@ -190,6 +405,4 @@ public partial class MainWindow : Window
                 MessageBoxImage.Warning);
         });
     }
-
-    private sealed record GuideStep(string Title, string Body, string Target, string Tips, bool ShowSettings = false);
 }

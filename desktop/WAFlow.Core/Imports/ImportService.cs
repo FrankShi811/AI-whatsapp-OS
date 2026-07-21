@@ -57,22 +57,27 @@ public sealed class ImportService
         var customHeaders = sheet.Headers.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         progress?.Report(new("正在读取已有客户", 0, sheet.Rows.Count));
         var existing = await _repository.GetLeadsAsync(cancellationToken: cancellationToken);
-        var byPhone = existing.Where(l => l.PhoneValid && !string.IsNullOrWhiteSpace(l.PhoneE164)).ToDictionary(l => l.PhoneE164, StringComparer.OrdinalIgnoreCase);
+        var byPhone = BuildPhoneIndex(existing.Where(l => l.PhoneValid && !string.IsNullOrWhiteSpace(l.PhoneE164)), lead => lead.PhoneE164);
+        var byCompositeIdentity = existing
+            .Select(lead => (Key: BuildCompositeIdentity(lead.CustomFields, lead.Name, lead.PhoneE164), Lead: lead))
+            .Where(item => item.Key is not null)
+            .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() == 1)
+            .ToDictionary(group => group.Key, group => group.Single().Lead, StringComparer.OrdinalIgnoreCase);
         var byIdentity = existing
             .Select(lead => (Key: BuildImportIdentity(lead.CustomFields, lead.Name), Lead: lead))
             .Where(item => item.Key is not null)
             .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() == 1)
             .ToDictionary(group => group.Key, group => group.Single().Lead, StringComparer.OrdinalIgnoreCase);
-        var incomingByPhone = new Dictionary<string, ImportPreviewRow>(StringComparer.OrdinalIgnoreCase);
-        var incomingByIdentity = new Dictionary<string, ImportPreviewRow>(StringComparer.OrdinalIgnoreCase);
+        var claimedExistingLeadIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var output = new List<ImportPreviewRow>(sheet.Rows.Count);
         for (var i = 0; i < sheet.Rows.Count; i++)
         {
             var values = new Dictionary<ImportField, string>();
             foreach (var pair in coreMap)
             {
-                var value = sheet.Rows[i].GetValueOrDefault(pair.Key, "").Trim();
+                var value = NormalizeCoreValue(pair.Value, sheet.Rows[i].GetValueOrDefault(pair.Key, ""));
                 values[pair.Value] = value;
             }
             var customValues = customHeaders.ToDictionary(header => header, header => sheet.Rows[i].GetValueOrDefault(header, "").Trim(), StringComparer.OrdinalIgnoreCase);
@@ -91,39 +96,83 @@ public sealed class ImportService
             {
                 RowNumber = i + 2, Values = values, CustomValues = customValues, Name = values.GetValueOrDefault(ImportField.Name, ""),
                 Company = values.GetValueOrDefault(ImportField.Company, ""), Country = country,
-                PhoneE164 = normalized.Valid ? normalized.E164 : rawPhone, PhoneValid = normalized.Valid
+                PhoneE164 = normalized.E164.Length > 0 ? normalized.E164 : rawPhone, PhoneValid = normalized.Valid
             };
             var importIdentity = BuildImportIdentity(customValues);
+            var compositeIdentity = BuildCompositeIdentity(customValues, item.Name, item.PhoneE164);
             if (!normalized.Valid) item.Warnings.Add(string.IsNullOrWhiteSpace(values.GetValueOrDefault(ImportField.WhatsApp))
                 ? "未提供 WhatsApp 号码"
-                : normalized.Reason == "country_code_required" ? "号码缺少国家区号，且国家字段无法推断" : "WhatsApp 号码格式无效");
-            if (item.PhoneValid && byPhone.TryGetValue(item.PhoneE164, out var duplicate))
+                : "WhatsApp 号码格式无效；已保留表格号码且仅补 + 号");
+            Lead? duplicate = null;
+            if (compositeIdentity is not null
+                && byCompositeIdentity.TryGetValue(compositeIdentity, out var compositeDuplicate)
+                && !claimedExistingLeadIds.Contains(compositeDuplicate.Id))
+            {
+                duplicate = compositeDuplicate;
+            }
+            duplicate ??= item.PhoneValid
+                ? FindUniquePhoneMatch(byPhone, item.PhoneE164, lead => lead.PhoneE164, lead => !claimedExistingLeadIds.Contains(lead.Id))
+                : null;
+            if (duplicate is null
+                && importIdentity is not null
+                && byIdentity.TryGetValue(importIdentity, out var identityDuplicate)
+                && !claimedExistingLeadIds.Contains(identityDuplicate.Id))
+            {
+                duplicate = identityDuplicate;
+            }
+            if (duplicate is not null)
             {
                 item.IsDuplicate = true; item.DuplicateLeadId = duplicate.Id; item.Changes = BuildChanges(duplicate, values, customValues, normalized);
+                claimedExistingLeadIds.Add(duplicate.Id);
             }
-            else if (importIdentity is not null && byIdentity.TryGetValue(importIdentity, out duplicate))
-            {
-                item.IsDuplicate = true; item.DuplicateLeadId = duplicate.Id; item.Changes = BuildChanges(duplicate, values, customValues, normalized);
-            }
-            else if (item.PhoneValid && incomingByPhone.TryGetValue(item.PhoneE164, out var importDuplicate))
-            {
-                item.IsDuplicate = true; item.DuplicateRowNumber = importDuplicate.RowNumber;
-                item.Changes = $"与导入表第 {importDuplicate.RowNumber} 行号码重复；将合并到同一客户";
-            }
-            else if (importIdentity is not null && incomingByIdentity.TryGetValue(importIdentity, out importDuplicate))
-            {
-                item.IsDuplicate = true; item.DuplicateRowNumber = importDuplicate.RowNumber;
-                item.Changes = $"与导入表第 {importDuplicate.RowNumber} 行客户标识重复；将合并到同一客户";
-            }
-            else
-            {
-                if (item.PhoneValid) incomingByPhone[item.PhoneE164] = item;
-                if (importIdentity is not null) incomingByIdentity[importIdentity] = item;
-            }
+            // A spreadsheet row is a customer record. Rows in the same upload are never
+            // collapsed merely because the customer name or phone number is repeated.
+            // Exact composite identity + one-time claims still make a later re-import idempotent.
             output.Add(item);
             if ((i + 1) % 250 == 0 || i + 1 == sheet.Rows.Count) progress?.Report(new("正在生成重复与风险预览", i + 1, sheet.Rows.Count));
         }
         return output;
+    }
+
+    private static Dictionary<string, List<T>> BuildPhoneIndex<T>(IEnumerable<T> items, Func<T, string> phoneSelector) where T : class
+    {
+        var index = new Dictionary<string, List<T>>(StringComparer.Ordinal);
+        foreach (var item in items) AddPhoneIndex(index, item, phoneSelector);
+        return index;
+    }
+
+    private static void AddPhoneIndex<T>(Dictionary<string, List<T>> index, T item, Func<T, string> phoneSelector) where T : class
+    {
+        foreach (var key in PhoneLookupKeys(phoneSelector(item)))
+        {
+            if (!index.TryGetValue(key, out var values)) index[key] = values = [];
+            values.Add(item);
+        }
+    }
+
+    private static T? FindUniquePhoneMatch<T>(Dictionary<string, List<T>> index, string phone, Func<T, string> phoneSelector, Func<T, bool>? include = null) where T : class
+    {
+        var target = PhoneIdentity.Digits(phone);
+        if (target.Length < 8) return null;
+        var candidates = PhoneLookupKeys(target)
+            .Where(index.ContainsKey)
+            .SelectMany(key => index[key])
+            .Distinct()
+            .Where(item => include?.Invoke(item) ?? true)
+            .Where(item => PhoneIdentity.IsMatch(phoneSelector(item), target))
+            .Select(item => new { Item = item, Difference = Math.Abs(PhoneIdentity.Digits(phoneSelector(item)).Length - target.Length) })
+            .ToList();
+        if (candidates.Count == 0) return null;
+        var bestDifference = candidates.Min(candidate => candidate.Difference);
+        var best = candidates.Where(candidate => candidate.Difference == bestDifference).Select(candidate => candidate.Item).Distinct().ToList();
+        return best.Count == 1 ? best[0] : null;
+    }
+
+    private static IEnumerable<string> PhoneLookupKeys(string phone)
+    {
+        var digits = PhoneIdentity.Digits(phone);
+        for (var skipped = 0; skipped <= 4 && digits.Length - skipped >= 8; skipped++)
+            yield return digits[skipped..];
     }
 
     private static string? BuildImportIdentity(IReadOnlyDictionary<string, string> fields, string? fallbackName = null)
@@ -137,6 +186,20 @@ public sealed class ImportService
         if (string.IsNullOrWhiteSpace(fallbackName)) return null;
         var fallback = new string(fallbackName.Trim().ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
         return fallback.Length >= 2 ? "name:" + fallback : null;
+    }
+
+    private static string? BuildCompositeIdentity(IReadOnlyDictionary<string, string> fields, string? fallbackName, string? phone)
+    {
+        var name = BuildImportIdentity(fields, fallbackName);
+        var digits = PhoneIdentity.Digits(phone);
+        return name is not null && digits.Length >= 8 ? $"{name}|phone:{digits}" : null;
+    }
+
+    private static string NormalizeCoreValue(ImportField field, string value)
+    {
+        var trimmed = value.Trim();
+        if (field != ImportField.Country) return trimmed;
+        return trimmed.ToUpperInvariant() is "0" or "#N/A" or "N/A" or "NA" or "NULL" or "-" or "--" ? "" : trimmed;
     }
 
     public async Task<ImportCommitResult> CommitAsync(string fileName, IReadOnlyList<ImportPreviewRow> preview, bool allowStageChange, bool allowOwnerChange, IProgress<ImportProgress>? progress = null, CancellationToken cancellationToken = default)
@@ -173,15 +236,11 @@ public sealed class ImportService
                 }
                 if (!row.IsDuplicate && row.DuplicateRowNumber is null)
                 {
-                    lead.Score = 0;
-                    lead.Grade = "D";
-                    lead.ScoreBreakdown = [];
-                    lead.ScoreReasons = [];
-                    lead.AiScoreApplied = false;
+                    LeadScoringService.ResetToAiBaseline(
+                        lead,
+                        "等待 AI 分析",
+                        row.PhoneValid ? "等待客户回复或手动运行 AI 分析。" : "核对 WhatsApp 号码后再触达。");
                     lead.AnalysisStatus = AnalysisStatus.NotRun;
-                    lead.ProfileSummary = "等待 AI 分析";
-                    lead.CustomerSegment = "未分析";
-                    lead.NextAction = row.PhoneValid ? "等待客户回复或手动运行 AI 分析。" : "核对 WhatsApp 号码后再触达。";
                 }
                 importedRows[row.RowNumber] = lead;
                 pending[lead.Id] = lead;
@@ -300,12 +359,23 @@ public sealed class ImportService
             if (range is null) continue;
             var matrix = new List<List<string>>();
             var formulaCount = 0;
-            foreach (var row in range.Rows())
+            var rows = range.Rows().ToList();
+            var sourceHeaders = rows[0].Cells().Select(cell => cell.GetFormattedString()).ToList();
+            for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
             {
                 var values = new List<string>();
-                foreach (var cell in row.Cells())
+                var cells = rows[rowIndex].Cells().ToList();
+                for (var columnIndex = 0; columnIndex < cells.Count; columnIndex++)
                 {
+                    var cell = cells[columnIndex];
                     if (cell.HasFormula) { values.Add("'=" + cell.FormulaA1); formulaCount++; }
+                    else if (rowIndex > 0
+                             && columnIndex < sourceHeaders.Count
+                             && FieldAliases.Suggest(sourceHeaders[columnIndex]) == ImportField.WhatsApp
+                             && cell.DataType == XLDataType.Number)
+                    {
+                        values.Add(Sanitize(cell.GetDouble().ToString("0", CultureInfo.InvariantCulture), ref formulaCount));
+                    }
                     else values.Add(Sanitize(cell.GetFormattedString(), ref formulaCount));
                 }
                 matrix.Add(values);

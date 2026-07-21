@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>AISalesOS.Mac</AssemblyName>
+    <RootNamespace>WAFlow.Mac</RootNamespace>
+    <Version>1.16.0</Version>
+    <Product>AI Sales OS</Product>
+    <Description>AI Sales OS 原生 macOS 中文客户端</Description>
+    <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <GitHubRepositoryUrl Condition="'$(GitHubRepositoryUrl)' == ''">https://github.com/FrankShi811/AI-whatsapp-OS</GitHubRepositoryUrl>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\WAFlow.Core\WAFlow.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.18" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.18" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.18" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.18" />
+    <PackageReference Include="Velopack" Version="1.2.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\WAFlow.Desktop\ReleaseCatalog.cs" Link="Updates\ReleaseCatalog.cs" />
+    <Compile Include="..\WAFlow.Desktop\Updates\ApplicationUpdateState.cs" Link="Updates\ApplicationUpdateState.cs" />
+    <Compile Include="..\WAFlow.Desktop\Updates\UpdateConfiguration.cs" Link="Updates\UpdateConfiguration.cs" />
+    <Compile Include="..\WAFlow.Desktop\Updates\VelopackUpdateService.cs" Link="Updates\VelopackUpdateService.cs" />
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>GitHubRepositoryUrl</_Parameter1>
+      <_Parameter2>$(GitHubRepositoryUrl)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <ItemGroup>
+    <AvaloniaResource Include="..\WAFlow.Desktop\Assets\AI-Sales-OS.png" Link="Assets\AI-Sales-OS.png" />
+  </ItemGroup>
+</Project>

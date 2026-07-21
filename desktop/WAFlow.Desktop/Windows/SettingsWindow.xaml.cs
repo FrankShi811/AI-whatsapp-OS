@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Threading;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
+using WAFlow.Desktop.Controls;
 
 namespace WAFlow.Desktop.Windows;
 
@@ -14,6 +15,7 @@ public partial class SettingsWindow : Window
     private string _modelsBaseUrl = "";
     private DateTimeOffset? _modelsFetchedAt;
     private bool _loaded;
+    private OnboardingState _onboardingState = new();
 
     public SettingsWindow(AppServices services)
     {
@@ -21,22 +23,69 @@ public partial class SettingsWindow : Window
         _services = services;
         _modelFetchTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
         _modelFetchTimer.Tick += async (_, _) => { _modelFetchTimer.Stop(); await FetchModelsAsync(false); };
+        SettingsGuide.AllowGlobalLink = false;
+        SettingsGuide.CloseRequested += SettingsGuide_CloseRequested;
+        SettingsGuide.FinishedRequested += SettingsGuide_FinishedRequested;
         Loaded += SettingsWindow_Loaded;
-        Closed += (_, _) => _modelFetchCancellation?.Cancel();
+        Closed += (_, _) =>
+        {
+            _modelFetchCancellation?.Cancel();
+            SettingsGuide.CloseRequested -= SettingsGuide_CloseRequested;
+            SettingsGuide.FinishedRequested -= SettingsGuide_FinishedRequested;
+        };
     }
 
     private async void SettingsWindow_Loaded(object sender, RoutedEventArgs e)
     {
         var settings = await _services.Repository.GetAppSettingsAsync();
         BaseUrlBox.Text = settings.DeepSeekBaseUrl;
+        ThemeModeBox.ItemsSource = new[]
+        {
+            new ThemeOption("跟随 Windows 系统", "System"),
+            new ThemeOption("浅色", "Light"),
+            new ThemeOption("深色", "Dark")
+        };
+        ThemeModeBox.DisplayMemberPath = nameof(ThemeOption.Label);
+        ThemeModeBox.SelectedItem = ((IEnumerable<ThemeOption>)ThemeModeBox.ItemsSource).First(item => item.Value == ThemeManager.Normalize(settings.ThemeMode));
         _availableModels = settings.AvailableModels.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         _modelsBaseUrl = settings.ModelsBaseUrl;
         _modelsFetchedAt = settings.ModelsFetchedAt;
         SetModelItems(settings.DeepSeekModel);
         ApiStatusText.Text = _services.DeepSeek.HasApiKey() ? "已安全配置" : "未配置";
         DatabasePathText.Text = _services.Repository.DatabasePath;
+        _onboardingState = await _services.Repository.GetOnboardingStateAsync();
         _loaded = true;
         if (_services.DeepSeek.HasApiKey()) await FetchModelsAsync(false);
+        if (_onboardingState.ModuleGuideVersion < GuideCatalog.ModuleGuideVersion ||
+            !(_onboardingState.SeenModuleGuides ?? []).Any(key => key.Equals("settings", StringComparison.OrdinalIgnoreCase)))
+            SettingsGuide.ShowGuide(GuideCatalog.ForModule("settings"));
+    }
+
+    private void ShowGuide_Click(object sender, RoutedEventArgs e) => SettingsGuide.ShowGuide(GuideCatalog.ForModule("settings"));
+
+    private async Task MarkSettingsGuideSeenAsync()
+    {
+        if (_onboardingState.ModuleGuideVersion < GuideCatalog.ModuleGuideVersion)
+        {
+            _onboardingState.ModuleGuideVersion = GuideCatalog.ModuleGuideVersion;
+            _onboardingState.SeenModuleGuides = [];
+        }
+        _onboardingState.SeenModuleGuides ??= [];
+        if (!_onboardingState.SeenModuleGuides.Any(key => key.Equals("settings", StringComparison.OrdinalIgnoreCase)))
+            _onboardingState.SeenModuleGuides.Add("settings");
+        await _services.Repository.SaveOnboardingStateAsync(_onboardingState);
+    }
+
+    private async void SettingsGuide_CloseRequested(object? sender, EventArgs e)
+    {
+        await MarkSettingsGuideSeenAsync();
+        SettingsGuide.HideGuide();
+    }
+
+    private async void SettingsGuide_FinishedRequested(object? sender, EventArgs e)
+    {
+        await MarkSettingsGuideSeenAsync();
+        SettingsGuide.HideGuide();
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e)
@@ -61,10 +110,12 @@ public partial class SettingsWindow : Window
             {
                 DeepSeekBaseUrl=normalizedBaseUrl,
                 DeepSeekModel=ModelBox.Text.Trim(),
+                ThemeMode=(ThemeModeBox.SelectedItem as ThemeOption)?.Value ?? "System",
                 AvailableModels=_availableModels,
                 ModelsBaseUrl=_modelsBaseUrl,
                 ModelsFetchedAt=_modelsFetchedAt
             });
+            ThemeManager.Apply((ThemeModeBox.SelectedItem as ThemeOption)?.Value);
             await _services.LeadAutomation.NotifyProviderConfiguredAsync();
             DialogResult = true;
         }
@@ -133,5 +184,7 @@ public partial class SettingsWindow : Window
             ModelStatusText.Text = $"已缓存 {_availableModels.Count} 个模型 · {age}；打开设置时会自动刷新。";
         }
     }
+
+    private sealed record ThemeOption(string Label, string Value);
 
 }

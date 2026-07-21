@@ -1,0 +1,64 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="WAFlow.Mac.MainWindow"
+        Title="AI Sales OS · 销售智能操作系统"
+        Width="1440" Height="900" MinWidth="1120" MinHeight="720"
+        Background="#F3F7F5">
+  <Grid ColumnDefinitions="258,*">
+    <Border Grid.Column="0" Background="#062C24" Padding="22,24">
+      <Grid RowDefinitions="Auto,28,*,Auto">
+        <StackPanel Orientation="Horizontal" Spacing="12">
+          <Border Width="50" Height="50" CornerRadius="13" Background="#F5FBF9">
+            <Image Source="avares://WAFlow.Mac/Assets/AI-Sales-OS.png" Margin="6" />
+          </Border>
+          <StackPanel VerticalAlignment="Center">
+            <TextBlock Text="AI Sales OS" FontSize="20" FontWeight="Bold" Foreground="White" />
+            <TextBlock Text="SALES INTELLIGENCE" FontSize="10" Foreground="#82CBB8" />
+          </StackPanel>
+        </StackPanel>
+
+        <StackPanel Grid.Row="2">
+          <TextBlock Text="销售指挥中心" Foreground="#74B6A5" FontSize="11" FontWeight="SemiBold" Margin="4,0,0,8" />
+          <Button Classes="nav" Tag="dashboard" Click="Navigate_Click" Content="▦   Dashboard" />
+          <Button Classes="nav" Tag="intelligence" Click="Navigate_Click" Content="✦   商机智能" />
+          <TextBlock Text="客户运营" Foreground="#74B6A5" FontSize="11" FontWeight="SemiBold" Margin="4,20,0,8" />
+          <Button Classes="nav" Tag="customers" Click="Navigate_Click" Content="◎   客户列表" />
+          <Button Classes="nav" Tag="inbox" Click="Navigate_Click" Content="◉   WhatsApp Inbox" />
+          <Button Classes="nav" Tag="campaigns" Click="Navigate_Click" Content="◌   自动化群发" />
+          <TextBlock Text="智能分析" Foreground="#74B6A5" FontSize="11" FontWeight="SemiBold" Margin="4,20,0,8" />
+          <Button Classes="nav" Tag="analytics" Click="Navigate_Click" Content="▥   客户智能分析" />
+          <Button Classes="nav" Tag="settings" Click="Navigate_Click" Content="⚙   API 对接" />
+        </StackPanel>
+
+        <Button Grid.Row="3" x:Name="UpdateButton" Click="UpdateButton_Click"
+                Background="#113E34" BorderThickness="0" CornerRadius="12" Padding="14,12"
+                HorizontalContentAlignment="Stretch" ToolTip.Tip="查看版本、更新日志并安装新版本">
+          <StackPanel Spacing="4">
+            <TextBlock x:Name="UpdateHeadlineText" Text="macOS 原生测试版" Foreground="#75E0C0" FontWeight="SemiBold" />
+            <TextBlock x:Name="VersionText" Text="版本 1.16.0 · 本地数据" Foreground="#A7C9C0" FontSize="12" />
+          </StackPanel>
+        </Button>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Column="1" RowDefinitions="76,*">
+      <Border Background="White" BorderBrush="#DCE7E2" BorderThickness="0,0,0,1" Padding="32,0">
+        <Grid ColumnDefinitions="*,Auto">
+          <StackPanel VerticalAlignment="Center">
+            <TextBlock x:Name="PageTitle" Text="Dashboard" FontSize="20" FontWeight="Bold" Foreground="#062C24" />
+            <TextBlock x:Name="PageSubtitle" Text="今天最值得优先处理的销售动作" FontSize="12" Foreground="#637A73" />
+          </StackPanel>
+          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
+            <Border Background="#E5F8F1" CornerRadius="18" Padding="14,8">
+              <TextBlock x:Name="AiStateText" Text="● AI 待配置" Foreground="#087A5E" FontWeight="SemiBold" />
+            </Border>
+            <Button Classes="primary" Tag="settings" Click="Navigate_Click" Content="API 对接" />
+          </StackPanel>
+        </Grid>
+      </Border>
+      <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
+        <ContentControl x:Name="ContentHost" Margin="32,28" />
+      </ScrollViewer>
+    </Grid>
+  </Grid>
+</Window>

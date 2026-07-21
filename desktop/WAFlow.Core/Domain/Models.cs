@@ -51,11 +51,17 @@ public sealed class Lead
     public LeadStage Stage { get; set; } = LeadStage.New;
     public int Score { get; set; }
     public string Grade { get; set; } = "D";
+    public int AnalysisContractVersion { get; set; }
+    public int BaseProfileScore { get; set; }
+    public int BehaviorSignalScore { get; set; }
     public Dictionary<string, int> ScoreBreakdown { get; set; } = [];
     public List<string> ScoreReasons { get; set; } = [];
+    public List<LeadFactor> ScoreFactors { get; set; } = [];
+    public List<LeadBehaviorSignal> BehaviorSignals { get; set; } = [];
     public string ProfileSummary { get; set; } = "等待 AI 分析";
     public string CustomerSegment { get; set; } = "未分析";
     public string NextAction { get; set; } = "补充客户信息后进行分析";
+    public string RiskWarning { get; set; } = "";
     public List<string> Risks { get; set; } = [];
     public List<AnalysisEvidence> Evidence { get; set; } = [];
     public double AnalysisConfidence { get; set; }
@@ -79,6 +85,7 @@ public sealed class Lead
     [JsonIgnore] public string TagsLabel => string.Join(" · ", Tags);
     [JsonIgnore] public string CustomFieldsLabel => string.Join(" · ", CustomFields.Where(x => !string.IsNullOrWhiteSpace(x.Value)).Select(x => $"{x.Key}: {x.Value}"));
     [JsonIgnore] public string AnalysisStateLabel => Labels.Analysis(AnalysisStatus);
+    [JsonIgnore] public bool HasCurrentAiScore => AiScoreApplied && AnalysisContractVersion == LeadIntelligenceContract.Version && AnalysisStatus == AnalysisStatus.Succeeded;
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
@@ -139,6 +146,11 @@ public sealed class WhatsAppMessage
     public string MediaPath { get; set; } = "";
     public string MediaDownloadError { get; set; } = "";
     public string PushName { get; set; } = "";
+    public string QuotedMessageId { get; set; } = "";
+    public string QuotedText { get; set; } = "";
+    public bool QuotedFromMe { get; set; }
+    public bool IsRevoked { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
     public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.Now;
     public DateTimeOffset? StatusUpdatedAt { get; set; }
     public DateTimeOffset? DeliveredAt { get; set; }
@@ -269,20 +281,40 @@ public sealed class LeadFactor
     public int Score { get; set; }
     public int MaxScore { get; set; }
     public string Rationale { get; set; } = "";
+    public List<string> Evidence { get; set; } = [];
+}
+
+public sealed class LeadBehaviorSignal
+{
+    public string Signal { get; set; } = "";
+    public int Score { get; set; }
+    public string Evidence { get; set; } = "";
 }
 
 public sealed class LeadAnalysis
 {
+    public int ContractVersion { get; set; } = LeadIntelligenceContract.Version;
     public int Score { get; set; }
+    public int BaseProfileScore { get; set; }
+    public int BehaviorSignalScore { get; set; }
     public string Grade { get; set; } = "D";
     public List<LeadFactor> Factors { get; set; } = [];
+    public List<LeadBehaviorSignal> BehaviorSignals { get; set; } = [];
     public LeadStage Stage { get; set; }
     public double Confidence { get; set; }
     public List<AnalysisEvidence> Evidence { get; set; } = [];
     public string ProfileSummary { get; set; } = "";
     public string CustomerSegment { get; set; } = "";
     public string NextAction { get; set; } = "";
+    public string RiskWarning { get; set; } = "";
     public List<string> Risks { get; set; } = [];
+}
+
+public static class LeadIntelligenceContract
+{
+    public const int Version = 2;
+    public const int BehaviorSignalMinimum = -20;
+    public const int BehaviorSignalMaximum = 20;
 }
 
 public sealed class OutreachDraft
@@ -316,6 +348,12 @@ public sealed class DashboardSnapshot
     public int PendingFollowUps { get; set; }
     public int ActiveCampaigns { get; set; }
     public int FailedAnalyses { get; set; }
+    public int AnalyzedLeads { get; set; }
+    public int QueuedAnalyses { get; set; }
+    public int CampaignSent { get; set; }
+    public int CampaignFailed { get; set; }
+    public int CampaignQueued { get; set; }
+    public int SafetyStoppedCampaigns { get; set; }
     public List<Lead> PriorityLeads { get; set; } = [];
     public string LastImportText { get; set; } = "暂无导入记录";
 }
@@ -324,6 +362,7 @@ public sealed class AppSettings
 {
     public string DeepSeekBaseUrl { get; set; } = "https://api.deepseek.com";
     public string DeepSeekModel { get; set; } = "deepseek-chat";
+    public string ThemeMode { get; set; } = "System";
     public List<string> AvailableModels { get; set; } = [];
     public string ModelsBaseUrl { get; set; } = "";
     public DateTimeOffset? ModelsFetchedAt { get; set; }
@@ -334,6 +373,8 @@ public sealed class OnboardingState
     public bool Completed { get; set; }
     public int GuideVersion { get; set; } = 1;
     public DateTimeOffset? CompletedAt { get; set; }
+    public int ModuleGuideVersion { get; set; }
+    public List<string> SeenModuleGuides { get; set; } = [];
 }
 
 public static class Labels

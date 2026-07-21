@@ -21,6 +21,7 @@ let ping = false
 let initialized = false
 let authRecoveryEvent = false
 let authRecoveryValidated = false
+let groupCommandValidated = false
 
 const timeout = setTimeout(() => {
   child.kill()
@@ -43,6 +44,9 @@ output.on('line', line => {
     authRecoveryEvent = message.data?.requiresQr === true && message.data?.reason === 'local_session_unreadable'
   } else if (message.type === 'response' && message.requestId === 'validate-1' && message.ok) {
     authRecoveryValidated = message.result?.recovered === true
+    child.stdin.write(`${JSON.stringify({ command: 'create_group', requestId: 'group-1', subject: 'Smoke group', participants: ['447700900123'] })}\n`)
+  } else if (message.type === 'response' && message.requestId === 'group-1') {
+    groupCommandValidated = message.ok === false && message.error?.code === 'whatsapp_not_connected'
     clearTimeout(timeout)
     child.stdin.end()
   }
@@ -50,9 +54,9 @@ output.on('line', line => {
 
 child.on('exit', async () => {
   await fs.rm(smokeLocalAppData, { recursive: true, force: true })
-  if (ready && ping && initialized && authRecoveryEvent && authRecoveryValidated) console.log(`PASS WAFlow WhatsApp bridge ready/ping/initialize/auth-recovery${packagedExecutable ? ' (packaged EXE)' : ''}`)
+  if (ready && ping && initialized && authRecoveryEvent && authRecoveryValidated && groupCommandValidated) console.log(`PASS WAFlow WhatsApp bridge ready/ping/initialize/auth-recovery/group-protocol${packagedExecutable ? ' (packaged EXE)' : ''}`)
   else {
-    console.error(`FAIL bridge smoke ready=${ready} ping=${ping} initialized=${initialized} authEvent=${authRecoveryEvent} authValidated=${authRecoveryValidated}`)
+    console.error(`FAIL bridge smoke ready=${ready} ping=${ping} initialized=${initialized} authEvent=${authRecoveryEvent} authValidated=${authRecoveryValidated} group=${groupCommandValidated}`)
     process.exitCode = 1
   }
 })

@@ -13,7 +13,6 @@ if (-not $dotnet -or -not (Test-Path -LiteralPath $dotnet)) {
 }
 $work = Join-Path $root 'work'
 $publish = Join-Path $work "publish\$Runtime-$([Guid]::NewGuid().ToString('N'))"
-$output = Join-Path $root 'outputs\AI Sales OS.exe'
 $rootOutput = Join-Path $root 'AI Sales OS.exe'
 $bridgeBuild = Join-Path $root 'bridge\scripts\build-sea.mjs'
 
@@ -43,20 +42,16 @@ if (Test-Path -LiteralPath $bridgeBuild) {
   -p:PublishTrimmed=false -o $publish
 if ($LASTEXITCODE -ne 0) { throw 'AI Sales OS desktop publish failed.' }
 
-Copy-Item -LiteralPath (Join-Path $publish 'AISalesOS.exe') -Destination $output -Force
-$file = Get-Item -LiteralPath $output
-$threePartVersion = (($file.VersionInfo.FileVersion -split '\.')[0..2] -join '.')
-$versionedRootOutput = Join-Path $root "AI Sales OS $threePartVersion.exe"
-Copy-Item -LiteralPath $output -Destination $versionedRootOutput -Force
+$publishedExe = Join-Path $publish 'AISalesOS.exe'
 try {
-  Copy-Item -LiteralPath $output -Destination $rootOutput -Force
+  Copy-Item -LiteralPath $publishedExe -Destination $rootOutput -Force
 }
 catch [System.IO.IOException] {
-  Write-Warning "The canonical root EXE is currently running and could not be replaced. New build is available at: $versionedRootOutput"
+  throw 'AI Sales OS.exe is currently running. Close the application and rebuild so the canonical EXE can be overwritten.'
 }
-$hash = Get-FileHash -LiteralPath $output -Algorithm SHA256
+$file = Get-Item -LiteralPath $rootOutput
+$hash = Get-FileHash -LiteralPath $rootOutput -Algorithm SHA256
 Write-Host "Created: $($file.FullName)"
-Write-Host "Versioned copy: $versionedRootOutput"
 Write-Host "Size: $([Math]::Round($file.Length / 1MB, 2)) MB"
 Write-Host "SHA256: $($hash.Hash)"
 try { Remove-Item -LiteralPath $publish -Recurse -Force -ErrorAction Stop }

@@ -61,6 +61,31 @@
 
                 <Border Style="{StaticResource Card}" Margin="0,16,0,0">
                     <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="AI 商机评分卡" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock x:Name="AiScoreStateText" Text="等待 Lead Intelligence V2 分析" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <StackPanel Margin="0,0,12,0"><TextBlock Text="AI Score" Foreground="{StaticResource Muted}" FontSize="10" HorizontalAlignment="Right"/><TextBlock x:Name="AiScoreText" Text="0" FontSize="28" FontWeight="Bold" HorizontalAlignment="Right"/></StackPanel>
+                                <Border Background="{StaticResource SuccessSoft}" CornerRadius="20" Width="54" Height="54"><TextBlock x:Name="AiGradeText" Text="D级" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+                            </StackPanel>
+                        </Grid>
+                        <Grid Margin="0,16,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="160"/><ColumnDefinition Width="160"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <StackPanel><TextBlock Text="基础画像分" Style="{StaticResource LabelText}"/><TextBlock x:Name="AiBaseScoreText" Text="0 / 100" FontWeight="SemiBold" Margin="0,4,0,0"/></StackPanel>
+                            <StackPanel Grid.Column="1"><TextBlock Text="行为修正" Style="{StaticResource LabelText}"/><TextBlock x:Name="AiBehaviorScoreText" Text="0 / ±20" FontWeight="SemiBold" Margin="0,4,0,0"/></StackPanel>
+                            <StackPanel Grid.Column="2"><TextBlock Text="下一步" Style="{StaticResource LabelText}"/><TextBlock x:Name="AiNextActionText" Text="等待分析" TextWrapping="Wrap" Margin="0,4,0,0"/></StackPanel>
+                        </Grid>
+                        <TextBlock Text="评分原因与证据" Style="{StaticResource LabelText}" Margin="0,16,0,5"/>
+                        <ItemsControl x:Name="AiReasonItems"><ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding StringFormat=• {0}}" TextWrapping="Wrap" Margin="0,2,0,0"/></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                        <TextBlock Text="风险" Style="{StaticResource LabelText}" Margin="0,14,0,4"/>
+                        <TextBlock x:Name="AiRiskText" Text="尚未分析" Foreground="#8A4E29" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
+                    <StackPanel>
                         <TextBlock Text="原表全部维度" Style="{StaticResource SectionTitle}"/>
                         <TextBlock Text="这里按上传表格的原始列名逐项显示。修改后保存，客户列表中的对应单元格会同步更新。" Foreground="{StaticResource Muted}" Margin="0,5,0,14"/>
                         <ItemsControl x:Name="OriginalDimensions">

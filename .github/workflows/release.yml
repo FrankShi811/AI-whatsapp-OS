@@ -1,0 +1,140 @@
+name: Release AI Sales OS
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semantic version without v prefix, for example 1.16.0'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+
+      - name: Resolve version
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.version }}' } else { '${{ github.ref_name }}'.TrimStart('v') }
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw "Invalid version: $version" }
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install Bridge dependencies
+        run: npm ci --prefix bridge
+
+      - name: Install Inno Setup for Chinese installer
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Restore previous Velopack assets for delta packages
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force dist/velopack | Out-Null
+          gh release download --pattern '*.nupkg' --pattern 'releases.win.json' --dir dist/velopack 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Host 'No previous release assets found; creating the first full package.' }
+
+      - name: Build application and Velopack release
+        shell: pwsh
+        run: |
+          .\scripts\build-velopack-release.ps1 -Version $env:RELEASE_VERSION -RepositoryUrl "https://github.com/${{ github.repository }}"
+
+      - name: Run core regression tests
+        shell: pwsh
+        run: .\scripts\test-desktop.ps1
+
+      - name: Publish GitHub Release assets
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          dotnet tool restore
+          dotnet tool run vpk -- upload github --outputDir dist/velopack --channel win --repoUrl "https://github.com/${{ github.repository }}" --token $env:GITHUB_TOKEN --publish true --merge true --releaseName "AI Sales OS $env:RELEASE_VERSION" --tag $env:RELEASE_TAG --targetCommitish "${{ github.sha }}"
+          gh release upload $env:RELEASE_TAG "dist/installers/AI Sales OS Setup.exe" --clobber
+
+      - name: Upload build evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Sales-OS-${{ env.RELEASE_VERSION }}-windows
+          path: |
+            dist/installers/AI Sales OS Setup.exe
+            dist/velopack/*
+          if-no-files-found: error
+
+  macos-preview:
+    needs: windows-release
+    runs-on: macos-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve version
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.version }}' } else { '${{ github.ref_name }}'.TrimStart('v') }
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw "Invalid version: $version" }
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install macOS packaging dependency
+        run: python -m pip install --disable-pip-version-check Pillow
+
+      - name: Build native macOS Chinese preview packages
+        shell: pwsh
+        run: ./scripts/build-macos-preview.ps1 -Version $env:RELEASE_VERSION -Architecture Both -Velopack -RepositoryUrl "https://github.com/${{ github.repository }}"
+
+      - name: Upload macOS packages to GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload $env:RELEASE_TAG `
+            "dist/installers/AI Sales OS macOS Apple-Silicon Chinese Preview.zip" `
+            "dist/installers/AI Sales OS macOS Apple-Silicon Chinese Preview.pkg" `
+            "dist/installers/AI Sales OS macOS Intel Chinese Preview.zip" `
+            "dist/installers/AI Sales OS macOS Intel Chinese Preview.pkg" `
+            dist/velopack-macos-arm64/* dist/velopack-macos-x64/* --clobber
+
+      - name: Upload macOS build evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Sales-OS-${{ env.RELEASE_VERSION }}-macos-preview
+          path: |
+            dist/installers/AI Sales OS macOS * Chinese Preview.zip
+            dist/installers/AI Sales OS macOS * Chinese Preview.pkg
+            dist/velopack-macos-*/*
+          if-no-files-found: error

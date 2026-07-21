@@ -7,10 +7,17 @@ bridge/dist/sea-manifest.json
 bridge/dist/waflow-bridge.blob
 outputs/
 work/
+/dist/
 *.exe
 *.db
 *.db-shm
 *.db-wal
 *.log
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
 .vs/
 .idea/

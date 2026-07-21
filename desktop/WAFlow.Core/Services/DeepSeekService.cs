@@ -16,11 +16,12 @@ public sealed class DeepSeekException : Exception
 
 public sealed record AiModelCatalog(IReadOnlyList<string> Models, DateTimeOffset FetchedAt);
 
-public sealed class DeepSeekService
+public sealed class DeepSeekService : IStructuredAiProvider
 {
     private readonly LocalRepository _repository;
     private readonly ISecretStore _secrets;
     private readonly HttpClient _http;
+    private readonly SemaphoreSlim _analysisGate = new(1, 1);
 
     public DeepSeekService(LocalRepository repository, ISecretStore secrets, HttpClient? httpClient = null)
     {
@@ -32,6 +33,39 @@ public sealed class DeepSeekService
     {
         try { return !string.IsNullOrWhiteSpace(_secrets.Read()); }
         catch { return false; }
+    }
+
+    public async Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default)
+    {
+        var settings = await _repository.GetAppSettingsAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(settings.DeepSeekModel))
+            throw new DeepSeekException("model_not_selected", "请先从自动拉取的模型列表中选择一个模型。", false);
+        return settings.DeepSeekModel;
+    }
+
+    public async Task<T> CompleteStructuredAsync<T>(
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        await _analysisGate.WaitAsync(cancellationToken);
+        try
+        {
+            var settings = await _repository.GetAppSettingsAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(settings.DeepSeekModel))
+                throw new DeepSeekException("model_not_selected", "请先从自动拉取的模型列表中选择一个模型。", false);
+            var content = await CompleteJsonAsync(settings, instructions, Infrastructure.Json.Serialize(payload), cancellationToken);
+            T? result;
+            try { result = Infrastructure.Json.Deserialize<T>(ExtractJson(content)); }
+            catch (Exception error) { throw new DeepSeekException("invalid_structured_output", "AI 返回的结构化 JSON 无法解析。", true, error); }
+            if (result is null) throw new DeepSeekException("invalid_structured_output", "AI 未返回结构化分析结果。", true);
+            var validationError = validate(result);
+            if (!string.IsNullOrWhiteSpace(validationError))
+                throw new DeepSeekException("invalid_structured_output", validationError, true);
+            return result;
+        }
+        finally { _analysisGate.Release(); }
     }
 
     public async Task<AiModelCatalog> DiscoverModelsAsync(string baseUrl, string? apiKeyOverride = null, CancellationToken cancellationToken = default)
@@ -96,23 +130,34 @@ public sealed class DeepSeekService
 
     public async Task<Lead> AnalyzeLeadAsync(Lead lead, CancellationToken cancellationToken = default)
     {
+        await _analysisGate.WaitAsync(cancellationToken);
+        try { return await AnalyzeLeadCoreAsync(lead, cancellationToken); }
+        finally { _analysisGate.Release(); }
+    }
+
+    private async Task<Lead> AnalyzeLeadCoreAsync(Lead lead, CancellationToken cancellationToken)
+    {
         var settings = await _repository.GetAppSettingsAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(settings.DeepSeekModel)) throw new DeepSeekException("model_not_selected", "请先从自动拉取的模型列表中选择一个模型。", false);
         var runId = Guid.NewGuid().ToString("N");
         var requestedAt = lead.AnalysisRequestedAt;
+        LeadScoringService.ResetToAiBaseline(lead, "AI 正在分析客户资料与 WhatsApp 行为", "等待本次 AI 分析完成。");
         lead.AnalysisStatus = AnalysisStatus.Running; lead.AnalysisError = "";
         await _repository.UpsertLeadAsync(lead, cancellationToken);
         await _repository.SaveAnalysisRunAsync(runId, lead.Id, "running", settings.DeepSeekModel, null, null, cancellationToken);
         try
         {
-            var recentMessages = await _repository.GetWhatsAppMessagesForLeadAsync(lead, 40, cancellationToken);
-            var replySignals = WhatsAppReplySignalExtractor.Extract(recentMessages);
+            var recentMessages = await _repository.GetWhatsAppMessagesForLeadAsync(lead, 80, cancellationToken);
             var payload = new
             {
-                lead = new { lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.EstimatedOrderValue, lead.Currency, lead.CompanyScale, lead.PurchasePower, lead.ExplicitDemand, lead.RegisteredOrConsulted, lead.Source, lead.Tags, lead.Owner, lead.CustomFields, stage = lead.Stage.ToString(), lead.LatestMessage },
+                lead = new
+                {
+                    lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.EstimatedOrderValue, lead.Currency,
+                    lead.CompanyScale, lead.PurchasePower, lead.ExplicitDemand, lead.RegisteredOrConsulted,
+                    lead.Source, lead.Tags, lead.Owner, lead.CustomFields, stage = lead.Stage.ToString(), lead.LatestMessage
+                },
                 whatsapp = new
                 {
-                    replySignals,
                     recentMessages = recentMessages.Select(message => new
                     {
                         direction = message.Direction == WhatsAppMessageDirection.Incoming ? "customer" : "seller",
@@ -121,40 +166,101 @@ public sealed class DeepSeekService
                         message.Body
                     })
                 },
-                scoringWeights = LeadScoringService.Weights
+                scoring_contract = new
+                {
+                    version = LeadIntelligenceContract.Version,
+                    dimension_weights = LeadScoringService.Weights,
+                    behavior_signal_range = new[] { LeadIntelligenceContract.BehaviorSignalMinimum, LeadIntelligenceContract.BehaviorSignalMaximum },
+                    grade_rules = new { A = ">=80", B = "60-79", C = "40-59", D = "<40" },
+                    final_score_formula = "clamp(base_profile_score + behavior_signal_score, 0, 100)"
+                }
             };
             var instructions = """
-                You are AI Sales OS's auditable B2B lead analyst. Use only the input evidence and return one JSON object, without markdown.
-                Required properties: score(integer 0..100), grade(A/B/C/D), factors(array of exactly 8 objects: key, score, maxScore, rationale),
-                stage(one of new,contacted,interested,negotiation,waiting,customer,lost), confidence(0..1), evidence(array of field,value,interpretation),
-                profileSummary, customerSegment, nextAction, risks(array of strings).
-                Factor keys and maximums must exactly match scoringWeights. Score must equal the factor sum. Grade: A>=80, B=60..79, C=40..59, D<40.
-                WhatsApp customer replies are the primary evidence for replyEngagement, explicitDemand, recency and stage. Keyword signals are retrieval hints only:
-                verify every signal against the exact message text and context, and do not treat a keyword alone as intent. CRM/imported fields are supporting context.
-                State uncertainty in risks; never invent facts. Answer profileSummary, nextAction and rationale in Simplified Chinese.
+                You are AI Sales OS's auditable B2B Lead Intelligence V2 analyst. Use only the supplied CRM/import data and WhatsApp message history.
+                Return exactly one JSON object without markdown. Never use keyword matching as a scoring rule and never invent missing evidence.
+
+                Required JSON shape (all property names are exact):
+                {
+                  "contract_version": 2,
+                  "lead_score": 0,
+                  "base_profile_score": 0,
+                  "behavior_signal_score": 0,
+                  "grade": "D",
+                  "dimension_scores": {
+                    "paid_marketing_willingness": 0,
+                    "supply_stability": 0,
+                    "ecommerce_foundation": 0,
+                    "private_traffic": 0,
+                    "existing_sales": 0,
+                    "materials_readiness": 0
+                  },
+                  "dimension_evidence": {
+                    "paid_marketing_willingness": { "reason": "", "evidence": [""] },
+                    "supply_stability": { "reason": "", "evidence": [""] },
+                    "ecommerce_foundation": { "reason": "", "evidence": [""] },
+                    "private_traffic": { "reason": "", "evidence": [""] },
+                    "existing_sales": { "reason": "", "evidence": [""] },
+                    "materials_readiness": { "reason": "", "evidence": [""] }
+                  },
+                  "behavior_signals": ["requested quotation"],
+                  "behavior_signal_details": [{ "signal": "requested quotation", "score": 10, "evidence": "exact message excerpt" }],
+                  "customer_profile": "",
+                  "customer_segment": "",
+                  "stage": "new",
+                  "confidence": 0.0,
+                  "next_action": "",
+                  "risk_warning": ""
+                }
+
+                Dimension maxima are exactly those in scoring_contract.dimension_weights. base_profile_score must equal the six dimension scores.
+                behavior_signal_score must be an integer from -20 to +20 and equal the sum of behavior_signal_details[].score.
+                behavior_signals must list the same signal names as behavior_signal_details. Use both arrays empty when the behavior score is zero.
+                Positive WhatsApp evidence may include asking price or MOQ (+5), providing purchase quantity or requesting a quotation/cooperation (+10).
+                Negative evidence may include prolonged non-response (-5), price-only inquiry without intent (-5), or explicit rejection (-15); interpret full context, not words alone.
+                lead_score must equal clamp(base_profile_score + behavior_signal_score, 0, 100). Grade: A>=80, B=60..79, C=40..59, D<40.
+                Every dimension must contain a non-empty Chinese reason and at least one evidence string. For a zero score, explicitly state that the supplied input contains no evidence.
+                stage must be one of new, contacted, interested, negotiation, waiting, customer, lost. Do not change stage without evidence.
+                Answer customer_profile, customer_segment, reasons, next_action and risk_warning in Simplified Chinese. Keep message excerpts in their original language.
                 """;
             var content = await CompleteJsonAsync(settings, instructions, Infrastructure.Json.Serialize(payload), cancellationToken);
             var analysis = ParseAnalysis(content);
             Validate(analysis);
             var target = await _repository.GetLeadAsync(lead.Id, cancellationToken) ?? lead;
-            target.Score = analysis.Score; target.Grade = analysis.Grade; target.ScoreBreakdown = analysis.Factors.ToDictionary(f => f.Key, f => f.Score);
-            target.ScoreReasons = analysis.Factors.OrderByDescending(f => f.Score / (double)Math.Max(1, f.MaxScore)).Take(3).Select(f => f.Rationale).ToList();
+            target.Score = analysis.Score; target.Grade = analysis.Grade; target.AnalysisContractVersion = analysis.ContractVersion;
+            target.BaseProfileScore = analysis.BaseProfileScore; target.BehaviorSignalScore = analysis.BehaviorSignalScore;
+            target.ScoreBreakdown = analysis.Factors.ToDictionary(f => f.Key, f => f.Score);
+            target.ScoreReasons = analysis.Factors.Select(f => f.Rationale).ToList();
+            target.ScoreFactors = analysis.Factors; target.BehaviorSignals = analysis.BehaviorSignals;
             target.Stage = analysis.Stage; target.AnalysisConfidence = analysis.Confidence; target.Evidence = analysis.Evidence;
-            target.ProfileSummary = analysis.ProfileSummary; target.CustomerSegment = analysis.CustomerSegment; target.NextAction = analysis.NextAction; target.Risks = analysis.Risks;
-            target.LatestReplySignals = replySignals;
+            target.ProfileSummary = analysis.ProfileSummary; target.CustomerSegment = analysis.CustomerSegment; target.NextAction = analysis.NextAction;
+            target.RiskWarning = analysis.RiskWarning; target.Risks = analysis.Risks;
+            target.LatestReplySignals = analysis.BehaviorSignals.Select(signal => $"{signal.Signal} ({signal.Score:+#;-#;0})").ToList();
             target.AnalysisStatus = AnalysisStatus.Succeeded; target.AnalysisError = ""; target.AiScoreApplied = true; target.LastAnalyzedAt = DateTimeOffset.Now;
             await _repository.UpsertLeadAsync(target, cancellationToken);
             await _repository.SaveAnalysisRunAsync(runId, lead.Id, "succeeded", settings.DeepSeekModel, analysis, null, cancellationToken);
             await _repository.LogEventAsync("lead_analyzed", lead.Id, null, $"provider=compatible; model={settings.DeepSeekModel}; trigger={target.AnalysisTrigger}", cancellationToken);
             return target;
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            var target = await _repository.GetLeadAsync(lead.Id, CancellationToken.None) ?? lead;
+            LeadScoringService.ResetToAiBaseline(target, "AI 批量分析已由用户取消", "可再次运行批量分析或重试。");
+            target.AnalysisStatus = AnalysisStatus.RetryableFailed;
+            target.AnalysisError = "用户取消了本次 AI 分析，可重试。";
+            target.LastAnalyzedAt = null;
+            await _repository.UpsertLeadAsync(target, CancellationToken.None);
+            await _repository.SaveAnalysisRunAsync(runId, lead.Id, "cancelled", settings.DeepSeekModel, null, target.AnalysisError, CancellationToken.None);
+            throw;
+        }
         catch (Exception error)
         {
             var safe = error is DeepSeekException dse ? $"{dse.Code}: {dse.Message}" : "AI 返回内容无法验证，请重试。";
             var target = await _repository.GetLeadAsync(lead.Id, cancellationToken) ?? lead;
             var hasNewerRequest = target.AnalysisRequestedAt is not null && (requestedAt is null || target.AnalysisRequestedAt > requestedAt);
+            LeadScoringService.ResetToAiBaseline(target, "本次 AI 分析失败，客户资料已保留", "检查 AI 配置后重试分析。");
             target.AnalysisStatus = hasNewerRequest ? AnalysisStatus.Queued : AnalysisStatus.RetryableFailed;
             target.AnalysisError = hasNewerRequest ? $"{safe} 新回复已重新排队。" : safe;
+            target.LastAnalyzedAt = null;
             await _repository.UpsertLeadAsync(target, cancellationToken);
             await _repository.SaveAnalysisRunAsync(runId, lead.Id, "retryable_failed", settings.DeepSeekModel, null, safe, cancellationToken);
             throw error is DeepSeekException ? error : new DeepSeekException("invalid_structured_output", safe, true, error);
@@ -203,6 +309,7 @@ public sealed class DeepSeekService
         }), Encoding.UTF8, "application/json");
         HttpResponseMessage response;
         try { response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (TaskCanceledException error) { throw new DeepSeekException("provider_timeout", "AI 请求超时，请稍后重试。", true, error); }
         catch (HttpRequestException error) { throw new DeepSeekException("provider_unavailable", "无法连接 AI Provider，请检查网络和 Base URL。", true, error); }
         using (response)
@@ -231,18 +338,51 @@ public sealed class DeepSeekService
         {
             using var document = JsonDocument.Parse(ExtractJson(content));
             var root = document.RootElement;
-            var factors = root.GetProperty("factors").EnumerateArray().Select(x => new LeadFactor
+            var dimensionScores = root.GetProperty("dimension_scores");
+            var dimensionEvidence = root.GetProperty("dimension_evidence");
+            var factors = LeadScoringService.Weights.Select(weight =>
             {
-                Key=x.GetProperty("key").GetString() ?? "", Score=x.GetProperty("score").GetInt32(), MaxScore=x.GetProperty("maxScore").GetInt32(), Rationale=x.GetProperty("rationale").GetString() ?? ""
+                var detail = dimensionEvidence.GetProperty(weight.Key);
+                return new LeadFactor
+                {
+                    Key = weight.Key,
+                    Score = dimensionScores.GetProperty(weight.Key).GetInt32(),
+                    MaxScore = weight.Value,
+                    Rationale = detail.GetProperty("reason").GetString() ?? "",
+                    Evidence = detail.GetProperty("evidence").EnumerateArray()
+                        .Select(item => item.GetString() ?? "").Where(item => item.Length > 0).ToList()
+                };
             }).ToList();
-            var evidence = root.TryGetProperty("evidence", out var ev) ? ev.EnumerateArray().Select(x => new AnalysisEvidence { Field=x.GetProperty("field").GetString() ?? "", Value=x.GetProperty("value").ToString(), Interpretation=x.GetProperty("interpretation").GetString() ?? "" }).ToList() : [];
+            var behaviorSignalNames = root.GetProperty("behavior_signals").EnumerateArray()
+                .Select(item => item.GetString() ?? "").Where(item => item.Length > 0).ToList();
+            var behaviorSignals = root.GetProperty("behavior_signal_details").EnumerateArray().Select(item => new LeadBehaviorSignal
+            {
+                Signal = item.GetProperty("signal").GetString() ?? "",
+                Score = item.GetProperty("score").GetInt32(),
+                Evidence = item.GetProperty("evidence").GetString() ?? ""
+            }).ToList();
+            if (behaviorSignalNames.Count != behaviorSignals.Count ||
+                behaviorSignalNames.Except(behaviorSignals.Select(signal => signal.Signal), StringComparer.OrdinalIgnoreCase).Any())
+                throw new JsonException("Behavior signal names and details do not match");
+            var evidence = factors.SelectMany(factor => factor.Evidence.Select(value => new AnalysisEvidence
+                { Field=factor.Key, Value=value, Interpretation=factor.Rationale }))
+                .Concat(behaviorSignals.Select(signal => new AnalysisEvidence
+                    { Field="whatsapp_behavior", Value=signal.Evidence, Interpretation=$"{signal.Signal} ({signal.Score:+#;-#;0})" }))
+                .ToList();
             var stageText = root.GetProperty("stage").GetString();
+            var validStages = new[] { "new", "contacted", "interested", "negotiation", "waiting", "customer", "lost" };
+            if (stageText is null || !validStages.Contains(stageText, StringComparer.OrdinalIgnoreCase)) throw new JsonException("Invalid stage");
+            var riskWarning = root.GetProperty("risk_warning").GetString() ?? "";
             return new LeadAnalysis
             {
-                Score=root.GetProperty("score").GetInt32(), Grade=root.GetProperty("grade").GetString() ?? "D", Factors=factors, Stage=StageParser.Parse(stageText),
-                Confidence=root.GetProperty("confidence").GetDouble(), Evidence=evidence, ProfileSummary=root.GetProperty("profileSummary").GetString() ?? "",
-                CustomerSegment=root.GetProperty("customerSegment").GetString() ?? "", NextAction=root.GetProperty("nextAction").GetString() ?? "",
-                Risks=root.TryGetProperty("risks", out var risks) ? risks.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => x.Length > 0).ToList() : []
+                ContractVersion=root.GetProperty("contract_version").GetInt32(),
+                Score=root.GetProperty("lead_score").GetInt32(),
+                BaseProfileScore=root.GetProperty("base_profile_score").GetInt32(),
+                BehaviorSignalScore=root.GetProperty("behavior_signal_score").GetInt32(),
+                Grade=root.GetProperty("grade").GetString() ?? "D", Factors=factors, BehaviorSignals=behaviorSignals, Stage=StageParser.Parse(stageText),
+                Confidence=root.GetProperty("confidence").GetDouble(), Evidence=evidence, ProfileSummary=root.GetProperty("customer_profile").GetString() ?? "",
+                CustomerSegment=root.GetProperty("customer_segment").GetString() ?? "", NextAction=root.GetProperty("next_action").GetString() ?? "",
+                RiskWarning=riskWarning, Risks=string.IsNullOrWhiteSpace(riskWarning) ? [] : [riskWarning]
             };
         }
         catch (Exception error) { throw new DeepSeekException("invalid_structured_output", "AI 分析 JSON 解析失败。", true, error); }
@@ -250,11 +390,26 @@ public sealed class DeepSeekService
 
     private static void Validate(LeadAnalysis analysis)
     {
-        if (analysis.Factors.Count != 8 || analysis.Factors.Select(x => x.Key).Distinct().Count() != 8) throw new DeepSeekException("invalid_structured_output", "分析必须包含 8 个唯一评分因素。", true);
+        if (analysis.ContractVersion != LeadIntelligenceContract.Version)
+            throw new DeepSeekException("invalid_structured_output", "AI 未返回 Lead Intelligence V2 契约。", true);
+        if (analysis.Factors.Count != LeadScoringService.Weights.Count || analysis.Factors.Select(x => x.Key).Distinct().Count() != LeadScoringService.Weights.Count)
+            throw new DeepSeekException("invalid_structured_output", "分析必须包含 6 个唯一 V2 评分维度。", true);
         foreach (var factor in analysis.Factors)
-            if (!LeadScoringService.Weights.TryGetValue(factor.Key, out var max) || factor.MaxScore != max || factor.Score < 0 || factor.Score > max) throw new DeepSeekException("invalid_structured_output", $"评分因素 {factor.Key} 超出规则。", true);
-        if (analysis.Factors.Sum(x => x.Score) != analysis.Score || LeadScoringService.GradeFromScore(analysis.Score) != analysis.Grade) throw new DeepSeekException("invalid_structured_output", "总分、等级与因素分数不一致。", true);
-        if (analysis.Confidence is < 0 or > 1 || string.IsNullOrWhiteSpace(analysis.ProfileSummary) || string.IsNullOrWhiteSpace(analysis.NextAction)) throw new DeepSeekException("invalid_structured_output", "分析缺少必需字段。", true);
+            if (!LeadScoringService.Weights.TryGetValue(factor.Key, out var max) || factor.MaxScore != max || factor.Score < 0 || factor.Score > max ||
+                string.IsNullOrWhiteSpace(factor.Rationale) || factor.Evidence.Count == 0 || factor.Evidence.Any(string.IsNullOrWhiteSpace))
+                throw new DeepSeekException("invalid_structured_output", $"评分维度 {factor.Key} 的分数、原因或证据无效。", true);
+        if (analysis.Factors.Sum(x => x.Score) != analysis.BaseProfileScore || analysis.BaseProfileScore is < 0 or > 100)
+            throw new DeepSeekException("invalid_structured_output", "基础画像分与六维分数不一致。", true);
+        if (analysis.BehaviorSignalScore is < LeadIntelligenceContract.BehaviorSignalMinimum or > LeadIntelligenceContract.BehaviorSignalMaximum ||
+            analysis.BehaviorSignals.Sum(signal => signal.Score) != analysis.BehaviorSignalScore ||
+            analysis.BehaviorSignals.Any(signal => signal.Score == 0 || signal.Score is < LeadIntelligenceContract.BehaviorSignalMinimum or > LeadIntelligenceContract.BehaviorSignalMaximum || string.IsNullOrWhiteSpace(signal.Signal) || string.IsNullOrWhiteSpace(signal.Evidence)))
+            throw new DeepSeekException("invalid_structured_output", "WhatsApp 行为修正分与行为证据不一致。", true);
+        var expectedScore = Math.Clamp(analysis.BaseProfileScore + analysis.BehaviorSignalScore, 0, 100);
+        if (analysis.Score != expectedScore || LeadScoringService.GradeFromScore(analysis.Score) != analysis.Grade)
+            throw new DeepSeekException("invalid_structured_output", "最终分、行为修正分与等级不一致。", true);
+        if (analysis.Confidence is < 0 or > 1 || string.IsNullOrWhiteSpace(analysis.ProfileSummary) || string.IsNullOrWhiteSpace(analysis.CustomerSegment) ||
+            string.IsNullOrWhiteSpace(analysis.NextAction) || string.IsNullOrWhiteSpace(analysis.RiskWarning))
+            throw new DeepSeekException("invalid_structured_output", "分析缺少画像、分组、风险或下一步动作。", true);
     }
 
     private static string ExtractJson(string content)

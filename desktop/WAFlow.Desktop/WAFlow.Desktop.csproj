@@ -8,7 +8,7 @@
     <AssemblyName>AISalesOS</AssemblyName>
     <AssemblyTitle>AI Sales OS</AssemblyTitle>
     <RootNamespace>WAFlow.Desktop</RootNamespace>
-    <Version>1.11.1</Version>
+    <Version>1.16.0</Version>
     <Title>AI Sales OS</Title>
     <Product>AI Sales OS</Product>
     <Company>AI Sales OS</Company>
@@ -20,6 +20,8 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>embedded</DebugType>
     <PublishTrimmed>false</PublishTrimmed>
+    <StartupObject>WAFlow.Desktop.App</StartupObject>
+    <GitHubRepositoryUrl Condition="'$(GitHubRepositoryUrl)' == ''">https://github.com/FrankShi811/AI-whatsapp-OS</GitHubRepositoryUrl>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\WAFlow.Core\WAFlow.Core.csproj" />
@@ -27,5 +29,16 @@
   <ItemGroup>
     <Resource Include="Assets\AI-Sales-OS.ico" />
     <Resource Include="Assets\AI-Sales-OS.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <ApplicationDefinition Remove="App.xaml" />
+    <Page Include="App.xaml" />
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>GitHubRepositoryUrl</_Parameter1>
+      <_Parameter2>$(GitHubRepositoryUrl)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Velopack" Version="1.2.0" />
   </ItemGroup>
 </Project>

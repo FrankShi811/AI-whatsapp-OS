@@ -16,6 +16,8 @@ public sealed class AppServices
     public LeadIntelligenceAutomationService LeadAutomation { get; }
     public PublicIpMonitor PublicIp { get; }
     public CampaignAutomationService Campaigns { get; }
+    public CustomerAnalysisService CustomerAnalysis { get; }
+    public CustomerReportExportService CustomerReportExports { get; }
 
     public AppServices(LocalRepository? repository = null)
     {
@@ -29,6 +31,8 @@ public sealed class AppServices
         LeadAutomation = new LeadIntelligenceAutomationService(Repository, DeepSeek, WhatsAppSync);
         PublicIp = new PublicIpMonitor(Repository);
         Campaigns = new CampaignAutomationService(Repository, WhatsApp, PublicIp);
+        CustomerAnalysis = new CustomerAnalysisService(Repository, DeepSeek);
+        CustomerReportExports = new CustomerReportExportService(Repository);
     }
 
     public Task InitializeAsync(CancellationToken cancellationToken = default) => Repository.InitializeAsync(cancellationToken);

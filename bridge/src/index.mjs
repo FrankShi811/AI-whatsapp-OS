@@ -28,6 +28,7 @@ const state = {
   existingSession: false,
   contacts: new Map(),
   chats: new Map(),
+  messages: new Map(),
   mediaDownloads: new Map(),
   historyTotals: { contacts: 0, chats: 0, messages: 0 },
   syncQueue: Promise.resolve()
@@ -255,6 +256,60 @@ function messageContent(message) {
   return message
 }
 
+function messageContextInfo(message) {
+  message = messageContent(message)
+  if (!message) return null
+  return message.extendedTextMessage?.contextInfo
+    ?? message.imageMessage?.contextInfo
+    ?? message.videoMessage?.contextInfo
+    ?? message.audioMessage?.contextInfo
+    ?? message.documentMessage?.contextInfo
+    ?? message.stickerMessage?.contextInfo
+    ?? null
+}
+
+function revocationTarget(message) {
+  const protocol = messageContent(message)?.protocolMessage
+  if (protocol?.type !== proto.Message.ProtocolMessage.Type.REVOKE || !protocol.key?.id) return null
+  return protocol.key
+}
+
+function rememberMessage(message) {
+  const id = String(message?.key?.id ?? '')
+  if (!id) return
+  state.messages.delete(id)
+  state.messages.set(id, message)
+  while (state.messages.size > 10000) state.messages.delete(state.messages.keys().next().value)
+}
+
+function quotedMessageDetails(message) {
+  const contextInfo = messageContextInfo(message)
+  const quotedMessageId = String(contextInfo?.stanzaId ?? '')
+  if (!quotedMessageId) return { quotedMessageId: '', quotedText: '', quotedFromMe: false }
+  const participantPhone = phoneFromJid(String(contextInfo?.participant ?? ''))
+  const ownPhone = phoneFromJid(String(state.socket?.user?.id ?? ''))
+  return {
+    quotedMessageId,
+    quotedText: messageText(contextInfo?.quotedMessage),
+    quotedFromMe: Boolean(participantPhone && ownPhone && participantPhone === ownPhone)
+  }
+}
+
+function quotedSendOptions(command, jid) {
+  const quotedMessageId = String(command.quotedMessageId ?? '').trim()
+  if (!quotedMessageId) return {}
+  let quoted = state.messages.get(quotedMessageId)
+  if (!quoted) {
+    const quotedText = String(command.quotedText ?? '').trim()
+    if (!quotedText) throw new Error('quoted_message_not_available')
+    quoted = {
+      key: { remoteJid: jid, id: quotedMessageId, fromMe: Boolean(command.quotedFromMe) },
+      message: { conversation: quotedText }
+    }
+  }
+  return { quoted }
+}
+
 function messageText(message) {
   message = messageContent(message)
   if (!message) return ''
@@ -473,13 +528,30 @@ async function normalizeChat(chat, source = 'live') {
 }
 
 async function normalizeMessage(message, source) {
+  rememberMessage(message)
   const sourceJid = message?.key?.remoteJid ?? ''
   const jid = await resolveDirectJid(message?.key)
   if (!shouldForward(jid)) return null
+  const revokedKey = revocationTarget(message?.message)
+  if (revokedKey) {
+    state.messages.delete(String(revokedKey.id))
+    return {
+      id: message.key.id ?? '',
+      jid,
+      sourceJid,
+      phone: phoneFromJid(jid),
+      fromMe: Boolean(revokedKey.fromMe),
+      revokedMessageId: String(revokedKey.id),
+      isRevocation: true,
+      timestamp: timestampToIso(message.messageTimestamp),
+      source
+    }
+  }
   const kind = messageKind(message.message)
   const fileName = messageFileName(message.message)
   const mimeType = messageMimeType(message.message)
   const media = await downloadMessageMedia(message, kind, fileName, mimeType)
+  const quote = quotedMessageDetails(message.message)
   return {
     id: message.key.id ?? '',
     jid,
@@ -497,6 +569,7 @@ async function normalizeMessage(message, source) {
     status: message.status ?? null,
     deliveredAt: latestReceiptTime(message.userReceipt, 'receiptTimestamp'),
     readAt: latestReceiptTime(message.userReceipt, 'readTimestamp', 'playedTimestamp'),
+    ...quote,
     source
   }
 }
@@ -560,6 +633,7 @@ async function normalizeMessages(messages, source) {
   await Promise.all(workers)
   const items = normalized.filter(item => item?.phone && item?.id)
   for (const item of items) {
+    if (item.isRevocation) continue
     const contact = [...state.contacts.values()].find(value => value.phone === item.phone)
     if (!item.fromMe && item.pushName) rememberContact({ jid: item.jid, sourceJid: item.sourceJid, phone: item.phone, displayName: item.pushName, notifyName: item.pushName, source })
     rememberChat({ jid: item.jid, sourceJid: item.sourceJid, phone: item.phone, displayName: contact?.displayName || item.pushName || `+${item.phone}`, lastMessage: item.text || `[${item.kind}]`, lastMessageAt: item.timestamp, unreadCount: null, source })
@@ -570,6 +644,10 @@ async function normalizeMessages(messages, source) {
 async function forwardMessage(message, source) {
   const data = await normalizeMessage(message, source)
   if (!data?.phone || !data.id) return
+  if (data.isRevocation) {
+    emit({ type: 'event', event: 'message_revoked', accountId: state.accountId, data })
+    return
+  }
   if (!data.fromMe && data.pushName) rememberContact({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: data.pushName, notifyName: data.pushName, source })
   const contact = [...state.contacts.values()].find(value => value.phone === data.phone)
   rememberChat({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: contact?.displayName || data.pushName || `+${data.phone}`, lastMessage: data.text || `[${data.kind}]`, lastMessageAt: data.timestamp, unreadCount: null, source })
@@ -646,6 +724,7 @@ async function connect() {
   state.existingSession = Boolean(auth.creds.registered && (auth.creds.accountSyncCounter ?? 0) > 0)
   state.contacts.clear()
   state.chats.clear()
+  state.messages.clear()
   state.historyTotals = { contacts: 0, chats: 0, messages: 0 }
   const { version } = await fetchLatestBaileysVersion()
   const socket = makeWASocket({
@@ -781,7 +860,7 @@ async function handle(command) {
   try {
     switch (command.command) {
       case 'ping':
-        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.4.0', connection: state.connection })
+        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.5.0', connection: state.connection })
         return
       case 'initialize': {
         state.accountId = validateAccountId(command.accountId ?? 'default')
@@ -821,8 +900,9 @@ async function handle(command) {
         if (!text || text.length > 4096) throw new Error('invalid_message_text')
         const jid = command.jid ? String(command.jid) : jidFromPhone(command.phone)
         if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
-        const result = await state.socket.sendMessage(jid, { text })
-        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString(), status: result?.status ?? 2 })
+        const result = await state.socket.sendMessage(jid, { text }, quotedSendOptions(command, jid))
+        rememberMessage(result)
+        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString(), status: result?.status ?? 2, quotedMessageId: String(command.quotedMessageId ?? '') })
         return
       }
       case 'send_media': {
@@ -830,8 +910,25 @@ async function handle(command) {
         const jid = command.jid ? String(command.jid) : jidFromPhone(command.phone)
         if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
         const media = await buildMediaMessage(command.path, command.caption)
-        const result = await state.socket.sendMessage(jid, media.payload)
-        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString(), status: result?.status ?? 2, kind: media.kind, mimeType: media.mimeType, fileName: media.fileName })
+        const result = await state.socket.sendMessage(jid, media.payload, quotedSendOptions(command, jid))
+        rememberMessage(result)
+        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString(), status: result?.status ?? 2, kind: media.kind, mimeType: media.mimeType, fileName: media.fileName, quotedMessageId: String(command.quotedMessageId ?? '') })
+        return
+      }
+      case 'revoke_message': {
+        if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
+        const jid = command.jid ? String(command.jid) : jidFromPhone(command.phone)
+        if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
+        const id = String(command.messageId ?? '').trim()
+        if (!id || id.length > 256) throw new Error('invalid_message_id')
+        const result = await state.socket.sendMessage(jid, { delete: { remoteJid: jid, fromMe: true, id } })
+        state.messages.delete(id)
+        const timestamp = new Date().toISOString()
+        emit({
+          type: 'event', event: 'message_revoked', accountId: state.accountId,
+          data: { id: result?.key?.id ?? '', jid, phone: phoneFromJid(jid), fromMe: true, revokedMessageId: id, isRevocation: true, timestamp, source: 'desktop' }
+        })
+        reply(requestId, true, { id: result?.key?.id ?? '', jid, revokedMessageId: id, timestamp })
         return
       }
       case 'set_chat_pin': {
@@ -843,6 +940,26 @@ async function handle(command) {
         const chat = state.chats.get(phoneFromJid(jid))
         if (chat) rememberChat({ ...chat, pinned, pinnedAt: pinned ? new Date().toISOString() : '' })
         reply(requestId, true, { jid, pinned })
+        return
+      }
+      case 'create_group': {
+        if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
+        const subject = String(command.subject ?? '').trim()
+        if (!subject || subject.length > 100) throw new Error('invalid_group_subject')
+        if (!Array.isArray(command.participants)) throw new Error('invalid_group_participants')
+        const ownPhone = phoneFromJid(String(state.socket.user?.id ?? ''))
+        const participantJids = [...new Set(command.participants.map(jidFromPhone))]
+          .filter(jid => phoneFromJid(jid) !== ownPhone)
+        if (participantJids.length < 1 || participantJids.length > 256) throw new Error('invalid_group_participant_count')
+        const result = await state.socket.groupCreate(subject, participantJids)
+        const groupJid = String(result?.id ?? '')
+        if (!groupJid.endsWith('@g.us')) throw new Error('group_create_missing_id')
+        const participants = Array.isArray(result?.participants)
+          ? result.participants.map(item => phoneFromJid(String(item?.id ?? item))).filter(Boolean)
+          : participantJids.map(phoneFromJid)
+        const data = { jid: groupJid, subject: String(result?.subject ?? subject), participantCount: participants.length, participants }
+        emit({ type: 'event', event: 'group_created', accountId: state.accountId, data })
+        reply(requestId, true, data)
         return
       }
       case 'sync_now': {

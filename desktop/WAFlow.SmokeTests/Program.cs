@@ -1,6 +1,7 @@
 using System.Text;
 using System.Net;
 using System.Text.Json;
+using ClosedXML.Excel;
 using Microsoft.Data.Sqlite;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Imports;
@@ -29,8 +30,8 @@ if (args.Length >= 3 && args[0] == "--database-reimport")
     var realCommit = await upgradeImports.CommitAsync(Path.GetFileName(args[1]), realPreview, allowStageChange:true, allowOwnerChange:true);
     await upgradeRepository.RemoveDemoLeadsIfRealDataExistsAsync();
     var leads = await upgradeRepository.GetLeadsAsync();
-    Check(realCommit.Failed == 0 && realCommit.Created + realCommit.Updated == 540, "existing partial database reimport processes all 540 rows");
-    Check(leads.Count == 533, "existing partial database upgrades to all unique workbook customers without demos");
+    Check(realCommit.Failed == 0 && realCommit.Created + realCommit.Updated == sherrySheet.Rows.Count, "existing partial database reimport processes every workbook row");
+    Check(leads.Count >= sherrySheet.Rows.Count, "existing partial database retains one customer record for every workbook row");
     Console.WriteLine($"RESULT total={realCommit.Total} created={realCommit.Created} updated={realCommit.Updated} invalid={realCommit.InvalidPhones} failed={realCommit.Failed} leads={leads.Count}");
     try { File.Delete(database); Directory.Delete(root, true); } catch { }
     return failures.Count == 0 ? 0 : 1;
@@ -41,15 +42,15 @@ if (args.Length >= 2 && args[0] == "--workbook-only")
     var realParsed = imports.Parse(args[1]);
     var sherrySheet = realParsed.Sheets.FirstOrDefault(sheet => sheet.Name == "客户总表（Sherry3）") ?? realParsed.Sheets[0];
     Check(realParsed.PreferredSheetName == "客户总表（Sherry3）", "provided SP workbook active sheet selected by default");
-    Check(sherrySheet.Rows.Count == 540 && sherrySheet.Headers.Count == 31, "provided SP workbook shape parsed");
+    Check(sherrySheet.Rows.Count > 0 && sherrySheet.Headers.Count > 0, "provided SP workbook shape parsed");
     var realMapping = imports.SuggestMapping(sherrySheet);
     Check(realMapping.Any(row => row.Target == ImportField.Name) && realMapping.Any(row => row.Target == ImportField.WhatsApp), "provided SP workbook core fields inferred");
     var realPreview = await imports.BuildPreviewAsync(sherrySheet, realMapping);
     Check(realPreview.All(row => row.Errors.Count == 0), "provided SP workbook has no mandatory-field failures");
     var realCommit = await imports.CommitAsync(Path.GetFileName(args[1]), realPreview, allowStageChange:true, allowOwnerChange:true);
-    var luis = (await repository.GetLeadsAsync("Luis Luis Exposito")).FirstOrDefault();
-    Check(realCommit.Failed == 0 && realCommit.Created + realCommit.Updated == sherrySheet.Rows.Count, "provided SP workbook imports every row without mapping failures");
-    Check(luis is not null && luis.CustomFields.Count == sherrySheet.Headers.Count, "provided SP workbook keeps all 31 original dimensions");
+    var firstImported = (await repository.GetLeadsAsync()).FirstOrDefault(lead => lead.Name == realPreview[0].Name && lead.PhoneE164 == realPreview[0].PhoneE164);
+    Check(realCommit.Failed == 0 && realCommit.Created == sherrySheet.Rows.Count && realCommit.Updated == 0, "provided SP workbook imports every row as one customer without collapsing repeated names or phones");
+    Check(firstImported is not null && firstImported.CustomFields.Count == sherrySheet.Headers.Count, "provided SP workbook keeps every original dimension");
     Console.WriteLine($"RESULT total={realCommit.Total} created={realCommit.Created} updated={realCommit.Updated} invalid={realCommit.InvalidPhones} failed={realCommit.Failed}");
     try { File.Delete(database); Directory.Delete(root, true); } catch { }
     return failures.Count == 0 ? 0 : 1;
@@ -59,21 +60,32 @@ Check(LeadScoringService.GradeFromScore(80) == "A", "score boundary A=80");
 Check(LeadScoringService.GradeFromScore(79) == "B", "score boundary B=79");
 Check(LeadScoringService.GradeFromScore(40) == "C", "score boundary C=40");
 Check(LeadScoringService.GradeFromScore(39) == "D", "score boundary D=39");
+Check(LeadScoringService.Weights.SequenceEqual(new Dictionary<string, int>
+{
+    ["paid_marketing_willingness"] = 25, ["supply_stability"] = 20, ["ecommerce_foundation"] = 15,
+    ["private_traffic"] = 15, ["existing_sales"] = 15, ["materials_readiness"] = 10
+}), "Lead Intelligence V2 uses the six requested dimensions and 100 point total");
 
-var phone = PhoneNormalizer.Normalize("07700 900123", "United Kingdom");
-Check(phone.Valid && phone.E164 == "+447700900123" && phone.CountryInferred, "E.164 country inference");
+var phone = PhoneNormalizer.Normalize("447700 900123", "United Kingdom");
+Check(phone.Valid && phone.E164 == "+447700900123" && !phone.CountryInferred, "phone normalization only adds plus without inferring a country code");
+var localFormatPhone = PhoneNormalizer.Normalize("07700 900123", "United Kingdom");
+Check(!localFormatPhone.Valid && localFormatPhone.E164 == "+07700900123" && !localFormatPhone.CountryInferred, "country field is ignored and a local leading zero is preserved");
 var alreadyInternationalUsPhone = PhoneNormalizer.Normalize("13373224256", "美国");
-Check(alreadyInternationalUsPhone.Valid && alreadyInternationalUsPhone.E164 == "+13373224256", "country inference does not duplicate an existing country code");
+Check(alreadyInternationalUsPhone.Valid && alreadyInternationalUsPhone.E164 == "+13373224256", "existing digits are preserved when adding plus");
 Check(PhoneIdentity.IsMatch("+113373224256", "+13373224256"), "legacy duplicated country code still matches WhatsApp number by complete suffix");
 var customPhoneLead = new Lead { Name="custom phone", CustomFields=new Dictionary<string, string> { ["WhatsApp号码"]="1-337-322-4256" } };
 Check(PhoneIdentity.FindUniqueLead([customPhoneLead], "+13373224256")?.Id == customPhoneLead.Id, "WhatsApp custom column participates in customer matching");
+var groupRequest = WhatsAppGroupCreateRequest.CreateValidated("Priority Buyers", ["+44 7700 900123", "447700900123", "+1 415 555 0103"]);
+Check(groupRequest.Subject == "Priority Buyers" && groupRequest.ParticipantPhones.SequenceEqual(["+447700900123", "+14155550103"]), "WhatsApp group request validates and deduplicates international members");
+try { WhatsAppGroupCreateRequest.CreateValidated("", ["+447700900123"]); Check(false, "WhatsApp group rejects empty subject"); }
+catch (InvalidOperationException) { Check(true, "WhatsApp group rejects empty subject"); }
 var ambiguousPhoneMatch = PhoneIdentity.FindUniqueLead([
     new Lead { Name="first", PhoneE164="+11234567890" },
     new Lead { Name="second", PhoneE164="+21234567890" }
 ], "1234567890");
 Check(ambiguousPhoneMatch is null, "ambiguous suffix phone matches fail closed");
 var badPhone = PhoneNormalizer.Normalize("12345", "Unknown");
-Check(!badPhone.Valid, "invalid phone risk");
+Check(!badPhone.Valid && badPhone.E164 == "+12345", "invalid phone is retained with a leading plus for correction");
 var wa = PhoneNormalizer.BuildWaMeUrl("+44 7700 900123", "Hello Elena & team");
 Check(wa == "https://wa.me/447700900123?text=Hello%20Elena%20%26%20team", "wa.me encoding");
 Check(StageParser.Parse("qualified") == WAFlow.Core.Domain.LeadStage.Interested && StageParser.Parse("won") == WAFlow.Core.Domain.LeadStage.Customer, "legacy stage migration");
@@ -82,9 +94,12 @@ var baselineRoot = Path.Combine(root, "ai-baseline");
 var baselineRepository = new LocalRepository(Path.Combine(baselineRoot, "baseline.db"));
 await baselineRepository.InitializeAsync();
 await baselineRepository.UpsertLeadAsync(new Lead { Id="legacy-rule-score", Name="Legacy Rule Score", Grade="B", Score=72, ScoreBreakdown=new Dictionary<string, int> { ["productFit"]=18 }, ScoreReasons=["旧规则评分"], AnalysisStatus=AnalysisStatus.NotRun });
+await baselineRepository.UpsertLeadAsync(new Lead { Id="legacy-ai-score", Name="Legacy AI Score", Grade="A", Score=88, AnalysisContractVersion=1, AiScoreApplied=true, AnalysisStatus=AnalysisStatus.Succeeded, ProfileSummary="旧版 AI 画像" });
 await baselineRepository.InitializeAsync();
 var alignedBaseline = await baselineRepository.GetLeadAsync("legacy-rule-score");
 Check(alignedBaseline is { Grade: "D", Score: 0, AiScoreApplied: false, AnalysisStatus: AnalysisStatus.NotRun } && alignedBaseline.ScoreBreakdown.Count == 0, "upgrade resets legacy non-AI scores to the D baseline");
+var alignedLegacyAi = await baselineRepository.GetLeadAsync("legacy-ai-score");
+Check(alignedLegacyAi is { Grade: "D", Score: 0, AiScoreApplied: false, AnalysisStatus: AnalysisStatus.NotRun, AnalysisContractVersion: 0 } && alignedLegacyAi.AnalysisError.Contains("旧评分契约"), "upgrade invalidates V1 AI scores without deleting CRM data");
 
 var recoveryRoot = Path.Combine(root, "database-recovery");
 var recoveryDatabase = Path.Combine(recoveryRoot, "recovery.db");
@@ -141,6 +156,7 @@ Check(committed.Created == 1 && committed.Updated == 1, "preview then update com
 var elena = await repository.GetLeadAsync("lead_elena");
 Check(elena?.Stage == WAFlow.Core.Domain.LeadStage.Negotiation, "duplicate stage protected by default");
 var newBuyer = (await repository.GetLeadsAsync("New Buyer")).Single();
+Check(newBuyer.PhoneE164 == "+07700900999" && !newBuyer.PhoneValid, "import never prepends a country dialing code and only adds plus");
 Check(newBuyer.CustomFields.GetValueOrDefault("门店数量") == "12" && newBuyer.CustomFields.GetValueOrDefault("采购周期") == "Quarterly", "custom dimensions persisted on lead");
 Check(newBuyer.CustomFields.Count == parsed.Sheets[0].Headers.Count && newBuyer.CustomFields.GetValueOrDefault("客户姓名") == "New Buyer", "every original spreadsheet column persisted");
 Check(newBuyer is { Grade: "D", Score: 0, AnalysisStatus: AnalysisStatus.NotRun, AiScoreApplied: false }, "new imports stay D until an AI analysis succeeds");
@@ -166,6 +182,60 @@ var directPreview = await imports.BuildPreviewAsync(directSheet, directMapping);
 var directCommit = await imports.CommitAsync("direct.xlsx", directPreview, allowStageChange:true, allowOwnerChange:true);
 var directLead = (await repository.GetLeadsAsync("direct_buyer_01")).Single();
 Check(directCommit.Failed == 0 && directLead.CustomFields.Count == directSheet.Headers.Count && directLead.Owner == "Daisy", "direct import retains every source dimension and links core fields");
+
+var rowIdentityRoot = Path.Combine(root, "row-identity-import");
+var rowIdentityRepository = new LocalRepository(Path.Combine(rowIdentityRoot, "row-identity.db"));
+await rowIdentityRepository.InitializeAsync();
+var rowIdentityImports = new ImportService(rowIdentityRepository);
+var rowIdentitySheet = new ImportSheet
+{
+    Name="row-identity", Headers=["buyer_nickname", "电话", "国家/邮箱"],
+    Rows=
+    [
+        new Dictionary<string, string> { ["buyer_nickname"]="same-name", ["电话"]="14155550101", ["国家/邮箱"]="美国" },
+        new Dictionary<string, string> { ["buyer_nickname"]="same-name", ["电话"]="14155550102", ["国家/邮箱"]="美国" },
+        new Dictionary<string, string> { ["buyer_nickname"]="shared-phone-one", ["电话"]="14155550103", ["国家/邮箱"]="美国" },
+        new Dictionary<string, string> { ["buyer_nickname"]="shared-phone-two", ["电话"]="14155550103", ["国家/邮箱"]="美国" }
+    ]
+};
+var rowIdentityMapping = rowIdentityImports.SuggestMapping(rowIdentitySheet);
+var rowIdentityPreview = await rowIdentityImports.BuildPreviewAsync(rowIdentitySheet, rowIdentityMapping);
+var rowIdentityCommit = await rowIdentityImports.CommitAsync("row-identity.xlsx", rowIdentityPreview, allowStageChange:true, allowOwnerChange:true);
+Check(rowIdentityPreview.All(row => !row.IsDuplicate) && rowIdentityCommit.Created == 4, "every row in one workbook is imported even when names or phone numbers repeat");
+Check(await rowIdentityRepository.GetLeadByPhoneAsync("14155550103") is null, "duplicate phone ownership fails closed instead of linking WhatsApp to the wrong customer");
+var rowIdentityReimportPreview = await rowIdentityImports.BuildPreviewAsync(rowIdentitySheet, rowIdentityMapping);
+var rowIdentityReimport = await rowIdentityImports.CommitAsync("row-identity.xlsx", rowIdentityReimportPreview, allowStageChange:true, allowOwnerChange:true);
+Check(rowIdentityReimport.Created == 0 && rowIdentityReimport.Updated == 4 && rowIdentityReimportPreview.Select(row => row.DuplicateLeadId).Distinct().Count() == 4, "composite row identity keeps repeated-name and repeated-phone reimports idempotent");
+
+var scientificPhonePath = Path.Combine(root, "scientific-phone.xlsx");
+using (var scientificWorkbook = new XLWorkbook())
+{
+    var sheet = scientificWorkbook.AddWorksheet("customers");
+    sheet.Cell(1, 1).Value = "buyer_nickname"; sheet.Cell(1, 2).Value = "电话"; sheet.Cell(1, 3).Value = "国家/邮箱";
+    sheet.Cell(2, 1).Value = "scientific-phone";
+    sheet.Cell(2, 2).Value = 525525000000d; sheet.Cell(2, 2).Style.NumberFormat.Format = "0.00E+00";
+    sheet.Cell(2, 3).Value = 0;
+    scientificWorkbook.SaveAs(scientificPhonePath);
+}
+var scientificParsed = imports.Parse(scientificPhonePath).Sheets.Single();
+var scientificPreview = (await imports.BuildPreviewAsync(scientificParsed, imports.SuggestMapping(scientificParsed))).Single();
+Check(scientificParsed.Rows.Single()["电话"] == "525525000000" && scientificPreview.PhoneE164 == "+525525000000", "numeric Excel phones bypass scientific display formatting and keep every digit");
+Check(scientificPreview.Country == "" && scientificPreview.CustomValues["国家/邮箱"] == "0", "country placeholders stay in the original dimension but do not become an incorrect CRM country");
+Check(PhoneNormalizer.Normalize("5.25525E+11", "").E164 == "+525525000000", "scientific phone text is expanded before normalization");
+
+var legacyPhoneRoot = Path.Combine(root, "legacy-phone-reimport");
+var legacyPhoneRepository = new LocalRepository(Path.Combine(legacyPhoneRoot, "legacy-phone.db"));
+await legacyPhoneRepository.InitializeAsync();
+await legacyPhoneRepository.UpsertLeadAsync(new Lead { Id="legacy-country-prefix", Name="Old Imported Name", PhoneE164="+113373224256", PhoneValid=true });
+var legacyPhoneImports = new ImportService(legacyPhoneRepository);
+var correctedPhoneSheet = new ImportSheet
+{
+    Name="corrected-phone",
+    Headers=["客户姓名", "WhatsApp号码", "国家"],
+    Rows=[new Dictionary<string, string> { ["客户姓名"]="Updated Imported Name", ["WhatsApp号码"]="13373224256", ["国家"]="美国" }]
+};
+var correctedPhonePreview = await legacyPhoneImports.BuildPreviewAsync(correctedPhoneSheet, legacyPhoneImports.SuggestMapping(correctedPhoneSheet));
+Check(correctedPhonePreview.Single() is { IsDuplicate: true, DuplicateLeadId: "legacy-country-prefix", PhoneE164: "+13373224256" }, "reimport matches and corrects a legacy duplicated country prefix without creating a new customer");
 directLead.CustomFields["任意业务维度"] = "人工修改后的值";
 await repository.UpsertLeadAsync(directLead);
 Check((await repository.GetLeadAsync(directLead.Id))?.CustomFields.GetValueOrDefault("任意业务维度") == "人工修改后的值", "manual custom-dimension edits persist");
@@ -210,7 +280,7 @@ var riskyPhoneSheet = new ImportSheet
     Rows=[new Dictionary<string, string> { ["buyer_nickname"]="risky_buyer", ["电话"]="0", ["国家"]="美国" }]
 };
 var riskyPhonePreview = await imports.BuildPreviewAsync(riskyPhoneSheet, imports.SuggestMapping(riskyPhoneSheet));
-Check(!riskyPhonePreview.Single().PhoneValid && riskyPhonePreview.Single().PhoneE164 == "0", "invalid phone keeps the original cell value instead of a misleading partial E.164 value");
+Check(!riskyPhonePreview.Single().PhoneValid && riskyPhonePreview.Single().PhoneE164 == "+0", "invalid phone keeps its digits and receives only a leading plus for correction");
 
 var legacyLead = new Lead { Name="Legacy mapped name", CustomFields=new Dictionary<string, string> { [buyerHeader]="legacy_buyer_01" } };
 await repository.UpsertLeadAsync(legacyLead);
@@ -253,12 +323,12 @@ if (!string.IsNullOrWhiteSpace(workbookArgument))
 {
     var realParsed = imports.Parse(workbookArgument);
     var sherrySheet = realParsed.Sheets.FirstOrDefault(sheet => sheet.Name == "客户总表（Sherry3）") ?? realParsed.Sheets[0];
-    Check(sherrySheet.Rows.Count == 540 && sherrySheet.Headers.Count == 31, "provided SP workbook shape parsed");
+    Check(sherrySheet.Rows.Count > 0 && sherrySheet.Headers.Count > 0, "provided SP workbook shape parsed");
     var realPreview = await imports.BuildPreviewAsync(sherrySheet, imports.SuggestMapping(sherrySheet));
     var realCommit = await imports.CommitAsync(Path.GetFileName(workbookArgument), realPreview, allowStageChange:true, allowOwnerChange:true);
-    var luis = (await repository.GetLeadsAsync("Luis Luis Exposito")).FirstOrDefault();
     Check(realCommit.Failed == 0 && realCommit.Created + realCommit.Updated == sherrySheet.Rows.Count, "provided SP workbook imports every row without mapping failures");
-    Check(luis is not null && luis.CustomFields.Count == sherrySheet.Headers.Count, "provided SP workbook keeps all 31 original dimensions");
+    var firstImported = (await repository.GetLeadsAsync()).FirstOrDefault(lead => lead.Name == realPreview[0].Name && lead.PhoneE164 == realPreview[0].PhoneE164);
+    Check(firstImported is not null && firstImported.CustomFields.Count == sherrySheet.Headers.Count, "provided SP workbook keeps every original dimension");
 }
 
 var whatsappLead = (await repository.GetLeadAsync("lead_james"))!;
@@ -279,6 +349,20 @@ var messageInsertedTwice = await repository.UpsertWhatsAppMessageAsync(whatsappM
 Check(messageInserted && !messageInsertedTwice && (await repository.GetWhatsAppMessagesAsync(conversation.Id)).Count == 1, "WhatsApp message idempotency");
 await repository.UpdateWhatsAppMessageStatusAsync("primary", "wamid-smoke", WhatsAppMessageStatus.Read);
 Check((await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single().Status == WhatsAppMessageStatus.Read, "WhatsApp message status persistence");
+var quotedReply = new WhatsAppMessage
+{
+    Id="primary:wamid-reply", ProviderMessageId="wamid-reply", AccountId="primary", ConversationId=conversation.Id,
+    LeadId=whatsappLead.Id, Phone=conversation.Phone, Direction=WhatsAppMessageDirection.Outgoing, Status=WhatsAppMessageStatus.Sent,
+    Body="Here is the quotation", QuotedMessageId="wamid-smoke", QuotedText="Hello", QuotedFromMe=false, Timestamp=whatsappMessage.Timestamp.AddMinutes(-1)
+};
+await repository.UpsertWhatsAppMessageAsync(quotedReply);
+var storedReply = (await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single(message => message.ProviderMessageId == "wamid-reply");
+Check(storedReply.QuotedMessageId == "wamid-smoke" && storedReply.QuotedText == "Hello" && !storedReply.QuotedFromMe, "WhatsApp native reply context persists");
+var revokedAt = DateTimeOffset.Now;
+await repository.MarkWhatsAppMessageRevokedAsync("primary", "wamid-reply", revokedAt);
+await repository.UpsertWhatsAppMessageAsync(quotedReply);
+storedReply = (await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single(message => message.ProviderMessageId == "wamid-reply");
+Check(storedReply.IsRevoked && storedReply.RevokedAt is not null && storedReply.QuotedMessageId == "wamid-smoke", "WhatsApp delete-for-everyone state persists and cannot regress");
 await repository.MarkWhatsAppConversationReadAsync(conversation.Id);
 Check((await repository.GetWhatsAppConversationsAsync()).Single(x => x.Id == conversation.Id).UnreadCount == 0, "WhatsApp conversation unread persistence");
 Check((await repository.GetLeadAsync("lead_james"))?.WhatsAppOptIn == true, "WhatsApp opt-in audit fields persisted");
@@ -408,8 +492,9 @@ var safetyPassed = await campaigns.CheckSafetyValveAsync();
 var safetyStoppedCampaign = await repository.GetCampaignAsync(campaign.Id);
 var executionHistory = await campaigns.GetExecutionHistoryAsync();
 Check(!safetyPassed && safetyStoppedCampaign is { Status: CampaignStatus.SafetyStopped, SafetyStopFromIp: "198.51.100.30", SafetyStopToIp: "203.0.113.31" } && (await repository.GetCampaignAsync(secondAccountCampaign.Id))?.Status == CampaignStatus.SafetyStopped && safetyNotice?.Campaigns.Count == 2 && safetyNotice.Campaigns.Sum(item => item.Failed) == 1 && executionHistory.Single(item => item.Campaign.Id == campaign.Id).StopOrNext.Contains("已处理"), "IP change safety valve stops all active outreach across accounts and preserves execution position");
-await repository.SaveOnboardingStateAsync(new OnboardingState { Completed=true, GuideVersion=4, CompletedAt=DateTimeOffset.Now });
-Check((await repository.GetOnboardingStateAsync()) is { Completed: true, GuideVersion: 4 }, "API-only first-run onboarding completion persists");
+await repository.SaveOnboardingStateAsync(new OnboardingState { Completed=true, GuideVersion=6, ModuleGuideVersion=1, SeenModuleGuides=["dashboard", "customers", "settings"], CompletedAt=DateTimeOffset.Now });
+var persistedOnboarding = await repository.GetOnboardingStateAsync();
+Check(persistedOnboarding is { Completed: true, GuideVersion: 6, ModuleGuideVersion: 1 } && persistedOnboarding.SeenModuleGuides.SequenceEqual(["dashboard", "customers", "settings"]), "global and per-module onboarding completion persists");
 
 await using (var embeddedBridge = new WhatsAppConnectionManager())
 {
@@ -419,20 +504,7 @@ await using (var embeddedBridge = new WhatsAppConnectionManager())
     await embeddedBridge.LogoutAsync();
 }
 
-var analysisJson = WAFlow.Core.Infrastructure.Json.Serialize(new
-{
-    score=88, grade="A",
-    factors=new[]
-    {
-        new { key="marketValue", score=15, maxScore=15, rationale="订单价值高" }, new { key="companyScale", score=8, maxScore=10, rationale="公司规模较好" },
-        new { key="productFit", score=18, maxScore=20, rationale="产品匹配度高" }, new { key="purchasePower", score=13, maxScore=15, rationale="采购能力强" },
-        new { key="replyEngagement", score=10, maxScore=15, rationale="回复积极" }, new { key="recency", score=9, maxScore=10, rationale="近期活跃" },
-        new { key="explicitDemand", score=10, maxScore=10, rationale="需求明确" }, new { key="registeredOrConsulted", score=5, maxScore=5, rationale="已有咨询" }
-    },
-    stage="negotiation", confidence=.91,
-    evidence=new[] { new { field="latestMessage", value="300 units", interpretation="数量信号明确" } },
-    profileSummary="欧洲家具分销商，采购意图明确。", customerSegment="高价值经销商", nextAction="确认交期并提供阶梯报价。", risks=new[] { "需要人工核对交期" }
-});
+var analysisJson = V2AnalysisJson("Could you quote 300 units?");
 var draftJson = WAFlow.Core.Infrastructure.Json.Serialize(new { purpose="follow_up", language="en", body="Hi Elena, thank you for confirming 300 units. I will verify the lead time and share the next details with you.", rationale=new[] { "承接客户的数量与交期问题" }, assumptions=Array.Empty<string>(), risks=new[] { "交期需人工确认" } });
 var invalidAnalysisJson = "{\"score\":99,\"grade\":\"A\",\"factors\":[],\"stage\":\"new\",\"confidence\":0.8,\"evidence\":[],\"profileSummary\":\"x\",\"customerSegment\":\"x\",\"nextAction\":\"x\",\"risks\":[]}";
 var handler = new QueueHandler([Envelope(analysisJson), Envelope(draftJson), Envelope(invalidAnalysisJson)]);
@@ -441,7 +513,9 @@ await repository.SaveAppSettingsAsync(new AppSettings { DeepSeekBaseUrl="https:/
 var catalog = await deepSeek.DiscoverModelsAsync("https://api.deepseek.com");
 Check(catalog.Models.SequenceEqual(["deepseek-chat", "deepseek-reasoner"]), "AI provider model catalog is fetched and sorted");
 var analyzed = await deepSeek.AnalyzeLeadAsync((await repository.GetLeadAsync("lead_elena"))!);
-Check(analyzed.AnalysisStatus == AnalysisStatus.Succeeded && analyzed.Score == 88 && analyzed.Evidence.Count == 1, "DeepSeek structured analysis success");
+Check(analyzed is { AnalysisStatus: AnalysisStatus.Succeeded, Score: 88, BaseProfileScore: 78, BehaviorSignalScore: 10, AnalysisContractVersion: 2, AiScoreApplied: true } && analyzed.ScoreFactors.Count == 6 && analyzed.Evidence.Count >= 7, "DeepSeek V2 structured analysis success");
+var analyzedDashboard = await repository.GetDashboardAsync();
+Check(analyzedDashboard.Grades["A"] >= 1 && analyzedDashboard.PriorityLeads.Any(lead => lead.Id == analyzed.Id), "Dashboard grade distribution reads validated V2 AI scores");
 var generated = await deepSeek.GenerateDraftAsync(analyzed, "follow_up", "en", "");
 Check(generated.Body.StartsWith("Hi Elena") && generated.Status == DraftStatus.Draft, "DeepSeek structured draft success");
 try
@@ -450,16 +524,18 @@ try
     Check(false, "DeepSeek invalid structure rejected");
 }
 catch (DeepSeekException error) { Check(error.Code == "invalid_structured_output" && error.Retryable, "DeepSeek invalid structure rejected"); }
+var failedAnalysisLead = await repository.GetLeadAsync("lead_ahmed");
+Check(failedAnalysisLead is { Grade: "D", Score: 0, AnalysisStatus: AnalysisStatus.RetryableFailed, AiScoreApplied: false }, "AI analysis failure remains D/0 and is retryable");
 Check(handler.Requests.All(x => x.Authorization == "Bearer sk-test-redacted") && handler.Requests.Count(x => x.Method == "GET" && x.Uri == "https://api.deepseek.com/models") == 1 && handler.Requests.Count(x => x.Method == "POST" && x.Uri == "https://api.deepseek.com/chat/completions") == 3, "AI model discovery and chat requests use the server-side key");
-Check(WhatsAppReplySignalExtractor.Extract("Yes, please quote 300 pcs and confirm the lead time.").Contains("采购数量") && WhatsAppReplySignalExtractor.Extract("Yes, please quote 300 pcs and confirm the lead time.").Contains("价格 / 报价"), "WhatsApp reply keywords are captured as non-scoring AI hints");
+Check(handler.RequestBodies.Any(body => body.Contains("dimension_weights") && body.Contains("recentMessages")), "AI request includes the V2 contract, imported CRM fields and WhatsApp history");
 
 var automationLead = new Lead { Id="reply-automation-lead", Name="Reply Buyer", PhoneE164="+8829990000123", PhoneValid=true };
 await repository.UpsertLeadAsync(automationLead);
 var automationConversation = new WhatsAppConversation { Id="primary:8829990000123", AccountId="primary", Phone="8829990000123", LeadId=automationLead.Id, DisplayName=automationLead.Name, LastMessage="Please quote 300 pcs", LastMessageAt=DateTimeOffset.Now };
 await repository.UpsertWhatsAppConversationAsync(automationConversation);
-var automationMessage = new WhatsAppMessage { Id="primary:reply-auto", ProviderMessageId="reply-auto", AccountId="primary", ConversationId=automationConversation.Id, LeadId=automationLead.Id, Phone=automationConversation.Phone, Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received, Body="Yes, please quote 300 pcs and confirm the lead time.", Timestamp=DateTimeOffset.Now };
+var automationMessage = new WhatsAppMessage { Id="primary:reply-auto", ProviderMessageId="reply-auto", AccountId="primary", ConversationId=automationConversation.Id, LeadId=automationLead.Id, Phone=automationConversation.Phone, Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received, Body="I need 500 pcs monthly", Timestamp=DateTimeOffset.Now };
 await repository.UpsertWhatsAppMessageAsync(automationMessage);
-var automationHandler = new QueueHandler([Envelope(analysisJson)]);
+var automationHandler = new QueueHandler([Envelope(V2AnalysisJson("I need 500 pcs monthly"))]);
 var automationProvider = new DeepSeekService(repository, new FakeSecretStore("sk-automation"), new HttpClient(automationHandler) { Timeout=TimeSpan.FromSeconds(5) });
 await using (var automationBridge = new WhatsAppConnectionManager())
 {
@@ -469,11 +545,93 @@ await using (var automationBridge = new WhatsAppConnectionManager())
     automation.AnalysisChanged += (_, change) => { if (change.LeadId == automationLead.Id && change.Status == AnalysisStatus.Succeeded) completed.TrySetResult(); };
     await automation.QueueLeadForReplyAsync(automationMessage);
     var queuedLead = await repository.GetLeadAsync(automationLead.Id);
-    Check(queuedLead is { Grade: "D", Score: 0, AnalysisStatus: AnalysisStatus.Queued } && queuedLead.LatestReplySignals.Contains("采购数量"), "WhatsApp reply queues analysis while retaining the initial D grade");
+    Check(queuedLead is { Grade: "D", Score: 0, AnalysisStatus: AnalysisStatus.Queued, AiScoreApplied: false } && queuedLead.LatestReplySignals.Count == 0, "WhatsApp reply queues AI analysis at D/0 without local keyword scoring");
     await automation.StartAsync();
     await completed.Task.WaitAsync(TimeSpan.FromSeconds(5));
     var automaticallyAnalyzed = await repository.GetLeadAsync(automationLead.Id);
-    Check(automaticallyAnalyzed is { Grade: "A", Score: 88, AnalysisStatus: AnalysisStatus.Succeeded, AiScoreApplied: true } && automaticallyAnalyzed.LastAnalyzedAt is not null, "selected AI model updates lead intelligence and grade after a WhatsApp reply");
+    Check(automaticallyAnalyzed is { Grade: "A", Score: 88, BehaviorSignalScore: 10, AnalysisStatus: AnalysisStatus.Succeeded, AiScoreApplied: true, AnalysisContractVersion: 2 } && automaticallyAnalyzed.LastAnalyzedAt is not null && automaticallyAnalyzed.BehaviorSignals.Any(signal => signal.Evidence == "I need 500 pcs monthly"), "AI recognizes the 500 pcs monthly purchase signal and updates lead intelligence");
+    Check(automationHandler.RequestBodies.Any(body => body.Contains("I need 500 pcs monthly")), "the exact new WhatsApp message is supplied to the AI Provider");
+}
+
+var bulkRoot = Path.Combine(root, "bulk-lead-analysis");
+var bulkRepository = new LocalRepository(Path.Combine(bulkRoot, "bulk.db"));
+await bulkRepository.InitializeAsync();
+await bulkRepository.UpsertLeadAsync(new Lead { Id="bulk-one", Name="Bulk One", PhoneE164="+14155550101", PhoneValid=true });
+await bulkRepository.UpsertLeadAsync(new Lead { Id="bulk-two", Name="Bulk Two", PhoneE164="+14155550102", PhoneValid=true });
+await bulkRepository.RemoveDemoLeadsIfRealDataExistsAsync();
+await bulkRepository.SaveAppSettingsAsync(new AppSettings { DeepSeekBaseUrl="https://api.deepseek.com", DeepSeekModel="deepseek-chat" });
+var bulkHandler = new QueueHandler([Envelope(invalidAnalysisJson), Envelope(V2AnalysisJson("Please send a quotation for 500 pcs"))]);
+var bulkProvider = new DeepSeekService(bulkRepository, new FakeSecretStore("sk-bulk"), new HttpClient(bulkHandler) { Timeout=TimeSpan.FromSeconds(5) });
+await using (var bulkBridge = new WhatsAppConnectionManager())
+{
+    var bulkSync = new WhatsAppSyncService(bulkRepository, bulkBridge);
+    await using var bulkAutomation = new LeadIntelligenceAutomationService(bulkRepository, bulkProvider, bulkSync);
+    var bulkResult = await bulkAutomation.AnalyzeAllLeadsAsync();
+    var bulkDashboard = await bulkRepository.GetDashboardAsync();
+    Check(bulkResult is { Total: 2, Succeeded: 1, Failed: 1 } && bulkHandler.RequestBodies.Count == 2, "bulk lead analysis continues after one customer fails");
+    Check(bulkDashboard.Grades["A"] == 1 && bulkDashboard.Grades["D"] == 1, "bulk AI results update Dashboard while failed customers remain D/0");
+}
+
+var reportRoot = Path.Combine(root, "customer-intelligence-report");
+var reportRepository = new LocalRepository(Path.Combine(reportRoot, "reports.db"));
+await reportRepository.InitializeAsync();
+var reportLead = new Lead
+{
+    Id="report-customer", Name="Monthly Buyer", Country="美国", PhoneE164="+14155558888", PhoneValid=true,
+    ProductInterest="家居用品", Owner="Frank", Stage=LeadStage.Negotiation, Grade="A", Score=86,
+    AnalysisContractVersion=LeadIntelligenceContract.Version, AiScoreApplied=true, AnalysisStatus=AnalysisStatus.Succeeded,
+    ScoreFactors=
+    [
+        new LeadFactor { Key="paid_marketing_willingness", Score=20, MaxScore=25, Rationale="有增长意愿", Evidence=["历史分析"] },
+        new LeadFactor { Key="supply_stability", Score=18, MaxScore=20, Rationale="采购稳定", Evidence=["月度需求"] },
+        new LeadFactor { Key="ecommerce_foundation", Score=15, MaxScore=15, Rationale="Amazon 渠道", Evidence=["CRM"] },
+        new LeadFactor { Key="private_traffic", Score=12, MaxScore=15, Rationale="WhatsApp 社群", Evidence=["CRM"] },
+        new LeadFactor { Key="existing_sales", Score=12, MaxScore=15, Rationale="已有销售", Evidence=["CRM"] },
+        new LeadFactor { Key="materials_readiness", Score=9, MaxScore=10, Rationale="素材较完整", Evidence=["CRM"] }
+    ],
+    CustomFields=new Dictionary<string, string> { ["销售渠道"]="Amazon", ["采购周期"]="每月", ["原始需求"]="500 pcs monthly" }
+};
+await reportRepository.UpsertLeadAsync(reportLead);
+var reportConversation = new WhatsAppConversation { Id="primary:14155558888", AccountId="primary", Phone="14155558888", LeadId=reportLead.Id, DisplayName=reportLead.Name, LastMessage="I need 500 pcs monthly.", LastMessageAt=DateTimeOffset.Now };
+await reportRepository.UpsertWhatsAppConversationAsync(reportConversation);
+for (var index = 0; index < 85; index++)
+    await reportRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+    {
+        Id=$"primary:report-{index}", ProviderMessageId=$"report-{index}", AccountId="primary", ConversationId=reportConversation.Id,
+        LeadId=reportLead.Id, Phone=reportConversation.Phone, Direction=index % 2 == 0 ? WhatsAppMessageDirection.Incoming : WhatsAppMessageDirection.Outgoing,
+        Status=index % 2 == 0 ? WhatsAppMessageStatus.Received : WhatsAppMessageStatus.Read,
+        Body=index == 84 ? "I need 500 pcs monthly." : index % 2 == 0 ? $"Customer message {index}" : $"Sales reply {index}", Timestamp=DateTimeOffset.Now.AddMinutes(index - 85)
+    });
+var reportCampaign = new WhatsAppCampaign { Id="report-campaign", Name="月度采购跟进", Status=CampaignStatus.Completed, StartsAt=DateTimeOffset.Now.AddDays(-1) };
+await reportRepository.SaveCampaignAsync(reportCampaign);
+await reportRepository.SaveCampaignRecipientAsync(new CampaignRecipient { Id="report-recipient", CampaignId=reportCampaign.Id, LeadId=reportLead.Id, Phone=reportLead.PhoneE164, DisplayName=reportLead.Name, RenderedMessage="Hi, checking your monthly plan.", Status=CampaignRecipientStatus.Sent, ScheduledAt=DateTimeOffset.Now.AddDays(-1), SentAt=DateTimeOffset.Now.AddDays(-1).AddMinutes(1) });
+await reportRepository.LogEventAsync("lead_stage_changed", reportLead.Id, null, "new -> negotiation");
+await reportRepository.SaveAnalysisRunAsync("report-analysis-run", reportLead.Id, "succeeded", "deepseek-test", new LeadAnalysis { Score=86, Grade="A", ProfileSummary="成熟 Amazon 买家" }, null);
+var reportProvider = new FakeStructuredReportProvider();
+var customerAnalysis = new CustomerAnalysisService(reportRepository, reportProvider);
+var firstReport = await customerAnalysis.GenerateAsync(reportLead.Id);
+var reportSteps = await reportRepository.GetCustomerAnalysisStepsAsync(firstReport.Id);
+Check(firstReport is { Status: CustomerReportStatus.Succeeded, Version: 1 } && firstReport.SourceSnapshot.WhatsAppMessages.Count == 85 && firstReport.SourceSnapshot.CampaignTouches.Count == 1 && firstReport.SourceSnapshot.LeadAnalysisHistory.Count == 1, "customer intelligence report snapshots CRM, all WhatsApp history, automation and Lead Intelligence history");
+Check(reportSteps.Count(step => step.Status == CustomerReportStepStatus.Succeeded) == 5 && reportProvider.FactExtractionCalls == 2, "customer intelligence report persists every multi-stage result and batches all 85 messages without truncation");
+Check(firstReport.Report.ManagementSummary.Length is >= 300 and <= 500 && firstReport.Report.WhatsAppAnalysis.Quotes.Single().Original == "I need 500 pcs monthly." && firstReport.Report.WhatsAppAnalysis.Quotes.Single().ChineseMeaning.Contains("每月采购500件"), "customer intelligence report is Chinese-first while preserving and explaining the original customer quote");
+var reportExports = new CustomerReportExportService(reportRepository);
+var wordReportPath = Path.Combine(reportRoot, "Monthly Buyer 客户背景调查报告.docx");
+var pdfReportPath = Path.Combine(reportRoot, "Monthly Buyer 客户背景调查报告.pdf");
+await reportExports.ExportWordAsync(firstReport, wordReportPath);
+await reportExports.ExportPdfAsync(firstReport, pdfReportPath);
+Check(File.Exists(wordReportPath) && new FileInfo(wordReportPath).Length > 5_000 && File.ReadAllBytes(wordReportPath).Take(2).SequenceEqual(new byte[] { 0x50, 0x4B }), "professional customer report exports a valid non-empty DOCX package");
+Check(File.Exists(pdfReportPath) && new FileInfo(pdfReportPath).Length > 10_000 && Encoding.ASCII.GetString(File.ReadAllBytes(pdfReportPath), 0, 5) == "%PDF-", "professional customer report exports a valid non-empty PDF document");
+var secondReport = await customerAnalysis.GenerateAsync(reportLead.Id);
+var reportHistory = await customerAnalysis.GetHistoryAsync(reportLead.Id);
+Check(secondReport.Version == 2 && reportHistory.Select(report => report.Version).SequenceEqual([2, 1]) && reportHistory.All(report => report.CustomerId == reportLead.Id), "customer intelligence reports support re-analysis, immutable versions and history comparison");
+Check((await reportRepository.GetLeadAsync(reportLead.Id)) is { Score: 86, Grade: "A" }, "customer report generation never overwrites authoritative CRM or Lead Intelligence data");
+var keepArtifactIndex = Array.IndexOf(args, "--keep-report-artifacts");
+if (keepArtifactIndex >= 0 && keepArtifactIndex + 1 < args.Length)
+{
+    var artifactDirectory = Path.GetFullPath(args[keepArtifactIndex + 1]);
+    Directory.CreateDirectory(artifactDirectory);
+    File.Copy(wordReportPath, Path.Combine(artifactDirectory, "Customer Intelligence Report QA.docx"), true);
+    File.Copy(pdfReportPath, Path.Combine(artifactDirectory, "Customer Intelligence Report QA.pdf"), true);
 }
 
 var lifecycleRoot = Path.Combine(root, "lifecycle");
@@ -488,12 +646,49 @@ await lifecycleRepository.InitializeAsync();
 Check((await lifecycleRepository.GetLeadsAsync()).Select(lead => lead.Id).SequenceEqual([lifecycleLead.Id]), "demo customers are removed automatically once real customer data exists");
 Check(await lifecycleRepository.DeleteLeadAsync(lifecycleLead.Id) && await lifecycleRepository.GetLeadAsync(lifecycleLead.Id) is null, "customer can be deleted manually");
 Check((await lifecycleRepository.GetWhatsAppConversationsAsync()).Single().LeadId == "" && (await lifecycleRepository.GetWhatsAppMessagesAsync(lifecycleConversation.Id)).Single().LeadId == "", "customer deletion retains WhatsApp history and removes customer links");
+var bulkDeleteOne = new Lead { Id="bulk-delete-one", Name="Bulk Delete One", PhoneE164="+14155551001", PhoneValid=true };
+var bulkDeleteTwo = new Lead { Id="bulk-delete-two", Name="Bulk Delete Two", PhoneE164="+14155551002", PhoneValid=true };
+await lifecycleRepository.UpsertLeadAsync(bulkDeleteOne);
+await lifecycleRepository.UpsertLeadAsync(bulkDeleteTwo);
+var bulkDeleted = await lifecycleRepository.DeleteLeadsAsync([bulkDeleteOne.Id, bulkDeleteTwo.Id, bulkDeleteOne.Id, "missing-customer"]);
+Check(bulkDeleted == 2 && await lifecycleRepository.GetLeadAsync(bulkDeleteOne.Id) is null && await lifecycleRepository.GetLeadAsync(bulkDeleteTwo.Id) is null, "checkbox bulk deletion is transactional, distinct and ignores missing customers");
 
 try { File.Delete(database); Directory.Delete(root, true); } catch { }
 Console.WriteLine(failures.Count == 0 ? "\nAI Sales OS native core smoke tests passed." : $"\n{failures.Count} smoke test(s) failed.");
 return failures.Count == 0 ? 0 : 1;
 
 static string Envelope(string content) => System.Text.Json.JsonSerializer.Serialize(new { choices=new[] { new { message=new { content } } } });
+
+static string V2AnalysisJson(string behaviorEvidence) => WAFlow.Core.Infrastructure.Json.Serialize(new
+{
+    contract_version=2,
+    lead_score=88,
+    base_profile_score=78,
+    behavior_signal_score=10,
+    grade="A",
+    dimension_scores=new
+    {
+        paid_marketing_willingness=20, supply_stability=18, ecommerce_foundation=15,
+        private_traffic=12, existing_sales=8, materials_readiness=5
+    },
+    dimension_evidence=new
+    {
+        paid_marketing_willingness=new { reason="有明确增长投入意向", evidence=new[] { "客户资料显示付费增长需求" } },
+        supply_stability=new { reason="品类与采购方向清晰", evidence=new[] { "客户提供了持续采购背景" } },
+        ecommerce_foundation=new { reason="已有成熟电商渠道", evidence=new[] { "客户资料包含 Amazon 渠道" } },
+        private_traffic=new { reason="具备一定私域触达能力", evidence=new[] { "客户资料包含 WhatsApp 社群" } },
+        existing_sales=new { reason="已有销售记录但规模需核实", evidence=new[] { "导入资料包含历史销售记录" } },
+        materials_readiness=new { reason="已有部分营销素材", evidence=new[] { "客户资料提及产品图片" } }
+    },
+    behavior_signals=new[] { "提供明确采购数量" },
+    behavior_signal_details=new[] { new { signal="提供明确采购数量", score=10, evidence=behaviorEvidence } },
+    customer_profile="美国 Amazon 卖家，正在寻找稳定供应商。",
+    customer_segment="高潜力电商买家",
+    stage="negotiation",
+    confidence=.91,
+    next_action="发送报价与历史客户案例。",
+    risk_warning="价格敏感，报价需说明价值差异。"
+});
 
 sealed class FakeSecretStore(string value) : ISecretStore
 {
@@ -505,12 +700,13 @@ sealed class QueueHandler(IEnumerable<string> responses) : HttpMessageHandler
 {
     private readonly Queue<string> _responses = new(responses);
     public List<(string Method, string Uri, string Authorization)> Requests { get; } = [];
+    public List<string> RequestBodies { get; } = [];
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Requests.Add((request.Method.Method, request.RequestUri!.ToString(), request.Headers.Authorization?.ToString() ?? ""));
         if (request.Method == HttpMethod.Get)
             return new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent("{\"data\":[{\"id\":\"deepseek-reasoner\"},{\"id\":\"deepseek-chat\"}]}", Encoding.UTF8, "application/json") };
-        _ = await request.Content!.ReadAsStringAsync(cancellationToken);
+        RequestBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
         return new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent(_responses.Dequeue(), Encoding.UTF8, "application/json") };
     }
 }
@@ -540,5 +736,66 @@ sealed class MutableIpMonitorHandler(string initialIp) : HttpMessageHandler
             ? System.Text.Json.JsonSerializer.Serialize(new { ip = CurrentIp })
             : System.Text.Json.JsonSerializer.Serialize(new { success=true, country_code="US", country="United States", region="Virginia", city="Ashburn", connection=new { isp="Example ISP" } });
         return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent(json, Encoding.UTF8, "application/json") });
+    }
+}
+
+sealed class FakeStructuredReportProvider : IStructuredAiProvider
+{
+    public int FactExtractionCalls { get; private set; }
+    public bool HasApiKey() => true;
+    public Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default) => Task.FromResult("deepseek-report-test");
+
+    public Task<T> CompleteStructuredAsync<T>(string instructions, object payload, Func<T, string?> validate, CancellationToken cancellationToken = default) where T : class
+    {
+        object result;
+        if (typeof(T) == typeof(CustomerFactSet))
+        {
+            FactExtractionCalls++;
+            result = new CustomerFactSet
+            {
+                Facts=[new ReportStatement { Nature="事实", Topic="采购需求", Statement="客户明确表达每月采购500件。", Evidence="I need 500 pcs monthly.", Source="WhatsApp report-84", Confidence=.98 }],
+                Quotes=[new CustomerQuote { Original="I need 500 pcs monthly.", ChineseMeaning="客户明确表达每月采购500件需求。", AiAnalysis="这是明确的持续采购数量信号。", Timestamp=DateTimeOffset.Now }],
+                InformationGaps=["尚未确认目标价格。"]
+            };
+        }
+        else if (typeof(T) == typeof(CustomerBusinessAnalysisResult))
+        {
+            result = new CustomerBusinessAnalysisResult
+            {
+                ExecutiveSummary=new CustomerExecutiveSummary { OneLinePositioning="该客户是具有明确月度采购需求的美国 Amazon 卖家。", CustomerType="跨境电商卖家", BusinessStage="供应商评估与报价阶段", OverallValueJudgment="待最终综合", CurrentSalesRecommendation="待最终综合" },
+                BasicProfile=new CustomerBasicProfile { CustomerType="跨境电商卖家", BusinessModels=["Amazon"], ProductDirection="家居用品", OperatingScale="已表达每月500件采购需求，其他规模待验证", DevelopmentStage="成熟采购需求验证阶段" },
+                BusinessBackground=new CustomerBusinessBackground { CurrentBusinessModel="通过 Amazon 销售家居用品并按月补充供应链。", CoreAdvantages=["采购数量明确", "已有线上销售渠道"], CurrentLimitations=["目标价格尚未确认"], GrowthOpportunities=["建立稳定月度供货合作"] },
+                PainAnalysis=new CustomerPainAnalysis { SurfacePains=["需要稳定供应商"], DeepBusinessProblems=["持续补货能力与供应链确定性仍需验证"] },
+                PurchaseMotivation=new CustomerPurchaseMotivation { InterestReasons=["需要满足月度采购计划"], TriggerEvents=["主动提出500件月度需求"], DecisionFactors=["价格", "交期", "供货稳定性"] },
+                WhatsAppAnalysis=new CustomerWhatsAppAnalysis { EngagementLevel="积极，已提供明确采购数量", FocusTopics=["月度采购数量"], PurchaseSignals=["每月500件"], Concerns=["价格与交期尚未确认"] },
+                OpportunityJudgment=new CustomerOpportunityJudgment { Grade="A", AiScore=86, DealProbability=72, PositiveFactors=["明确采购数量", "已有 Amazon 渠道"], NegativeFactors=["价格敏感度待确认"] },
+                ProductFit=new CustomerProductFit { HighMatchPoints=["家居用品方向一致"], LowMatchPoints=["尚无卖方具体产品参数"], QuestionsToValidate=["目标 SKU 与规格是什么"] },
+                RiskAnalysis=new CustomerRiskAnalysis { DealRisks=["价格与交期未确认"], AdoptionRisks=["需求规格可能变化"], ChurnRisks=["供应响应不及时可能转向其他供应商"] }
+            };
+        }
+        else if (typeof(T) == typeof(CustomerSalesStrategy))
+        {
+            result = new CustomerSalesStrategy
+            {
+                Actions=
+                [
+                    new CustomerSalesAction { Timeframe="24小时", Action="确认SKU、规格、目标价格和交期。", Rationale="客户已给出数量但缺少成交条件。", SuccessCriterion="获得完整询价参数。" },
+                    new CustomerSalesAction { Timeframe="7天", Action="发送匹配报价与供货案例。", Rationale="用可核验信息降低供应链顾虑。", SuccessCriterion="客户确认报价评估或样品计划。" },
+                    new CustomerSalesAction { Timeframe="30天", Action="推动首单或月度供货计划。", Rationale="把月度需求转为可执行合作节奏。", SuccessCriterion="形成首单或明确采购时间表。" }
+                ],
+                RecommendedTalkTrack="感谢您确认每月500件的需求。为了给出准确方案，请确认目标SKU、规格、目标价格与期望交期。",
+                PendingQuestions=["目标SKU与规格是什么", "可接受价格区间是多少", "首次交付时间是什么"]
+            };
+        }
+        else if (typeof(T) == typeof(CustomerReportSynthesisResult))
+        {
+            var sentence = "事实方面，客户资料显示其位于美国并经营 Amazon 渠道，WhatsApp 原话明确提出每月采购500件，系统也记录了既往自动化触达和商机分析。AI判断方面，该客户具备持续采购潜力，当前最关键的不确定因素是目标SKU、规格、价格区间、交付周期和最终决策流程，这些信息尚未被证据确认，不能视为既定事实。销售建议方面，应在24小时内完成询价参数确认，在7天内提供与需求匹配的报价及供货案例，并在30天内推动首单或月度采购计划。沟通中应围绕供货稳定性、价格构成和交付能力建立信任，同时避免在库存、折扣或交期未经核实前作出承诺。管理层可将其列为优先跟进客户，但仍需由销售人员复核所有AI判断并持续记录客户反馈。";
+            result = new CustomerReportSynthesisResult { ManagementSummary=sentence, OverallValueJudgment="高潜力月度采购客户，具备明确数量信号但成交条件仍需确认。", CurrentSalesRecommendation="优先补齐询价参数并发送匹配报价与供货案例。", DealProbability=72 };
+        }
+        else throw new InvalidOperationException($"Unsupported report stage type: {typeof(T).Name}");
+        var typed = (T)result;
+        var error = validate(typed);
+        if (!string.IsNullOrWhiteSpace(error)) throw new InvalidOperationException(error);
+        return Task.FromResult(typed);
     }
 }

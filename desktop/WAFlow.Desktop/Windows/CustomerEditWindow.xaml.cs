@@ -38,6 +38,21 @@ public partial class CustomerEditWindow : Window
         OptInCheck.IsChecked = lead.WhatsAppOptIn;
         OptedOutCheck.IsChecked = lead.OptedOut;
 
+        AiScoreText.Text = lead.Score.ToString();
+        AiGradeText.Text = $"{lead.Grade}级";
+        AiBaseScoreText.Text = $"{lead.BaseProfileScore} / 100";
+        AiBehaviorScoreText.Text = $"{lead.BehaviorSignalScore:+#;-#;0} / ±20";
+        AiScoreStateText.Text = lead.HasCurrentAiScore
+            ? $"Lead Intelligence V{lead.AnalysisContractVersion} · {lead.AnalysisStateLabel} · {lead.ProfileSummary}"
+            : $"等待 Lead Intelligence V2 分析 · {lead.AnalysisStateLabel}";
+        AiNextActionText.Text = lead.NextAction;
+        AiRiskText.Text = string.IsNullOrWhiteSpace(lead.RiskWarning)
+            ? lead.Risks.FirstOrDefault() ?? "当前 D 级是未分析初始值，不代表低价值客户。"
+            : lead.RiskWarning;
+        AiReasonItems.ItemsSource = lead.ScoreFactors.Count == 0
+            ? new[] { "尚无 AI 评分原因与证据" }
+            : lead.ScoreFactors.Select(factor => $"{factor.Rationale}（{factor.Score}/{factor.MaxScore}）— {string.Join("；", factor.Evidence)}").ToList();
+
         StageBox.ItemsSource = Enum.GetValues<LeadStage>().Select(stage => new StageOption(Labels.Stage(stage), stage)).ToList();
         StageBox.SelectedItem = ((IEnumerable<StageOption>)StageBox.ItemsSource).First(option => option.Value == lead.Stage);
     }
@@ -96,10 +111,7 @@ public partial class CustomerEditWindow : Window
 
             if (!_lead.AiScoreApplied)
             {
-                _lead.Score = 0;
-                _lead.Grade = "D";
-                _lead.ScoreBreakdown = [];
-                _lead.ScoreReasons = [];
+                LeadScoringService.ResetToAiBaseline(_lead);
             }
             await _services.Repository.UpsertLeadAsync(_lead);
             await _services.Repository.LogEventAsync("customer_edited", _lead.Id, null, $"edited core fields and {_lead.CustomFields.Count} table dimensions");

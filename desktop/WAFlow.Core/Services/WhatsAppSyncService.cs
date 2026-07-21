@@ -52,6 +52,9 @@ public sealed class WhatsAppSyncService
             case "message_status":
                 await IngestStatusAsync(e);
                 return;
+            case "message_revoked":
+                await IngestRevocationAsync(accountId, e.Data);
+                return;
             case "contacts_upsert":
                 foreach (var item in Items(e.Data)) await IngestContactAsync(accountId, item);
                 RaiseDataChanged(accountId, "contacts");
@@ -61,7 +64,11 @@ public sealed class WhatsAppSyncService
                 RaiseDataChanged(accountId, "chats");
                 return;
             case "messages_history":
-                foreach (var item in Items(e.Data)) await IngestMessageAsync(accountId, item);
+                foreach (var item in Items(e.Data))
+                {
+                    if (Bool(item, "isRevocation")) await IngestRevocationAsync(accountId, item);
+                    else await IngestMessageAsync(accountId, item);
+                }
                 RaiseDataChanged(accountId, "messages");
                 return;
             case "sync_status":
@@ -190,6 +197,11 @@ public sealed class WhatsAppSyncService
             MediaPath = Text(data, "mediaPath"),
             MediaDownloadError = Text(data, "mediaDownloadError"),
             PushName = WhatsAppTextEncodingRepair.Repair(Text(data, "pushName")),
+            QuotedMessageId = Text(data, "quotedMessageId"),
+            QuotedText = WhatsAppTextEncodingRepair.Repair(Text(data, "quotedText")),
+            QuotedFromMe = Bool(data, "quotedFromMe"),
+            IsRevoked = Bool(data, "isRevoked"),
+            RevokedAt = ParseTimestamp(data, "revokedAt"),
             Timestamp = timestamp,
             DeliveredAt = deliveredAt,
             ReadAt = readAt,
@@ -211,6 +223,25 @@ public sealed class WhatsAppSyncService
             await _repository.LogEventAsync(fromMe ? "whatsapp_message_sent" : "whatsapp_message_received", lead.Id, null, $"message_id={providerId}; account={accountId}");
         }
         if (inserted && !historical) MessageSynchronized?.Invoke(this, message);
+    }
+
+    private async Task IngestRevocationAsync(string accountId, JsonElement data)
+    {
+        var providerId = Text(data, "revokedMessageId");
+        if (string.IsNullOrWhiteSpace(providerId)) return;
+        var revokedAt = ParseTimestamp(data, "timestamp") ?? DateTimeOffset.Now;
+        var message = await _repository.MarkWhatsAppMessageRevokedAsync(accountId, providerId, revokedAt);
+        if (message is null) return;
+        var conversation = await _repository.GetWhatsAppConversationAsync(accountId, message.Phone);
+        if (conversation is not null && conversation.LastMessageAt <= message.Timestamp)
+        {
+            conversation.LastMessage = message.Direction == WhatsAppMessageDirection.Outgoing ? "你撤回了一条消息" : "对方撤回了一条消息";
+            conversation.LastMessageAt = message.Timestamp;
+            await _repository.UpsertWhatsAppConversationAsync(conversation);
+        }
+        MessageSynchronized?.Invoke(this, message);
+        if (!string.IsNullOrWhiteSpace(message.LeadId))
+            await _repository.LogEventAsync("whatsapp_message_revoked", message.LeadId, null, $"message_id={providerId}; account={accountId}");
     }
 
     private async Task IngestStatusAsync(WhatsAppBridgeEvent e)

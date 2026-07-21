@@ -90,10 +90,18 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     }
     public Task<JsonElement> SendTextAsync(string phone, string text, CancellationToken cancellationToken = default) =>
         SendCommandAsync("send_text", new { phone, text }, cancellationToken);
+    public Task<JsonElement> SendReplyTextAsync(string phone, string text, string quotedMessageId, string quotedText, bool quotedFromMe, CancellationToken cancellationToken = default) =>
+        SendCommandAsync("send_text", new { phone, text, quotedMessageId, quotedText, quotedFromMe }, cancellationToken);
     public Task<JsonElement> SendMediaAsync(string phone, string path, string caption, CancellationToken cancellationToken = default) =>
         SendCommandAsync("send_media", new { phone, path, caption }, cancellationToken);
+    public Task<JsonElement> SendReplyMediaAsync(string phone, string path, string caption, string quotedMessageId, string quotedText, bool quotedFromMe, CancellationToken cancellationToken = default) =>
+        SendCommandAsync("send_media", new { phone, path, caption, quotedMessageId, quotedText, quotedFromMe }, cancellationToken);
+    public Task<JsonElement> RevokeMessageAsync(string phone, string messageId, CancellationToken cancellationToken = default) =>
+        SendCommandAsync("revoke_message", new { phone, messageId }, cancellationToken);
     public Task<JsonElement> SetChatPinnedAsync(string phone, bool pinned, CancellationToken cancellationToken = default) =>
         SendCommandAsync("set_chat_pin", new { phone, pinned }, cancellationToken);
+    public Task<JsonElement> CreateGroupAsync(WhatsAppGroupCreateRequest request, CancellationToken cancellationToken = default) =>
+        SendCommandAsync("create_group", new { subject = request.Subject, participants = request.ParticipantPhones }, cancellationToken);
     public Task<JsonElement> SyncNowAsync(CancellationToken cancellationToken = default) =>
         SendCommandAsync("sync_now", null, cancellationToken);
 

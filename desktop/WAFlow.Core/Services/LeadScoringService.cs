@@ -7,39 +7,34 @@ public sealed class LeadScoringService
 {
     public static readonly IReadOnlyDictionary<string, int> Weights = new Dictionary<string, int>
     {
-        ["marketValue"] = 15, ["companyScale"] = 10, ["productFit"] = 20,
-        ["purchasePower"] = 15, ["replyEngagement"] = 15, ["recency"] = 10,
-        ["explicitDemand"] = 10, ["registeredOrConsulted"] = 5
+        ["paid_marketing_willingness"] = 25,
+        ["supply_stability"] = 20,
+        ["ecommerce_foundation"] = 15,
+        ["private_traffic"] = 15,
+        ["existing_sales"] = 15,
+        ["materials_readiness"] = 10
     };
 
-    public void Score(Lead lead)
+    public static void ResetToAiBaseline(Lead lead, string profileSummary = "等待 AI 分析", string nextAction = "等待客户回复或手动运行 AI 分析")
     {
-        var orderSignal = Math.Clamp((double)lead.EstimatedOrderValue / 25_000d, 0, 1);
-        var productSignal = string.IsNullOrWhiteSpace(lead.ProductInterest) ? 0.25 : 0.8;
-        var replySignal = string.IsNullOrWhiteSpace(lead.LatestMessage) ? 0 : 0.55;
-        var recencySignal = lead.LastContactAt is null ? 0.2 : Math.Clamp(1 - (DateTimeOffset.Now - lead.LastContactAt.Value).TotalDays / 30d, 0.1, 1);
-        var signals = new Dictionary<string, double>
-        {
-            ["marketValue"] = orderSignal,
-            ["companyScale"] = Clamp01(lead.CompanyScale),
-            ["productFit"] = productSignal,
-            ["purchasePower"] = lead.PurchasePower > 0 ? Clamp01(lead.PurchasePower) : Math.Clamp(orderSignal * .8, 0.15, .8),
-            ["replyEngagement"] = replySignal,
-            ["recency"] = recencySignal,
-            ["explicitDemand"] = lead.ExplicitDemand ? 1 : 0,
-            ["registeredOrConsulted"] = lead.RegisteredOrConsulted ? 1 : 0
-        };
-        lead.ScoreBreakdown = signals.ToDictionary(x => x.Key, x => (int)Math.Round(x.Value * Weights[x.Key], MidpointRounding.AwayFromZero));
-        lead.Score = lead.ScoreBreakdown.Values.Sum();
-        lead.Grade = GradeFromScore(lead.Score);
+        lead.Score = 0;
+        lead.Grade = "D";
+        lead.AnalysisContractVersion = 0;
+        lead.BaseProfileScore = 0;
+        lead.BehaviorSignalScore = 0;
+        lead.ScoreBreakdown = [];
         lead.ScoreReasons = [];
-        if (lead.ScoreBreakdown["productFit"] >= 16) lead.ScoreReasons.Add("产品匹配度高");
-        if (lead.ScoreBreakdown["marketValue"] >= 12) lead.ScoreReasons.Add("预计市场价值高");
-        if (lead.ScoreBreakdown["purchasePower"] >= 12) lead.ScoreReasons.Add("采购能力强");
-        if (lead.ScoreBreakdown["explicitDemand"] >= 8) lead.ScoreReasons.Add("需求明确");
-        if (lead.ScoreBreakdown["recency"] >= 8) lead.ScoreReasons.Add("近期活跃");
-        if (lead.ScoreReasons.Count == 0) lead.ScoreReasons.Add("需要补充更多采购信号");
-        lead.UpdatedAt = DateTimeOffset.Now;
+        lead.ScoreFactors = [];
+        lead.BehaviorSignals = [];
+        lead.LatestReplySignals = [];
+        lead.AnalysisConfidence = 0;
+        lead.Evidence = [];
+        lead.Risks = [];
+        lead.RiskWarning = "";
+        lead.ProfileSummary = profileSummary;
+        lead.CustomerSegment = "未分析";
+        lead.NextAction = nextAction;
+        lead.AiScoreApplied = false;
     }
 
     public static string GradeFromScore(int score) => score >= 80 ? "A" : score >= 60 ? "B" : score >= 40 ? "C" : "D";

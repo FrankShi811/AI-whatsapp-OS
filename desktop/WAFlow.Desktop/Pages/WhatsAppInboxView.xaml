@@ -1,14 +1,16 @@
 <UserControl x:Class="WAFlow.Desktop.Pages.WhatsAppInboxView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <Grid Margin="24,22,24,24">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:WAFlow.Desktop.Controls">
+    <Grid Margin="30,24,30,28">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
         <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel>
-                <TextBlock Text="WhatsApp Inbox" Style="{StaticResource PageTitle}"/>
-                <TextBlock Text="个人账号实验连接器 · QR 多设备会话 · 非官方协议，账号风险由用户承担" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
-                <Border x:Name="IpStatusBorder" Background="#EDF4F0" CornerRadius="8" Padding="9,5" Margin="0,8,0,0" HorizontalAlignment="Left" ToolTip="监测本机连接 WhatsApp 时使用的公网出口 IP；每 60 秒检测一次。">
+                <TextBlock Text="LIVE SALES CONVERSATIONS" Style="{StaticResource PageEyebrow}"/>
+                <TextBlock Text="WhatsApp Conversation Command Center" Style="{StaticResource PageTitle}" Margin="0,5,0,0"/>
+                <TextBlock Text="会话、客户上下文、AI 商机判断与销售动作在同一工作区完成。" Foreground="{DynamicResource Muted}" Margin="0,6,0,0"/>
+                <Border x:Name="IpStatusBorder" Background="{DynamicResource SurfaceMuted}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="12" Padding="10,6" Margin="0,9,0,0" HorizontalAlignment="Left" ToolTip="监测本机连接 WhatsApp 时使用的公网出口 IP；每 60 秒检测一次。">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="●" x:Name="IpStatusDot" Foreground="{StaticResource Muted}" FontSize="9" VerticalAlignment="Center" Margin="0,0,6,0"/>
                         <TextBlock x:Name="IpStatusText" Text="公网 IP：检测中…" Foreground="{StaticResource Muted}" FontSize="11"/>
@@ -16,27 +18,28 @@
                 </Border>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                <ComboBox x:Name="AccountCombo" Width="145" DisplayMemberPath="DisplayLabel" SelectionChanged="AccountCombo_SelectionChanged" Margin="0,0,8,0"/>
-                <Button Content="＋账号" Style="{StaticResource SecondaryButton}" Click="AddAccount_Click" Margin="0,0,8,0"/>
-                <Border Background="{StaticResource WarningSoft}" CornerRadius="12" Padding="10,5" Margin="0,0,10,0"><TextBlock x:Name="ConnectionStateText" Text="未连接" Foreground="#8A6110" FontSize="11" FontWeight="SemiBold"/></Border>
+                <ComboBox x:Name="AccountCombo" Width="160" DisplayMemberPath="DisplayLabel" SelectionChanged="AccountCombo_SelectionChanged" Margin="0,0,8,0"/>
+                <Button Content="＋ 账号" Style="{StaticResource SecondaryButton}" Click="AddAccount_Click" Margin="0,0,8,0"/>
+                <Button x:Name="CreateGroupButton" Content="＋ 建群" Style="{StaticResource SecondaryButton}" Click="CreateGroup_Click" Margin="0,0,8,0" IsEnabled="False" ToolTip="从已同步联系人中选择成员并建立 WhatsApp 群组"/>
+                <Border Background="{DynamicResource WarningSoft}" CornerRadius="13" Padding="10,6" Margin="0,0,10,0"><TextBlock x:Name="ConnectionStateText" Text="未连接" Foreground="{DynamicResource Warning}" FontSize="10.5" FontWeight="SemiBold"/></Border>
                 <Button x:Name="ConnectButton" Content="连接 / 显示二维码" Style="{StaticResource PrimaryButton}" Click="Connect_Click"/>
                 <Button x:Name="DisconnectButton" Content="断开" Style="{StaticResource SecondaryButton}" Click="Disconnect_Click" Margin="8,0,0,0" IsEnabled="False"/>
                 <Button x:Name="LogoutButton" Content="退出账号" Style="{StaticResource SecondaryButton}" Click="Logout_Click" Margin="8,0,0,0" IsEnabled="False"/>
             </StackPanel>
         </Grid>
 
-        <Grid Grid.Row="1" Margin="0,18,0,0">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="285"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="330"/></Grid.ColumnDefinitions>
+        <Grid Grid.Row="1" Margin="0,17,0,0">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="300"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="360"/></Grid.ColumnDefinitions>
 
             <Border Style="{StaticResource Card}" Padding="0">
                 <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                     <Border Padding="14" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
                         <StackPanel>
                             <DockPanel LastChildFill="True">
-                                <TextBlock Text="会话与联系人" FontWeight="SemiBold"/>
+                                <TextBlock Text="会话与联系人" Style="{StaticResource SectionTitle}"/>
                                 <TextBlock x:Name="ConversationCountText" DockPanel.Dock="Right" Foreground="{StaticResource Muted}" FontSize="10" HorizontalAlignment="Right"/>
                             </DockPanel>
-                            <TextBox x:Name="ConversationSearchBox" ToolTip="输入姓名、WhatsApp 名称或号码，实时搜索" Margin="0,10,0,0" TextChanged="ConversationSearch_TextChanged"/>
+                            <Grid Margin="0,10,0,0"><TextBlock Text="⌕" FontSize="15" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="10,0,0,0" Panel.ZIndex="1" IsHitTestVisible="False"/><TextBox x:Name="ConversationSearchBox" ToolTip="输入姓名、WhatsApp 名称或号码，实时搜索" Padding="32,8,10,8" TextChanged="ConversationSearch_TextChanged"/></Grid>
                             <Grid Margin="0,9,0,0">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Button x:Name="SyncButton" Content="同步联系人与历史" Style="{StaticResource SecondaryButton}" Click="Sync_Click" Padding="10,6" IsEnabled="False"/>
@@ -52,7 +55,7 @@
                         </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Grid Margin="6,8" Width="238"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <Grid Margin="9,9" Width="246"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="●" Foreground="{StaticResource Primary}" FontSize="8" Margin="0,0,6,0" VerticalAlignment="Center" Visibility="{Binding PinnedVisibility}"/>
                                         <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
@@ -69,15 +72,15 @@
 
             <Border Grid.Column="2" Style="{StaticResource Card}" Padding="0">
                 <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                    <Border Padding="16,13" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
-                        <StackPanel><TextBlock x:Name="ChatTitleText" Text="选择会话" FontWeight="SemiBold" FontSize="16"/><TextBlock x:Name="ChatNumberText" Text="连接后会同步个人会话" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,3,0,0"/></StackPanel>
+                    <Border Padding="18,14" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1">
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock x:Name="ChatTitleText" Text="选择会话" FontWeight="SemiBold" FontSize="17"/><TextBlock x:Name="ChatNumberText" Text="连接后会同步个人会话" Foreground="{DynamicResource Muted}" FontSize="10.5" Margin="0,3,0,0"/></StackPanel><Border Grid.Column="1" Background="{DynamicResource PrimarySoft}" CornerRadius="10" Padding="9,5" VerticalAlignment="Center"><TextBlock Text="CRM LIVE SYNC" Foreground="{DynamicResource Primary}" FontSize="9" FontWeight="Bold"/></Border></Grid>
                     </Border>
                     <Grid Grid.Row="1">
                         <StackPanel x:Name="QrPanel" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="380">
                             <Image x:Name="QrImage" Width="300" Height="300" Stretch="Uniform"/>
                             <TextBlock x:Name="QrHintText" Text="点击“连接 / 显示二维码”，然后使用手机 WhatsApp 的“已关联设备”扫描。" TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource Muted}" Margin="0,12,0,0"/>
                         </StackPanel>
-                        <ListBox x:Name="MessageList" BorderThickness="0" Background="#F5F8F6" Visibility="Collapsed" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListBox x:Name="MessageList" BorderThickness="0" Background="{DynamicResource Canvas}" Visibility="Collapsed" ScrollViewer.VerticalScrollBarVisibility="Auto">
                             <ListBox.ItemContainerStyle>
                                 <Style TargetType="ListBoxItem">
                                     <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
@@ -90,7 +93,19 @@
                                 <DataTemplate>
                                     <Grid Margin="14,6">
                                         <Border Background="{Binding BubbleBrush}" BorderBrush="{Binding BubbleBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="11,8" MaxWidth="520" HorizontalAlignment="{Binding Alignment}">
+                                            <Border.ContextMenu>
+                                                <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                                                    <MenuItem Header="回复该消息" Click="ReplyMessage_Click" Visibility="{Binding ReplyMenuVisibility}"/>
+                                                    <MenuItem Header="从双方设备撤回" Click="RevokeMessage_Click" Visibility="{Binding RevokeMenuVisibility}" IsEnabled="{Binding CanRevoke}"/>
+                                                </ContextMenu>
+                                            </Border.ContextMenu>
                                             <StackPanel>
+                                                <Border Visibility="{Binding QuoteVisibility}" Background="{DynamicResource CanvasDeep}" BorderBrush="{DynamicResource Primary}" BorderThickness="3,0,0,0" CornerRadius="5" Padding="8,5" Margin="0,0,0,6">
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding QuoteHeader}" Foreground="#456052" FontSize="10" FontWeight="SemiBold"/>
+                                                        <TextBlock Text="{Binding QuoteText}" Foreground="#65786E" FontSize="10" TextWrapping="Wrap" MaxWidth="450" MaxHeight="38" TextTrimming="CharacterEllipsis"/>
+                                                    </StackPanel>
+                                                </Border>
                                                 <Button Visibility="{Binding ImageVisibility}" Click="OpenMedia_Click" Background="Transparent" BorderThickness="0" Padding="0" HorizontalContentAlignment="Center" Cursor="Hand" ToolTip="点击用系统程序打开原图">
                                                     <Image Source="{Binding MediaPreview}" MaxWidth="320" MaxHeight="260" Stretch="Uniform"/>
                                                 </Button>
@@ -109,12 +124,18 @@
                             </ListBox.ItemTemplate>
                         </ListBox>
                     </Grid>
-                    <Border Grid.Row="2" Padding="14" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
+                    <Border Grid.Row="2" Padding="14" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0">
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <Button x:Name="AttachButton" Content="＋" ToolTip="添加图片、视频、音频或文件" Style="{StaticResource SecondaryButton}" Click="Attach_Click" Width="54" Height="54" Padding="0" FontSize="25" FontWeight="SemiBold" FontFamily="Segoe UI Symbol" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Focusable="False" Margin="0,0,12,0" IsEnabled="False"/>
-                            <Grid Grid.Column="1"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                                <TextBox x:Name="ComposerBox" MinHeight="54" MaxHeight="120" AcceptsReturn="True" TextWrapping="Wrap" IsEnabled="False" PreviewKeyDown="ComposerBox_PreviewKeyDown" ToolTip="Enter 发送，Ctrl+Enter 换行"/>
-                                <Border x:Name="AttachmentPanel" Grid.Row="1" Background="#EDF4F0" CornerRadius="7" Padding="8,5" Margin="0,6,0,0" Visibility="Collapsed">
+                            <Grid Grid.Column="1"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                <Border x:Name="ReplyPanel" Grid.Row="0" Background="{DynamicResource PrimarySurface}" BorderBrush="{DynamicResource Primary}" BorderThickness="3,0,0,0" CornerRadius="8" Padding="9,6" Margin="0,0,0,6" Visibility="Collapsed">
+                                    <DockPanel>
+                                        <Button Content="×" DockPanel.Dock="Right" Click="ClearReply_Click" Padding="7,1" Margin="8,0,0,0" ToolTip="取消回复"/>
+                                        <StackPanel><TextBlock Text="回复该消息" Foreground="#0F7050" FontSize="10" FontWeight="SemiBold"/><TextBlock x:Name="ReplyText" Foreground="#60736A" FontSize="10" TextTrimming="CharacterEllipsis" MaxWidth="600"/></StackPanel>
+                                    </DockPanel>
+                                </Border>
+                                <TextBox x:Name="ComposerBox" Grid.Row="1" MinHeight="54" MaxHeight="120" AcceptsReturn="True" TextWrapping="Wrap" IsEnabled="False" PreviewKeyDown="ComposerBox_PreviewKeyDown" ToolTip="Enter 发送，Ctrl+Enter 换行"/>
+                                <Border x:Name="AttachmentPanel" Grid.Row="2" Background="{DynamicResource PrimarySurface}" CornerRadius="8" Padding="8,5" Margin="0,6,0,0" Visibility="Collapsed">
                                     <DockPanel><Button Content="移除" DockPanel.Dock="Right" Click="ClearAttachment_Click" Padding="7,2" Margin="8,0,0,0"/><TextBlock x:Name="AttachmentText" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/></DockPanel>
                                 </Border>
                             </Grid>
@@ -126,8 +147,21 @@
 
             <Border Grid.Column="4" Style="{StaticResource Card}" Padding="0">
                 <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                    <Border Padding="16,13" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1"><StackPanel><TextBlock Text="客户侧栏" FontWeight="SemiBold" FontSize="16"/><TextBlock x:Name="LeadLinkStateText" Text="选择会话后关联客户" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,3,0,0"/></StackPanel></Border>
+                    <Border Padding="17,14" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1"><StackPanel><TextBlock Text="Customer Intelligence" FontWeight="SemiBold" FontSize="16"/><TextBlock x:Name="LeadLinkStateText" Text="选择会话后关联客户" Foreground="{DynamicResource Muted}" FontSize="10.5" Margin="0,3,0,0"/></StackPanel></Border>
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"><StackPanel Margin="16">
+                        <Border Style="{StaticResource AiCard}" Padding="13" Margin="0,0,0,15">
+                            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="105"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <controls:ScoreRing x:Name="AiSidebarScoreRing" Width="100" Height="100"/>
+                                <StackPanel Grid.Column="1" Margin="12,1,0,0">
+                                    <TextBlock Text="AI SALES BRIEF" Style="{StaticResource PageEyebrow}"/>
+                                    <TextBlock x:Name="AiSidebarConfidenceText" Text="等待 AI 分析" FontWeight="SemiBold" Margin="0,5,0,4"/>
+                                    <ProgressBar x:Name="AiSidebarConfidenceBar" Height="5" Maximum="100" Foreground="{DynamicResource AiAccent}"/>
+                                    <TextBlock x:Name="AiSidebarProfileText" Text="选择已关联客户后显示画像" Foreground="{DynamicResource Muted}" FontSize="9.5" TextWrapping="Wrap" Margin="0,7,0,0" MaxHeight="42" TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                                <Border Grid.ColumnSpan="2" VerticalAlignment="Bottom" Background="{DynamicResource PrimarySurface}" CornerRadius="8" Padding="9,6" Margin="0,108,0,0"><TextBlock x:Name="AiSidebarNextActionText" Text="下一步：等待客户上下文" Foreground="{DynamicResource PrimaryDark}" FontSize="9.5" FontWeight="SemiBold" TextWrapping="Wrap"/></Border>
+                            </Grid>
+                        </Border>
+                        <TextBlock Text="客户资料" Style="{StaticResource SectionTitle}" Margin="0,0,0,11"/>
                         <TextBlock Text="姓名" Style="{StaticResource LabelText}"/><TextBox x:Name="NameBox" Margin="0,5,0,11"/>
                         <TextBlock Text="公司" Style="{StaticResource LabelText}"/><TextBox x:Name="CompanyBox" Margin="0,5,0,11"/>
                         <TextBlock Text="阶段" Style="{StaticResource LabelText}"/><ComboBox x:Name="StageCombo" DisplayMemberPath="Label" Margin="0,5,0,11"/>
@@ -138,7 +172,7 @@
                         <CheckBox x:Name="OptedOutCheck" Content="客户已退订（禁止任何 Campaign）" Margin="0,0,0,11" Foreground="#A83A2F"/>
                         <TextBlock Text="备注 / 最近情况" Style="{StaticResource LabelText}"/><TextBox x:Name="NotesBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="72" Margin="0,5,0,11"/>
                         <TextBlock Text="自定义维度（每行 key=value）" Style="{StaticResource LabelText}"/><TextBox x:Name="CustomFieldsBox" AcceptsReturn="True" TextWrapping="NoWrap" MinHeight="90" Margin="0,5,0,11" FontFamily="Consolas" FontSize="11"/>
-                        <Border Background="{StaticResource WarningSoft}" CornerRadius="8" Padding="10"><TextBlock Text="保存会同步到客户列表、商机智能和后续 Campaign。" Foreground="#7A5B12" TextWrapping="Wrap" FontSize="10"/></Border>
+                        <Border Background="{DynamicResource WarningSoft}" CornerRadius="9" Padding="10"><TextBlock Text="保存会同步到客户列表、商机智能和后续 Campaign。" Foreground="{DynamicResource Warning}" TextWrapping="Wrap" FontSize="10"/></Border>
                     </StackPanel></ScrollViewer>
                     <Button x:Name="SaveLeadButton" Grid.Row="2" Content="保存并同步客户" Style="{StaticResource PrimaryButton}" Click="SaveLead_Click" Margin="16" IsEnabled="False"/>
                 </Grid>

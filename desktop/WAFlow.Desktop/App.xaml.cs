@@ -1,13 +1,29 @@
 using System.Windows;
 using System.Windows.Threading;
 using System.IO;
+using Velopack;
 using WAFlow.Core;
+using WAFlow.Desktop.Updates;
 
 namespace WAFlow.Desktop;
 
 public partial class App : Application
 {
     public AppServices Services { get; private set; } = null!;
+    public IApplicationUpdateService Updates { get; private set; } = null!;
+
+    [STAThread]
+    public static void Main(string[] args)
+    {
+        VelopackApp.Build()
+            .SetAppUserModelId(WindowsTaskbarIdentity.AppUserModelId)
+            .SetAutoApplyOnStartup(false)
+            .Run();
+
+        var app = new App();
+        app.InitializeComponent();
+        app.Run();
+    }
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -18,7 +34,9 @@ public partial class App : Application
         {
             Services = new AppServices();
             await Services.InitializeAsync();
-            var main = new MainWindow(Services);
+            Updates = new VelopackUpdateService();
+            ThemeManager.Apply((await Services.Repository.GetAppSettingsAsync()).ThemeMode);
+            var main = new MainWindow(Services, Updates);
             MainWindow = main;
             main.Show();
             if (Services.Repository.LastRecoveryNotice is { } recovery)
