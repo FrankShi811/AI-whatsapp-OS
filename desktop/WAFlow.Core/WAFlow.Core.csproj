@@ -14,4 +14,9 @@
   <ItemGroup Condition="Exists('..\..\bridge\dist\WAFlow.WhatsApp.Bridge.exe')">
     <EmbeddedResource Include="..\..\bridge\dist\WAFlow.WhatsApp.Bridge.exe" LogicalName="WAFlow.WhatsApp.Bridge.exe" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\Fonts\NotoSansCJKsc-Regular.otf" LogicalName="WAFlow.Assets.Fonts.NotoSansCJKsc-Regular.otf" />
+    <EmbeddedResource Include="Assets\Fonts\NotoSansCJKsc-Bold.otf" LogicalName="WAFlow.Assets.Fonts.NotoSansCJKsc-Bold.otf" />
+    <EmbeddedResource Include="Assets\Fonts\LICENSE-NOTO.txt" LogicalName="WAFlow.Assets.Fonts.LICENSE-NOTO.txt" />
+  </ItemGroup>
 </Project>

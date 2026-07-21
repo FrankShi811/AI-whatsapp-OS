@@ -388,14 +388,34 @@ internal static class PdfCustomerReportRenderer
     {
         lock (FontLock)
         {
-            if (GlobalFontSettings.FontResolver is null) GlobalFontSettings.FontResolver = new WindowsChineseFontResolver();
+            if (GlobalFontSettings.FontResolver is null) GlobalFontSettings.FontResolver = new BundledChineseFontResolver();
         }
     }
 
-    private sealed class WindowsChineseFontResolver : IFontResolver
+    private sealed class BundledChineseFontResolver : IFontResolver
     {
-        public FontResolverInfo ResolveTypeface(string familyName, bool isBold, bool isItalic) => new(isBold ? "DengBold" : "DengRegular");
-        public byte[]? GetFont(string faceName) => File.ReadAllBytes(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), faceName == "DengBold" ? "Dengb.ttf" : "Deng.ttf"));
+        private const string RegularFace = "NotoSansCJKscRegular";
+        private const string BoldFace = "NotoSansCJKscBold";
+        private static readonly Lazy<byte[]> RegularFont = new(() => ReadResource("WAFlow.Assets.Fonts.NotoSansCJKsc-Regular.otf"));
+        private static readonly Lazy<byte[]> BoldFont = new(() => ReadResource("WAFlow.Assets.Fonts.NotoSansCJKsc-Bold.otf"));
+
+        public FontResolverInfo ResolveTypeface(string familyName, bool isBold, bool isItalic) => new(isBold ? BoldFace : RegularFace);
+
+        public byte[]? GetFont(string faceName) => faceName switch
+        {
+            BoldFace => BoldFont.Value,
+            RegularFace => RegularFont.Value,
+            _ => null
+        };
+
+        private static byte[] ReadResource(string resourceName)
+        {
+            using var stream = typeof(CustomerReportExportService).Assembly.GetManifestResourceStream(resourceName)
+                ?? throw new InvalidOperationException($"Bundled PDF font resource is missing: {resourceName}");
+            using var buffer = new MemoryStream();
+            stream.CopyTo(buffer);
+            return buffer.ToArray();
+        }
     }
 
     private sealed class PdfReportCanvas
