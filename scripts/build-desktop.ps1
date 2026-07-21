@@ -12,7 +12,7 @@ if (-not $dotnet -or -not (Test-Path -LiteralPath $dotnet)) {
   $dotnet = if (Test-Path -LiteralPath $localDotnet) { $localDotnet } else { (Get-Command dotnet -ErrorAction Stop).Source }
 }
 $work = Join-Path $root 'work'
-$publish = Join-Path $work "publish\$Runtime"
+$publish = Join-Path $work "publish\$Runtime-$([Guid]::NewGuid().ToString('N'))"
 $output = Join-Path $root 'outputs\AI Sales OS.exe'
 $rootOutput = Join-Path $root 'AI Sales OS.exe'
 $bridgeBuild = Join-Path $root 'bridge\scripts\build-sea.mjs'
@@ -59,3 +59,5 @@ Write-Host "Created: $($file.FullName)"
 Write-Host "Versioned copy: $versionedRootOutput"
 Write-Host "Size: $([Math]::Round($file.Length / 1MB, 2)) MB"
 Write-Host "SHA256: $($hash.Hash)"
+try { Remove-Item -LiteralPath $publish -Recurse -Force -ErrorAction Stop }
+catch { Write-Warning "Temporary publish directory could not be removed: $publish" }

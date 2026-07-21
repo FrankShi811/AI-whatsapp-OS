@@ -9,6 +9,7 @@ public sealed class LocalRepository
     private static readonly string[] DemoLeadIds = ["lead_elena", "lead_ahmed", "lead_maria", "lead_james", "lead_invalid"];
     private readonly string _connectionString;
     public string DatabasePath { get; }
+    public DatabaseRecoveryNotice? LastRecoveryNotice { get; private set; }
 
     public LocalRepository(string? databasePath = null)
     {
@@ -21,6 +22,7 @@ public sealed class LocalRepository
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
+        LastRecoveryNotice = await DatabaseStartupGuard.PrepareAsync(DatabasePath, cancellationToken);
         await using var db = Open();
         await db.OpenAsync(cancellationToken);
         var sql = """

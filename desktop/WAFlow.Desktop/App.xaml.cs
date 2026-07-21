@@ -21,6 +21,16 @@ public partial class App : Application
             var main = new MainWindow(Services);
             MainWindow = main;
             main.Show();
+            if (Services.Repository.LastRecoveryNotice is { } recovery)
+            {
+                MessageBox.Show(
+                    $"检测到本地数据库损坏，AI Sales OS 已自动恢复并保留可读取数据。\n\n" +
+                    $"客户：{recovery.LeadCount} 条\nWhatsApp 会话：{recovery.ConversationCount} 个\n消息：{recovery.MessageCount} 条\n\n" +
+                    $"损坏原件和恢复副本已保存在：\n{recovery.BackupDirectory}",
+                    "数据库已安全恢复",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
             await Services.LeadAutomation.StartAsync();
             await Services.Campaigns.StartAsync();
         }

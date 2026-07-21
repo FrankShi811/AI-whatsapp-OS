@@ -1,6 +1,6 @@
 # AI Sales OS Windows 原生版
 
-直接双击 `AI Sales OS.exe` 运行。当前版本为 1.11.0，主要数据继续保存在 `%LOCALAPPDATA%\WAFlow\waflow.db`，因此升级后仍会读取原有客户、账号、群发任务和设置。
+直接双击 `AI Sales OS.exe` 运行。当前版本为 1.11.1，主要数据继续保存在 `%LOCALAPPDATA%\WAFlow\waflow.db`，因此升级后仍会读取原有客户、账号、群发任务和设置。
 
 这是 WPF/.NET 8 自包含单文件 EXE，不是 Electron、Tauri 或 WebView 套壳，不启动 localhost HTTP 服务。最终用户无需安装 Node.js、npm、浏览器或 .NET Runtime；WhatsApp 桥接程序已作为 Windows EXE 嵌入主程序。
 
@@ -22,6 +22,7 @@
 - AI 分析和话术生成使用用户选择的 DeepSeek 或 OpenAI Chat Completions 兼容模型，不需要 OpenAI API Key。
 - 新导入及尚未完成 AI 分析的客户统一为 D 级、0 分；导入和人工编辑不再运行本地规则评分。WhatsApp 客户新回复会捕捉报价、数量、交期、需求、积极/延后/异议等信号并进入 AI 队列，只有结构校验成功的 AI 结果才能更新商机智能和 Dashboard 等级分布。
 - 回复关键词只用于帮助模型定位证据，不会单独改变等级；现有八因素结构暂时保留，后续可按用户提供的评分标准和商机模板替换。
+- 每次启动会先校验 SQLite 并保存最近 10 个完整备份；发现可安全重建的页面或索引损坏时，先归档损坏原件，再恢复全部可读取表并显示恢复数量，避免初始化直接失败。
 
 ## 品牌资源
 

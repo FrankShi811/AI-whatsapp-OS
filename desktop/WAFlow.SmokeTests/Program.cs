@@ -1,6 +1,7 @@
 using System.Text;
 using System.Net;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Imports;
 using WAFlow.Core.Infrastructure;
@@ -84,6 +85,44 @@ await baselineRepository.UpsertLeadAsync(new Lead { Id="legacy-rule-score", Name
 await baselineRepository.InitializeAsync();
 var alignedBaseline = await baselineRepository.GetLeadAsync("legacy-rule-score");
 Check(alignedBaseline is { Grade: "D", Score: 0, AiScoreApplied: false, AnalysisStatus: AnalysisStatus.NotRun } && alignedBaseline.ScoreBreakdown.Count == 0, "upgrade resets legacy non-AI scores to the D baseline");
+
+var recoveryRoot = Path.Combine(root, "database-recovery");
+var recoveryDatabase = Path.Combine(recoveryRoot, "recovery.db");
+var recoverySeedRepository = new LocalRepository(recoveryDatabase);
+await recoverySeedRepository.InitializeAsync();
+var recoveryLead = new Lead { Id="recovery-customer", Name="Recovery Customer", PhoneE164="+14155550123", PhoneValid=true };
+await recoverySeedRepository.UpsertLeadAsync(recoveryLead);
+SqliteConnection.ClearAllPools();
+int recoveryPageSize;
+long damagedIndexRootPage;
+await using (var recoveryConnection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource=recoveryDatabase, Pooling=false }.ToString()))
+{
+    await recoveryConnection.OpenAsync();
+    await using var pageSizeCommand = recoveryConnection.CreateCommand();
+    pageSizeCommand.CommandText = "PRAGMA page_size";
+    recoveryPageSize = Convert.ToInt32(await pageSizeCommand.ExecuteScalarAsync());
+    await using var indexPageCommand = recoveryConnection.CreateCommand();
+    indexPageCommand.CommandText = "SELECT rootpage FROM sqlite_schema WHERE type='index' AND name='ix_leads_filters'";
+    damagedIndexRootPage = Convert.ToInt64(await indexPageCommand.ExecuteScalarAsync());
+}
+await using (var databaseBytes = new FileStream(recoveryDatabase, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+{
+    databaseBytes.Position = (damagedIndexRootPage - 1) * recoveryPageSize;
+    databaseBytes.WriteByte(0);
+    databaseBytes.Flush(true);
+}
+var recoveredRepository = new LocalRepository(recoveryDatabase);
+await recoveredRepository.InitializeAsync();
+Check(recoveredRepository.LastRecoveryNotice is { LeadCount: 6 } notice && Directory.Exists(notice.BackupDirectory), "malformed SQLite database is backed up and recovered during startup");
+Check((await recoveredRepository.GetLeadAsync(recoveryLead.Id))?.Name == recoveryLead.Name, "database recovery preserves readable CRM customer data");
+SqliteConnection.ClearAllPools();
+await using (var recoveredConnection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource=recoveryDatabase, Mode=SqliteOpenMode.ReadOnly, Pooling=false }.ToString()))
+{
+    await recoveredConnection.OpenAsync();
+    await using var integrityCommand = recoveredConnection.CreateCommand();
+    integrityCommand.CommandText = "PRAGMA integrity_check";
+    Check(string.Equals(Convert.ToString(await integrityCommand.ExecuteScalarAsync()), "ok", StringComparison.OrdinalIgnoreCase), "recovered SQLite database passes integrity check");
+}
 
 var csvPath = Path.Combine(root, "sample.csv");
 await File.WriteAllTextAsync(csvPath, "客户姓名,公司名称,国家,WhatsApp号码,意向产品,预计订单额,阶段,备注,门店数量,采购周期\r\nNew Buyer,North Star,United Kingdom,07700900999,Oak chair,12000,new,=HYPERLINK(\"bad\"),12,Quarterly\r\nElena Duplicate,Nordline Living,Italy,+393491234567,DC-18,26000,won,Needs quote,28,Monthly", new UTF8Encoding(true));
