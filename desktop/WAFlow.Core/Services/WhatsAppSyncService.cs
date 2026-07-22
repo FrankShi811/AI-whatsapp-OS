@@ -226,7 +226,13 @@ public sealed class WhatsAppSyncService
             var preview = string.IsNullOrWhiteSpace(message.Body) ? $"[{message.Kind}]" : message.Body;
             conversation.LastMessage = message.IsStatusUpdate ? $"[最新动态] {preview}" : preview;
         }
-        if (inserted && !fromMe && !historical) conversation.UnreadCount++;
+        if (inserted && !fromMe && !historical &&
+            (conversation.LastReadAt is null || timestamp > conversation.LastReadAt.Value))
+        {
+            // Late/out-of-order bridge events that predate the local read cursor
+            // are history, even when the bridge did not label them as history.
+            conversation.UnreadCount++;
+        }
         await _repository.UpsertWhatsAppConversationAsync(conversation);
         if (lead is not null && inserted && !message.IsStatusUpdate)
         {

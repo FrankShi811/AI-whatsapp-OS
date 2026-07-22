@@ -13,12 +13,19 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("1.18.3", "2026-07-22", "WhatsApp 已读气泡跨板块稳定修复",
+        [
+            "会话已读游标改为只向前推进；后台联系人、聊天和历史同步不能再用较早快照覆盖用户刚刚完成的已读操作。",
+            "同一数据库的会话写入增加串行保护，消除点击会话与后台同步同时保存时恢复旧未读数的竞态。",
+            "晚到且消息时间早于本地已读游标的 WhatsApp 事件按历史消息处理，不再重新生成新消息气泡。",
+            "新增“逐个读完会话、切换其他板块、后台继续同步、返回 Inbox”的回归测试。"
+        ], true),
         new("1.18.2", "2026-07-22", "WhatsApp Inbox 可收起客户抽屉",
         [
             "Customer Intelligence 客户侧栏改为可收起抽屉；收起后聊天区自动扩宽，并保留窄把手随时恢复。",
             "WhatsApp 建群入口移动到左侧会话搜索框右侧，以紧凑的“＋”按钮呈现。",
             "本页使用手册同步更新抽屉与建群入口的操作步骤。"
-        ], true),
+        ]),
         new("1.18.1", "2026-07-22", "更新通道、WhatsApp 动态与未读状态修复",
         [
             "更新检查改为读取 GitHub Release 静态 Velopack 清单，不再调用容易触发匿名限流的 GitHub Releases API。",

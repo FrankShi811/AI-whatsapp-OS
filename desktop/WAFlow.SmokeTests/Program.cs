@@ -398,13 +398,34 @@ Check(storedReply.IsRevoked && storedReply.RevokedAt is not null && storedReply.
 await repository.MarkWhatsAppConversationReadAsync(conversation.Id);
 var readConversation = (await repository.GetWhatsAppConversationsAsync()).Single(x => x.Id == conversation.Id);
 Check(readConversation.UnreadCount == 0 && readConversation.LastReadAt is not null, "WhatsApp conversation unread cursor persistence");
+var persistedReadCursor = readConversation.LastReadAt ?? throw new InvalidOperationException("WhatsApp read cursor was not persisted.");
+var olderReadCursor = persistedReadCursor.AddMinutes(-5);
 await repository.UpsertWhatsAppConversationAsync(new WhatsAppConversation
 {
     Id=conversation.Id, AccountId=conversation.AccountId, Phone=conversation.Phone, LeadId=conversation.LeadId,
-    DisplayName=conversation.DisplayName, LastMessage=conversation.LastMessage, LastMessageAt=conversation.LastMessageAt, UnreadCount=9
+    DisplayName=conversation.DisplayName, LastMessage=conversation.LastMessage, LastMessageAt=conversation.LastMessageAt,
+    UnreadCount=9, LastReadAt=olderReadCursor
 });
 readConversation = (await repository.GetWhatsAppConversationsAsync()).Single(x => x.Id == conversation.Id);
-Check(readConversation.UnreadCount == 0 && readConversation.LastReadAt is not null, "stale WhatsApp chat counters cannot restore cleared unread badges");
+Check(readConversation.UnreadCount == 0 && readConversation.LastReadAt > olderReadCursor, "stale WhatsApp sync snapshots with older cursors cannot restore cleared unread badges");
+await using (var unreadBridge = new WhatsAppConnectionManager())
+{
+    var unreadSync = new WhatsAppSyncService(repository, unreadBridge);
+    using var lateMessageDocument = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        phone = conversation.Phone,
+        id = "wamid-late-before-read-cursor",
+        fromMe = false,
+        timestamp = olderReadCursor.ToString("O"),
+        source = "live",
+        kind = "text",
+        text = "Late bridge history item"
+    }));
+    var ingestMessage = typeof(WhatsAppSyncService).GetMethod("IngestMessageAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    await (Task)ingestMessage.Invoke(unreadSync, ["primary", lateMessageDocument.RootElement.Clone()])!;
+}
+readConversation = (await repository.GetWhatsAppConversationsAsync()).Single(x => x.Id == conversation.Id);
+Check(readConversation.UnreadCount == 0, "late WhatsApp events older than the read cursor stay read after leaving and returning to Inbox");
 var statusLead = new Lead { Id="status-lead", Name="Status Lead", PhoneE164="+14155550101", PhoneValid=true, LatestMessage="normal customer reply" };
 await repository.UpsertLeadAsync(statusLead);
 await repository.UpsertWhatsAppConversationAsync(new WhatsAppConversation

@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using System.Collections.Concurrent;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Services;
 
@@ -7,7 +8,9 @@ namespace WAFlow.Core.Infrastructure;
 public sealed class LocalRepository
 {
     private static readonly string[] DemoLeadIds = ["lead_elena", "lead_ahmed", "lead_maria", "lead_james", "lead_invalid"];
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> ConversationWriteGates = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _connectionString;
+    private readonly SemaphoreSlim _conversationWriteGate;
     public string DatabasePath { get; }
     public DatabaseRecoveryNotice? LastRecoveryNotice { get; private set; }
 
@@ -16,6 +19,7 @@ public sealed class LocalRepository
         DatabasePath = databasePath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WAFlow", "waflow.db");
         Directory.CreateDirectory(Path.GetDirectoryName(DatabasePath)!);
         _connectionString = new SqliteConnectionStringBuilder { DataSource = DatabasePath, ForeignKeys = true, Pooling = true }.ToString();
+        _conversationWriteGate = ConversationWriteGates.GetOrAdd(Path.GetFullPath(DatabasePath), _ => new SemaphoreSlim(1, 1));
     }
 
     private SqliteConnection Open() => new(_connectionString);
@@ -847,30 +851,41 @@ public sealed class LocalRepository
 
     public async Task UpsertWhatsAppConversationAsync(WhatsAppConversation conversation, CancellationToken cancellationToken = default)
     {
-        conversation.UpdatedAt = DateTimeOffset.Now;
-        await using var db = Open(); await db.OpenAsync(cancellationToken);
-        await using (var existingCommand = db.CreateCommand())
+        await _conversationWriteGate.WaitAsync(cancellationToken);
+        try
         {
-            existingCommand.CommandText = "SELECT data_json FROM whatsapp_conversations WHERE id=$id";
-            existingCommand.Parameters.AddWithValue("$id", conversation.Id);
-            if (Json.Deserialize<WhatsAppConversation>(await existingCommand.ExecuteScalarAsync(cancellationToken) as string) is { } existing)
+            conversation.UpdatedAt = DateTimeOffset.Now;
+            await using var db = Open(); await db.OpenAsync(cancellationToken);
+            await using (var existingCommand = db.CreateCommand())
             {
-                var incomingHasReadCursor = conversation.LastReadAt is not null;
-                conversation.LastReadAt ??= existing.LastReadAt;
-                if (!incomingHasReadCursor && existing.LastReadAt is not null)
+                existingCommand.CommandText = "SELECT data_json FROM whatsapp_conversations WHERE id=$id";
+                existingCommand.Parameters.AddWithValue("$id", conversation.Id);
+                if (Json.Deserialize<WhatsAppConversation>(await existingCommand.ExecuteScalarAsync(cancellationToken) as string) is { } existing &&
+                    existing.LastReadAt is { } persistedReadAt &&
+                    (conversation.LastReadAt is null || conversation.LastReadAt < persistedReadAt))
+                {
+                    // A history/contact sync may finish after the user opened the chat.
+                    // Read cursors are monotonic: an older snapshot must never restore
+                    // a badge that the newer local read action already cleared.
+                    conversation.LastReadAt = persistedReadAt;
                     conversation.UnreadCount = existing.UnreadCount;
+                }
             }
+            await using var command = db.CreateCommand();
+            command.CommandText = """
+                INSERT INTO whatsapp_conversations(id,account_id,phone,lead_id,last_message_at,unread_count,updated_at,data_json)
+                VALUES($id,$account,$phone,$lead,$last,$unread,$updated,$json)
+                ON CONFLICT(id) DO UPDATE SET lead_id=excluded.lead_id,last_message_at=excluded.last_message_at,unread_count=excluded.unread_count,updated_at=excluded.updated_at,data_json=excluded.data_json
+                """;
+            command.Parameters.AddWithValue("$id", conversation.Id); command.Parameters.AddWithValue("$account", conversation.AccountId); command.Parameters.AddWithValue("$phone", conversation.Phone);
+            command.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(conversation.LeadId) ? DBNull.Value : conversation.LeadId); command.Parameters.AddWithValue("$last", conversation.LastMessageAt.ToString("O"));
+            command.Parameters.AddWithValue("$unread", conversation.UnreadCount); command.Parameters.AddWithValue("$updated", conversation.UpdatedAt.ToString("O")); command.Parameters.AddWithValue("$json", Json.Serialize(conversation));
+            await command.ExecuteNonQueryAsync(cancellationToken);
         }
-        await using var command = db.CreateCommand();
-        command.CommandText = """
-            INSERT INTO whatsapp_conversations(id,account_id,phone,lead_id,last_message_at,unread_count,updated_at,data_json)
-            VALUES($id,$account,$phone,$lead,$last,$unread,$updated,$json)
-            ON CONFLICT(id) DO UPDATE SET lead_id=excluded.lead_id,last_message_at=excluded.last_message_at,unread_count=excluded.unread_count,updated_at=excluded.updated_at,data_json=excluded.data_json
-            """;
-        command.Parameters.AddWithValue("$id", conversation.Id); command.Parameters.AddWithValue("$account", conversation.AccountId); command.Parameters.AddWithValue("$phone", conversation.Phone);
-        command.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(conversation.LeadId) ? DBNull.Value : conversation.LeadId); command.Parameters.AddWithValue("$last", conversation.LastMessageAt.ToString("O"));
-        command.Parameters.AddWithValue("$unread", conversation.UnreadCount); command.Parameters.AddWithValue("$updated", conversation.UpdatedAt.ToString("O")); command.Parameters.AddWithValue("$json", Json.Serialize(conversation));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        finally
+        {
+            _conversationWriteGate.Release();
+        }
     }
 
     public async Task<bool> UpsertWhatsAppMessageAsync(WhatsAppMessage message, CancellationToken cancellationToken = default)
