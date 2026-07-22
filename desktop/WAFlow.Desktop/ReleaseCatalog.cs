@@ -13,13 +13,19 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("1.18.2", "2026-07-22", "WhatsApp Inbox 可收起客户抽屉",
+        [
+            "Customer Intelligence 客户侧栏改为可收起抽屉；收起后聊天区自动扩宽，并保留窄把手随时恢复。",
+            "WhatsApp 建群入口移动到左侧会话搜索框右侧，以紧凑的“＋”按钮呈现。",
+            "本页使用手册同步更新抽屉与建群入口的操作步骤。"
+        ], true),
         new("1.18.1", "2026-07-22", "更新通道、WhatsApp 动态与未读状态修复",
         [
             "更新检查改为读取 GitHub Release 静态 Velopack 清单，不再调用容易触发匿名限流的 GitHub Releases API。",
             "WhatsApp 最新动态与普通私聊消息分型显示；动态在客户会话顶部保留 24 小时，并明确标记为非普通聊天消息。",
             "WhatsApp 动态不再写入客户最近回复、商机评分证据、AI 会话助理或客户智能报告。",
             "会话已读时间写入本地数据库；切换板块或重新同步后，手机端旧未读计数不会恢复已经清除的气泡。"
-        ], true),
+        ]),
         new("1.18.0", "2026-07-22", "WhatsApp AI 会话助理",
         [
             "WhatsApp Inbox 输入区新增 AI 会话助理，可使用已配置模型读取客户白色气泡并生成可编辑回复。",

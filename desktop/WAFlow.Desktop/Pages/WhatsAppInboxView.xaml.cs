@@ -43,6 +43,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private readonly HashSet<string> _warnedIpChanges = new(StringComparer.OrdinalIgnoreCase);
     private readonly DispatcherTimer _ipTimer = new() { Interval = TimeSpan.FromSeconds(60) };
     private bool _checkingIp;
+    private bool _leadDrawerExpanded = true;
 
     private string CurrentAccountId => (AccountCombo.SelectedItem as WhatsAppAccount)?.Id ?? "primary";
 
@@ -187,6 +188,14 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         }
         catch (Exception error) { MessageBox.Show(error.Message, "WhatsApp 建群失败", MessageBoxButton.OK, MessageBoxImage.Warning); }
         finally { UpdateConnectionControls(); }
+    }
+
+    private void ToggleLeadDrawer_Click(object sender, RoutedEventArgs e)
+    {
+        _leadDrawerExpanded = !_leadDrawerExpanded;
+        LeadSidebarColumn.Width = new GridLength(_leadDrawerExpanded ? 360 : 40);
+        LeadSidebarBorder.Visibility = _leadDrawerExpanded ? Visibility.Visible : Visibility.Collapsed;
+        LeadDrawerCollapsedRail.Visibility = _leadDrawerExpanded ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private async void Connect_Click(object sender, RoutedEventArgs e)
