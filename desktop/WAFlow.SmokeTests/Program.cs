@@ -163,6 +163,38 @@ Check(newBuyer is { Grade: "D", Score: 0, AnalysisStatus: AnalysisStatus.NotRun,
 var dashboard = await repository.GetDashboardAsync();
 Check(dashboard.TotalLeads == 6, "SQLite persisted seed plus imported lead");
 
+var assistantLead = new Lead { Id="assistant-lead", Name="Assistant Buyer", PhoneE164="+14155550999", PhoneValid=true, Grade="D", Score=0 };
+await repository.UpsertLeadAsync(assistantLead);
+var assistantResult = new ConversationAssistantResult
+{
+    ReplyText="Thanks for the details. I can prepare the next step for your monthly requirement.",
+    ReplyLanguage="en",
+    NeedsSummary="客户明确表示每月需要采购500件。",
+    CustomerIntent="存在明确的周期性采购意向。",
+    PurchaseSignals=["明确月采购数量"],
+    Risks=["价格与交期尚未确认"],
+    RecommendedNextAction="核对产品规格后提供报价与交期。",
+    Confidence=0.92,
+    Model="deepseek-test",
+    FieldUpdates=
+    [
+        new ConversationFieldUpdate { Field="采购数量", Value="500件/月", EvidenceQuote="I need 500 pcs monthly", Reason="客户明确给出数量和周期" },
+        new ConversationFieldUpdate { Field="stage", Value="interested", EvidenceQuote="I need 500 pcs monthly", Reason="客户表达明确采购需求" }
+    ]
+};
+Check(ConversationAssistantService.Validate(assistantResult, ["采购数量", "stage"], ["I need 500 pcs monthly"]) is null, "AI conversation assistant accepts evidence-backed CRM field proposals");
+var invalidAssistantResult = new ConversationAssistantResult
+{
+    ReplyText="Hello", NeedsSummary="需求待确认。", CustomerIntent="待确认。", RecommendedNextAction="继续沟通。", Confidence=0.5,
+    FieldUpdates=[new ConversationFieldUpdate { Field="采购数量", Value="1000件", EvidenceQuote="I need 1000 pcs monthly", Reason="数量" }]
+};
+Check(ConversationAssistantService.Validate(invalidAssistantResult, ["采购数量"], ["I need 500 pcs monthly"])?.Contains("incoming 原话") == true, "AI conversation assistant rejects field updates without an exact customer quote");
+var assistantService = new ConversationAssistantService(repository, new AlwaysInvalidStructuredReportProvider());
+assistantLead = await assistantService.ApplyAsync(assistantLead, "14155550999", assistantLead.Name, assistantResult, assistantResult.FieldUpdates);
+var assistantHistory = await repository.GetCustomerHistoryAsync(assistantLead.Id);
+Check(assistantLead.CustomFields.GetValueOrDefault("采购数量") == "500件/月" && assistantLead.CustomFields.GetValueOrDefault("AI需求摘要")?.Contains("每月需要采购500件") == true && assistantLead.Stage == LeadStage.Interested, "approved AI conversation findings synchronize to the authoritative customer record");
+Check(assistantLead is { Grade: "D", Score: 0, AiScoreApplied: false } && assistantHistory.Any(item => item.Type == "whatsapp_ai_assistant_crm_synced" && item.Detail.Contains("I need 500 pcs monthly")), "AI conversation assistant preserves D/0 until Lead Intelligence runs and stores an evidence audit trail");
+
 var buyerHeader = "buyer_nickname\n累计GMV≥10w，且近一年GMV≥10000";
 var directSheet = new ImportSheet
 {

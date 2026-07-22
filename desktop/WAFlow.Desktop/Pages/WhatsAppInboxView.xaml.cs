@@ -32,6 +32,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private bool _refreshAgain;
     private bool _initialLeadLinkCompleted;
     private bool _sending;
+    private bool _aiAssisting;
     private string _attachmentPath = "";
     private MessageItem? _replyingTo;
     private string _composerConversationId = "";
@@ -521,6 +522,77 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
     private async void Send_Click(object sender, RoutedEventArgs e) => await SendCurrentAsync();
 
+    private async void AiAssistant_Click(object sender, RoutedEventArgs e)
+    {
+        if (_aiAssisting || ConversationList.SelectedItem is not ConversationItem conversation) return;
+        if (string.IsNullOrWhiteSpace(conversation.Phone))
+        {
+            MessageBox.Show("WhatsApp 尚未提供该联系人的电话号码，AI 暂时不能安全关联客户资料。", "AI 会话助理", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (!_services.DeepSeek.HasApiKey())
+        {
+            MessageBox.Show("请先点击右上角“API 对接”，填写 API Key 并选择工作模型。", "AI 会话助理", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _aiAssisting = true;
+        AiAssistantButton.Content = "分析中";
+        UpdateComposerState();
+        try
+        {
+            var result = await _services.ConversationAssistant.AnalyzeAsync(conversation.Id, _currentLead);
+            var canSend = _connected && _currentLead?.OptedOut != true;
+            var dialog = new AiConversationAssistantWindow(result, canSend) { Owner = Window.GetWindow(this) };
+            if (dialog.ShowDialog() != true || dialog.Action == ConversationAssistantAction.Cancel) return;
+
+            result.ReplyText = dialog.ReplyText;
+            ComposerBox.Text = dialog.ReplyText;
+            ComposerBox.CaretIndex = ComposerBox.Text.Length;
+            if (dialog.Action == ConversationAssistantAction.FillComposer)
+            {
+                ComposerBox.Focus();
+                return;
+            }
+
+            var lead = await _services.ConversationAssistant.ApplyAsync(
+                _currentLead,
+                conversation.Phone,
+                conversation.DisplayName,
+                result,
+                dialog.SelectedUpdates);
+            _currentLead = lead;
+            var existingIndex = _leads.FindIndex(item => item.Id == lead.Id);
+            if (existingIndex >= 0) _leads[existingIndex] = lead; else _leads.Add(lead);
+            conversation.LeadId = lead.Id;
+            conversation.DisplayName = lead.DisplayName;
+            await _services.Repository.SynchronizeLeadConnectionsFromInboxAsync([lead]);
+            await LoadLeadAsync(conversation);
+            var latestReply = (await _services.Repository.GetWhatsAppMessagesForLeadAsync(lead, 80))
+                .LastOrDefault(message => message.Direction == WhatsAppMessageDirection.Incoming && !string.IsNullOrWhiteSpace(message.Body));
+            if (latestReply is not null)
+                await _services.LeadAutomation.QueueLeadForReplyAsync(latestReply);
+            DataChanged?.Invoke(this, EventArgs.Empty);
+            var sent = await SendCurrentAsync("ai_conversation_assistant");
+            if (!sent)
+                MessageBox.Show("AI 提取的客户需求已经同步，但 WhatsApp 回复尚未得到成功回执。请先同步会话确认状态，不要重复发送。", "AI 会话助理", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (DeepSeekException error)
+        {
+            MessageBox.Show($"{error.Message}\n\n错误类型：{error.Code}", "AI 会话助理", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(error.Message, "AI 会话助理", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _aiAssisting = false;
+            AiAssistantButton.Content = "✦ AI";
+            UpdateComposerState();
+        }
+    }
+
     private void ReplyMessage_Click(object sender, RoutedEventArgs e)
     {
         if ((sender as MenuItem)?.DataContext is not MessageItem { FromMe: false, IsRevoked: false } message) return;
@@ -635,17 +707,18 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         UpdateComposerState();
     }
 
-    private async Task SendCurrentAsync()
+    private async Task<bool> SendCurrentAsync(string origin = "human")
     {
-        if (_sending || ConversationList.SelectedItem is not ConversationItem conversation) return;
+        if (_sending || ConversationList.SelectedItem is not ConversationItem conversation) return false;
         var text = ComposerBox.Text.Trim();
         var attachmentPath = _attachmentPath;
         var reply = _replyingTo;
-        if (string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(attachmentPath)) return;
-        if (string.IsNullOrWhiteSpace(conversation.Phone)) { MessageBox.Show("该联系人的电话号码尚未同步，暂时不能发送。", "WhatsApp", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
-        if (_currentLead?.OptedOut == true) { MessageBox.Show("客户已退订，禁止发送。", "WhatsApp", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+        if (string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(attachmentPath)) return false;
+        if (string.IsNullOrWhiteSpace(conversation.Phone)) { MessageBox.Show("该联系人的电话号码尚未同步，暂时不能发送。", "WhatsApp", MessageBoxButton.OK, MessageBoxImage.Warning); return false; }
+        if (_currentLead?.OptedOut == true) { MessageBox.Show("客户已退订，禁止发送。", "WhatsApp", MessageBoxButton.OK, MessageBoxImage.Warning); return false; }
 
         _sending = true;
+        var accepted = false;
         var pendingId = $"local-{Guid.NewGuid():N}";
         var pendingTimestamp = DateTimeOffset.Now;
         var pendingKind = string.IsNullOrWhiteSpace(attachmentPath) ? "text" : KindFromFileName(attachmentPath);
@@ -710,7 +783,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 StatusUpdatedAt = DateTimeOffset.Now,
                 DeliveredAt = status is WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read ? DateTimeOffset.Now : null,
                 ReadAt = status == WhatsAppMessageStatus.Read ? DateTimeOffset.Now : null,
-                Source = "desktop"
+                Source = origin == "ai_conversation_assistant" ? "desktop_ai" : "desktop"
             };
             await _services.Repository.UpsertWhatsAppMessageAsync(storedMessage);
             ReorderConversations(conversation);
@@ -719,8 +792,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             {
                 LeadConnectionStatus.ApplyFromMessage(_currentLead, storedMessage);
                 await _services.Repository.UpsertLeadAsync(_currentLead);
-                await _services.Repository.LogEventAsync("whatsapp_message_sent", _currentLead.Id, null, $"message_id={id}; kind={kind}");
+                await _services.Repository.LogEventAsync("whatsapp_message_sent", _currentLead.Id, null, $"message_id={id}; kind={kind}; origin={origin}");
             }
+            accepted = true;
         }
         catch (TimeoutException)
         {
@@ -733,6 +807,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             MessageBox.Show(error.Message, "发送失败", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally { _sending = false; UpdateComposerState(); }
+        return accepted;
     }
 
     private void ConversationSearch_TextChanged(object sender, TextChangedEventArgs e) => ApplyConversationFilter();
@@ -841,6 +916,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         ComposerBox.IsEnabled = available;
         AttachButton.IsEnabled = available;
         SendButton.IsEnabled = available && (!string.IsNullOrWhiteSpace(ComposerBox.Text) || !string.IsNullOrWhiteSpace(_attachmentPath));
+        AiAssistantButton.IsEnabled = ConversationList.SelectedItem is ConversationItem { Phone.Length: > 0 } && !_sending && !_aiAssisting;
     }
 
     private static Dictionary<string, string> ParseCustomFields(string text)

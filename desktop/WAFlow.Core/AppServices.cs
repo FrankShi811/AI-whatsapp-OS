@@ -19,6 +19,7 @@ public sealed class AppServices
     public CampaignAutomationService Campaigns { get; }
     public CustomerAnalysisService CustomerAnalysis { get; }
     public CustomerReportExportService CustomerReportExports { get; }
+    public ConversationAssistantService ConversationAssistant { get; }
 
     public AppServices(LocalRepository? repository = null)
     {
@@ -35,6 +36,7 @@ public sealed class AppServices
         Campaigns = new CampaignAutomationService(Repository, WhatsApp, PublicIp, Email);
         CustomerAnalysis = new CustomerAnalysisService(Repository, DeepSeek);
         CustomerReportExports = new CustomerReportExportService(Repository);
+        ConversationAssistant = new ConversationAssistantService(Repository, DeepSeek);
     }
 
     public Task InitializeAsync(CancellationToken cancellationToken = default) => Repository.InitializeAsync(cancellationToken);

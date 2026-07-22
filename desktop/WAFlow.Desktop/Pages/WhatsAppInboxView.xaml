@@ -125,9 +125,10 @@
                         </ListBox>
                     </Grid>
                     <Border Grid.Row="2" Padding="14" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0">
-                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                            <Button x:Name="AttachButton" Content="＋" ToolTip="添加图片、视频、音频或文件" Style="{StaticResource SecondaryButton}" Click="Attach_Click" Width="54" Height="54" Padding="0" FontSize="25" FontWeight="SemiBold" FontFamily="Segoe UI Symbol" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Focusable="False" Margin="0,0,12,0" IsEnabled="False"/>
-                            <Grid Grid.Column="1"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <Button x:Name="AiAssistantButton" Content="✦ AI" ToolTip="根据客户白色气泡生成回复，并提取需求到客户资料" Style="{StaticResource SecondaryButton}" Click="AiAssistant_Click" Width="68" Height="54" Padding="0" FontSize="15" FontWeight="Bold" Foreground="{DynamicResource AiAccentDeep}" BorderBrush="{DynamicResource AiAccent}" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Focusable="False" Margin="0,0,8,0" IsEnabled="False"/>
+                            <Button x:Name="AttachButton" Grid.Column="1" Content="＋" ToolTip="添加图片、视频、音频或文件" Style="{StaticResource SecondaryButton}" Click="Attach_Click" Width="54" Height="54" Padding="0" FontSize="25" FontWeight="SemiBold" FontFamily="Segoe UI Symbol" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Focusable="False" Margin="0,0,12,0" IsEnabled="False"/>
+                            <Grid Grid.Column="2"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                                 <Border x:Name="ReplyPanel" Grid.Row="0" Background="{DynamicResource PrimarySurface}" BorderBrush="{DynamicResource Primary}" BorderThickness="3,0,0,0" CornerRadius="8" Padding="9,6" Margin="0,0,0,6" Visibility="Collapsed">
                                     <DockPanel>
                                         <Button Content="×" DockPanel.Dock="Right" Click="ClearReply_Click" Padding="7,1" Margin="8,0,0,0" ToolTip="取消回复"/>
@@ -139,7 +140,7 @@
                                     <DockPanel><Button Content="移除" DockPanel.Dock="Right" Click="ClearAttachment_Click" Padding="7,2" Margin="8,0,0,0"/><TextBlock x:Name="AttachmentText" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/></DockPanel>
                                 </Border>
                             </Grid>
-                            <Button x:Name="SendButton" Grid.Column="2" Content="发送" Style="{StaticResource PrimaryButton}" Click="Send_Click" Margin="10,0,0,0" MinWidth="68" Height="54" IsEnabled="False"/>
+                            <Button x:Name="SendButton" Grid.Column="3" Content="发送" Style="{StaticResource PrimaryButton}" Click="Send_Click" Margin="10,0,0,0" MinWidth="68" Height="54" IsEnabled="False"/>
                         </Grid>
                     </Border>
                 </Grid>
