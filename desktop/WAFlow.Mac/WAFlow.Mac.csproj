@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>AISalesOS.Mac</AssemblyName>
     <RootNamespace>WAFlow.Mac</RootNamespace>
-    <Version>1.18.3</Version>
+    <Version>1.18.4</Version>
     <Product>AI Sales OS</Product>
     <Description>AI Sales OS 原生 macOS 中文客户端</Description>
     <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>

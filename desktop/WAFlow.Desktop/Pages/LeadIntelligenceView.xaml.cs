@@ -13,6 +13,7 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     private List<Lead> _leads = [];
     private CancellationTokenSource? _bulkCancellation;
     private LeadBulkAnalysisProgress? _lastBulkProgress;
+    private bool _decisionDrawerExpanded = true;
     public event EventHandler? ImportRequested;
     public event EventHandler? DataChanged;
 
@@ -157,6 +158,14 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     }
 
     private void LeadGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateInspector(LeadGrid.SelectedItem as Lead);
+    private void ToggleDecisionDrawer_Click(object sender, RoutedEventArgs e)
+    {
+        _decisionDrawerExpanded = !_decisionDrawerExpanded;
+        DecisionSidebarColumn.Width = new GridLength(_decisionDrawerExpanded ? 430 : 40);
+        DecisionSidebarBorder.Visibility = _decisionDrawerExpanded ? Visibility.Visible : Visibility.Collapsed;
+        DecisionDrawerCollapsedRail.Visibility = _decisionDrawerExpanded ? Visibility.Collapsed : Visibility.Visible;
+    }
+
     private void Import_Click(object sender, RoutedEventArgs e) => ImportRequested?.Invoke(this, EventArgs.Empty);
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await RefreshAsync();
     private async void GradeFilter_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (IsLoaded) await RefreshAsync(); }

@@ -67,7 +67,7 @@
                 </Border>
                 <DataGrid x:Name="CustomerGrid" Grid.Row="1" IsReadOnly="True" EnableRowVirtualization="True" EnableColumnVirtualization="True"
                           ScrollViewer.CanContentScroll="True" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto"
-                          FrozenColumnCount="2" CanUserSortColumns="True" Sorting="CustomerGrid_Sorting"
+                          FrozenColumnCount="0" CanUserSortColumns="True" Sorting="CustomerGrid_Sorting"
                           SelectionChanged="CustomerGrid_SelectionChanged" MouseDoubleClick="CustomerGrid_MouseDoubleClick" BorderThickness="0">
                     <DataGrid.Columns>
                         <DataGridTemplateColumn Header="" Width="46" CanUserSort="False"><DataGridTemplateColumn.CellTemplate><DataTemplate><CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" VerticalAlignment="Center" ToolTip="选择该客户"/></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
