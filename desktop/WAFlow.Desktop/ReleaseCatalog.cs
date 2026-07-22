@@ -13,6 +13,13 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("1.17.0", "2026-07-22", "邮件 Inbox 与多渠道销售自动化",
+        [
+            "新增邮件 Inbox，支持 Gmail、Outlook / Microsoft 365、Yahoo、iCloud 和自定义 IMAP / SMTP 账户连接、收取、发送与本地历史保存。",
+            "邮箱地址与客户列表、商机智能及客户情报报告使用同一客户资料；未匹配邮件联系人可在侧栏创建客户。",
+            "自动化任务支持 WhatsApp 与邮件两种渠道、动态客户字段、邮件主题模板、定时或即时发送，并在历史中分渠道统计成功与失败。",
+            "WhatsApp 联系人同步结果改为诊断信息，不再把本地联系人缓存缺失误判为号码不存在，也不再因此阻止真实发送。"
+        ], true),
         new("1.16.2", "2026-07-22", "群发真实回执与失败统计修复",
         [
             "群发成功改为以 WhatsApp 服务器回执为准，不再把本地调用受理误记为成功。",

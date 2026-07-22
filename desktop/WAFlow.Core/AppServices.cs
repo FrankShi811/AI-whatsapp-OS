@@ -13,6 +13,7 @@ public sealed class AppServices
     public DeepSeekService DeepSeek { get; }
     public WhatsAppConnectionManager WhatsApp { get; }
     public WhatsAppSyncService WhatsAppSync { get; }
+    public EmailService Email { get; }
     public LeadIntelligenceAutomationService LeadAutomation { get; }
     public PublicIpMonitor PublicIp { get; }
     public CampaignAutomationService Campaigns { get; }
@@ -28,9 +29,10 @@ public sealed class AppServices
         DeepSeek = new DeepSeekService(Repository, Secrets);
         WhatsApp = new WhatsAppConnectionManager();
         WhatsAppSync = new WhatsAppSyncService(Repository, WhatsApp);
+        Email = new EmailService(Repository);
         LeadAutomation = new LeadIntelligenceAutomationService(Repository, DeepSeek, WhatsAppSync);
         PublicIp = new PublicIpMonitor(Repository);
-        Campaigns = new CampaignAutomationService(Repository, WhatsApp, PublicIp);
+        Campaigns = new CampaignAutomationService(Repository, WhatsApp, PublicIp, Email);
         CustomerAnalysis = new CustomerAnalysisService(Repository, DeepSeek);
         CustomerReportExports = new CustomerReportExportService(Repository);
     }

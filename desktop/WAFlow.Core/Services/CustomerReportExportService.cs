@@ -166,7 +166,7 @@ internal static class WordCustomerReportRenderer
         body.Append(Callout(report.ManagementSummary, "E8EEF5", Navy));
         body.Append(Heading("证据说明", 2));
         body.Append(BodyParagraph("事实来自 CRM、Excel 导入字段、WhatsApp 原始消息、Lead Intelligence、自动化触达及系统审计轨迹；AI判断与销售建议基于上述事实推导，不会写回或覆盖原始客户数据。"));
-        body.Append(Callout($"数据覆盖：WhatsApp {source.SourceSnapshot.WhatsAppMessages.Count} 条 · 自动化触达 {source.SourceSnapshot.CampaignTouches.Count} 次 · 客户轨迹 {source.SourceSnapshot.Timeline.Count} 条 · 历史 AI 分析 {source.SourceSnapshot.LeadAnalysisHistory.Count} 次\n快照时间：{source.SourceSnapshot.CapturedAt.LocalDateTime:yyyy-MM-dd HH:mm}", "F4F6F9", DarkBlue));
+        body.Append(Callout($"数据覆盖：WhatsApp {source.SourceSnapshot.WhatsAppMessages.Count} 条 · 邮件 {source.SourceSnapshot.EmailMessages.Count} 条 · 自动化触达 {source.SourceSnapshot.CampaignTouches.Count} 次 · 客户轨迹 {source.SourceSnapshot.Timeline.Count} 条 · 历史 AI 分析 {source.SourceSnapshot.LeadAnalysisHistory.Count} 次\n快照时间：{source.SourceSnapshot.CapturedAt.LocalDateTime:yyyy-MM-dd HH:mm}", "F4F6F9", DarkBlue));
         body.Append(Heading("证据账本（精选）", 2));
         foreach (var statement in report.EvidenceLedger.Where(item => !string.IsNullOrWhiteSpace(item.Statement)).Take(18))
             body.Append(Callout($"[{(string.IsNullOrWhiteSpace(statement.Nature) ? "事实" : statement.Nature)}] {statement.Statement}\n来源：{statement.Source} · 证据：{statement.Evidence}", "F4F6F9", DarkBlue));
@@ -504,7 +504,7 @@ internal static class PdfCustomerReportRenderer
             Callout(report.ManagementSummary, XColor.FromArgb(232, 238, 245), XColor.FromArgb(11, 37, 69));
             Heading("证据说明", 2);
             LabelText("", "事实来自 CRM、Excel 导入字段、WhatsApp 原始消息、Lead Intelligence、自动化触达及系统审计轨迹；AI判断与销售建议基于上述事实推导，不会写回或覆盖原始客户数据。");
-            Callout($"数据覆盖：WhatsApp {_source.SourceSnapshot.WhatsAppMessages.Count} 条 · 自动化触达 {_source.SourceSnapshot.CampaignTouches.Count} 次 · 客户轨迹 {_source.SourceSnapshot.Timeline.Count} 条 · 历史 AI 分析 {_source.SourceSnapshot.LeadAnalysisHistory.Count} 次\n快照时间：{_source.SourceSnapshot.CapturedAt.LocalDateTime:yyyy-MM-dd HH:mm}", XColor.FromArgb(244, 246, 249), XColor.FromArgb(31, 77, 120));
+            Callout($"数据覆盖：WhatsApp {_source.SourceSnapshot.WhatsAppMessages.Count} 条 · 邮件 {_source.SourceSnapshot.EmailMessages.Count} 条 · 自动化触达 {_source.SourceSnapshot.CampaignTouches.Count} 次 · 客户轨迹 {_source.SourceSnapshot.Timeline.Count} 条 · 历史 AI 分析 {_source.SourceSnapshot.LeadAnalysisHistory.Count} 次\n快照时间：{_source.SourceSnapshot.CapturedAt.LocalDateTime:yyyy-MM-dd HH:mm}", XColor.FromArgb(244, 246, 249), XColor.FromArgb(31, 77, 120));
             Heading("证据账本（精选）", 2);
             foreach (var statement in report.EvidenceLedger.Where(item => !string.IsNullOrWhiteSpace(item.Statement)).Take(18))
                 LabelText(string.IsNullOrWhiteSpace(statement.Nature) ? "事实" : statement.Nature, $"{statement.Statement}\n来源：{statement.Source} · 证据：{statement.Evidence}");

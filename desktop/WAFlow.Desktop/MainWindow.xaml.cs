@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private readonly LeadIntelligenceView _intelligence;
     private readonly CustomersView _customers;
     private readonly WhatsAppInboxView _inbox;
+    private readonly EmailInboxView _email;
     private readonly CampaignsView _campaigns;
     private readonly AnalyticsView _analytics;
     private Button? _activeButton;
@@ -38,6 +39,7 @@ public partial class MainWindow : Window
         _intelligence = new LeadIntelligenceView(services);
         _customers = new CustomersView(services);
         _inbox = new WhatsAppInboxView(services);
+        _email = new EmailInboxView(services);
         _campaigns = new CampaignsView(services);
         _analytics = new AnalyticsView(services);
         _dashboard.NavigateRequested += Dashboard_NavigateRequested;
@@ -46,6 +48,7 @@ public partial class MainWindow : Window
         _customers.ImportRequested += OpenImport;
         _customers.DataChanged += async (_, _) => await RefreshAllAsync();
         _inbox.DataChanged += async (_, _) => await RefreshAllAsync();
+        _email.DataChanged += async (_, _) => await RefreshAllAsync();
         _campaigns.DataChanged += async (_, _) => await RefreshAllAsync();
         _analytics.DataChanged += async (_, _) => await RefreshAllAsync();
         _services.Campaigns.SafetyStopped += Campaigns_SafetyStopped;
@@ -151,6 +154,7 @@ public partial class MainWindow : Window
         {
             "intelligence" => IntelligenceButton,
             "inbox" => InboxButton,
+            "email" => EmailButton,
             "broadcast" => BroadcastButton,
             "customers" => CustomersButton,
             "analytics" => AnalyticsButton,
@@ -179,7 +183,8 @@ public partial class MainWindow : Window
             "intelligence" => ((object)_intelligence, "商机智能", "AI 评分证据、客户画像与下一步决策"),
             "customers" => ((object)_customers, "客户列表", "统一客户数据、动态字段与批量运营"),
             "inbox" => ((object)_inbox, "WhatsApp Inbox", "会话、客户资料与 AI 销售信号实时联动"),
-            "broadcast" => ((object)_campaigns, "WhatsApp 自动化群发", "动态话术、精准受众、发送节奏与安全审计"),
+            "email" => ((object)_email, "邮件 Inbox", "邮件收发、历史归档与 CRM 客户资料实时联动"),
+            "broadcast" => ((object)_campaigns, "多渠道自动化触达", "WhatsApp 与邮件任务、动态字段、发送节奏与分渠道审计"),
             "analytics" => ((object)_analytics, "客户智能分析", "全量客户数据、AI 商业判断、报告版本与管理层导出"),
             _ => ((object)_dashboard, "Dashboard", "今天最值得推进的商机与动作")
         };
@@ -333,6 +338,7 @@ public partial class MainWindow : Window
             case "import": OpenImport(this, EventArgs.Empty); break;
             case "intelligence": await NavigateAsync(action, IntelligenceButton); break;
             case "inbox": await NavigateAsync(action, InboxButton); break;
+            case "email": await NavigateAsync(action, EmailButton); break;
             case "broadcast": await NavigateAsync(action, BroadcastButton); break;
             case "analytics": await NavigateAsync(action, AnalyticsButton); break;
         }
@@ -365,8 +371,9 @@ public partial class MainWindow : Window
             Key.D2 => ("intelligence", IntelligenceButton),
             Key.D3 => ("customers", CustomersButton),
             Key.D4 => ("inbox", InboxButton),
-            Key.D5 => ("broadcast", BroadcastButton),
-            Key.D6 => ("analytics", AnalyticsButton),
+            Key.D5 => ("email", EmailButton),
+            Key.D6 => ("broadcast", BroadcastButton),
+            Key.D7 => ("analytics", AnalyticsButton),
             _ => ((string Page, Button Button)?)null
         };
         if (target is null) return;
@@ -385,7 +392,7 @@ public partial class MainWindow : Window
 
     private async Task RefreshAllAsync()
     {
-        await _dashboard.RefreshAsync(); await _intelligence.RefreshAsync(); await _customers.RefreshAsync(); await _inbox.RefreshAsync(); await _campaigns.RefreshAsync(); await _analytics.RefreshAsync();
+        await _dashboard.RefreshAsync(); await _intelligence.RefreshAsync(); await _customers.RefreshAsync(); await _inbox.RefreshAsync(); await _email.RefreshAsync(); await _campaigns.RefreshAsync(); await _analytics.RefreshAsync();
     }
 
     private void Campaigns_SafetyStopped(object? sender, CampaignSafetyStoppedEventArgs e)

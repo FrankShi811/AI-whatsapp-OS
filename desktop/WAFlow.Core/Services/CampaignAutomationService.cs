@@ -31,6 +31,7 @@ public sealed record CampaignExecutionSummary(
     string NextPosition)
 {
     public string Name => Campaign.Name;
+    public string Channel => Campaign.ChannelLabel;
     public string AccountId => Campaign.AccountId;
     public string Status => Campaign.StatusLabel;
     public string Trigger => Campaign.ScheduleLabel;
@@ -62,6 +63,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
     private readonly LocalRepository _repository;
     private readonly WhatsAppConnectionManager _bridge;
     private readonly PublicIpMonitor _publicIp;
+    private readonly EmailService _email;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private CancellationTokenSource? _lifetime;
     private Task? _worker;
@@ -73,11 +75,12 @@ public sealed class CampaignAutomationService : IAsyncDisposable
     public event EventHandler? CampaignChanged;
     public event EventHandler<CampaignSafetyStoppedEventArgs>? SafetyStopped;
 
-    public CampaignAutomationService(LocalRepository repository, WhatsAppConnectionManager bridge, PublicIpMonitor publicIp)
+    public CampaignAutomationService(LocalRepository repository, WhatsAppConnectionManager bridge, PublicIpMonitor publicIp, EmailService email)
     {
         _repository = repository;
         _bridge = bridge;
         _publicIp = publicIp;
+        _email = email;
         _bridge.EventReceived += Bridge_EventReceived;
     }
 
@@ -138,7 +141,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
 
     private static CampaignAudienceItem CreateAudienceItem(WhatsAppCampaign campaign, Lead lead)
     {
-        var eligible = IsEligible(lead, out var reason);
+        var eligible = IsEligible(campaign, lead, out var reason);
         return new CampaignAudienceItem(lead, eligible, reason, RenderTemplate(campaign.MessageTemplate, lead));
     }
 
@@ -146,6 +149,8 @@ public sealed class CampaignAutomationService : IAsyncDisposable
     {
         ValidateDraft(campaign);
         await ValidateTemplateFieldsAsync(campaign.MessageTemplate, cancellationToken);
+        if (campaign.Channel == CampaignChannel.Email)
+            await ValidateTemplateFieldsAsync(campaign.EmailSubjectTemplate, cancellationToken);
         var existing = await _repository.GetCampaignAsync(campaign.Id, cancellationToken);
         if (existing is not null && existing.Status != CampaignStatus.Draft)
             throw new InvalidOperationException("已排期的 Campaign 不能直接修改；请暂停或取消后新建。");
@@ -160,14 +165,29 @@ public sealed class CampaignAutomationService : IAsyncDisposable
     {
         ValidateDraft(campaign);
         await ValidateTemplateFieldsAsync(campaign.MessageTemplate, cancellationToken);
+        if (campaign.Channel == CampaignChannel.Email)
+            await ValidateTemplateFieldsAsync(campaign.EmailSubjectTemplate, cancellationToken);
         if (campaign.SelectedLeadIds.Count == 0) throw new InvalidOperationException("请至少勾选 1 位客户后再建立发送任务。");
         var audience = await PreviewAudienceAsync(campaign, cancellationToken);
         var eligible = audience.Where(x => x.Eligible).ToList();
-        if (eligible.Count == 0) throw new InvalidOperationException("当前筛选没有可发送客户。请检查号码是否有效，以及客户是否已经退订。");
+        if (eligible.Count == 0) throw new InvalidOperationException(campaign.Channel == CampaignChannel.Email
+            ? "当前筛选没有可发送客户。请检查邮箱是否有效，以及客户是否已经退订。"
+            : "当前筛选没有可发送客户。请检查号码是否有效，以及客户是否已经退订。");
 
-        var ip = await _publicIp.CheckAsync(campaign.AccountId, true, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(ip.Error) || string.IsNullOrWhiteSpace(ip.State.CurrentIp))
-            throw new InvalidOperationException("无法取得当前公网 IP，安全阀门未能建立基线，因此没有创建发送任务。请检查网络后重试。");
+        string baselineIp = "";
+        if (campaign.Channel == CampaignChannel.WhatsApp)
+        {
+            var ip = await _publicIp.CheckAsync(campaign.AccountId, true, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(ip.Error) || string.IsNullOrWhiteSpace(ip.State.CurrentIp))
+                throw new InvalidOperationException("无法取得当前公网 IP，安全阀门未能建立基线，因此没有创建发送任务。请检查网络后重试。");
+            baselineIp = ip.State.CurrentIp;
+        }
+        else
+        {
+            var emailAccount = await _repository.GetEmailAccountAsync(campaign.AccountId, cancellationToken);
+            if (emailAccount is null || emailAccount.Status != EmailConnectionStatus.Connected)
+                throw new InvalidOperationException("邮件账号尚未连接，请先在邮件 Inbox 中完成 IMAP / SMTP 连接测试。");
+        }
 
         var now = DateTimeOffset.Now;
         var firstSendAt = campaign.ScheduleMode == CampaignScheduleMode.Immediate
@@ -177,8 +197,8 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         var recipients = eligible.Select((item, index) => new CampaignRecipient
         {
             Id = $"{campaign.Id}:{item.Lead.Id}", CampaignId = campaign.Id, LeadId = item.Lead.Id,
-            AccountId = campaign.AccountId, Phone = item.Lead.PhoneE164, DisplayName = item.DisplayName,
-            RenderedMessage = item.PreviewMessage, Status = CampaignRecipientStatus.Queued,
+            AccountId = campaign.AccountId, Phone = item.Lead.PhoneE164, Email = item.Lead.Email, DisplayName = item.DisplayName,
+            RenderedSubject = RenderTemplate(campaign.EmailSubjectTemplate, item.Lead), RenderedMessage = item.PreviewMessage, Status = CampaignRecipientStatus.Queued,
             ScheduledAt = firstSendAt.AddTicks(interval.Ticks * index),
             NextAttemptAt = firstSendAt.AddTicks(interval.Ticks * index)
         }).ToList();
@@ -188,14 +208,14 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         campaign.ApprovedAt = DateTimeOffset.Now;
         campaign.ApprovedBy = actor;
         campaign.PauseReason = "";
-        campaign.BaselinePublicIp = ip.State.CurrentIp;
+        campaign.BaselinePublicIp = baselineIp;
         campaign.SafetyStopFromIp = "";
         campaign.SafetyStopToIp = "";
         campaign.SafetyStopPosition = "";
         campaign.SafetyStoppedAt = null;
         await _repository.SaveCampaignAsync(campaign, cancellationToken);
         await _repository.ReplaceCampaignRecipientsAsync(campaign.Id, recipients, cancellationToken);
-        await _repository.LogEventAsync("campaign_approved", null, null, $"campaign_id={campaign.Id};mode={campaign.ScheduleMode};recipients={recipients.Count};interval={campaign.EffectiveIntervalValue};unit={campaign.IntervalUnit};daily_limit={campaign.DailyLimit}", cancellationToken);
+        await _repository.LogEventAsync("campaign_approved", null, null, $"campaign_id={campaign.Id};channel={campaign.Channel};mode={campaign.ScheduleMode};recipients={recipients.Count};interval={campaign.EffectiveIntervalValue};unit={campaign.IntervalUnit};daily_limit={campaign.DailyLimit}", cancellationToken);
         CampaignChanged?.Invoke(this, EventArgs.Empty);
         return recipients.Count;
     }
@@ -212,10 +232,13 @@ public sealed class CampaignAutomationService : IAsyncDisposable
     public async Task ResumeAsync(WhatsAppCampaign campaign, CancellationToken cancellationToken = default)
     {
         if (campaign.Status is not (CampaignStatus.Paused or CampaignStatus.SafetyStopped)) throw new InvalidOperationException("只有已暂停或被安全阀门停止的 Campaign 可以继续。");
-        var ip = await _publicIp.CheckAsync(campaign.AccountId, true, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(ip.Error) || string.IsNullOrWhiteSpace(ip.State.CurrentIp))
-            throw new InvalidOperationException("无法验证当前公网 IP，任务仍保持停止。请检查网络后重试。");
-        campaign.BaselinePublicIp = ip.State.CurrentIp;
+        if (campaign.Channel == CampaignChannel.WhatsApp)
+        {
+            var ip = await _publicIp.CheckAsync(campaign.AccountId, true, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(ip.Error) || string.IsNullOrWhiteSpace(ip.State.CurrentIp))
+                throw new InvalidOperationException("无法验证当前公网 IP，任务仍保持停止。请检查网络后重试。");
+            campaign.BaselinePublicIp = ip.State.CurrentIp;
+        }
         campaign.Status = CampaignStatus.Scheduled; campaign.PauseReason = "";
         await _repository.SaveCampaignAsync(campaign, cancellationToken);
         await _repository.LogEventAsync("campaign_resumed", null, null, $"campaign_id={campaign.Id}", cancellationToken);
@@ -280,7 +303,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
     public async Task<bool> CheckSafetyValveAsync(CancellationToken cancellationToken = default)
     {
         var active = await _repository.GetActiveCampaignsAsync(cancellationToken);
-        foreach (var accountGroup in active.GroupBy(item => item.AccountId, StringComparer.OrdinalIgnoreCase))
+        foreach (var accountGroup in active.Where(item => item.Channel == CampaignChannel.WhatsApp).GroupBy(item => item.AccountId, StringComparer.OrdinalIgnoreCase))
         {
             var result = await _publicIp.CheckAsync(accountGroup.Key, true, cancellationToken);
             if (!string.IsNullOrWhiteSpace(result.Error) || string.IsNullOrWhiteSpace(result.State.CurrentIp)) continue;
@@ -315,7 +338,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
 
             var lead = await _repository.GetLeadAsync(recipient.LeadId, cancellationToken);
             var reason = "客户记录不存在";
-            var eligible = lead is not null && IsEligible(lead, out reason);
+            var eligible = lead is not null && IsEligible(campaign, lead, out reason);
             if (!eligible)
             {
                 recipient.Status = CampaignRecipientStatus.Skipped; recipient.SkipReason = reason;
@@ -326,7 +349,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
             }
             var eligibleLead = lead!;
 
-            if (!await EnsureCampaignIpSafeAsync(campaign, cancellationToken)) return;
+            if (campaign.Channel == CampaignChannel.WhatsApp && !await EnsureCampaignIpSafeAsync(campaign, cancellationToken)) return;
 
             var sentToday = await _repository.CountCampaignMessagesSentAsync(campaign.AccountId, BeijingDayStart(DateTimeOffset.Now), cancellationToken);
             if (sentToday >= campaign.DailyLimit)
@@ -338,7 +361,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
                 return;
             }
 
-            if (!await EnsureConnectedAsync(campaign.AccountId, cancellationToken)) return;
+            if (campaign.Channel == CampaignChannel.WhatsApp && !await EnsureConnectedAsync(campaign.AccountId, cancellationToken)) return;
             if (campaign.Status == CampaignStatus.Scheduled)
             {
                 campaign.Status = CampaignStatus.Running; campaign.PauseReason = "";
@@ -349,42 +372,50 @@ public sealed class CampaignAutomationService : IAsyncDisposable
             await _repository.SaveCampaignRecipientAsync(recipient, cancellationToken);
             try
             {
-                var registration = await _bridge.ValidateNumberAsync(campaign.AccountId, recipient.Phone, cancellationToken);
-                var exists = registration.TryGetProperty("exists", out var existsElement) && existsElement.ValueKind == System.Text.Json.JsonValueKind.True;
-                if (!exists)
-                    throw new WhatsAppBridgeException("whatsapp_number_not_registered", "该号码未注册 WhatsApp，消息未发送。");
-
-                var result = await _bridge.SendTextAsync(campaign.AccountId, recipient.Phone, recipient.RenderedMessage, cancellationToken);
-                recipient.ProviderMessageId = result.TryGetProperty("id", out var id) ? id.GetString() ?? "" : "";
-                if (string.IsNullOrWhiteSpace(recipient.ProviderMessageId))
-                    throw new WhatsAppBridgeException("message_id_missing", "WhatsApp 未返回消息编号，发送状态无法确认。为避免重复触达，系统不会自动重发。");
-                var numericStatus = result.TryGetProperty("status", out var statusElement) && statusElement.TryGetInt32(out var parsedStatus) ? parsedStatus : 1;
-                if (numericStatus <= 0)
-                    throw new WhatsAppBridgeException("message_send_failed", "WhatsApp 返回发送错误，消息未发送。");
-                if (numericStatus >= 2)
+                if (campaign.Channel == CampaignChannel.Email)
                 {
+                    var sent = await _email.SendAsync(campaign.AccountId, recipient.Email, recipient.RenderedSubject, recipient.RenderedMessage, eligibleLead.Id, cancellationToken: cancellationToken);
+                    recipient.ProviderMessageId = sent.ProviderMessageId;
                     recipient.Status = CampaignRecipientStatus.Sent;
-                    recipient.SentAt = DateTimeOffset.Now;
+                    recipient.SentAt = sent.Timestamp;
                     recipient.LastError = "";
-                    await ApplyConfirmedSendToLeadAsync(campaign, recipient, eligibleLead, cancellationToken);
+                    await _repository.LogEventAsync("campaign_message_sent", eligibleLead.Id, null, $"campaign_id={campaign.Id};channel=Email;recipient_id={recipient.Id};message_id={recipient.ProviderMessageId}", cancellationToken);
                 }
                 else
                 {
-                    recipient.Status = CampaignRecipientStatus.Sending;
-                    recipient.SentAt = null;
-                    recipient.LastError = "等待 WhatsApp 服务器发送确认；未确认前不计入成功。";
+                    await RecordNumberValidationAdvisoryAsync(campaign, recipient, eligibleLead, cancellationToken);
+                    var result = await _bridge.SendTextAsync(campaign.AccountId, recipient.Phone, recipient.RenderedMessage, cancellationToken);
+                    recipient.ProviderMessageId = result.TryGetProperty("id", out var id) ? id.GetString() ?? "" : "";
+                    if (string.IsNullOrWhiteSpace(recipient.ProviderMessageId))
+                        throw new WhatsAppBridgeException("message_id_missing", "WhatsApp 未返回消息编号，发送状态无法确认。为避免重复触达，系统不会自动重发。");
+                    var numericStatus = result.TryGetProperty("status", out var statusElement) && statusElement.TryGetInt32(out var parsedStatus) ? parsedStatus : 1;
+                    if (numericStatus <= 0)
+                        throw new WhatsAppBridgeException("message_send_failed", "WhatsApp 返回发送错误，消息未发送。");
+                    if (numericStatus >= 2)
+                    {
+                        recipient.Status = CampaignRecipientStatus.Sent;
+                        recipient.SentAt = DateTimeOffset.Now;
+                        recipient.LastError = "";
+                        await ApplyConfirmedSendToLeadAsync(campaign, recipient, eligibleLead, cancellationToken);
+                    }
+                    else
+                    {
+                        recipient.Status = CampaignRecipientStatus.Sending;
+                        recipient.SentAt = null;
+                        recipient.LastError = "等待 WhatsApp 服务器发送确认；未确认前不计入成功。";
+                    }
                 }
             }
             catch (Exception error)
             {
                 recipient.LastError = Safe(error.Message);
-                if (error is WhatsAppBridgeException { Code: "whatsapp_number_not_registered" or "message_send_failed" or "message_id_missing" })
+                if (campaign.Channel == CampaignChannel.Email || error is WhatsAppBridgeException { Code: "message_send_failed" or "message_id_missing" })
                 {
                     recipient.Status = CampaignRecipientStatus.Failed;
                     recipient.SentAt = null;
-                    await _repository.LogEventAsync("campaign_message_failed", eligibleLead.Id, null, $"campaign_id={campaign.Id};recipient_id={recipient.Id};error={recipient.LastError}", cancellationToken);
+                    await _repository.LogEventAsync("campaign_message_failed", eligibleLead.Id, null, $"campaign_id={campaign.Id};channel={campaign.Channel};recipient_id={recipient.Id};error={recipient.LastError}", cancellationToken);
                 }
-                else if (!_bridge.IsConnectedFor(campaign.AccountId))
+                else if (campaign.Channel == CampaignChannel.WhatsApp && !_bridge.IsConnectedFor(campaign.AccountId))
                 {
                     recipient.Status = CampaignRecipientStatus.Queued;
                     recipient.NextAttemptAt = DateTimeOffset.Now.AddMinutes(5);
@@ -398,7 +429,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
                 }
             }
             await _repository.SaveCampaignRecipientAsync(recipient, cancellationToken);
-            if (recipient.Status == CampaignRecipientStatus.Sending)
+            if (campaign.Channel == CampaignChannel.WhatsApp && recipient.Status == CampaignRecipientStatus.Sending)
                 await ReconcileRecipientAfterSendAsync(campaign.AccountId, recipient.ProviderMessageId, cancellationToken);
             await CompleteCampaignIfFinishedAsync(campaign, cancellationToken);
             CampaignChanged?.Invoke(this, EventArgs.Empty);
@@ -421,6 +452,23 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         await ApplyStoredMessageStatusAsync(storedMessage, cancellationToken);
     }
 
+    private async Task RecordNumberValidationAdvisoryAsync(WhatsAppCampaign campaign, CampaignRecipient recipient, Lead lead, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var registration = await _bridge.ValidateNumberAsync(campaign.AccountId, recipient.Phone, cancellationToken);
+            var confirmed = registration.TryGetProperty("exists", out var existsElement) && existsElement.ValueKind == System.Text.Json.JsonValueKind.True;
+            if (!confirmed)
+                await _repository.LogEventAsync("campaign_whatsapp_registration_unconfirmed", lead.Id, null,
+                    $"campaign_id={campaign.Id};recipient_id={recipient.Id};diagnostic_only=true;send_continued=true", cancellationToken);
+        }
+        catch (Exception error)
+        {
+            await _repository.LogEventAsync("campaign_whatsapp_registration_check_unavailable", lead.Id, null,
+                $"campaign_id={campaign.Id};recipient_id={recipient.Id};diagnostic_only=true;send_continued=true;error={Safe(error.Message)}", cancellationToken);
+        }
+    }
+
     private async Task HandleDeliveryReceiptAsync(WhatsAppBridgeEvent e, CancellationToken cancellationToken)
     {
         if (e.Name != "message_status") return;
@@ -438,7 +486,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         }
 
         var campaign = await _repository.GetCampaignAsync(recipient.CampaignId, cancellationToken);
-        if (campaign is null) return;
+        if (campaign is null || campaign.Channel != CampaignChannel.WhatsApp) return;
         if (numericStatus <= 0)
         {
             var failureReason = e.Data.TryGetProperty("failureReason", out var failureElement) ? failureElement.GetString() ?? "" : "";
@@ -457,7 +505,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         var recipient = await _repository.GetCampaignRecipientByProviderMessageIdAsync(message.AccountId, message.ProviderMessageId, cancellationToken);
         if (recipient is null) return;
         var campaign = await _repository.GetCampaignAsync(recipient.CampaignId, cancellationToken);
-        if (campaign is null) return;
+        if (campaign is null || campaign.Channel != CampaignChannel.WhatsApp) return;
         if (message.Status == WhatsAppMessageStatus.Failed)
             await MarkDeliveryFailedAsync(campaign, recipient,
                 string.IsNullOrWhiteSpace(message.FailureReason) ? "WhatsApp 返回发送错误，消息未发送。" : message.FailureReason,
@@ -485,7 +533,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         lead.LatestMessage = recipient.RenderedMessage;
         if (lead.Stage == LeadStage.New) lead.Stage = LeadStage.Contacted;
         await _repository.UpsertLeadAsync(lead, cancellationToken);
-        await _repository.LogEventAsync("campaign_message_sent", lead.Id, null, $"campaign_id={campaign.Id};recipient_id={recipient.Id};message_id={recipient.ProviderMessageId}", cancellationToken);
+        await _repository.LogEventAsync("campaign_message_sent", lead.Id, null, $"campaign_id={campaign.Id};channel={campaign.Channel};recipient_id={recipient.Id};message_id={recipient.ProviderMessageId}", cancellationToken);
     }
 
     private async Task MarkDeliveryFailedAsync(WhatsAppCampaign campaign, CampaignRecipient recipient, string error, CancellationToken cancellationToken)
@@ -628,7 +676,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
             if (campaign.Status == CampaignStatus.Completed) return;
             campaign.Status = CampaignStatus.Completed; campaign.PauseReason = "";
             await _repository.SaveCampaignAsync(campaign, cancellationToken);
-            await _repository.LogEventAsync("campaign_completed", null, null, $"campaign_id={campaign.Id};sent={recipients.Count(x => x.Status == CampaignRecipientStatus.Sent)}", cancellationToken);
+            await _repository.LogEventAsync("campaign_completed", null, null, $"campaign_id={campaign.Id};channel={campaign.Channel};sent={recipients.Count(x => x.Status == CampaignRecipientStatus.Sent)}", cancellationToken);
         }
     }
 
@@ -690,10 +738,17 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         (string.IsNullOrWhiteSpace(campaign.TagFilter) || lead.Tags.Any(x => x.Contains(campaign.TagFilter.Trim(), StringComparison.CurrentCultureIgnoreCase))) &&
         (string.IsNullOrWhiteSpace(campaign.OwnerFilter) || lead.Owner.Contains(campaign.OwnerFilter.Trim(), StringComparison.CurrentCultureIgnoreCase));
 
-    private static bool IsEligible(Lead lead, out string reason)
+    private static bool IsEligible(WhatsAppCampaign campaign, Lead lead, out string reason)
     {
-        if (!lead.PhoneValid) { reason = "号码无效"; return false; }
         if (lead.OptedOut) { reason = "客户已退订"; return false; }
+        if (campaign.Channel == CampaignChannel.Email)
+        {
+            if (lead.EmailOptedOut) { reason = "客户已退订邮件"; return false; }
+            if (!System.Net.Mail.MailAddress.TryCreate(lead.Email, out _)) { reason = "邮箱无效或为空"; return false; }
+            reason = "邮箱有效";
+            return true;
+        }
+        if (!lead.PhoneValid) { reason = "号码无效"; return false; }
         reason = lead.WhatsAppOptIn ? "号码有效 · 已记录营销同意" : "号码有效 · 未记录营销同意";
         return true;
     }
@@ -702,7 +757,13 @@ public sealed class CampaignAutomationService : IAsyncDisposable
     {
         if (string.IsNullOrWhiteSpace(campaign.Name)) throw new InvalidOperationException("请填写 Campaign 名称。");
         if (string.IsNullOrWhiteSpace(campaign.MessageTemplate)) throw new InvalidOperationException("请填写发送话术。");
-        if (campaign.MessageTemplate.Length > 4096) throw new InvalidOperationException("WhatsApp 话术不能超过 4096 字符。");
+        if (campaign.Channel == CampaignChannel.WhatsApp && campaign.MessageTemplate.Length > 4096) throw new InvalidOperationException("WhatsApp 话术不能超过 4096 字符。");
+        if (campaign.Channel == CampaignChannel.Email)
+        {
+            if (string.IsNullOrWhiteSpace(campaign.EmailSubjectTemplate)) throw new InvalidOperationException("请填写邮件主题。");
+            if (campaign.EmailSubjectTemplate.Length > 998) throw new InvalidOperationException("邮件主题过长。");
+            if (campaign.MessageTemplate.Length > 200_000) throw new InvalidOperationException("邮件正文不能超过 200,000 字符。");
+        }
         var interval = campaign.EffectiveIntervalValue;
         if (campaign.IntervalUnit == CampaignIntervalUnit.Seconds && interval is < 10 or > 3600)
             throw new InvalidOperationException("按秒发送时，间隔必须在 10–3600 秒之间。过密发送不会让个人账号更安全。");

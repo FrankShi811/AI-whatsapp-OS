@@ -15,7 +15,9 @@ public partial class CampaignsView : UserControl, IRefreshableView
     private readonly AppServices _services;
     private readonly ObservableCollection<WhatsAppCampaign> _campaigns = [];
     private readonly ObservableCollection<AudienceRow> _rows = [];
-    private readonly ObservableCollection<WhatsAppAccount> _accounts = [];
+    private readonly ObservableCollection<CampaignAccountChoice> _accountChoices = [];
+    private readonly List<WhatsAppAccount> _whatsAppAccounts = [];
+    private readonly List<EmailAccount> _emailAccounts = [];
     private readonly ObservableCollection<CampaignMessageTemplate> _templates = [];
     private readonly ObservableCollection<CampaignTemplateField> _fields = [];
     private readonly ObservableCollection<CampaignExecutionSummary> _history = [];
@@ -31,7 +33,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
         _services = services;
         CampaignList.ItemsSource = _campaigns;
         AudienceGrid.ItemsSource = _rows;
-        AccountBox.ItemsSource = _accounts;
+        AccountBox.ItemsSource = _accountChoices;
         SavedTemplateBox.ItemsSource = _templates;
         FieldBox.ItemsSource = _fields;
         HistoryGrid.ItemsSource = _history;
@@ -44,6 +46,11 @@ public partial class CampaignsView : UserControl, IRefreshableView
         {
             new Choice<CampaignIntervalUnit>("秒 / 条", CampaignIntervalUnit.Seconds),
             new Choice<CampaignIntervalUnit>("分钟 / 条", CampaignIntervalUnit.Minutes)
+        };
+        ChannelBox.ItemsSource = new[]
+        {
+            new Choice<CampaignChannel>("WhatsApp 自动触达", CampaignChannel.WhatsApp),
+            new Choice<CampaignChannel>("邮件自动触达", CampaignChannel.Email)
         };
         CustomerGradeFilterBox.ItemsSource = new[] { "全部等级", "A", "B", "C", "D" };
         CustomerStageFilterBox.ItemsSource = new[] { new StageChoice("全部阶段", null) }.Concat(Enum.GetValues<LeadStage>().Select(value => new StageChoice(Labels.Stage(value), value))).ToList();
@@ -60,7 +67,9 @@ public partial class CampaignsView : UserControl, IRefreshableView
         try
         {
             var accounts = await _services.Repository.GetWhatsAppAccountsAsync();
-            _accounts.Clear(); foreach (var account in accounts) _accounts.Add(account);
+            _whatsAppAccounts.Clear(); _whatsAppAccounts.AddRange(accounts);
+            var emailAccounts = await _services.Repository.GetEmailAccountsAsync();
+            _emailAccounts.Clear(); _emailAccounts.AddRange(emailAccounts);
 
             var templates = await _services.Repository.GetCampaignMessageTemplatesAsync();
             _templates.Clear(); foreach (var template in templates.OrderByDescending(item => item.UpdatedAt)) _templates.Add(template);
@@ -95,7 +104,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
             }
             else
             {
-                AccountBox.SelectedItem = _accounts.FirstOrDefault(item => item.Id == _current.AccountId) ?? _accounts.FirstOrDefault();
+                ApplyChannelSelection(_current.Channel, _current.AccountId);
                 await LoadAudienceRowsAsync(_current);
             }
         }
@@ -120,9 +129,11 @@ public partial class CampaignsView : UserControl, IRefreshableView
         try
         {
             _current = campaign;
-            AccountBox.SelectedItem = _accounts.FirstOrDefault(item => item.Id == campaign.AccountId) ?? _accounts.FirstOrDefault();
+            ChannelBox.SelectedItem = ChannelBox.Items.Cast<Choice<CampaignChannel>>().First(item => item.Value == campaign.Channel);
+            ApplyChannelSelection(campaign.Channel, campaign.AccountId);
             NameBox.Text = campaign.Name;
             TemplateBox.Text = campaign.MessageTemplate;
+            EmailSubjectBox.Text = campaign.EmailSubjectTemplate;
             _currentTemplate = _templates.FirstOrDefault(item => item.Id == campaign.TemplateId);
             SavedTemplateBox.SelectedItem = _currentTemplate;
             TemplateNameBox.Text = _currentTemplate?.Name ?? "";
@@ -148,7 +159,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
         foreach (var item in items)
         {
             recipientByLead.TryGetValue(item.Lead.Id, out var recipient);
-            _rows.Add(new AudienceRow(item.Lead)
+            _rows.Add(new AudienceRow(item.Lead, campaign.Channel)
             {
                 Eligible = item.Eligible,
                 IsSelected = item.Eligible && selected.Contains(item.Lead.Id),
@@ -191,7 +202,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
             _current = campaign;
             await RefreshAsync();
             DataChanged?.Invoke(this, EventArgs.Empty);
-            MessageBox.Show("发送任务草稿已保存。", "WhatsApp 自动化群发", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("发送任务草稿已保存。", "多渠道自动化触达", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception error) { ShowError(error, "保存失败"); }
     }
@@ -206,13 +217,16 @@ public partial class CampaignsView : UserControl, IRefreshableView
             if (eligible == 0) throw new InvalidOperationException("所选客户中没有符合发送条件的客户。");
             var mode = campaign.ScheduleMode == CampaignScheduleMode.Immediate ? "批准后立即进入队列" : $"{FormatBeijing(campaign.StartsAt)}（北京时间）开始";
             var unit = campaign.IntervalUnit == CampaignIntervalUnit.Seconds ? "秒" : "分钟";
-            var confirmation = $"将为 {eligible} 位已同意客户生成独立消息并自动逐条发送。\n\n触发：{mode}\n间隔：每 {campaign.EffectiveIntervalValue} {unit} 1 条\n每日上限：{campaign.DailyLimit}\n\n发送间隔不能规避 WhatsApp 风控；个人号非官方连接仍可能被限制或封号。确认建立任务吗？";
+            var channelWarning = campaign.Channel == CampaignChannel.WhatsApp
+                ? "发送间隔不能规避 WhatsApp 风控；个人号非官方连接仍可能被限制或封号。"
+                : "邮件成功表示 SMTP 服务器已接受；退信或后续投递结果可能由收件服务器另行返回。";
+            var confirmation = $"将通过 {campaign.ChannelLabel} 为 {eligible} 位客户生成独立消息并自动逐条发送。\n\n触发：{mode}\n间隔：每 {campaign.EffectiveIntervalValue} {unit} 1 条\n每日上限：{campaign.DailyLimit}\n\n{channelWarning}\n确认建立任务吗？";
             if (MessageBox.Show(confirmation, "批准自动发送", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
             var count = await _services.Campaigns.ApproveAndScheduleAsync(campaign);
             _current = campaign;
             await RefreshAsync();
             DataChanged?.Invoke(this, EventArgs.Empty);
-            MessageBox.Show($"已建立 {count} 条逐人发送任务。请保持 AI Sales OS 运行，并确保对应 WhatsApp 账号已连接。", "发送任务已建立", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show($"已建立 {count} 条逐人发送任务。请保持 AI Sales OS 运行，并确保对应{campaign.ChannelLabel}账号已连接。", "发送任务已建立", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception error) { ShowError(error, "建立任务失败"); }
     }
@@ -246,7 +260,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
             _currentTemplate = await _services.Campaigns.SaveMessageTemplateAsync(template);
             if (_current is not null) _current.TemplateId = _currentTemplate.Id;
             await RefreshTemplatesAsync(_currentTemplate.Id);
-            MessageBox.Show("话术模板已保存。", "WhatsApp 自动化群发", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("话术模板已保存。", "多渠道自动化触达", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception error) { ShowError(error, "模板保存失败"); }
     }
@@ -290,6 +304,15 @@ public partial class CampaignsView : UserControl, IRefreshableView
         TemplateBox.Focus();
     }
 
+    private void InsertSubjectField_Click(object sender, RoutedEventArgs e)
+    {
+        if (FieldBox.SelectedItem is not CampaignTemplateField field) return;
+        var start = EmailSubjectBox.SelectionStart;
+        EmailSubjectBox.Text = EmailSubjectBox.Text.Insert(start, field.Token);
+        EmailSubjectBox.SelectionStart = start + field.Token.Length;
+        EmailSubjectBox.Focus();
+    }
+
     private async Task RefreshTemplatesAsync(string? selectId = null)
     {
         _loading = true;
@@ -306,10 +329,12 @@ public partial class CampaignsView : UserControl, IRefreshableView
     private WhatsAppCampaign ReadForm()
     {
         var campaign = _current is { Status: CampaignStatus.Draft } ? _current : new WhatsAppCampaign();
-        campaign.AccountId = (AccountBox.SelectedItem as WhatsAppAccount)?.Id ?? "primary";
+        campaign.Channel = (ChannelBox.SelectedItem as Choice<CampaignChannel>)?.Value ?? CampaignChannel.WhatsApp;
+        campaign.AccountId = (AccountBox.SelectedItem as CampaignAccountChoice)?.Id ?? throw new InvalidOperationException(campaign.Channel == CampaignChannel.Email ? "请先连接并选择邮件账号。" : "请选择 WhatsApp 账号。");
         campaign.Name = NameBox.Text.Trim();
         campaign.TemplateId = _currentTemplate?.Id ?? "";
         campaign.MessageTemplate = TemplateBox.Text.Trim();
+        campaign.EmailSubjectTemplate = EmailSubjectBox.Text.Trim();
         campaign.SelectedLeadIds = _rows.Where(row => row.IsSelected).Select(row => row.Lead.Id).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         campaign.ScheduleMode = (ScheduleModeBox.SelectedItem as Choice<CampaignScheduleMode>)?.Value ?? CampaignScheduleMode.Scheduled;
         campaign.StartsAt = campaign.ScheduleMode == CampaignScheduleMode.Scheduled ? ParseBeijing(StartAtBox.Text) : DateTimeOffset.Now;
@@ -331,7 +356,9 @@ public partial class CampaignsView : UserControl, IRefreshableView
         SavedTemplateBox.SelectedItem = null;
         TemplateNameBox.Clear();
         TemplateBox.Text = _current.MessageTemplate;
-        AccountBox.SelectedItem = _accounts.FirstOrDefault(item => item.Id == _services.WhatsApp.ActiveAccountId) ?? _accounts.FirstOrDefault();
+        EmailSubjectBox.Text = _current.EmailSubjectTemplate;
+        ChannelBox.SelectedItem = ChannelBox.Items.Cast<Choice<CampaignChannel>>().First(item => item.Value == CampaignChannel.WhatsApp);
+        ApplyChannelSelection(CampaignChannel.WhatsApp, _services.WhatsApp.ActiveAccountId);
         NameBox.Text = _current.Name;
         ScheduleModeBox.SelectedItem = ScheduleModeBox.Items.Cast<Choice<CampaignScheduleMode>>().First(item => item.Value == CampaignScheduleMode.Scheduled);
         StartAtBox.Text = FormatBeijing(_current.StartsAt);
@@ -355,7 +382,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
     private void ApplyState(WhatsAppCampaign campaign)
     {
         var editable = campaign.Status == CampaignStatus.Draft;
-        foreach (var control in new Control[] { AccountBox, NameBox, SavedTemplateBox, TemplateNameBox, TemplateBox, FieldBox, SaveTemplateButton, DeleteTemplateButton, ScheduleModeBox, StartAtBox, IntervalBox, IntervalUnitBox, DailyLimitBox }) control.IsEnabled = editable;
+        foreach (var control in new Control[] { ChannelBox, AccountBox, NameBox, SavedTemplateBox, TemplateNameBox, TemplateBox, EmailSubjectBox, FieldBox, SaveTemplateButton, DeleteTemplateButton, ScheduleModeBox, StartAtBox, IntervalBox, IntervalUnitBox, DailyLimitBox }) control.IsEnabled = editable;
         AudienceGrid.IsEnabled = editable;
         PreviewButton.IsEnabled = editable;
         SaveButton.IsEnabled = editable;
@@ -370,6 +397,39 @@ public partial class CampaignsView : UserControl, IRefreshableView
     }
 
     private void ScheduleModeBox_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateScheduleMode();
+
+    private async void ChannelBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || ChannelBox.SelectedItem is not Choice<CampaignChannel> choice) return;
+        if (_current is not null) _current.Channel = choice.Value;
+        ApplyChannelSelection(choice.Value, null);
+        if (_current is not null) await LoadAudienceRowsAsync(_current);
+        UpdateConnectionState();
+    }
+
+    private void ApplyChannelSelection(CampaignChannel channel, string? preferredAccountId)
+    {
+        var previousLoading = _loading;
+        _loading = true;
+        _accountChoices.Clear();
+        if (channel == CampaignChannel.Email)
+        {
+            foreach (var account in _emailAccounts)
+                _accountChoices.Add(new CampaignAccountChoice(account.Id, account.DisplayLabel, channel, account.Status == EmailConnectionStatus.Connected));
+        }
+        else
+        {
+            foreach (var account in _whatsAppAccounts)
+                _accountChoices.Add(new CampaignAccountChoice(account.Id, account.DisplayLabel, channel, _services.WhatsApp.IsConnectedFor(account.Id)));
+        }
+        AccountBox.SelectedItem = _accountChoices.FirstOrDefault(item => item.Id == preferredAccountId) ?? _accountChoices.FirstOrDefault();
+        EmailSubjectPanel.Visibility = channel == CampaignChannel.Email ? Visibility.Visible : Visibility.Collapsed;
+        SafetyHintText.Text = channel == CampaignChannel.Email
+            ? "邮件任务以 SMTP 服务器接受结果计为成功；退信和后续投递结果可能由收件服务器另行返回。失败原因会与 WhatsApp 历史分开统计。"
+            : "WhatsApp 任务会记录公网 IP 并持续核对；IP 变化立即停止所有自动触达。号码查询只作诊断，不再因本地联系人同步不完整而拒绝发送。";
+        _loading = previousLoading;
+        UpdateConnectionState();
+    }
 
     private void UpdateScheduleMode()
     {
@@ -393,7 +453,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
         view.Filter = item => item is AudienceRow row
             && (grade == "全部等级" || row.Grade.Equals(grade, StringComparison.OrdinalIgnoreCase))
             && (stage is null || row.Lead.Stage == stage)
-            && (query.Length == 0 || string.Join(" ", row.DisplayName, row.Company, row.Phone, row.Lead.TagsLabel).Contains(query, StringComparison.CurrentCultureIgnoreCase));
+            && (query.Length == 0 || string.Join(" ", row.DisplayName, row.Company, row.Phone, row.Email, row.Lead.TagsLabel).Contains(query, StringComparison.CurrentCultureIgnoreCase));
         PreviewSummaryText.Text = $"显示 {view.Cast<object>().Count()} / {_rows.Count} 位客户";
     }
 
@@ -434,10 +494,12 @@ public partial class CampaignsView : UserControl, IRefreshableView
 
     private void UpdateConnectionState()
     {
-        var accountId = (AccountBox.SelectedItem as WhatsAppAccount)?.Id ?? "primary";
-        var connected = _services.WhatsApp.IsConnectedFor(accountId);
-        var state = _services.WhatsApp.ConnectionStateFor(accountId);
-        ConnectionText.Text = connected ? "已连接" : state switch { "connecting" => "连接中 / 等待扫码", "logged_out" => "登录已失效", _ => "未连接" };
+        var choice = AccountBox.SelectedItem as CampaignAccountChoice;
+        var channel = (ChannelBox.SelectedItem as Choice<CampaignChannel>)?.Value ?? CampaignChannel.WhatsApp;
+        var accountId = choice?.Id ?? "primary";
+        var connected = channel == CampaignChannel.Email ? choice?.Connected == true : _services.WhatsApp.IsConnectedFor(accountId);
+        var state = channel == CampaignChannel.Email ? "email" : _services.WhatsApp.ConnectionStateFor(accountId);
+        ConnectionText.Text = connected ? $"{(channel == CampaignChannel.Email ? "邮件" : "WhatsApp")}已连接" : state switch { "connecting" => "连接中 / 等待扫码", "logged_out" => "登录已失效", _ => channel == CampaignChannel.Email ? "未连接邮件账号" : "未连接" };
         ConnectionText.Foreground = (System.Windows.Media.Brush)FindResource(connected ? "Success" : "Warning");
     }
 
@@ -462,6 +524,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
 
     private sealed record StageChoice(string Label, LeadStage? Value);
     private sealed record Choice<T>(string Label, T Value);
+    private sealed record CampaignAccountChoice(string Id, string DisplayLabel, CampaignChannel Channel, bool Connected);
 
     private sealed class AudienceRow : INotifyPropertyChanged
     {
@@ -469,11 +532,14 @@ public partial class CampaignsView : UserControl, IRefreshableView
         private string _statusText = "";
         private string _detail = "";
 
-        public AudienceRow(Lead lead) => Lead = lead;
+        public AudienceRow(Lead lead, CampaignChannel channel) { Lead = lead; Channel = channel; }
         public Lead Lead { get; }
+        public CampaignChannel Channel { get; }
         public string DisplayName => Lead.DisplayName;
         public string Company => Lead.Company;
         public string Phone => Lead.PhoneE164;
+        public string Email => Lead.Email;
+        public string Contact => Channel == CampaignChannel.Email ? Lead.Email : Lead.PhoneE164;
         public string Grade => Lead.Grade;
         public bool Eligible { get; init; }
         public bool IsSelected { get => _isSelected; set { if (_isSelected == value) return; _isSelected = value; OnPropertyChanged(nameof(IsSelected)); } }

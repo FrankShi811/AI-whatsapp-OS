@@ -15,7 +15,7 @@ public partial class VersionHistoryWindow : Window
         CurrentVersionText.Text = $"AI Sales OS v{ReleaseCatalog.CurrentVersion}";
         ReleaseList.ItemsSource = ReleaseCatalog.History.Select(note => new ReleaseNoteItem(
             note.Version, note.Date, note.Title, note.Changes,
-            note.IsCurrent ? Visibility.Visible : Visibility.Collapsed));
+            note.Version == ReleaseCatalog.CurrentVersion ? Visibility.Visible : Visibility.Collapsed));
         Loaded += VersionHistoryWindow_Loaded;
         Closed += VersionHistoryWindow_Closed;
         _updates.StateChanged += Updates_StateChanged;

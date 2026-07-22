@@ -70,7 +70,7 @@ public sealed class CustomerAnalysisService
             report.Status = CustomerReportStatus.Succeeded;
             report.Error = "";
             await _repository.SaveCustomerAnalysisReportAsync(report, cancellationToken);
-            await _repository.LogEventAsync("customer_intelligence_report_generated", lead.Id, null, $"report_id={report.Id};version={report.Version};model={model};messages={snapshot.WhatsAppMessages.Count}", cancellationToken);
+            await _repository.LogEventAsync("customer_intelligence_report_generated", lead.Id, null, $"report_id={report.Id};version={report.Version};model={model};whatsapp_messages={snapshot.WhatsAppMessages.Count};email_messages={snapshot.EmailMessages.Count}", cancellationToken);
             return report;
         }
         catch (OperationCanceledException)
@@ -130,6 +130,7 @@ public sealed class CustomerAnalysisService
     private async Task<CustomerIntelligenceSourceSnapshot> BuildSnapshotAsync(Lead lead, CancellationToken cancellationToken)
     {
         var messages = await _repository.GetWhatsAppMessagesForLeadAsync(lead, 5000, cancellationToken);
+        var emailMessages = await _repository.GetEmailMessagesForLeadAsync(lead.Id, 5000, cancellationToken);
         var campaigns = await _repository.GetCampaignsAsync(null, cancellationToken);
         var touches = new List<CustomerCampaignTouch>();
         foreach (var campaign in campaigns)
@@ -137,7 +138,7 @@ public sealed class CustomerAnalysisService
             foreach (var recipient in (await _repository.GetCampaignRecipientsAsync(campaign.Id, cancellationToken)).Where(item => item.LeadId == lead.Id))
                 touches.Add(new CustomerCampaignTouch
                 {
-                    CampaignId = campaign.Id, CampaignName = campaign.Name, Message = recipient.RenderedMessage,
+                    CampaignId = campaign.Id, CampaignName = campaign.Name, Channel = campaign.ChannelLabel, Message = recipient.RenderedMessage,
                     Status = recipient.StatusLabel, ScheduledAt = recipient.ScheduledAt, SentAt = recipient.SentAt, LastError = recipient.LastError
                 });
         }
@@ -149,6 +150,7 @@ public sealed class CustomerAnalysisService
             CapturedAt = DateTimeOffset.Now,
             Lead = lead,
             WhatsAppMessages = messages,
+            EmailMessages = emailMessages,
             CampaignTouches = touches.OrderBy(item => item.ScheduledAt).ToList(),
             Timeline = timeline.OrderBy(item => item.CreatedAt).ToList(),
             LeadAnalysisHistory = await _repository.GetLeadAnalysisHistoryAsync(lead.Id, cancellationToken)
@@ -230,6 +232,16 @@ public sealed class CustomerAnalysisService
                 lead.ScoreFactors, lead.BehaviorSignals, lead.ProfileSummary, lead.NextAction, lead.RiskWarning, lead.AnalysisConfidence
             },
             facts,
+            emailMessages = snapshot.EmailMessages.Select(message => new
+            {
+                message.Id,
+                direction = message.Direction,
+                message.Timestamp,
+                message.Subject,
+                message.TextBody,
+                message.FromAddress,
+                message.ToAddresses
+            }),
             campaignTouches = snapshot.CampaignTouches,
             timeline = snapshot.Timeline
         };

@@ -217,6 +217,29 @@ function jidFromPhone(phone) {
   return `${digits}@s.whatsapp.net`
 }
 
+async function resolveOutboundJid(phone, explicitJid = '') {
+  const explicit = String(explicitJid ?? '').trim()
+  if (shouldForward(explicit)) return explicit
+  const digits = String(phone ?? '').replace(/\D/g, '')
+  const fallback = jidFromPhone(digits)
+
+  const cached = [...state.contacts.values(), ...state.chats.values()]
+    .find(item => item?.phone === digits || phoneFromJid(item?.jid) === digits || phoneFromJid(item?.sourceJid) === digits)
+  if (cached) {
+    const resolved = await resolveUserJid(cached.jid, cached.sourceJid)
+    if (shouldForward(resolved)) return resolved
+  }
+
+  try {
+    const matches = await state.socket?.onWhatsApp(digits)
+    const match = (matches ?? []).find(item => item?.exists && shouldForward(String(item?.jid ?? '')))
+    if (match?.jid) return String(match.jid)
+  } catch {
+    // Number discovery is advisory only. A temporary discovery failure must not block a real send attempt.
+  }
+  return fallback
+}
+
 function timestampToIso(value) {
   if (value == null) return new Date().toISOString()
   const seconds = typeof value === 'number' ? value : Number(value?.toString?.() ?? value)
@@ -799,6 +822,14 @@ async function connect() {
       const jid = await resolveDirectJid(update.key)
       if (!shouldForward(jid)) continue
       const numericStatus = update.update?.status ?? null
+      const failureDetails = [
+        update.update?.error?.message,
+        update.update?.error?.output?.payload?.message,
+        ...(Array.isArray(update.update?.messageStubParameters) ? update.update.messageStubParameters : [])
+      ].map(value => String(value ?? '').trim()).filter(Boolean)
+      const failureReason = Number(numericStatus) === 0
+        ? (failureDetails.length > 0 ? `WhatsApp 发送失败：${failureDetails.join('；')}` : 'WhatsApp 返回发送错误（账号可搜索或已保存联系人并不代表本次传输成功）')
+        : ''
       emit({
         type: 'event', event: 'message_status', accountId: state.accountId,
         data: {
@@ -806,7 +837,10 @@ async function connect() {
           statusAt: new Date().toISOString(),
           deliveredAt: Number(numericStatus) >= 3 ? new Date().toISOString() : '',
           readAt: Number(numericStatus) >= 4 ? new Date().toISOString() : '',
-          failureReason: Number(numericStatus) === 0 ? 'WhatsApp 返回发送错误' : ''
+          failureReason,
+          statusContext: Object.keys(update.update ?? {}).sort().join(','),
+          remoteJid: String(update.key?.remoteJid ?? ''),
+          remoteJidAlt: String(update.key?.remoteJidAlt ?? '')
         }
       })
     }
@@ -898,7 +932,7 @@ async function handle(command) {
         if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
         const text = String(command.text ?? '').trim()
         if (!text || text.length > 4096) throw new Error('invalid_message_text')
-        const jid = command.jid ? String(command.jid) : jidFromPhone(command.phone)
+        const jid = await resolveOutboundJid(command.phone, command.jid)
         if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
         const result = await state.socket.sendMessage(jid, { text }, quotedSendOptions(command, jid))
         rememberMessage(result)
@@ -909,7 +943,7 @@ async function handle(command) {
       }
       case 'send_media': {
         if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
-        const jid = command.jid ? String(command.jid) : jidFromPhone(command.phone)
+        const jid = await resolveOutboundJid(command.phone, command.jid)
         if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
         const media = await buildMediaMessage(command.path, command.caption)
         const result = await state.socket.sendMessage(jid, media.payload, quotedSendOptions(command, jid))
@@ -928,7 +962,7 @@ async function handle(command) {
       }
       case 'revoke_message': {
         if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
-        const jid = command.jid ? String(command.jid) : jidFromPhone(command.phone)
+        const jid = await resolveOutboundJid(command.phone, command.jid)
         if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
         const id = String(command.messageId ?? '').trim()
         if (!id || id.length > 256) throw new Error('invalid_message_id')
@@ -944,7 +978,7 @@ async function handle(command) {
       }
       case 'set_chat_pin': {
         if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
-        const jid = command.jid ? String(command.jid) : jidFromPhone(command.phone)
+        const jid = await resolveOutboundJid(command.phone, command.jid)
         if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
         const pinned = Boolean(command.pinned)
         await state.socket.chatModify({ pin: pinned }, jid)

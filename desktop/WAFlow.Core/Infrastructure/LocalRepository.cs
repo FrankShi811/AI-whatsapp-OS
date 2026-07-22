@@ -169,6 +169,43 @@ public sealed class LocalRepository
             );
             CREATE INDEX IF NOT EXISTS ix_whatsapp_messages_timeline ON whatsapp_messages(conversation_id, timestamp DESC);
             CREATE INDEX IF NOT EXISTS ix_whatsapp_messages_lead ON whatsapp_messages(lead_id, timestamp DESC);
+            CREATE TABLE IF NOT EXISTS email_accounts (
+              id TEXT PRIMARY KEY,
+              email_address TEXT NOT NULL COLLATE NOCASE,
+              status TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL,
+              UNIQUE(email_address)
+            );
+            CREATE INDEX IF NOT EXISTS ix_email_accounts_recent ON email_accounts(updated_at DESC);
+            CREATE TABLE IF NOT EXISTS email_conversations (
+              id TEXT PRIMARY KEY,
+              account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+              lead_id TEXT,
+              peer_email TEXT NOT NULL COLLATE NOCASE,
+              last_message_at TEXT NOT NULL,
+              unread_count INTEGER NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL,
+              UNIQUE(account_id, peer_email)
+            );
+            CREATE INDEX IF NOT EXISTS ix_email_conversations_recent ON email_conversations(account_id, last_message_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_email_conversations_lead ON email_conversations(lead_id, last_message_at DESC);
+            CREATE TABLE IF NOT EXISTS email_messages (
+              id TEXT PRIMARY KEY,
+              provider_message_id TEXT NOT NULL,
+              account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+              conversation_id TEXT NOT NULL REFERENCES email_conversations(id) ON DELETE CASCADE,
+              lead_id TEXT,
+              direction TEXT NOT NULL,
+              status TEXT NOT NULL,
+              timestamp TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL,
+              UNIQUE(account_id, provider_message_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_email_messages_timeline ON email_messages(conversation_id, timestamp DESC);
+            CREATE INDEX IF NOT EXISTS ix_email_messages_lead ON email_messages(lead_id, timestamp DESC);
             CREATE TABLE IF NOT EXISTS whatsapp_campaigns (
               id TEXT PRIMARY KEY,
               account_id TEXT NOT NULL,
@@ -285,6 +322,7 @@ public sealed class LocalRepository
             update.Parameters.AddWithValue("$json", Json.Serialize(item));
             await update.ExecuteNonQueryAsync(cancellationToken);
         }
+
     }
 
     private static async Task SeedIfEmptyAsync(SqliteConnection db, CancellationToken cancellationToken)
@@ -536,6 +574,46 @@ public sealed class LocalRepository
             await update.ExecuteNonQueryAsync(cancellationToken);
         }
 
+        var emailConversations = new List<EmailConversation>();
+        await using (var select = db.CreateCommand())
+        {
+            select.Transaction = transaction;
+            select.CommandText = "SELECT data_json FROM email_conversations WHERE lead_id=$lead";
+            select.Parameters.AddWithValue("$lead", leadId);
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<EmailConversation>(reader.GetString(0)) is { } item) emailConversations.Add(item);
+        }
+        foreach (var item in emailConversations)
+        {
+            item.LeadId = "";
+            await using var update = db.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE email_conversations SET lead_id=NULL,data_json=$json WHERE id=$id";
+            update.Parameters.AddWithValue("$id", item.Id); update.Parameters.AddWithValue("$json", Json.Serialize(item));
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var emailMessages = new List<EmailMessage>();
+        await using (var select = db.CreateCommand())
+        {
+            select.Transaction = transaction;
+            select.CommandText = "SELECT data_json FROM email_messages WHERE lead_id=$lead";
+            select.Parameters.AddWithValue("$lead", leadId);
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<EmailMessage>(reader.GetString(0)) is { } item) emailMessages.Add(item);
+        }
+        foreach (var item in emailMessages)
+        {
+            item.LeadId = "";
+            await using var update = db.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE email_messages SET lead_id=NULL,data_json=$json WHERE id=$id";
+            update.Parameters.AddWithValue("$id", item.Id); update.Parameters.AddWithValue("$json", Json.Serialize(item));
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         await using (var queued = db.CreateCommand())
         {
             queued.Transaction = transaction;
@@ -556,7 +634,7 @@ public sealed class LocalRepository
         audit.Transaction = transaction;
         audit.CommandText = "INSERT INTO audit_events(event_type,lead_id,draft_id,detail,created_at) VALUES($type,$lead,NULL,$detail,$at)";
         audit.Parameters.AddWithValue("$type", eventType); audit.Parameters.AddWithValue("$lead", leadId);
-        audit.Parameters.AddWithValue("$detail", "lead deleted; WhatsApp history retained and unlinked"); audit.Parameters.AddWithValue("$at", DateTimeOffset.Now.ToString("O"));
+        audit.Parameters.AddWithValue("$detail", "lead deleted; WhatsApp and email history retained and unlinked"); audit.Parameters.AddWithValue("$at", DateTimeOffset.Now.ToString("O"));
         await audit.ExecuteNonQueryAsync(cancellationToken);
         return true;
     }
@@ -615,6 +693,19 @@ public sealed class LocalRepository
         if (exact.Count > 1) return null;
         return Services.PhoneIdentity.FindUniqueLead(await GetLeadsAsync(cancellationToken: cancellationToken), digits);
     }
+
+    public async Task<Lead?> GetLeadByEmailAsync(string email, CancellationToken cancellationToken = default)
+    {
+        var normalized = NormalizeEmail(email);
+        if (normalized.Length == 0) return null;
+        var matches = (await GetLeadsAsync(cancellationToken: cancellationToken))
+            .Where(lead => NormalizeEmail(lead.Email).Equals(normalized, StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToList();
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
+    private static string NormalizeEmail(string? email) => (email ?? "").Trim().ToLowerInvariant();
 
     public async Task<int> SynchronizeLeadConnectionsFromInboxAsync(IReadOnlyList<Lead> leads, CancellationToken cancellationToken = default)
     {
@@ -943,6 +1034,140 @@ public sealed class LocalRepository
             WhatsAppMessageStatus.Received => 3, _ => -1
         };
         return Rank(next) >= Rank(current);
+    }
+
+    public async Task<List<EmailAccount>> GetEmailAccountsAsync(CancellationToken cancellationToken = default)
+    {
+        var items = new List<EmailAccount>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM email_accounts ORDER BY updated_at DESC";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<EmailAccount>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task<EmailAccount?> GetEmailAccountAsync(string id, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM email_accounts WHERE id=$id";
+        command.Parameters.AddWithValue("$id", id);
+        return Json.Deserialize<EmailAccount>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task SaveEmailAccountAsync(EmailAccount account, CancellationToken cancellationToken = default)
+    {
+        account.EmailAddress = NormalizeEmail(account.EmailAddress);
+        account.UserName = string.IsNullOrWhiteSpace(account.UserName) ? account.EmailAddress : account.UserName.Trim();
+        account.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO email_accounts(id,email_address,status,updated_at,data_json)
+            VALUES($id,$email,$status,$updated,$json)
+            ON CONFLICT(id) DO UPDATE SET email_address=excluded.email_address,status=excluded.status,updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", account.Id); command.Parameters.AddWithValue("$email", account.EmailAddress);
+        command.Parameters.AddWithValue("$status", account.Status.ToString()); command.Parameters.AddWithValue("$updated", account.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(account));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task DeleteEmailAccountAsync(string id, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand(); command.CommandText = "DELETE FROM email_accounts WHERE id=$id";
+        command.Parameters.AddWithValue("$id", id); await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<EmailConversation>> GetEmailConversationsAsync(string accountId, CancellationToken cancellationToken = default)
+    {
+        var items = new List<EmailConversation>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM email_conversations WHERE account_id=$account ORDER BY last_message_at DESC";
+        command.Parameters.AddWithValue("$account", accountId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<EmailConversation>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task UpsertEmailConversationAsync(EmailConversation conversation, CancellationToken cancellationToken = default)
+    {
+        conversation.PeerEmail = NormalizeEmail(conversation.PeerEmail);
+        conversation.UpdatedAt = DateTimeOffset.Now;
+        if (string.IsNullOrWhiteSpace(conversation.Id)) conversation.Id = $"{conversation.AccountId}:{conversation.PeerEmail}";
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO email_conversations(id,account_id,lead_id,peer_email,last_message_at,unread_count,updated_at,data_json)
+            VALUES($id,$account,$lead,$peer,$last,$unread,$updated,$json)
+            ON CONFLICT(id) DO UPDATE SET lead_id=excluded.lead_id,peer_email=excluded.peer_email,last_message_at=excluded.last_message_at,
+              unread_count=excluded.unread_count,updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", conversation.Id); command.Parameters.AddWithValue("$account", conversation.AccountId);
+        command.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(conversation.LeadId) ? DBNull.Value : conversation.LeadId);
+        command.Parameters.AddWithValue("$peer", conversation.PeerEmail); command.Parameters.AddWithValue("$last", conversation.LastMessageAt.ToString("O"));
+        command.Parameters.AddWithValue("$unread", conversation.UnreadCount); command.Parameters.AddWithValue("$updated", conversation.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(conversation)); await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<bool> UpsertEmailMessageAsync(EmailMessage message, CancellationToken cancellationToken = default)
+    {
+        message.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO email_messages(id,provider_message_id,account_id,conversation_id,lead_id,direction,status,timestamp,updated_at,data_json)
+            VALUES($id,$provider,$account,$conversation,$lead,$direction,$status,$timestamp,$updated,$json)
+            ON CONFLICT(id) DO UPDATE SET lead_id=excluded.lead_id,status=excluded.status,updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", message.Id); command.Parameters.AddWithValue("$provider", message.ProviderMessageId);
+        command.Parameters.AddWithValue("$account", message.AccountId); command.Parameters.AddWithValue("$conversation", message.ConversationId);
+        command.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(message.LeadId) ? DBNull.Value : message.LeadId);
+        command.Parameters.AddWithValue("$direction", message.Direction.ToString()); command.Parameters.AddWithValue("$status", message.Status.ToString());
+        command.Parameters.AddWithValue("$timestamp", message.Timestamp.ToString("O")); command.Parameters.AddWithValue("$updated", message.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(message));
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task<EmailMessage?> GetEmailMessageAsync(string id, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM email_messages WHERE id=$id";
+        command.Parameters.AddWithValue("$id", id);
+        return Json.Deserialize<EmailMessage>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task<List<EmailMessage>> GetEmailMessagesAsync(string conversationId, int limit = 500, CancellationToken cancellationToken = default)
+    {
+        var items = new List<EmailMessage>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM email_messages WHERE conversation_id=$conversation ORDER BY timestamp DESC LIMIT $limit";
+        command.Parameters.AddWithValue("$conversation", conversationId); command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 2_000));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<EmailMessage>(reader.GetString(0)) is { } item) items.Add(item);
+        items.Reverse();
+        return items;
+    }
+
+    public async Task<List<EmailMessage>> GetEmailMessagesForLeadAsync(string leadId, int limit = 100, CancellationToken cancellationToken = default)
+    {
+        var items = new List<EmailMessage>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM email_messages WHERE lead_id=$lead ORDER BY timestamp DESC LIMIT $limit";
+        command.Parameters.AddWithValue("$lead", leadId); command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 1_000));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<EmailMessage>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
     }
 
     public async Task<List<WhatsAppCampaign>> GetCampaignsAsync(string? accountId = "primary", CancellationToken cancellationToken = default)

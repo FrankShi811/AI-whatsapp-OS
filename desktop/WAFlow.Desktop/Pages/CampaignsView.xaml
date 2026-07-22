@@ -6,9 +6,9 @@
         <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel>
-                <TextBlock Text="SAFE SALES AUTOMATION" Style="{StaticResource PageEyebrow}"/>
-                <TextBlock Text="Campaign Orchestration" Style="{StaticResource PageTitle}" Margin="0,5,0,0"/>
-                <TextBlock Text="从动态话术、精准受众到发送节奏与安全审计，每一步都可预览、可批准、可追踪。" Foreground="{DynamicResource Muted}" Margin="0,6,0,0"/>
+                <TextBlock Text="OMNICHANNEL SALES AUTOMATION" Style="{StaticResource PageEyebrow}"/>
+                <TextBlock Text="多渠道自动化触达" Style="{StaticResource PageTitle}" Margin="0,5,0,0"/>
+                <TextBlock Text="统一编排 WhatsApp 与邮件任务；字段替换、受众、节奏、结果和失败原因都可追踪。" Foreground="{DynamicResource Muted}" Margin="0,6,0,0"/>
             </StackPanel>
             <Button Grid.Column="1" Content="＋  新建发送任务" Style="{StaticResource PrimaryButton}" Click="New_Click" VerticalAlignment="Center"/>
         </Grid>
@@ -18,7 +18,7 @@
             <Border Grid.Column="0" Style="{StaticResource MetricCard}" Margin="0,0,6,0"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="发送任务" Style="{StaticResource LabelText}"/><TextBlock x:Name="CampaignCountText" Text="0" Style="{StaticResource MetricValue}" FontSize="22"/></StackPanel><Border Grid.Column="1" Width="32" Height="32" Background="{DynamicResource PrimarySoft}" CornerRadius="9"><TextBlock Text="◌" Foreground="{DynamicResource Primary}" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></Grid></Border>
             <Border Grid.Column="1" Style="{StaticResource MetricCard}" Margin="6,0"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="运行 / 排期 / 安全停止" Style="{StaticResource LabelText}"/><TextBlock x:Name="ActiveCountText" Text="0" Style="{StaticResource MetricValue}" FontSize="22" Foreground="{DynamicResource Primary}"/></StackPanel><Border Grid.Column="1" Width="32" Height="32" Background="{DynamicResource WarningSoft}" CornerRadius="9"><TextBlock Text="◷" Foreground="{DynamicResource Warning}" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></Grid></Border>
             <Border Grid.Column="2" Style="{StaticResource MetricCard}" Margin="6,0"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="已发送" Style="{StaticResource LabelText}"/><TextBlock x:Name="SentCountText" Text="0" Style="{StaticResource MetricValue}" FontSize="22"/></StackPanel><Border Grid.Column="1" Width="32" Height="32" Background="{DynamicResource SuccessSoft}" CornerRadius="9"><TextBlock Text="✓" Foreground="{DynamicResource Success}" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></Grid></Border>
-            <Border Grid.Column="3" Style="{StaticResource MetricCard}" Margin="6,0,0,0"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="WhatsApp 连接" Style="{StaticResource LabelText}"/><TextBlock x:Name="ConnectionText" Text="未连接" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource Warning}" Margin="0,6,0,0"/></StackPanel><Border Grid.Column="1" Width="32" Height="32" Background="{DynamicResource InfoSoft}" CornerRadius="9"><TextBlock Text="◉" Foreground="{DynamicResource Info}" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></Grid></Border>
+            <Border Grid.Column="3" Style="{StaticResource MetricCard}" Margin="6,0,0,0"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="当前渠道连接" Style="{StaticResource LabelText}"/><TextBlock x:Name="ConnectionText" Text="未连接" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource Warning}" Margin="0,6,0,0"/></StackPanel><Border Grid.Column="1" Width="32" Height="32" Background="{DynamicResource InfoSoft}" CornerRadius="9"><TextBlock Text="◉" Foreground="{DynamicResource Info}" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></Grid></Border>
         </Grid>
 
         <TabControl Grid.Row="2" x:Name="CampaignTabs">
@@ -34,6 +34,7 @@
                             <Border Padding="12,10" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Width="195">
                                 <StackPanel>
                                     <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding ChannelLabel}" Foreground="{StaticResource Muted}" FontSize="9" Margin="0,3,0,0"/>
                                     <TextBlock Text="{Binding ScheduleLabel}" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,5,0,0"/>
                                     <TextBlock Text="{Binding StatusLabel}" Foreground="{StaticResource Primary}" FontSize="10" FontWeight="SemiBold" Margin="0,3,0,0"/>
                                 </StackPanel>
@@ -66,7 +67,17 @@
                         <TextBlock Text="群发时会为每位客户生成独立文本；空值会替换为空，不会把字段符号直接发给客户。" Foreground="{StaticResource Muted}" FontSize="9" Margin="0,5,0,6" TextWrapping="Wrap"/>
                         <Button x:Name="SaveTemplateButton" Content="保存话术模板" Style="{StaticResource SecondaryButton}" Click="SaveTemplate_Click" HorizontalAlignment="Left" Padding="12,6"/>
 
+                        <StackPanel x:Name="EmailSubjectPanel" Visibility="Collapsed" Margin="0,10,0,0">
+                            <TextBlock Text="邮件主题（支持同样的客户字段）" Style="{StaticResource LabelText}"/>
+                            <Grid Margin="0,4,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="6"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <TextBox x:Name="EmailSubjectBox"/>
+                                <Button Grid.Column="2" Content="插入字段" Style="{StaticResource SecondaryButton}" Click="InsertSubjectField_Click" Padding="10,5"/>
+                            </Grid>
+                        </StackPanel>
+
                         <Border Height="1" Background="{StaticResource Line}" Margin="0,13,0,12"/>
+                        <TextBlock Text="发送渠道" Style="{StaticResource LabelText}"/>
+                        <ComboBox x:Name="ChannelBox" DisplayMemberPath="Label" SelectionChanged="ChannelBox_SelectionChanged" Margin="0,4,0,8"/>
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                             <StackPanel><TextBlock Text="发送账号" Style="{StaticResource LabelText}"/><ComboBox x:Name="AccountBox" DisplayMemberPath="DisplayLabel" Margin="0,4,0,0"/></StackPanel>
                             <StackPanel Grid.Column="2"><TextBlock Text="任务名称" Style="{StaticResource LabelText}"/><TextBox x:Name="NameBox" Margin="0,4,0,0"/></StackPanel>
@@ -86,7 +97,7 @@
                         </Grid>
 
                         <Border Background="{StaticResource WarningSoft}" CornerRadius="8" Padding="10" Margin="0,12,0,11">
-                            <TextBlock Text="发送间隔只是节奏控制，不能规避 WhatsApp 风控。任务批准时会记录公网 IP，运行中每 10 秒及每次发送前核对；IP 不一致会立即停止所有自动触达。号码有效且未退订的客户可以选择；是否已记录营销同意会作为状态提示保留。" Foreground="{DynamicResource Warning}" FontSize="9" TextWrapping="Wrap"/>
+                            <TextBlock x:Name="SafetyHintText" Text="WhatsApp 任务会记录公网 IP 并持续核对；IP 变化立即停止自动触达。邮件任务以 SMTP 服务器接受结果计为成功，失败原因单独记录。" Foreground="{DynamicResource Warning}" FontSize="9" TextWrapping="Wrap"/>
                         </Border>
 
                         <WrapPanel>
@@ -107,7 +118,7 @@
                             <StackPanel><TextBlock Text="04 · 选择发送客户" FontWeight="SemiBold" FontSize="14"/><TextBlock x:Name="PreviewSummaryText" Text="请勾选一位或多位客户" Foreground="{DynamicResource Muted}" FontSize="10" Margin="0,3,0,0"/></StackPanel>
                             <TextBlock Grid.Column="1" x:Name="EligibleCountText" Text="已选 0" Foreground="{StaticResource Primary}" FontWeight="SemiBold" VerticalAlignment="Center"/>
                         </Grid>
-                        <TextBox x:Name="AudienceSearchBox" Margin="0,9,0,7" ToolTip="搜索姓名、公司、号码或标签" TextChanged="AudienceFilter_Changed"/>
+                        <TextBox x:Name="AudienceSearchBox" Margin="0,9,0,7" ToolTip="搜索姓名、公司、WhatsApp、邮箱或标签" TextChanged="AudienceFilter_Changed"/>
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="6"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                             <ComboBox x:Name="CustomerGradeFilterBox" SelectionChanged="AudienceFilter_Changed"/>
                             <ComboBox Grid.Column="2" x:Name="CustomerStageFilterBox" DisplayMemberPath="Label" SelectionChanged="AudienceFilter_Changed"/>
@@ -118,7 +129,7 @@
                         <DataGrid.Columns>
                             <DataGridTemplateColumn Header="选" Width="38"><DataGridTemplateColumn.CellTemplate><DataTemplate><CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" Click="AudienceCheck_Click" IsEnabled="{Binding Eligible}"/></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
                             <DataGridTextColumn Header="客户" Binding="{Binding DisplayName}" Width="1.05*" IsReadOnly="True"/>
-                            <DataGridTextColumn Header="公司" Binding="{Binding Company}" Width="*" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="发送目标" Binding="{Binding Contact}" Width="1.15*" IsReadOnly="True"/>
                             <DataGridTextColumn Header="等级" Binding="{Binding Grade}" Width="48" IsReadOnly="True"/>
                             <DataGridTextColumn Header="状态" Binding="{Binding StatusText}" Width="75" IsReadOnly="True"/>
                         </DataGrid.Columns>
@@ -139,11 +150,12 @@
             <Border Style="{StaticResource Card}" Padding="0" Margin="0,8,0,0">
                 <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                     <Border Background="{DynamicResource PrimarySurface}" Padding="15,12" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" CornerRadius="16,16,0,0">
-                        <StackPanel><TextBlock Text="任务发送历史" FontSize="15" FontWeight="SemiBold"/><TextBlock Text="统计每次任务的成功、失败、跳过、取消、待发送、完成进度和成功率；IP 安全停止会保留停止位置。" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,4,0,0"/></StackPanel>
+                        <StackPanel><TextBlock Text="任务发送历史" FontSize="15" FontWeight="SemiBold"/><TextBlock Text="按 WhatsApp / 邮件渠道分别统计成功、失败、跳过、完成进度与失败原因。" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,4,0,0"/></StackPanel>
                     </Border>
                     <DataGrid x:Name="HistoryGrid" Grid.Row="1" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="True" RowHeight="42" MouseDoubleClick="HistoryGrid_MouseDoubleClick" HeadersVisibility="Column" HorizontalScrollBarVisibility="Auto">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="任务" Binding="{Binding Name}" Width="180"/>
+                            <DataGridTextColumn Header="渠道" Binding="{Binding Channel}" Width="82"/>
                             <DataGridTextColumn Header="账号" Binding="{Binding AccountId}" Width="105"/>
                             <DataGridTextColumn Header="触发时间" Binding="{Binding Trigger}" Width="135"/>
                             <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="92"/>

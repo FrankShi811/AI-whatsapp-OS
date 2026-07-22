@@ -446,7 +446,7 @@ await using (var protocolClient = new WhatsAppBridgeClient())
 var campaignBridge = new WhatsAppConnectionManager();
 var campaignIpHandler = new MutableIpMonitorHandler("198.51.100.30");
 var campaignIpMonitor = new PublicIpMonitor(repository, new HttpClient(campaignIpHandler) { Timeout=TimeSpan.FromSeconds(2) });
-await using var campaigns = new CampaignAutomationService(repository, campaignBridge, campaignIpMonitor);
+await using var campaigns = new CampaignAutomationService(repository, campaignBridge, campaignIpMonitor, new EmailService(repository));
 var campaign = new WhatsAppCampaign
 {
     Name="UK opt-in follow-up", TagFilter="UK", MessageTemplate="Hi {name}, following up about {product} for {company}.",
@@ -497,6 +497,45 @@ var safetyStoppedCampaign = await repository.GetCampaignAsync(campaign.Id);
 var executionHistory = await campaigns.GetExecutionHistoryAsync();
 Check(!safetyPassed && safetyStoppedCampaign is { Status: CampaignStatus.SafetyStopped, SafetyStopFromIp: "198.51.100.30", SafetyStopToIp: "203.0.113.31" } && (await repository.GetCampaignAsync(secondAccountCampaign.Id))?.Status == CampaignStatus.SafetyStopped && safetyNotice?.Campaigns.Count == 2 && safetyNotice.Campaigns.Sum(item => item.Failed) == 1 && executionHistory.Single(item => item.Campaign.Id == campaign.Id).StopOrNext.Contains("已处理"), "IP change safety valve stops all active outreach across accounts and preserves execution position");
 
+var emailAccount = new EmailAccount
+{
+    Id="sales-email", DisplayName="Sales Team", EmailAddress="sales@example.com", UserName="sales@example.com",
+    Provider=EmailProviderKind.Custom, ImapHost="imap.example.com", ImapPort=993, SmtpHost="smtp.example.com", SmtpPort=465,
+    Status=EmailConnectionStatus.Connected
+};
+await repository.SaveEmailAccountAsync(emailAccount);
+var emailLead = new Lead { Id="email-lead", Name="Email Buyer", Email="buyer@example.com", Stage=LeadStage.New, Grade="D", Score=0 };
+await repository.UpsertLeadAsync(emailLead);
+Check((await repository.GetLeadByEmailAsync(" BUYER@EXAMPLE.COM "))?.Id == emailLead.Id, "email address links inbox conversations to the authoritative CRM customer");
+var emailConversation = new EmailConversation
+{
+    Id="sales-email:buyer@example.com", AccountId=emailAccount.Id, LeadId=emailLead.Id, PeerEmail=emailLead.Email,
+    PeerName=emailLead.Name, Subject="Monthly order", LastMessage="Please quote 500 pcs monthly", LastMessageAt=DateTimeOffset.Now
+};
+await repository.UpsertEmailConversationAsync(emailConversation);
+await repository.UpsertEmailMessageAsync(new EmailMessage
+{
+    Id="sales-email:mail-1", ProviderMessageId="mail-1", AccountId=emailAccount.Id, ConversationId=emailConversation.Id,
+    LeadId=emailLead.Id, Direction=EmailMessageDirection.Incoming, Status=EmailMessageStatus.Received,
+    FromAddress=emailLead.Email, ToAddresses=[emailAccount.EmailAddress], Subject=emailConversation.Subject,
+    TextBody=emailConversation.LastMessage, Timestamp=DateTimeOffset.Now
+});
+Check((await repository.GetEmailMessagesForLeadAsync(emailLead.Id)).Single().TextBody.Contains("500 pcs"), "email history persists and remains linked to the customer record");
+var emailCampaign = new WhatsAppCampaign
+{
+    Id="email-campaign", Channel=CampaignChannel.Email, AccountId=emailAccount.Id, Name="Email nurture",
+    EmailSubjectTemplate="Follow-up for {name}", MessageTemplate="Hi {name}, we can support your monthly order.",
+    SelectedLeadIds=[emailLead.Id], ScheduleMode=CampaignScheduleMode.Immediate, IntervalValue=30,
+    IntervalUnit=CampaignIntervalUnit.Seconds, DailyLimit=20
+};
+var emailAudience = await campaigns.PreviewAudienceAsync(emailCampaign);
+Check(emailAudience.Single().Eligible, "email campaign selects CRM customers with valid email addresses");
+Check(await campaigns.ApproveAndScheduleAsync(emailCampaign, "smoke-test") == 1, "email campaign creates a durable recipient queue without requiring a WhatsApp IP baseline");
+var storedEmailCampaign = await repository.GetCampaignAsync(emailCampaign.Id);
+var storedEmailRecipient = (await repository.GetCampaignRecipientsAsync(emailCampaign.Id)).Single();
+var channelHistory = (await campaigns.GetExecutionHistoryAsync()).Single(item => item.Campaign.Id == emailCampaign.Id);
+Check(storedEmailCampaign is { Channel: CampaignChannel.Email, BaselinePublicIp: "" } && storedEmailRecipient.Email == emailLead.Email && storedEmailRecipient.RenderedSubject.Contains(emailLead.Name) && channelHistory.Channel.Length > 0, "campaign history distinguishes email from WhatsApp and stores rendered email subject/body");
+
 var deliveryRoot = Path.Combine(root, "campaign-delivery");
 var deliveryRepository = new LocalRepository(Path.Combine(deliveryRoot, "delivery.db"));
 await deliveryRepository.InitializeAsync();
@@ -523,7 +562,7 @@ await deliveryRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
 });
 var deliveryBridge = new WhatsAppConnectionManager();
 var deliveryIpMonitor = new PublicIpMonitor(deliveryRepository, new HttpClient(new MutableIpMonitorHandler("198.51.100.40")) { Timeout=TimeSpan.FromSeconds(2) });
-await using (var deliveryCampaigns = new CampaignAutomationService(deliveryRepository, deliveryBridge, deliveryIpMonitor))
+await using (var deliveryCampaigns = new CampaignAutomationService(deliveryRepository, deliveryBridge, deliveryIpMonitor, new EmailService(deliveryRepository)))
 {
     await deliveryCampaigns.StartAsync();
     var repairedRecipient = (await deliveryRepository.GetCampaignRecipientsAsync(deliveryCampaign.Id)).Single();
@@ -539,7 +578,7 @@ await deliveryRepository.SaveCampaignRecipientAsync(new CampaignRecipient
     DisplayName=deliveryLead.Name, RenderedMessage="Pending", Status=CampaignRecipientStatus.Sending, ProviderMessageId="receipt-provider",
     ScheduledAt=DateTimeOffset.Now, NextAttemptAt=DateTimeOffset.Now
 });
-await using (var receiptCampaigns = new CampaignAutomationService(deliveryRepository, deliveryBridge, deliveryIpMonitor))
+await using (var receiptCampaigns = new CampaignAutomationService(deliveryRepository, deliveryBridge, deliveryIpMonitor, new EmailService(deliveryRepository)))
 {
     using var receiptJson = System.Text.Json.JsonDocument.Parse("{\"id\":\"receipt-provider\",\"status\":0,\"failureReason\":\"WhatsApp returned send error\"}");
     var receiptEvent = new WhatsAppBridgeEvent("message_status", "primary", receiptJson.RootElement.Clone());

@@ -69,6 +69,7 @@ public sealed class CustomerIntelligenceSourceSnapshot
     public DateTimeOffset CapturedAt { get; set; } = DateTimeOffset.Now;
     public Lead Lead { get; set; } = new();
     public List<WhatsAppMessage> WhatsAppMessages { get; set; } = [];
+    public List<EmailMessage> EmailMessages { get; set; } = [];
     public List<CustomerCampaignTouch> CampaignTouches { get; set; } = [];
     public List<CustomerHistoryEvent> Timeline { get; set; } = [];
     public List<LeadAnalysisRunSnapshot> LeadAnalysisHistory { get; set; } = [];
@@ -78,6 +79,7 @@ public sealed class CustomerCampaignTouch
 {
     public string CampaignId { get; set; } = "";
     public string CampaignName { get; set; } = "";
+    public string Channel { get; set; } = "WhatsApp";
     public string Message { get; set; } = "";
     public string Status { get; set; } = "";
     public DateTimeOffset ScheduledAt { get; set; }

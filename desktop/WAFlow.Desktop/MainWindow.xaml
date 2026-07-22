@@ -53,6 +53,9 @@
                         <Button x:Name="InboxButton" Tag="inbox" Click="Navigate_Click" Style="{StaticResource NavButton}">
                             <StackPanel Orientation="Horizontal"><TextBlock Text="◉" Width="26" FontSize="14"/><TextBlock Text="WhatsApp Inbox"/></StackPanel>
                         </Button>
+                        <Button x:Name="EmailButton" Tag="email" Click="Navigate_Click" Style="{StaticResource NavButton}">
+                            <StackPanel Orientation="Horizontal"><TextBlock Text="✉" Width="26" FontSize="14"/><TextBlock Text="邮件 Inbox"/></StackPanel>
+                        </Button>
                         <Button x:Name="BroadcastButton" Tag="broadcast" Click="Navigate_Click" Style="{StaticResource NavButton}">
                             <StackPanel Orientation="Horizontal"><TextBlock Text="◌" Width="26" FontSize="14"/><TextBlock Text="自动化群发"/></StackPanel>
                         </Button>

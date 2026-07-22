@@ -23,6 +23,21 @@ public enum CampaignScheduleMode { Immediate, Scheduled }
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum CampaignIntervalUnit { Seconds, Minutes }
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum CampaignChannel { WhatsApp, Email }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum EmailProviderKind { Gmail, Microsoft365, Yahoo, ICloud, Custom }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum EmailConnectionStatus { NotConfigured, Connected, Error }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum EmailMessageDirection { Incoming, Outgoing }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum EmailMessageStatus { Draft, Sending, Sent, Received, Failed }
+
 public sealed class Lead
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
@@ -36,6 +51,7 @@ public sealed class Lead
     public DateTimeOffset? WhatsAppOptInAt { get; set; }
     public string WhatsAppOptInSource { get; set; } = "";
     public string Email { get; set; } = "";
+    public bool EmailOptedOut { get; set; }
     public string PreferredLanguage { get; set; } = "en";
     public string ProductInterest { get; set; } = "";
     public decimal EstimatedOrderValue { get; set; }
@@ -186,9 +202,80 @@ public sealed class WhatsAppAccount
     [JsonIgnore] public string DisplayLabel => string.IsNullOrWhiteSpace(LinkedPhone) ? Name : $"{Name} · {LinkedPhone}";
 }
 
+public sealed class EmailAccount
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string DisplayName { get; set; } = "";
+    public string EmailAddress { get; set; } = "";
+    public EmailProviderKind Provider { get; set; } = EmailProviderKind.Custom;
+    public string UserName { get; set; } = "";
+    public string ImapHost { get; set; } = "";
+    public int ImapPort { get; set; } = 993;
+    public bool ImapUseSsl { get; set; } = true;
+    public string SmtpHost { get; set; } = "";
+    public int SmtpPort { get; set; } = 465;
+    public bool SmtpUseSsl { get; set; } = true;
+    public EmailConnectionStatus Status { get; set; } = EmailConnectionStatus.NotConfigured;
+    public string LastError { get; set; } = "";
+    public DateTimeOffset? LastSyncAt { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
+
+    [JsonIgnore] public string DisplayLabel => string.IsNullOrWhiteSpace(DisplayName) ? EmailAddress : $"{DisplayName} · {EmailAddress}";
+    [JsonIgnore] public string StatusLabel => Status switch
+    {
+        EmailConnectionStatus.Connected => "已连接",
+        EmailConnectionStatus.Error => "连接异常",
+        _ => "未配置"
+    };
+}
+
+public sealed class EmailConversation
+{
+    public string Id { get; set; } = "";
+    public string AccountId { get; set; } = "";
+    public string LeadId { get; set; } = "";
+    public string PeerEmail { get; set; } = "";
+    public string PeerName { get; set; } = "";
+    public string Subject { get; set; } = "";
+    public string LastMessage { get; set; } = "";
+    public DateTimeOffset LastMessageAt { get; set; }
+    public int UnreadCount { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
+
+    [JsonIgnore] public string DisplayName => string.IsNullOrWhiteSpace(PeerName) ? PeerEmail : PeerName;
+    [JsonIgnore] public string LastTimeLabel => LastMessageAt == default ? "" : LastMessageAt.LocalDateTime.ToString("MM-dd HH:mm");
+}
+
+public sealed class EmailMessage
+{
+    public string Id { get; set; } = "";
+    public string ProviderMessageId { get; set; } = "";
+    public string AccountId { get; set; } = "";
+    public string ConversationId { get; set; } = "";
+    public string LeadId { get; set; } = "";
+    public EmailMessageDirection Direction { get; set; }
+    public EmailMessageStatus Status { get; set; }
+    public string FromAddress { get; set; } = "";
+    public string FromName { get; set; } = "";
+    public List<string> ToAddresses { get; set; } = [];
+    public List<string> CcAddresses { get; set; } = [];
+    public string Subject { get; set; } = "";
+    public string TextBody { get; set; } = "";
+    public string HtmlBody { get; set; } = "";
+    public string InReplyTo { get; set; } = "";
+    public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.Now;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
+    public string FailureReason { get; set; } = "";
+
+    [JsonIgnore] public string TimeLabel => Timestamp.LocalDateTime.ToString("yyyy-MM-dd HH:mm");
+    [JsonIgnore] public string DirectionLabel => Direction == EmailMessageDirection.Outgoing ? "已发送" : "已接收";
+}
+
 public sealed class WhatsAppCampaign
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public CampaignChannel Channel { get; set; } = CampaignChannel.WhatsApp;
     public string AccountId { get; set; } = "primary";
     public string Name { get; set; } = "";
     public string GradeFilter { get; set; } = "全部";
@@ -197,6 +284,7 @@ public sealed class WhatsAppCampaign
     public string OwnerFilter { get; set; } = "";
     public string TemplateId { get; set; } = "";
     public string MessageTemplate { get; set; } = "Hi {name}, I'd like to follow up about {product}.";
+    public string EmailSubjectTemplate { get; set; } = "Follow-up for {name}";
     public List<string> SelectedLeadIds { get; set; } = [];
     public CampaignScheduleMode ScheduleMode { get; set; } = CampaignScheduleMode.Scheduled;
     public DateTimeOffset StartsAt { get; set; } = DateTimeOffset.Now.AddMinutes(5);
@@ -229,6 +317,7 @@ public sealed class WhatsAppCampaign
         : TimeSpan.FromMinutes(EffectiveIntervalValue);
     [JsonIgnore] public string ScheduleLabel => ScheduleMode == CampaignScheduleMode.Immediate ? "立即发送" : StartsAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm");
     [JsonIgnore] public bool IsEditable => Status == CampaignStatus.Draft;
+    [JsonIgnore] public string ChannelLabel => Channel == CampaignChannel.Email ? "邮件" : "WhatsApp";
 }
 
 public sealed class CampaignMessageTemplate
@@ -247,7 +336,9 @@ public sealed class CampaignRecipient
     public string LeadId { get; set; } = "";
     public string AccountId { get; set; } = "primary";
     public string Phone { get; set; } = "";
+    public string Email { get; set; } = "";
     public string DisplayName { get; set; } = "";
+    public string RenderedSubject { get; set; } = "";
     public string RenderedMessage { get; set; } = "";
     public CampaignRecipientStatus Status { get; set; } = CampaignRecipientStatus.Queued;
     public DateTimeOffset ScheduledAt { get; set; }

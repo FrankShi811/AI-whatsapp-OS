@@ -52,6 +52,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-velopack-release.ps1 `
 
 ## GitHub Release 发布
 
+日常版本更新只提交并推送 GitHub，由 Actions 生成 Release、安装包和更新清单。不要在用户电脑执行本地发布脚本，不要覆盖、关闭或重启正在使用的 `AI Sales OS.exe`；用户通过程序左下角版本中心手动确认安装。
+
 1. 将仓库连接为 Git remote，并确保 GitHub Actions 可运行。
 2. 更新两个 `.csproj` 的 `Version` 和 `docs/releases/vX.Y.Z.md`。
 3. 提交并推送到 `main`。工作流会读取 `.csproj` 版本号并创建/更新对应 Release，无需在本机保存 GitHub Token。
