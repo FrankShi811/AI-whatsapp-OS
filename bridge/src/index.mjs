@@ -276,7 +276,23 @@ function messageContent(message) {
   if (message.viewOnceMessage?.message) return messageContent(message.viewOnceMessage.message)
   if (message.viewOnceMessageV2?.message) return messageContent(message.viewOnceMessageV2.message)
   if (message.documentWithCaptionMessage?.message) return messageContent(message.documentWithCaptionMessage.message)
+  if (message.statusMentionMessage?.message) return messageContent(message.statusMentionMessage.message)
+  if (message.groupStatusMentionMessage?.message) return messageContent(message.groupStatusMentionMessage.message)
   return message
+}
+
+function isStatusUpdateMessage(webMessage) {
+  const raw = webMessage?.message ?? webMessage
+  const context = messageContextInfo(raw)
+  return Boolean(
+    raw?.statusMentionMessage
+    || raw?.groupStatusMentionMessage
+    || webMessage?.statusMentionMessageInfo?.quotedStatus
+    || webMessage?.isMentionedInStatus
+    || webMessage?.key?.remoteJid === 'status@broadcast'
+    || context?.remoteJid === 'status@broadcast'
+    || context?.isMentionedInStatus
+  )
 }
 
 function messageContextInfo(message) {
@@ -555,6 +571,7 @@ async function normalizeMessage(message, source) {
   const sourceJid = message?.key?.remoteJid ?? ''
   const jid = await resolveDirectJid(message?.key)
   if (!shouldForward(jid)) return null
+  const isStatusUpdate = isStatusUpdateMessage(message)
   const revokedKey = revocationTarget(message?.message)
   if (revokedKey) {
     state.messages.delete(String(revokedKey.id))
@@ -575,6 +592,7 @@ async function normalizeMessage(message, source) {
   const mimeType = messageMimeType(message.message)
   const media = await downloadMessageMedia(message, kind, fileName, mimeType)
   const quote = quotedMessageDetails(message.message)
+  const timestamp = timestampToIso(message.messageTimestamp)
   return {
     id: message.key.id ?? '',
     jid,
@@ -583,7 +601,7 @@ async function normalizeMessage(message, source) {
     fromMe: Boolean(message.key.fromMe),
     participant: message.key.participant ?? '',
     pushName: message.pushName ?? '',
-    timestamp: timestampToIso(message.messageTimestamp),
+    timestamp,
     text: messageText(message.message),
     kind,
     fileName,
@@ -592,6 +610,8 @@ async function normalizeMessage(message, source) {
     status: message.status ?? null,
     deliveredAt: latestReceiptTime(message.userReceipt, 'receiptTimestamp'),
     readAt: latestReceiptTime(message.userReceipt, 'readTimestamp', 'playedTimestamp'),
+    isStatusUpdate,
+    statusExpiresAt: isStatusUpdate ? new Date(new Date(timestamp).getTime() + 24 * 60 * 60 * 1000).toISOString() : '',
     ...quote,
     source
   }
@@ -659,7 +679,8 @@ async function normalizeMessages(messages, source) {
     if (item.isRevocation) continue
     const contact = [...state.contacts.values()].find(value => value.phone === item.phone)
     if (!item.fromMe && item.pushName) rememberContact({ jid: item.jid, sourceJid: item.sourceJid, phone: item.phone, displayName: item.pushName, notifyName: item.pushName, source })
-    rememberChat({ jid: item.jid, sourceJid: item.sourceJid, phone: item.phone, displayName: contact?.displayName || item.pushName || `+${item.phone}`, lastMessage: item.text || `[${item.kind}]`, lastMessageAt: item.timestamp, unreadCount: null, source })
+    const preview = item.text || `[${item.kind}]`
+    rememberChat({ jid: item.jid, sourceJid: item.sourceJid, phone: item.phone, displayName: contact?.displayName || item.pushName || `+${item.phone}`, lastMessage: item.isStatusUpdate ? `[最新动态] ${preview}` : preview, lastMessageAt: item.timestamp, unreadCount: null, source })
   }
   return items
 }
@@ -673,7 +694,8 @@ async function forwardMessage(message, source) {
   }
   if (!data.fromMe && data.pushName) rememberContact({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: data.pushName, notifyName: data.pushName, source })
   const contact = [...state.contacts.values()].find(value => value.phone === data.phone)
-  rememberChat({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: contact?.displayName || data.pushName || `+${data.phone}`, lastMessage: data.text || `[${data.kind}]`, lastMessageAt: data.timestamp, unreadCount: null, source })
+  const preview = data.text || `[${data.kind}]`
+  rememberChat({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: contact?.displayName || data.pushName || `+${data.phone}`, lastMessage: data.isStatusUpdate ? `[最新动态] ${preview}` : preview, lastMessageAt: data.timestamp, unreadCount: null, source })
   emit({
     type: 'event',
     event: 'message',

@@ -144,8 +144,17 @@ public sealed class WhatsAppSyncService
             conversation.LastMessageAt = lastAt;
             if (!string.IsNullOrWhiteSpace(lastMessage)) conversation.LastMessage = lastMessage;
         }
-        if (data.TryGetProperty("unreadCount", out var unread) && unread.ValueKind == JsonValueKind.Number && unread.TryGetInt32(out var unreadCount))
+        if (conversation.LastReadAt is not null)
+        {
+            // WhatsApp history sync can repeatedly return the phone's old unread
+            // counter. Once the desktop user has opened a conversation, derive the
+            // badge from locally persisted messages newer than that read cursor.
+            conversation.UnreadCount = await _repository.CountUnreadWhatsAppMessagesAsync(conversation.Id, conversation.LastReadAt);
+        }
+        else if (data.TryGetProperty("unreadCount", out var unread) && unread.ValueKind == JsonValueKind.Number && unread.TryGetInt32(out var unreadCount))
+        {
             conversation.UnreadCount = Math.Max(0, unreadCount);
+        }
         if (data.TryGetProperty("pinned", out var pinned) && pinned.ValueKind is JsonValueKind.True or JsonValueKind.False)
         {
             conversation.IsPinned = pinned.GetBoolean();
@@ -202,6 +211,8 @@ public sealed class WhatsAppSyncService
             QuotedFromMe = Bool(data, "quotedFromMe"),
             IsRevoked = Bool(data, "isRevoked"),
             RevokedAt = ParseTimestamp(data, "revokedAt"),
+            IsStatusUpdate = Bool(data, "isStatusUpdate"),
+            StatusExpiresAt = ParseTimestamp(data, "statusExpiresAt"),
             Timestamp = timestamp,
             DeliveredAt = deliveredAt,
             ReadAt = readAt,
@@ -212,11 +223,12 @@ public sealed class WhatsAppSyncService
         if (timestamp >= conversation.LastMessageAt)
         {
             conversation.LastMessageAt = timestamp;
-            conversation.LastMessage = string.IsNullOrWhiteSpace(message.Body) ? $"[{message.Kind}]" : message.Body;
+            var preview = string.IsNullOrWhiteSpace(message.Body) ? $"[{message.Kind}]" : message.Body;
+            conversation.LastMessage = message.IsStatusUpdate ? $"[最新动态] {preview}" : preview;
         }
         if (inserted && !fromMe && !historical) conversation.UnreadCount++;
         await _repository.UpsertWhatsAppConversationAsync(conversation);
-        if (lead is not null && inserted)
+        if (lead is not null && inserted && !message.IsStatusUpdate)
         {
             LeadConnectionStatus.ApplyFromMessage(lead, message);
             await _repository.UpsertLeadAsync(lead);

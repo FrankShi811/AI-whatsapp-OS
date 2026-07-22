@@ -36,6 +36,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private string _attachmentPath = "";
     private MessageItem? _replyingTo;
     private string _composerConversationId = "";
+    private string _currentStatusUpdateUrl = "";
     private int _persistedConversationCount;
     private int _contactCount;
     private readonly HashSet<string> _automaticSyncRequested = new(StringComparer.OrdinalIgnoreCase);
@@ -94,7 +95,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             var linkedLead = FindLead(saved.Phone);
             conversation.LeadId = linkedLead?.Id ?? saved.LeadId;
             conversation.DisplayName = linkedLead is not null && !string.IsNullOrWhiteSpace(linkedLead.DisplayName) ? linkedLead.DisplayName : saved.DisplayName;
-            conversation.LastMessage = saved.LastMessage; conversation.LastAt = saved.LastMessageAt; conversation.Unread = saved.UnreadCount;
+            conversation.LastMessage = saved.LastMessage; conversation.LastAt = saved.LastMessageAt; conversation.Unread = saved.UnreadCount; conversation.LastReadAt = saved.LastReadAt;
             conversation.IsPinned = saved.IsPinned; conversation.PinnedAt = saved.PinnedAt;
             refreshed[conversation.Id] = conversation;
         }
@@ -406,13 +407,20 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             conversation = new ConversationItem(string.IsNullOrWhiteSpace(e.AccountId) ? "primary" : e.AccountId, phone, preferredName, Text(e.Data, "jid")) { LeadId = linkedLead?.Id ?? "" };
             _conversations.Insert(0, conversation);
         }
+        var isStatusUpdate = Bool(e.Data, "isStatusUpdate");
         if (!conversation.Messages.Any(x => x.Id == messageId))
-            conversation.Messages.Add(new MessageItem(messageId, text, timestamp, fromMe, kind, fileName, mimeType, mediaPath, mediaDownloadError, ParseMessageStatus(e.Data, fromMe), ParseTime(e.Data, "statusAt"), ParseTime(e.Data, "deliveredAt"), ParseTime(e.Data, "readAt"), Text(e.Data, "failureReason"), Text(e.Data, "quotedMessageId"), WhatsAppTextEncodingRepair.Repair(Text(e.Data, "quotedText")), Bool(e.Data, "quotedFromMe"), Bool(e.Data, "isRevoked"), ParseTime(e.Data, "revokedAt")));
-        conversation.LastMessage = MessagePreview(text, kind, fileName);
+            conversation.Messages.Add(new MessageItem(messageId, text, timestamp, fromMe, kind, fileName, mimeType, mediaPath, mediaDownloadError, ParseMessageStatus(e.Data, fromMe), ParseTime(e.Data, "statusAt"), ParseTime(e.Data, "deliveredAt"), ParseTime(e.Data, "readAt"), Text(e.Data, "failureReason"), Text(e.Data, "quotedMessageId"), WhatsAppTextEncodingRepair.Repair(Text(e.Data, "quotedText")), Bool(e.Data, "quotedFromMe"), Bool(e.Data, "isRevoked"), ParseTime(e.Data, "revokedAt"), isStatusUpdate, ParseTime(e.Data, "statusExpiresAt")));
+        var preview = MessagePreview(text, kind, fileName);
+        conversation.LastMessage = isStatusUpdate ? $"[最新动态] {preview}" : preview;
         conversation.LastAt = timestamp;
         if (!fromMe && ConversationList.SelectedItem != conversation) conversation.Unread++;
+        else if (!fromMe) _ = PersistConversationReadAfterSyncAsync(conversation);
         ReorderConversations(conversation);
-        if (ConversationList.SelectedItem == conversation) ScrollMessages(conversation);
+        if (ConversationList.SelectedItem == conversation)
+        {
+            UpdateStatusUpdateBanner(conversation);
+            ScrollMessages(conversation);
+        }
     }
 
     private async Task SaveLinkedAccountAsync(WhatsAppBridgeEvent e)
@@ -430,6 +438,21 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         catch { }
     }
 
+    private async Task PersistConversationReadAfterSyncAsync(ConversationItem conversation)
+    {
+        try
+        {
+            // The bridge persistence subscriber and this visible Inbox receive
+            // the same live event. Persist after that write so a message already
+            // visible on screen cannot resurrect as unread on the next refresh.
+            await Task.Delay(150);
+            conversation.Unread = 0;
+            conversation.LastReadAt = DateTimeOffset.Now;
+            await _services.Repository.MarkWhatsAppConversationReadAsync(conversation.Id);
+        }
+        catch { }
+    }
+
     private async void ConversationList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (ConversationList.SelectedItem is not ConversationItem conversation)
@@ -437,7 +460,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             _composerConversationId = "";
             ClearAttachment();
             ClearReply();
-            ChatTitleText.Text = "选择会话"; ChatNumberText.Text = "连接后会同步个人会话"; MessageList.ItemsSource = null; ClearLead(); return;
+            ChatTitleText.Text = "选择会话"; ChatNumberText.Text = "连接后会同步个人会话"; MessageList.ItemsSource = null; HideStatusUpdateBanner(); ClearLead(); return;
         }
         if (!_composerConversationId.Equals(conversation.Id, StringComparison.OrdinalIgnoreCase))
         {
@@ -446,18 +469,20 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             ClearReply();
         }
         conversation.Unread = 0;
+        conversation.LastReadAt = DateTimeOffset.Now;
         if (!string.IsNullOrWhiteSpace(conversation.Phone)) await _services.Repository.MarkWhatsAppConversationReadAsync(conversation.Id);
         ChatTitleText.Text = conversation.DisplayName;
         ChatNumberText.Text = string.IsNullOrWhiteSpace(conversation.Phone) ? "WhatsApp 尚未提供该联系人的电话号码" : $"+{conversation.Phone}";
         var persistedMessages = string.IsNullOrWhiteSpace(conversation.Phone) ? [] : await _services.Repository.GetWhatsAppMessagesAsync(conversation.Id, 2000);
         foreach (var message in persistedMessages)
             if (!conversation.Messages.Any(x => x.Id == message.ProviderMessageId))
-                conversation.Messages.Add(new MessageItem(message.ProviderMessageId, message.Body, message.Timestamp, message.Direction == WhatsAppMessageDirection.Outgoing, message.Kind, message.FileName, message.MimeType, message.MediaPath, message.MediaDownloadError, message.Status, message.StatusUpdatedAt, message.DeliveredAt, message.ReadAt, message.FailureReason, message.QuotedMessageId, message.QuotedText, message.QuotedFromMe, message.IsRevoked, message.RevokedAt));
+                conversation.Messages.Add(new MessageItem(message.ProviderMessageId, message.Body, message.Timestamp, message.Direction == WhatsAppMessageDirection.Outgoing, message.Kind, message.FileName, message.MimeType, message.MediaPath, message.MediaDownloadError, message.Status, message.StatusUpdatedAt, message.DeliveredAt, message.ReadAt, message.FailureReason, message.QuotedMessageId, message.QuotedText, message.QuotedFromMe, message.IsRevoked, message.RevokedAt, message.IsStatusUpdate, message.StatusExpiresAt));
         MessageList.ItemsSource = conversation.Messages;
         if (_connected) { QrPanel.Visibility = Visibility.Collapsed; MessageList.Visibility = Visibility.Visible; }
         SaveLeadButton.IsEnabled = !string.IsNullOrWhiteSpace(conversation.Phone);
         await LoadLeadAsync(conversation);
         UpdateComposerState();
+        UpdateStatusUpdateBanner(conversation);
         ScrollMessages(conversation);
     }
 
@@ -507,7 +532,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             }
             await _services.Repository.SynchronizeLeadConnectionsFromInboxAsync([lead]);
             var latestReply = (await _services.Repository.GetWhatsAppMessagesForLeadAsync(lead, 40))
-                .LastOrDefault(message => message.Direction == WhatsAppMessageDirection.Incoming && !string.IsNullOrWhiteSpace(message.Body));
+                .LastOrDefault(message => !message.IsStatusUpdate && message.Direction == WhatsAppMessageDirection.Incoming && !string.IsNullOrWhiteSpace(message.Body));
             if (latestReply is not null && (!lead.AiScoreApplied || lead.LastAnalyzedAt is null || latestReply.Timestamp > lead.LastAnalyzedAt))
                 await _services.LeadAutomation.QueueLeadForReplyAsync(latestReply);
             conversation.LeadId = lead.Id;
@@ -569,7 +594,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             await _services.Repository.SynchronizeLeadConnectionsFromInboxAsync([lead]);
             await LoadLeadAsync(conversation);
             var latestReply = (await _services.Repository.GetWhatsAppMessagesForLeadAsync(lead, 80))
-                .LastOrDefault(message => message.Direction == WhatsAppMessageDirection.Incoming && !string.IsNullOrWhiteSpace(message.Body));
+                .LastOrDefault(message => !message.IsStatusUpdate && message.Direction == WhatsAppMessageDirection.Incoming && !string.IsNullOrWhiteSpace(message.Body));
             if (latestReply is not null)
                 await _services.LeadAutomation.QueueLeadForReplyAsync(latestReply);
             DataChanged?.Invoke(this, EventArgs.Empty);
@@ -958,6 +983,55 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         if (conversation.Messages.LastOrDefault() is { } last) MessageList.ScrollIntoView(last);
     }
 
+    private void UpdateStatusUpdateBanner(ConversationItem conversation)
+    {
+        var now = DateTimeOffset.Now;
+        var status = conversation.Messages
+            .Where(message => message.IsStatusUpdate && !message.IsRevoked && (message.StatusExpiresAt ?? message.Timestamp.AddHours(24)) > now)
+            .OrderByDescending(message => message.Timestamp)
+            .FirstOrDefault();
+        if (status is null)
+        {
+            HideStatusUpdateBanner();
+            return;
+        }
+
+        _currentStatusUpdateUrl = ExtractHttpUrl(status.Text);
+        StatusUpdateLinkText.Text = status.DisplayText;
+        var expiresAt = status.StatusExpiresAt ?? status.Timestamp.AddHours(24);
+        StatusUpdateMetaText.Text = $"发布 {status.Timestamp.LocalDateTime:MM-dd HH:mm} · 置顶至 {expiresAt.LocalDateTime:MM-dd HH:mm}";
+        StatusUpdateBanner.Visibility = Visibility.Visible;
+    }
+
+    private void HideStatusUpdateBanner()
+    {
+        _currentStatusUpdateUrl = "";
+        StatusUpdateBanner.Visibility = Visibility.Collapsed;
+        StatusUpdateLinkText.Text = "";
+        StatusUpdateMetaText.Text = "";
+    }
+
+    private void OpenStatusUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_currentStatusUpdateUrl))
+        {
+            MessageBox.Show("该动态没有可直接打开的网页链接。", "WhatsApp 最新动态", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        try { Process.Start(new ProcessStartInfo(_currentStatusUpdateUrl) { UseShellExecute = true }); }
+        catch (Exception error) { MessageBox.Show(error.Message, "无法打开动态链接", MessageBoxButton.OK, MessageBoxImage.Warning); }
+    }
+
+    private static string ExtractHttpUrl(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return "";
+        var start = text.IndexOf("http://", StringComparison.OrdinalIgnoreCase);
+        if (start < 0) start = text.IndexOf("https://", StringComparison.OrdinalIgnoreCase);
+        if (start < 0) return "";
+        var end = text.IndexOfAny([' ', '\r', '\n', '\t'], start);
+        return (end < 0 ? text[start..] : text[start..end]).TrimEnd('.', ',', ';', ')', ']', '}');
+    }
+
     private void SetConnectionText(string text, bool connected)
     {
         ConnectionStateText.Text = text;
@@ -1041,6 +1115,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         public DateTimeOffset LastAt { get => _lastAt; set { if (Set(ref _lastAt, value)) OnPropertyChanged(nameof(LastTimeLabel)); } }
         public string LastTimeLabel => LastAt == default ? "" : LastAt.LocalDateTime.ToString("MM-dd HH:mm");
         public int Unread { get => _unread; set { if (Set(ref _unread, value)) OnPropertyChanged(nameof(UnreadVisibility)); } }
+        public DateTimeOffset? LastReadAt { get; set; }
         public Visibility UnreadVisibility => Unread > 0 ? Visibility.Visible : Visibility.Collapsed;
         public bool IsPinned { get => _isPinned; set { if (Set(ref _isPinned, value)) { OnPropertyChanged(nameof(PinnedVisibility)); OnPropertyChanged(nameof(PinActionLabel)); } } }
         public DateTimeOffset? PinnedAt { get => _pinnedAt; set => Set(ref _pinnedAt, value); }
@@ -1072,11 +1147,14 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             string quotedText = "",
             bool quotedFromMe = false,
             bool isRevoked = false,
-            DateTimeOffset? revokedAt = null)
+            DateTimeOffset? revokedAt = null,
+            bool isStatusUpdate = false,
+            DateTimeOffset? statusExpiresAt = null)
         {
             Id = id; Text = text; Timestamp = timestamp; FromMe = fromMe; Kind = kind; FileName = fileName; MimeType = mimeType; MediaPath = mediaPath; MediaDownloadError = mediaDownloadError;
             Status = status; StatusUpdatedAt = statusUpdatedAt; DeliveredAt = deliveredAt; ReadAt = readAt; FailureReason = failureReason;
             QuotedMessageId = quotedMessageId; QuotedText = quotedText; QuotedFromMe = quotedFromMe; IsRevoked = isRevoked; RevokedAt = revokedAt;
+            IsStatusUpdate = isStatusUpdate; StatusExpiresAt = statusExpiresAt;
             MediaPreview = LoadMediaPreview(kind, mediaPath);
         }
 
@@ -1100,6 +1178,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         public bool QuotedFromMe { get; }
         public bool IsRevoked { get; private set; }
         public DateTimeOffset? RevokedAt { get; private set; }
+        public bool IsStatusUpdate { get; }
+        public DateTimeOffset? StatusExpiresAt { get; }
         private bool IsRevoking { get; set; }
         public string DisplayText => IsRevoked ? (FromMe ? "你撤回了一条消息" : "对方撤回了一条消息") : MessagePreview(Text, Kind, FileName);
         public bool HasMedia => !IsRevoked && Kind is "image" or "video" or "audio" or "document" or "sticker";
@@ -1113,8 +1193,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         public string MediaMissingText => string.IsNullOrWhiteSpace(MediaDownloadError) ? "媒体尚未下载；重新同步后会再次尝试。" : $"媒体下载失败：{MediaDownloadError}";
         public string TimeLabel => Timestamp.LocalDateTime.ToString("MM-dd HH:mm");
         public HorizontalAlignment Alignment => FromMe ? HorizontalAlignment.Right : HorizontalAlignment.Left;
-        public Brush BubbleBrush => new SolidColorBrush(FromMe ? Color.FromRgb(220,248,233) : Colors.White);
-        public Brush BubbleBorderBrush => new SolidColorBrush(FromMe ? Color.FromRgb(190,232,211) : Color.FromRgb(223,230,226));
+        public Brush BubbleBrush => new SolidColorBrush(IsStatusUpdate ? Color.FromRgb(255, 249, 229) : FromMe ? Color.FromRgb(220,248,233) : Colors.White);
+        public Brush BubbleBorderBrush => new SolidColorBrush(IsStatusUpdate ? Color.FromRgb(232, 198, 108) : FromMe ? Color.FromRgb(190,232,211) : Color.FromRgb(223,230,226));
+        public Visibility StatusUpdateVisibility => IsStatusUpdate ? Visibility.Visible : Visibility.Collapsed;
         public Visibility QuoteVisibility => !IsRevoked && !string.IsNullOrWhiteSpace(QuotedMessageId) ? Visibility.Visible : Visibility.Collapsed;
         public string QuoteHeader => QuotedFromMe ? "你" : "对方";
         public string QuoteText => string.IsNullOrWhiteSpace(QuotedText) ? "[原消息]" : QuotedText;

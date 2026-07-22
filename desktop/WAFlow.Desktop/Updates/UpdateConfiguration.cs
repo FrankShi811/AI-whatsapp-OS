@@ -40,4 +40,10 @@ public sealed record UpdateConfiguration(string? GitHubRepositoryUrl, string? Lo
             throw new InvalidOperationException("GitHub 更新仓库必须使用 https://github.com/owner/repository 格式。");
         return $"https://github.com/{uri.Segments[1].TrimEnd('/')}/{uri.Segments[2].TrimEnd('/')}";
     }
+
+    public static string BuildLatestReleaseDownloadBaseUrl(string repositoryUrl)
+    {
+        var normalized = NormalizeGitHubRepositoryUrl(repositoryUrl);
+        return $"{normalized}/releases/latest/download";
+    }
 }

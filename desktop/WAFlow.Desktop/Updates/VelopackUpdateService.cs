@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -175,19 +174,29 @@ public sealed class VelopackUpdateService : IApplicationUpdateService
             Message = "正在为便携版检查正式安装包…"
         });
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, BuildLatestReleaseApiUrl(_configuration.GitHubRepositoryUrl));
-        request.Headers.UserAgent.Add(new ProductInfoHeaderValue("AI-Sales-OS", ReleaseCatalog.CurrentVersion));
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-            throw new HttpRequestException($"GitHub Release 检查失败（HTTP {(int)response.StatusCode}）。");
-
+        // GitHub's anonymous Releases API has a small shared rate limit and can
+        // return HTTP 403 even when the actual release assets are healthy. The
+        // Velopack feed is a normal static Release asset and needs no API call.
+        var releaseBaseUrl = UpdateConfiguration.BuildLatestReleaseDownloadBaseUrl(_configuration.GitHubRepositoryUrl);
+        var feedUrl = $"{releaseBaseUrl}/releases.{_configuration.Channel}.json";
+        using var response = await _http.GetAsync(feedUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
         await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(responseStream, cancellationToken: cancellationToken);
         var root = document.RootElement;
-        var tag = root.TryGetProperty("tag_name", out var tagNode) ? tagNode.GetString()?.Trim() ?? "" : "";
-        var latestVersion = tag.TrimStart('v', 'V');
-        var notes = root.TryGetProperty("body", out var bodyNode) ? bodyNode.GetString() ?? "" : "";
+        if (!root.TryGetProperty("Assets", out var feedAssets) || feedAssets.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException("GitHub Release 更新清单缺少 Assets。");
+        var fullAsset = feedAssets.EnumerateArray()
+            .Where(item => item.TryGetProperty("Type", out var type) && type.GetString()?.Equals("Full", StringComparison.OrdinalIgnoreCase) == true)
+            .Select(item => new
+            {
+                Version = item.TryGetProperty("Version", out var version) ? version.GetString() ?? "" : "",
+                Notes = item.TryGetProperty("NotesMarkdown", out var notesNode) ? notesNode.GetString() ?? "" : ""
+            })
+            .OrderByDescending(item => Version.TryParse(item.Version, out var version) ? version : new Version())
+            .FirstOrDefault() ?? throw new InvalidOperationException("GitHub Release 更新清单没有完整安装包记录。");
+        var latestVersion = fullAsset.Version;
+        var notes = fullAsset.Notes;
         if (!TryCompareVersion(latestVersion, State.CurrentVersion, out var versionComparison))
             throw new InvalidOperationException("GitHub Release 返回的版本号无效。");
         if (versionComparison < 0)
@@ -206,17 +215,8 @@ public sealed class VelopackUpdateService : IApplicationUpdateService
             return;
         }
 
-        if (!root.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
-            throw new InvalidOperationException("GitHub Release 未包含安装资产。");
-        var asset = assets.EnumerateArray()
-            .Select(item => new PortableReleaseAsset(
-                item.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "",
-                item.TryGetProperty("browser_download_url", out var url) ? url.GetString() ?? "" : "",
-                item.TryGetProperty("size", out var size) && size.TryGetInt64(out var value) ? value : 0,
-                item.TryGetProperty("digest", out var digest) ? digest.GetString() ?? "" : ""))
-            .FirstOrDefault(item => IsInstallerAsset(item.Name));
-        if (asset is null || string.IsNullOrWhiteSpace(asset.DownloadUrl))
-            throw new InvalidOperationException("最新 Release 未找到适用于当前设备的正式安装包。");
+        var installerName = PortableInstallerAssetName();
+        var asset = new PortableReleaseAsset(installerName, $"{releaseBaseUrl}/{installerName}", 0, "");
 
         Publish(State with
         {
@@ -288,7 +288,10 @@ public sealed class VelopackUpdateService : IApplicationUpdateService
         var options = new UpdateOptions { ExplicitChannel = _configuration.Channel };
         if (!string.IsNullOrWhiteSpace(_configuration.LocalSourceDirectory))
             return new UpdateManager(_configuration.LocalSourceDirectory, options);
-        return new UpdateManager(new GithubSource(_configuration.GitHubRepositoryUrl!, accessToken: null, prerelease: false), options);
+        // Use the static releases.<channel>.json feed. This avoids GitHub API
+        // rate limits and keeps package checksum verification inside Velopack.
+        var releaseBaseUrl = UpdateConfiguration.BuildLatestReleaseDownloadBaseUrl(_configuration.GitHubRepositoryUrl!);
+        return new UpdateManager(new SimpleWebSource(releaseBaseUrl, null, 30), options);
     }
 
     private void PublishReady(VelopackAsset release)
@@ -320,14 +323,6 @@ public sealed class VelopackUpdateService : IApplicationUpdateService
         _ => $"更新失败：{error.Message}"
     };
 
-    private static string BuildLatestReleaseApiUrl(string repositoryUrl)
-    {
-        var uri = new Uri(repositoryUrl);
-        var segments = uri.AbsolutePath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (segments.Length < 2) throw new InvalidOperationException("GitHub 更新仓库地址无效。");
-        return $"https://api.github.com/repos/{segments[0]}/{segments[1]}/releases/latest";
-    }
-
     private static bool TryCompareVersion(string candidate, string current, out int comparison)
     {
         comparison = 0;
@@ -336,15 +331,13 @@ public sealed class VelopackUpdateService : IApplicationUpdateService
         return true;
     }
 
-    private static bool IsInstallerAsset(string name)
+    private static string PortableInstallerAssetName()
     {
-        var compactName = new string(name.Where(char.IsLetterOrDigit).ToArray());
-        var isAiSalesOs = compactName.Contains("AISalesOS", StringComparison.OrdinalIgnoreCase);
-        if (OperatingSystem.IsWindows())
-            return name.EndsWith("Setup.exe", StringComparison.OrdinalIgnoreCase) && isAiSalesOs;
-        if (!OperatingSystem.IsMacOS() || !name.EndsWith(".pkg", StringComparison.OrdinalIgnoreCase)) return false;
-        var expected = RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "AppleSilicon" : "Intel";
-        return isAiSalesOs && compactName.Contains(expected, StringComparison.OrdinalIgnoreCase);
+        if (OperatingSystem.IsWindows()) return "AI.Sales.OS.Setup.exe";
+        if (!OperatingSystem.IsMacOS()) throw new PlatformNotSupportedException("当前平台没有可用的正式安装包。");
+        return RuntimeInformation.ProcessArchitecture == Architecture.Arm64
+            ? "AI.Sales.OS.macOS.Apple-Silicon.Chinese.Preview.pkg"
+            : "AI.Sales.OS.macOS.Intel.Chinese.Preview.pkg";
     }
 
     private sealed record PortableReleaseAsset(string Name, string DownloadUrl, long Size, string Digest);

@@ -132,7 +132,9 @@ public sealed class CustomerAnalysisService
 
     private async Task<CustomerIntelligenceSourceSnapshot> BuildSnapshotAsync(Lead lead, CancellationToken cancellationToken)
     {
-        var messages = await _repository.GetWhatsAppMessagesForLeadAsync(lead, 5000, cancellationToken);
+        var messages = (await _repository.GetWhatsAppMessagesForLeadAsync(lead, 5000, cancellationToken))
+            .Where(message => !message.IsStatusUpdate)
+            .ToList();
         var emailMessages = await _repository.GetEmailMessagesForLeadAsync(lead.Id, 5000, cancellationToken);
         var campaigns = await _repository.GetCampaignsAsync(null, cancellationToken);
         var touches = new List<CustomerCampaignTouch>();

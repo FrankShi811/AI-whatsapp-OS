@@ -396,7 +396,32 @@ await repository.UpsertWhatsAppMessageAsync(quotedReply);
 storedReply = (await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single(message => message.ProviderMessageId == "wamid-reply");
 Check(storedReply.IsRevoked && storedReply.RevokedAt is not null && storedReply.QuotedMessageId == "wamid-smoke", "WhatsApp delete-for-everyone state persists and cannot regress");
 await repository.MarkWhatsAppConversationReadAsync(conversation.Id);
-Check((await repository.GetWhatsAppConversationsAsync()).Single(x => x.Id == conversation.Id).UnreadCount == 0, "WhatsApp conversation unread persistence");
+var readConversation = (await repository.GetWhatsAppConversationsAsync()).Single(x => x.Id == conversation.Id);
+Check(readConversation.UnreadCount == 0 && readConversation.LastReadAt is not null, "WhatsApp conversation unread cursor persistence");
+await repository.UpsertWhatsAppConversationAsync(new WhatsAppConversation
+{
+    Id=conversation.Id, AccountId=conversation.AccountId, Phone=conversation.Phone, LeadId=conversation.LeadId,
+    DisplayName=conversation.DisplayName, LastMessage=conversation.LastMessage, LastMessageAt=conversation.LastMessageAt, UnreadCount=9
+});
+readConversation = (await repository.GetWhatsAppConversationsAsync()).Single(x => x.Id == conversation.Id);
+Check(readConversation.UnreadCount == 0 && readConversation.LastReadAt is not null, "stale WhatsApp chat counters cannot restore cleared unread badges");
+var statusLead = new Lead { Id="status-lead", Name="Status Lead", PhoneE164="+14155550101", PhoneValid=true, LatestMessage="normal customer reply" };
+await repository.UpsertLeadAsync(statusLead);
+await repository.UpsertWhatsAppConversationAsync(new WhatsAppConversation
+{
+    Id="primary:14155550101", AccountId="primary", Phone="14155550101", LeadId=statusLead.Id,
+    DisplayName=statusLead.DisplayName, LastMessage="normal customer reply", LastMessageAt=DateTimeOffset.Now
+});
+var statusUpdate = new WhatsAppMessage
+{
+    Id="primary:wamid-status", ProviderMessageId="wamid-status", AccountId="primary", ConversationId="primary:14155550101",
+    LeadId=statusLead.Id, Phone="14155550101", Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received,
+    Body="https://example.com/status", IsStatusUpdate=true, StatusExpiresAt=DateTimeOffset.Now.AddHours(24), Timestamp=DateTimeOffset.Now
+};
+await repository.UpsertWhatsAppMessageAsync(statusUpdate);
+var storedStatusUpdate = (await repository.GetWhatsAppMessagesAsync(statusUpdate.ConversationId)).Single();
+Check(storedStatusUpdate.IsStatusUpdate && storedStatusUpdate.StatusExpiresAt is not null, "WhatsApp Status/update classification and 24-hour expiry persist");
+Check(!LeadConnectionStatus.ApplyFromMessage(statusLead, statusUpdate) && statusLead.LatestMessage == "normal customer reply", "WhatsApp Status/update never becomes CRM reply evidence");
 Check((await repository.GetLeadAsync("lead_james"))?.WhatsAppOptIn == true, "WhatsApp opt-in audit fields persisted");
 await repository.SynchronizeLeadConnectionsFromInboxAsync([whatsappLead]);
 var connectionLead = await repository.GetLeadAsync("lead_james");

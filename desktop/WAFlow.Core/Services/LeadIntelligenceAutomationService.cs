@@ -38,7 +38,7 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
 
     public async Task QueueLeadForReplyAsync(WhatsAppMessage message, CancellationToken cancellationToken = default)
     {
-        if (message.Direction != WhatsAppMessageDirection.Incoming || string.IsNullOrWhiteSpace(message.LeadId) || string.IsNullOrWhiteSpace(message.Body)) return;
+        if (message.IsStatusUpdate || message.Direction != WhatsAppMessageDirection.Incoming || string.IsNullOrWhiteSpace(message.LeadId) || string.IsNullOrWhiteSpace(message.Body)) return;
         var lead = await _repository.GetLeadAsync(message.LeadId, cancellationToken);
         if (lead is null) return;
 
@@ -114,7 +114,7 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
 
     private void Sync_MessageSynchronized(object? sender, WhatsAppMessage message)
     {
-        if (message.Direction != WhatsAppMessageDirection.Incoming) return;
+        if (message.IsStatusUpdate || message.Direction != WhatsAppMessageDirection.Incoming) return;
         _ = QueueReplySafelyAsync(message);
     }
 

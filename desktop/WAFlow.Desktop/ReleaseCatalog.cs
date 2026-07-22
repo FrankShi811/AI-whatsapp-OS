@@ -13,6 +13,13 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("1.18.1", "2026-07-22", "更新通道、WhatsApp 动态与未读状态修复",
+        [
+            "更新检查改为读取 GitHub Release 静态 Velopack 清单，不再调用容易触发匿名限流的 GitHub Releases API。",
+            "WhatsApp 最新动态与普通私聊消息分型显示；动态在客户会话顶部保留 24 小时，并明确标记为非普通聊天消息。",
+            "WhatsApp 动态不再写入客户最近回复、商机评分证据、AI 会话助理或客户智能报告。",
+            "会话已读时间写入本地数据库；切换板块或重新同步后，手机端旧未读计数不会恢复已经清除的气泡。"
+        ], true),
         new("1.18.0", "2026-07-22", "WhatsApp AI 会话助理",
         [
             "WhatsApp Inbox 输入区新增 AI 会话助理，可使用已配置模型读取客户白色气泡并生成可编辑回复。",
@@ -20,7 +27,7 @@ public static class ReleaseCatalog
             "发送前提供回复与 CRM 字段预览，可选择只填入输入框或发送并同步；未匹配联系人可在确认后建立客户档案。",
             "AI 提取结果写入统一客户动态字段和审计轨迹，供商机智能重跑及客户智能报告继续使用。",
             "WhatsApp Inbox 独立新手引导已补充 AI 助理操作步骤与数据边界。"
-        ], true),
+        ]),
         new("1.17.2", "2026-07-22", "AI 分析与正式安装通道稳定版",
         [
             "修复 GitHub 将安装资产空格规范化为点号后，便携版无法识别正式 Setup / PKG 的问题。",

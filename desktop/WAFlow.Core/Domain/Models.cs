@@ -130,6 +130,7 @@ public sealed class WhatsAppConversation
     public string LastMessage { get; set; } = "";
     public DateTimeOffset LastMessageAt { get; set; }
     public int UnreadCount { get; set; }
+    public DateTimeOffset? LastReadAt { get; set; }
     public bool IsPinned { get; set; }
     public DateTimeOffset? PinnedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
@@ -177,6 +178,8 @@ public sealed class WhatsAppMessage
     public bool QuotedFromMe { get; set; }
     public bool IsRevoked { get; set; }
     public DateTimeOffset? RevokedAt { get; set; }
+    public bool IsStatusUpdate { get; set; }
+    public DateTimeOffset? StatusExpiresAt { get; set; }
     public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.Now;
     public DateTimeOffset? StatusUpdatedAt { get; set; }
     public DateTimeOffset? DeliveredAt { get; set; }

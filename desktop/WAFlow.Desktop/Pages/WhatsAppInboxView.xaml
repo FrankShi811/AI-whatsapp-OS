@@ -71,11 +71,21 @@
             </Border>
 
             <Border Grid.Column="2" Style="{StaticResource Card}" Padding="0">
-                <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <Border Padding="18,14" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1">
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock x:Name="ChatTitleText" Text="选择会话" FontWeight="SemiBold" FontSize="17"/><TextBlock x:Name="ChatNumberText" Text="连接后会同步个人会话" Foreground="{DynamicResource Muted}" FontSize="10.5" Margin="0,3,0,0"/></StackPanel><Border Grid.Column="1" Background="{DynamicResource PrimarySoft}" CornerRadius="10" Padding="9,5" VerticalAlignment="Center"><TextBlock Text="CRM LIVE SYNC" Foreground="{DynamicResource Primary}" FontSize="9" FontWeight="Bold"/></Border></Grid>
                     </Border>
-                    <Grid Grid.Row="1">
+                    <Border x:Name="StatusUpdateBanner" Grid.Row="1" Visibility="Collapsed" Background="#FFF7DF" BorderBrush="#E8C66C" BorderThickness="0,0,0,1" Padding="16,10">
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="WhatsApp 最新动态 · 非普通聊天消息" Foreground="#8A5B08" FontSize="10" FontWeight="Bold"/>
+                                <TextBlock x:Name="StatusUpdateLinkText" TextTrimming="CharacterEllipsis" Foreground="#5F4A21" Margin="0,3,0,0"/>
+                                <TextBlock x:Name="StatusUpdateMetaText" Foreground="#98702A" FontSize="9" Margin="0,2,0,0"/>
+                            </StackPanel>
+                            <Button Grid.Column="1" Content="打开动态链接" Style="{StaticResource SecondaryButton}" Click="OpenStatusUpdate_Click" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+                    <Grid Grid.Row="2">
                         <StackPanel x:Name="QrPanel" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="380">
                             <Image x:Name="QrImage" Width="300" Height="300" Stretch="Uniform"/>
                             <TextBlock x:Name="QrHintText" Text="点击“连接 / 显示二维码”，然后使用手机 WhatsApp 的“已关联设备”扫描。" TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource Muted}" Margin="0,12,0,0"/>
@@ -100,6 +110,9 @@
                                                 </ContextMenu>
                                             </Border.ContextMenu>
                                             <StackPanel>
+                                                <Border Visibility="{Binding StatusUpdateVisibility}" Background="#FFF0C2" BorderBrush="#E3B84C" BorderThickness="1" CornerRadius="6" Padding="7,4" Margin="0,0,0,6">
+                                                    <TextBlock Text="WhatsApp 最新动态 · 非普通聊天消息" Foreground="#855B08" FontSize="9.5" FontWeight="SemiBold"/>
+                                                </Border>
                                                 <Border Visibility="{Binding QuoteVisibility}" Background="{DynamicResource CanvasDeep}" BorderBrush="{DynamicResource Primary}" BorderThickness="3,0,0,0" CornerRadius="5" Padding="8,5" Margin="0,0,0,6">
                                                     <StackPanel>
                                                         <TextBlock Text="{Binding QuoteHeader}" Foreground="#456052" FontSize="10" FontWeight="SemiBold"/>
@@ -124,7 +137,7 @@
                             </ListBox.ItemTemplate>
                         </ListBox>
                     </Grid>
-                    <Border Grid.Row="2" Padding="14" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0">
+                    <Border Grid.Row="3" Padding="14" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0">
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <Button x:Name="AiAssistantButton" Content="✦ AI" ToolTip="根据客户白色气泡生成回复，并提取需求到客户资料" Style="{StaticResource SecondaryButton}" Click="AiAssistant_Click" Width="68" Height="54" Padding="0" FontSize="15" FontWeight="Bold" Foreground="{DynamicResource AiAccentDeep}" BorderBrush="{DynamicResource AiAccent}" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Focusable="False" Margin="0,0,8,0" IsEnabled="False"/>
                             <Button x:Name="AttachButton" Grid.Column="1" Content="＋" ToolTip="添加图片、视频、音频或文件" Style="{StaticResource SecondaryButton}" Click="Attach_Click" Width="54" Height="54" Padding="0" FontSize="25" FontWeight="SemiBold" FontFamily="Segoe UI Symbol" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Focusable="False" Margin="0,0,12,0" IsEnabled="False"/>

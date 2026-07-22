@@ -849,6 +849,18 @@ public sealed class LocalRepository
     {
         conversation.UpdatedAt = DateTimeOffset.Now;
         await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using (var existingCommand = db.CreateCommand())
+        {
+            existingCommand.CommandText = "SELECT data_json FROM whatsapp_conversations WHERE id=$id";
+            existingCommand.Parameters.AddWithValue("$id", conversation.Id);
+            if (Json.Deserialize<WhatsAppConversation>(await existingCommand.ExecuteScalarAsync(cancellationToken) as string) is { } existing)
+            {
+                var incomingHasReadCursor = conversation.LastReadAt is not null;
+                conversation.LastReadAt ??= existing.LastReadAt;
+                if (!incomingHasReadCursor && existing.LastReadAt is not null)
+                    conversation.UnreadCount = existing.UnreadCount;
+            }
+        }
         await using var command = db.CreateCommand();
         command.CommandText = """
             INSERT INTO whatsapp_conversations(id,account_id,phone,lead_id,last_message_at,unread_count,updated_at,data_json)
@@ -1014,9 +1026,32 @@ public sealed class LocalRepository
     {
         var all = await GetWhatsAppConversationsAsync(cancellationToken: cancellationToken);
         var conversation = all.FirstOrDefault(x => x.Id == conversationId);
-        if (conversation is null || conversation.UnreadCount == 0) return;
+        if (conversation is null) return;
         conversation.UnreadCount = 0;
+        conversation.LastReadAt = DateTimeOffset.Now;
         await UpsertWhatsAppConversationAsync(conversation, cancellationToken);
+    }
+
+    public async Task<int> CountUnreadWhatsAppMessagesAsync(
+        string conversationId,
+        DateTimeOffset? lastReadAt,
+        CancellationToken cancellationToken = default)
+    {
+        if (lastReadAt is null) return 0;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM whatsapp_messages WHERE conversation_id=$conversation AND direction=$direction AND julianday(timestamp)>julianday($read)";
+        command.Parameters.AddWithValue("$conversation", conversationId);
+        command.Parameters.AddWithValue("$direction", WhatsAppMessageDirection.Incoming.ToString());
+        command.Parameters.AddWithValue("$read", lastReadAt.Value.ToString("O"));
+        var count = 0;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var message = Json.Deserialize<WhatsAppMessage>(reader.GetString(0));
+            if (message is { IsRevoked: false }) count++;
+        }
+        return count;
     }
 
     private static bool CanAdvanceStatus(WhatsAppMessageStatus current, WhatsAppMessageStatus next)

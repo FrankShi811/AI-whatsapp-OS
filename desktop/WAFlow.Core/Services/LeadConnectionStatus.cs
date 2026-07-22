@@ -8,6 +8,7 @@ public static class LeadConnectionStatus
 
     public static bool ApplyFromMessage(Lead lead, WhatsAppMessage message)
     {
+        if (message.IsStatusUpdate) return false;
         if (lead.LastContactAt is not null && message.Timestamp < lead.LastContactAt) return false;
         var label = message.Direction == WhatsAppMessageDirection.Incoming
             ? "\u5ba2\u6237\u5df2\u56de\u590d"

@@ -171,7 +171,9 @@ public sealed class DeepSeekService : IStructuredAiProvider
         await _repository.SaveAnalysisRunAsync(runId, lead.Id, "running", settings.DeepSeekModel, null, null, cancellationToken);
         try
         {
-            var recentMessages = await _repository.GetWhatsAppMessagesForLeadAsync(lead, 80, cancellationToken);
+            var recentMessages = (await _repository.GetWhatsAppMessagesForLeadAsync(lead, 80, cancellationToken))
+                .Where(message => !message.IsStatusUpdate)
+                .ToList();
             var payload = new
             {
                 lead = new

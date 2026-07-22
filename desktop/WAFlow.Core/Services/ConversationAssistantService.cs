@@ -66,7 +66,7 @@ public sealed class ConversationAssistantService
         if (!_provider.HasApiKey())
             throw new DeepSeekException("provider_not_configured", "请先完成 AI API 对接并选择模型。", false);
         var messages = (await _repository.GetWhatsAppMessagesAsync(conversationId, 160, cancellationToken))
-            .Where(message => !message.IsRevoked && !string.IsNullOrWhiteSpace(message.Body))
+            .Where(message => !message.IsStatusUpdate && !message.IsRevoked && !string.IsNullOrWhiteSpace(message.Body))
             .OrderBy(message => message.Timestamp)
             .TakeLast(100)
             .ToList();
