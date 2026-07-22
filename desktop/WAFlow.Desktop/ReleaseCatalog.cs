@@ -13,6 +13,12 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("1.17.2", "2026-07-22", "AI 分析与正式安装通道稳定版",
+        [
+            "修复 GitHub 将安装资产空格规范化为点号后，便携版无法识别正式 Setup / PKG 的问题。",
+            "延续结构化 AI 自动纠错、当前资料报告降级、失败原因细分与八个板块独立新手引导。",
+            "Windows、Apple Silicon 和 Intel Mac 的中文安装包重新生成并通过 GitHub Release 分发。"
+        ], true),
         new("1.17.1", "2026-07-22", "AI 结构化分析与便携版更新修复",
         [
             "AI 结构化输出增加兼容解析、自动纠错重试和严格证据归一化，资料不足不再被误判为程序失败。",

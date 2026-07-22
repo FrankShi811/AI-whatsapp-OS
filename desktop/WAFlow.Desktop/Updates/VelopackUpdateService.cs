@@ -338,11 +338,13 @@ public sealed class VelopackUpdateService : IApplicationUpdateService
 
     private static bool IsInstallerAsset(string name)
     {
+        var compactName = new string(name.Where(char.IsLetterOrDigit).ToArray());
+        var isAiSalesOs = compactName.Contains("AISalesOS", StringComparison.OrdinalIgnoreCase);
         if (OperatingSystem.IsWindows())
-            return name.EndsWith("Setup.exe", StringComparison.OrdinalIgnoreCase) && name.Contains("AI Sales OS", StringComparison.OrdinalIgnoreCase);
+            return name.EndsWith("Setup.exe", StringComparison.OrdinalIgnoreCase) && isAiSalesOs;
         if (!OperatingSystem.IsMacOS() || !name.EndsWith(".pkg", StringComparison.OrdinalIgnoreCase)) return false;
-        var expected = RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "Apple-Silicon" : "Intel";
-        return name.Contains("AI Sales OS", StringComparison.OrdinalIgnoreCase) && name.Contains(expected, StringComparison.OrdinalIgnoreCase);
+        var expected = RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "AppleSilicon" : "Intel";
+        return isAiSalesOs && compactName.Contains(expected, StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed record PortableReleaseAsset(string Name, string DownloadUrl, long Size, string Digest);
