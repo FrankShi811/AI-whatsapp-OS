@@ -11,6 +11,7 @@ const nccOutput = path.join(dist, 'ncc')
 const blob = path.join(dist, 'waflow-bridge.blob')
 const executable = path.join(dist, 'WAFlow.WhatsApp.Bridge.exe')
 const node = process.execPath
+const skipNcc = process.argv.includes('--skip-ncc')
 
 async function run(file, args, options = {}) {
   await new Promise((resolve, reject) => {
@@ -30,9 +31,13 @@ async function listFiles(directory, prefix = '') {
   return output.sort()
 }
 
-await fs.rm(dist, { recursive: true, force: true })
-await fs.mkdir(nccOutput, { recursive: true })
-await run(node, [path.join(root, 'node_modules', '@vercel', 'ncc', 'dist', 'ncc', 'cli.js'), 'build', path.join(root, 'src', 'index.mjs'), '-o', nccOutput, '--no-cache', '--license', 'THIRD_PARTY_LICENSES.txt'])
+if (!skipNcc) {
+  await fs.rm(dist, { recursive: true, force: true })
+  await fs.mkdir(nccOutput, { recursive: true })
+  await run(node, [path.join(root, 'node_modules', '@vercel', 'ncc', 'dist', 'ncc', 'cli.js'), 'build', path.join(root, 'src', 'index.mjs'), '-o', nccOutput, '--no-cache', '--license', 'THIRD_PARTY_LICENSES.txt'])
+} else if (!(await fs.stat(path.join(nccOutput, 'index.mjs')).catch(() => null))) {
+  throw new Error('Cannot skip ncc because dist/ncc/index.mjs does not exist')
+}
 
 const files = await listFiles(nccOutput)
 if (!files.includes('index.mjs')) throw new Error('ncc output entry index.mjs is missing')

@@ -13,12 +13,18 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("1.16.2", "2026-07-22", "群发真实回执与失败统计修复",
+        [
+            "群发成功改为以 WhatsApp 服务器回执为准，不再把本地调用受理误记为成功。",
+            "异步失败回执会同步修正任务收件人、成功率、失败数和历史任务统计。",
+            "发送前校验号码是否注册 WhatsApp；旧版错误成功记录在启动时自动对账修复。"
+        ], true),
         new("1.16.1", "2026-07-21", "跨平台自动更新正式验证",
         [
             "完成 GitHub Release 首次发布与后续版本更新链路验证。",
             "Windows、Apple Silicon 和 Intel 分别使用独立 Velopack 更新通道。",
             "内置开源中文 PDF 字体，避免不同电脑缺少系统字体导致报告导出失败。"
-        ], true),
+        ]),
         new("1.16.0", "2026-07-21", "GitHub Release 自动更新",
         [
             "启动自动检查 GitHub Release，发现新版本后在后台自动下载。",

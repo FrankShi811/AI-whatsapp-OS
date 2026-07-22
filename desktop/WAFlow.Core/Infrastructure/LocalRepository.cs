@@ -868,6 +868,20 @@ public sealed class LocalRepository
         return items;
     }
 
+    public async Task<WhatsAppMessage?> GetWhatsAppMessageByProviderIdAsync(
+        string accountId,
+        string providerMessageId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(providerMessageId)) return null;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM whatsapp_messages WHERE account_id=$account AND provider_message_id=$provider ORDER BY timestamp DESC LIMIT 1";
+        command.Parameters.AddWithValue("$account", string.IsNullOrWhiteSpace(accountId) ? "primary" : accountId);
+        command.Parameters.AddWithValue("$provider", providerMessageId);
+        return Json.Deserialize<WhatsAppMessage>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
     public async Task<WhatsAppMessage?> UpdateWhatsAppMessageStatusAsync(
         string accountId,
         string providerMessageId,
@@ -917,7 +931,10 @@ public sealed class LocalRepository
     private static bool CanAdvanceStatus(WhatsAppMessageStatus current, WhatsAppMessageStatus next)
     {
         if (current == next) return true;
-        if (next == WhatsAppMessageStatus.Failed) return current == WhatsAppMessageStatus.Pending;
+        // WhatsApp can accept a local send request and only report the transport
+        // error afterwards. A server error must therefore be allowed to correct
+        // both Pending and Sent, but never a message already delivered/read.
+        if (next == WhatsAppMessageStatus.Failed) return current is WhatsAppMessageStatus.Pending or WhatsAppMessageStatus.Sent;
         if (current == WhatsAppMessageStatus.Failed) return next is WhatsAppMessageStatus.Sent or WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read;
         static int Rank(WhatsAppMessageStatus value) => value switch
         {
@@ -990,6 +1007,42 @@ public sealed class LocalRepository
         command.Parameters.AddWithValue("$campaign", campaignId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken)) if (Json.Deserialize<CampaignRecipient>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task<CampaignRecipient?> GetCampaignRecipientByProviderMessageIdAsync(
+        string accountId,
+        string providerMessageId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(providerMessageId)) return null;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            SELECT data_json
+            FROM whatsapp_campaign_recipients
+            WHERE account_id=$account
+              AND json_extract(data_json, '$.providerMessageId')=$provider
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """;
+        command.Parameters.AddWithValue("$account", string.IsNullOrWhiteSpace(accountId) ? "primary" : accountId);
+        command.Parameters.AddWithValue("$provider", providerMessageId);
+        return Json.Deserialize<CampaignRecipient>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task<List<CampaignRecipient>> GetCampaignRecipientsAwaitingConfirmationAsync(
+        DateTimeOffset updatedBefore,
+        CancellationToken cancellationToken = default)
+    {
+        var items = new List<CampaignRecipient>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM whatsapp_campaign_recipients WHERE status='Sending' AND updated_at <= $before ORDER BY updated_at";
+        command.Parameters.AddWithValue("$before", updatedBefore.ToString("O"));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<CampaignRecipient>(reader.GetString(0)) is { } item) items.Add(item);
         return items;
     }
 

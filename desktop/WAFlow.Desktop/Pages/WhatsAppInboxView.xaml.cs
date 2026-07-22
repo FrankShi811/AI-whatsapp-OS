@@ -673,7 +673,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             var kind = result.TryGetProperty("kind", out var kindElement) ? kindElement.GetString() ?? "text" : "text";
             var fileName = result.TryGetProperty("fileName", out var fileNameElement) ? fileNameElement.GetString() ?? "" : "";
             var mimeType = result.TryGetProperty("mimeType", out var mimeElement) ? mimeElement.GetString() ?? "" : "";
-            var numericStatus = result.TryGetProperty("status", out var statusElement) && statusElement.TryGetInt32(out var parsedStatus) ? parsedStatus : 2;
+            var numericStatus = result.TryGetProperty("status", out var statusElement) && statusElement.TryGetInt32(out var parsedStatus) ? parsedStatus : 1;
             var status = StatusFromNumeric(numericStatus);
             var existing = conversation.Messages.FirstOrDefault(item => item.Id == id && !ReferenceEquals(item, pendingMessage));
             if (existing is not null)

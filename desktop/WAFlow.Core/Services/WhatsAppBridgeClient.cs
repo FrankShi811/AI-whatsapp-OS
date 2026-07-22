@@ -90,6 +90,8 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     }
     public Task<JsonElement> SendTextAsync(string phone, string text, CancellationToken cancellationToken = default) =>
         SendCommandAsync("send_text", new { phone, text }, cancellationToken);
+    public Task<JsonElement> ValidateNumberAsync(string phone, CancellationToken cancellationToken = default) =>
+        SendCommandAsync("validate_number", new { phone }, cancellationToken);
     public Task<JsonElement> SendReplyTextAsync(string phone, string text, string quotedMessageId, string quotedText, bool quotedFromMe, CancellationToken cancellationToken = default) =>
         SendCommandAsync("send_text", new { phone, text, quotedMessageId, quotedText, quotedFromMe }, cancellationToken);
     public Task<JsonElement> SendMediaAsync(string phone, string path, string caption, CancellationToken cancellationToken = default) =>

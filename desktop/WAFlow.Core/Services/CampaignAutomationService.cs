@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Infrastructure;
@@ -66,6 +67,8 @@ public sealed class CampaignAutomationService : IAsyncDisposable
     private Task? _worker;
     private Task? _safetyWorker;
     private readonly Dictionary<string, DateTimeOffset> _lastConnectAttempts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, WhatsAppBridgeEvent> _deliveryReceipts = new(StringComparer.OrdinalIgnoreCase);
+    private DateTimeOffset _lastDeliverySweep = DateTimeOffset.MinValue;
 
     public event EventHandler? CampaignChanged;
     public event EventHandler<CampaignSafetyStoppedEventArgs>? SafetyStopped;
@@ -246,7 +249,9 @@ public sealed class CampaignAutomationService : IAsyncDisposable
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         if (_worker is not null) return;
+        await ReconcileStoredDeliveryStatusesAsync(cancellationToken);
         await _repository.RecoverInterruptedCampaignRecipientsAsync(cancellationToken);
+        await CompleteRecoveredCampaignsAsync(cancellationToken);
         _lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _worker = Task.Run(() => RunAsync(_lifetime.Token), CancellationToken.None);
         _safetyWorker = Task.Run(() => RunSafetyMonitorAsync(_lifetime.Token), CancellationToken.None);
@@ -302,6 +307,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         if (!await _sendLock.WaitAsync(0, cancellationToken)) return;
         try
         {
+            await SweepStaleDeliveryConfirmationsAsync(cancellationToken);
             var recipient = await _repository.GetNextDueCampaignRecipientAsync(DateTimeOffset.Now, cancellationToken);
             if (recipient is null) return;
             var campaign = await _repository.GetCampaignAsync(recipient.CampaignId, cancellationToken);
@@ -343,18 +349,42 @@ public sealed class CampaignAutomationService : IAsyncDisposable
             await _repository.SaveCampaignRecipientAsync(recipient, cancellationToken);
             try
             {
+                var registration = await _bridge.ValidateNumberAsync(campaign.AccountId, recipient.Phone, cancellationToken);
+                var exists = registration.TryGetProperty("exists", out var existsElement) && existsElement.ValueKind == System.Text.Json.JsonValueKind.True;
+                if (!exists)
+                    throw new WhatsAppBridgeException("whatsapp_number_not_registered", "该号码未注册 WhatsApp，消息未发送。");
+
                 var result = await _bridge.SendTextAsync(campaign.AccountId, recipient.Phone, recipient.RenderedMessage, cancellationToken);
                 recipient.ProviderMessageId = result.TryGetProperty("id", out var id) ? id.GetString() ?? "" : "";
-                recipient.Status = CampaignRecipientStatus.Sent; recipient.SentAt = DateTimeOffset.Now; recipient.LastError = "";
-                eligibleLead.LastContactAt = recipient.SentAt; eligibleLead.LatestMessage = recipient.RenderedMessage;
-                if (eligibleLead.Stage == LeadStage.New) eligibleLead.Stage = LeadStage.Contacted;
-                await _repository.UpsertLeadAsync(eligibleLead, cancellationToken);
-                await _repository.LogEventAsync("campaign_message_sent", eligibleLead.Id, null, $"campaign_id={campaign.Id};recipient_id={recipient.Id};message_id={recipient.ProviderMessageId}", cancellationToken);
+                if (string.IsNullOrWhiteSpace(recipient.ProviderMessageId))
+                    throw new WhatsAppBridgeException("message_id_missing", "WhatsApp 未返回消息编号，发送状态无法确认。为避免重复触达，系统不会自动重发。");
+                var numericStatus = result.TryGetProperty("status", out var statusElement) && statusElement.TryGetInt32(out var parsedStatus) ? parsedStatus : 1;
+                if (numericStatus <= 0)
+                    throw new WhatsAppBridgeException("message_send_failed", "WhatsApp 返回发送错误，消息未发送。");
+                if (numericStatus >= 2)
+                {
+                    recipient.Status = CampaignRecipientStatus.Sent;
+                    recipient.SentAt = DateTimeOffset.Now;
+                    recipient.LastError = "";
+                    await ApplyConfirmedSendToLeadAsync(campaign, recipient, eligibleLead, cancellationToken);
+                }
+                else
+                {
+                    recipient.Status = CampaignRecipientStatus.Sending;
+                    recipient.SentAt = null;
+                    recipient.LastError = "等待 WhatsApp 服务器发送确认；未确认前不计入成功。";
+                }
             }
             catch (Exception error)
             {
                 recipient.LastError = Safe(error.Message);
-                if (!_bridge.IsConnectedFor(campaign.AccountId))
+                if (error is WhatsAppBridgeException { Code: "whatsapp_number_not_registered" or "message_send_failed" or "message_id_missing" })
+                {
+                    recipient.Status = CampaignRecipientStatus.Failed;
+                    recipient.SentAt = null;
+                    await _repository.LogEventAsync("campaign_message_failed", eligibleLead.Id, null, $"campaign_id={campaign.Id};recipient_id={recipient.Id};error={recipient.LastError}", cancellationToken);
+                }
+                else if (!_bridge.IsConnectedFor(campaign.AccountId))
                 {
                     recipient.Status = CampaignRecipientStatus.Queued;
                     recipient.NextAttemptAt = DateTimeOffset.Now.AddMinutes(5);
@@ -368,11 +398,146 @@ public sealed class CampaignAutomationService : IAsyncDisposable
                 }
             }
             await _repository.SaveCampaignRecipientAsync(recipient, cancellationToken);
+            if (recipient.Status == CampaignRecipientStatus.Sending)
+                await ReconcileRecipientAfterSendAsync(campaign.AccountId, recipient.ProviderMessageId, cancellationToken);
             await CompleteCampaignIfFinishedAsync(campaign, cancellationToken);
             CampaignChanged?.Invoke(this, EventArgs.Empty);
         }
         finally { _sendLock.Release(); }
     }
+
+    private async Task ReconcileRecipientAfterSendAsync(string accountId, string providerMessageId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(providerMessageId)) return;
+        var key = DeliveryKey(accountId, providerMessageId);
+        if (_deliveryReceipts.TryRemove(key, out var pendingReceipt))
+        {
+            await HandleDeliveryReceiptAsync(pendingReceipt, cancellationToken);
+            return;
+        }
+
+        var storedMessage = await _repository.GetWhatsAppMessageByProviderIdAsync(accountId, providerMessageId, cancellationToken);
+        if (storedMessage is null || storedMessage.Status == WhatsAppMessageStatus.Pending) return;
+        await ApplyStoredMessageStatusAsync(storedMessage, cancellationToken);
+    }
+
+    private async Task HandleDeliveryReceiptAsync(WhatsAppBridgeEvent e, CancellationToken cancellationToken)
+    {
+        if (e.Name != "message_status") return;
+        var providerMessageId = e.Data.TryGetProperty("id", out var idElement) ? idElement.GetString() ?? "" : "";
+        if (string.IsNullOrWhiteSpace(providerMessageId)) return;
+        var accountId = string.IsNullOrWhiteSpace(e.AccountId) ? "primary" : e.AccountId;
+        if (!e.Data.TryGetProperty("status", out var statusElement) || !statusElement.TryGetInt32(out var numericStatus)) return;
+        if (numericStatus == 1) return;
+
+        var recipient = await _repository.GetCampaignRecipientByProviderMessageIdAsync(accountId, providerMessageId, cancellationToken);
+        if (recipient is null)
+        {
+            _deliveryReceipts[DeliveryKey(accountId, providerMessageId)] = e;
+            return;
+        }
+
+        var campaign = await _repository.GetCampaignAsync(recipient.CampaignId, cancellationToken);
+        if (campaign is null) return;
+        if (numericStatus <= 0)
+        {
+            var failureReason = e.Data.TryGetProperty("failureReason", out var failureElement) ? failureElement.GetString() ?? "" : "";
+            await MarkDeliveryFailedAsync(campaign, recipient,
+                string.IsNullOrWhiteSpace(failureReason) ? "WhatsApp 返回发送错误，消息未发送。" : failureReason,
+                cancellationToken);
+        }
+        else if (numericStatus >= 2)
+        {
+            await MarkDeliverySentAsync(campaign, recipient, cancellationToken);
+        }
+    }
+
+    private async Task ApplyStoredMessageStatusAsync(WhatsAppMessage message, CancellationToken cancellationToken)
+    {
+        var recipient = await _repository.GetCampaignRecipientByProviderMessageIdAsync(message.AccountId, message.ProviderMessageId, cancellationToken);
+        if (recipient is null) return;
+        var campaign = await _repository.GetCampaignAsync(recipient.CampaignId, cancellationToken);
+        if (campaign is null) return;
+        if (message.Status == WhatsAppMessageStatus.Failed)
+            await MarkDeliveryFailedAsync(campaign, recipient,
+                string.IsNullOrWhiteSpace(message.FailureReason) ? "WhatsApp 返回发送错误，消息未发送。" : message.FailureReason,
+                cancellationToken);
+        else if (message.Status is WhatsAppMessageStatus.Sent or WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read)
+            await MarkDeliverySentAsync(campaign, recipient, cancellationToken);
+    }
+
+    private async Task MarkDeliverySentAsync(WhatsAppCampaign campaign, CampaignRecipient recipient, CancellationToken cancellationToken)
+    {
+        var changed = recipient.Status != CampaignRecipientStatus.Sent;
+        recipient.Status = CampaignRecipientStatus.Sent;
+        recipient.SentAt ??= DateTimeOffset.Now;
+        recipient.LastError = "";
+        var lead = await _repository.GetLeadAsync(recipient.LeadId, cancellationToken);
+        if (changed && lead is not null) await ApplyConfirmedSendToLeadAsync(campaign, recipient, lead, cancellationToken);
+        await _repository.SaveCampaignRecipientAsync(recipient, cancellationToken);
+        await CompleteCampaignIfFinishedAsync(campaign, cancellationToken);
+        CampaignChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private async Task ApplyConfirmedSendToLeadAsync(WhatsAppCampaign campaign, CampaignRecipient recipient, Lead lead, CancellationToken cancellationToken)
+    {
+        lead.LastContactAt = recipient.SentAt ?? DateTimeOffset.Now;
+        lead.LatestMessage = recipient.RenderedMessage;
+        if (lead.Stage == LeadStage.New) lead.Stage = LeadStage.Contacted;
+        await _repository.UpsertLeadAsync(lead, cancellationToken);
+        await _repository.LogEventAsync("campaign_message_sent", lead.Id, null, $"campaign_id={campaign.Id};recipient_id={recipient.Id};message_id={recipient.ProviderMessageId}", cancellationToken);
+    }
+
+    private async Task MarkDeliveryFailedAsync(WhatsAppCampaign campaign, CampaignRecipient recipient, string error, CancellationToken cancellationToken)
+    {
+        var changed = recipient.Status != CampaignRecipientStatus.Failed || !string.Equals(recipient.LastError, error, StringComparison.Ordinal);
+        recipient.Status = CampaignRecipientStatus.Failed;
+        recipient.SentAt = null;
+        recipient.LastError = Safe(error);
+        await _repository.SaveCampaignRecipientAsync(recipient, cancellationToken);
+        if (changed)
+            await _repository.LogEventAsync("campaign_message_failed", recipient.LeadId, null, $"campaign_id={campaign.Id};recipient_id={recipient.Id};message_id={recipient.ProviderMessageId};error={recipient.LastError}", cancellationToken);
+        await CompleteCampaignIfFinishedAsync(campaign, cancellationToken);
+        CampaignChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private async Task ReconcileStoredDeliveryStatusesAsync(CancellationToken cancellationToken)
+    {
+        foreach (var campaign in await _repository.GetCampaignsAsync(null, cancellationToken))
+        {
+            foreach (var recipient in await _repository.GetCampaignRecipientsAsync(campaign.Id, cancellationToken))
+            {
+                if (string.IsNullOrWhiteSpace(recipient.ProviderMessageId) || recipient.Status is not (CampaignRecipientStatus.Sending or CampaignRecipientStatus.Sent)) continue;
+                var message = await _repository.GetWhatsAppMessageByProviderIdAsync(recipient.AccountId, recipient.ProviderMessageId, cancellationToken);
+                if (message is not null) await ApplyStoredMessageStatusAsync(message, cancellationToken);
+            }
+        }
+    }
+
+    private async Task SweepStaleDeliveryConfirmationsAsync(CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.Now;
+        if (now - _lastDeliverySweep < TimeSpan.FromSeconds(15)) return;
+        _lastDeliverySweep = now;
+        foreach (var recipient in await _repository.GetCampaignRecipientsAwaitingConfirmationAsync(now.AddSeconds(-90), cancellationToken))
+        {
+            var campaign = await _repository.GetCampaignAsync(recipient.CampaignId, cancellationToken);
+            if (campaign is null) continue;
+            var message = await _repository.GetWhatsAppMessageByProviderIdAsync(recipient.AccountId, recipient.ProviderMessageId, cancellationToken);
+            if (message is not null && message.Status != WhatsAppMessageStatus.Pending)
+                await ApplyStoredMessageStatusAsync(message, cancellationToken);
+            else
+                await MarkDeliveryFailedAsync(campaign, recipient, "90 秒内未收到 WhatsApp 服务器发送确认；未计为成功，且为避免重复触达不会自动重发。", cancellationToken);
+        }
+    }
+
+    private async Task CompleteRecoveredCampaignsAsync(CancellationToken cancellationToken)
+    {
+        foreach (var campaign in await _repository.GetCampaignsAsync(null, cancellationToken))
+            await CompleteCampaignIfFinishedAsync(campaign, cancellationToken);
+    }
+
+    private static string DeliveryKey(string accountId, string providerMessageId) => $"{(string.IsNullOrWhiteSpace(accountId) ? "primary" : accountId)}:{providerMessageId}";
 
     private async Task<bool> EnsureConnectedAsync(string accountId, CancellationToken cancellationToken)
     {
@@ -460,6 +625,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         var recipients = await _repository.GetCampaignRecipientsAsync(campaign.Id, cancellationToken);
         if (recipients.Count > 0 && recipients.All(x => x.Status is CampaignRecipientStatus.Sent or CampaignRecipientStatus.Skipped or CampaignRecipientStatus.Failed or CampaignRecipientStatus.Cancelled))
         {
+            if (campaign.Status == CampaignStatus.Completed) return;
             campaign.Status = CampaignStatus.Completed; campaign.PauseReason = "";
             await _repository.SaveCampaignAsync(campaign, cancellationToken);
             await _repository.LogEventAsync("campaign_completed", null, null, $"campaign_id={campaign.Id};sent={recipients.Count(x => x.Status == CampaignRecipientStatus.Sent)}", cancellationToken);
@@ -468,9 +634,14 @@ public sealed class CampaignAutomationService : IAsyncDisposable
 
     private async void Bridge_EventReceived(object? sender, WhatsAppBridgeEvent e)
     {
-        if (e.Name != "connection" || !e.Data.TryGetProperty("state", out var state) || state.GetString() != "logged_out") return;
         try
         {
+            if (e.Name == "message_status")
+            {
+                await HandleDeliveryReceiptAsync(e, _lifetime?.Token ?? CancellationToken.None);
+                return;
+            }
+            if (e.Name != "connection" || !e.Data.TryGetProperty("state", out var state) || state.GetString() != "logged_out") return;
             await _repository.PauseActiveCampaignsAsync(string.IsNullOrWhiteSpace(e.AccountId) ? "primary" : e.AccountId, "WhatsApp 登录已失效，Campaign 已自动暂停。");
             CampaignChanged?.Invoke(this, EventArgs.Empty);
         }

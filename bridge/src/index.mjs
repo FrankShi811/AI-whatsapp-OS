@@ -860,7 +860,7 @@ async function handle(command) {
   try {
     switch (command.command) {
       case 'ping':
-        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.5.0', connection: state.connection })
+        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.6.0', connection: state.connection })
         return
       case 'initialize': {
         state.accountId = validateAccountId(command.accountId ?? 'default')
@@ -902,7 +902,9 @@ async function handle(command) {
         if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
         const result = await state.socket.sendMessage(jid, { text }, quotedSendOptions(command, jid))
         rememberMessage(result)
-        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString(), status: result?.status ?? 2, quotedMessageId: String(command.quotedMessageId ?? '') })
+        // sendMessage may return before WhatsApp has acknowledged the message.
+        // Missing status means pending, never a confirmed send.
+        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString(), status: result?.status ?? 1, quotedMessageId: String(command.quotedMessageId ?? '') })
         return
       }
       case 'send_media': {
@@ -912,7 +914,16 @@ async function handle(command) {
         const media = await buildMediaMessage(command.path, command.caption)
         const result = await state.socket.sendMessage(jid, media.payload, quotedSendOptions(command, jid))
         rememberMessage(result)
-        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString(), status: result?.status ?? 2, kind: media.kind, mimeType: media.mimeType, fileName: media.fileName, quotedMessageId: String(command.quotedMessageId ?? '') })
+        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString(), status: result?.status ?? 1, kind: media.kind, mimeType: media.mimeType, fileName: media.fileName, quotedMessageId: String(command.quotedMessageId ?? '') })
+        return
+      }
+      case 'validate_number': {
+        if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
+        const phone = String(command.phone ?? '').replace(/\D/g, '')
+        if (phone.length < 7 || phone.length > 15) throw new Error('invalid_phone_number')
+        const matches = await state.socket.onWhatsApp(phone)
+        const match = (matches ?? []).find(item => item?.exists)
+        reply(requestId, true, { phone, exists: Boolean(match), jid: match?.jid ?? '' })
         return
       }
       case 'revoke_message': {
@@ -988,4 +999,4 @@ lines.on('close', async () => {
   process.exit(0)
 })
 
-emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.4.0' } })
+emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.6.0' } })

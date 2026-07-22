@@ -385,6 +385,10 @@ await repository.UpdateWhatsAppMessageStatusAsync("primary", "wamid-out", WhatsA
 await repository.UpdateWhatsAppMessageStatusAsync("primary", "wamid-out", WhatsAppMessageStatus.Read, readAt, deliveredAt, readAt);
 var receiptedMessage = (await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single(x => x.Id == outgoingStatus.Id);
 Check(receiptedMessage.Status == WhatsAppMessageStatus.Read && receiptedMessage.DeliveredAt == deliveredAt && receiptedMessage.ReadAt == readAt, "WhatsApp delivered/read receipt times persist");
+var lateFailure = new WhatsAppMessage { Id="primary:wamid-late-failure", ProviderMessageId="wamid-late-failure", AccountId="primary", ConversationId=conversation.Id, LeadId=whatsappLead.Id, Phone=conversation.Phone, Direction=WhatsAppMessageDirection.Outgoing, Status=WhatsAppMessageStatus.Sent, Body="Late failure", Timestamp=DateTimeOffset.Now };
+await repository.UpsertWhatsAppMessageAsync(lateFailure);
+await repository.UpdateWhatsAppMessageStatusAsync("primary", lateFailure.ProviderMessageId, WhatsAppMessageStatus.Failed, DateTimeOffset.Now, failureReason:"WhatsApp returned an error");
+Check((await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single(x => x.Id == lateFailure.Id).Status == WhatsAppMessageStatus.Failed, "late WhatsApp transport errors correct an optimistic sent status");
 
 var ipHandler = new IpMonitorHandler();
 var ipMonitor = new PublicIpMonitor(repository, new HttpClient(ipHandler) { Timeout=TimeSpan.FromSeconds(2) });
@@ -492,6 +496,59 @@ var safetyPassed = await campaigns.CheckSafetyValveAsync();
 var safetyStoppedCampaign = await repository.GetCampaignAsync(campaign.Id);
 var executionHistory = await campaigns.GetExecutionHistoryAsync();
 Check(!safetyPassed && safetyStoppedCampaign is { Status: CampaignStatus.SafetyStopped, SafetyStopFromIp: "198.51.100.30", SafetyStopToIp: "203.0.113.31" } && (await repository.GetCampaignAsync(secondAccountCampaign.Id))?.Status == CampaignStatus.SafetyStopped && safetyNotice?.Campaigns.Count == 2 && safetyNotice.Campaigns.Sum(item => item.Failed) == 1 && executionHistory.Single(item => item.Campaign.Id == campaign.Id).StopOrNext.Contains("已处理"), "IP change safety valve stops all active outreach across accounts and preserves execution position");
+
+var deliveryRoot = Path.Combine(root, "campaign-delivery");
+var deliveryRepository = new LocalRepository(Path.Combine(deliveryRoot, "delivery.db"));
+await deliveryRepository.InitializeAsync();
+var deliveryLead = new Lead { Id="delivery-lead", Name="Delivery Lead", PhoneE164="+14155557777", PhoneValid=true };
+await deliveryRepository.UpsertLeadAsync(deliveryLead);
+var deliveryCampaign = new WhatsAppCampaign { Id="delivery-campaign", Name="Delivery accounting", Status=CampaignStatus.Completed, ApprovedAt=DateTimeOffset.Now, StartsAt=DateTimeOffset.Now };
+await deliveryRepository.SaveCampaignAsync(deliveryCampaign);
+await deliveryRepository.SaveCampaignRecipientAsync(new CampaignRecipient
+{
+    Id="delivery-recipient", CampaignId=deliveryCampaign.Id, LeadId=deliveryLead.Id, AccountId="primary", Phone=deliveryLead.PhoneE164,
+    DisplayName=deliveryLead.Name, RenderedMessage="Hello", Status=CampaignRecipientStatus.Sent, ProviderMessageId="delivery-provider",
+    ScheduledAt=DateTimeOffset.Now, NextAttemptAt=DateTimeOffset.Now, SentAt=DateTimeOffset.Now
+});
+await deliveryRepository.UpsertWhatsAppConversationAsync(new WhatsAppConversation
+{
+    Id="primary:14155557777", AccountId="primary", Phone="14155557777", LeadId=deliveryLead.Id,
+    DisplayName=deliveryLead.Name, LastMessage="Hello", LastMessageAt=DateTimeOffset.Now
+});
+await deliveryRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id="primary:delivery-provider", ProviderMessageId="delivery-provider", AccountId="primary", ConversationId="primary:14155557777",
+    LeadId=deliveryLead.Id, Phone="14155557777", Direction=WhatsAppMessageDirection.Outgoing, Status=WhatsAppMessageStatus.Failed,
+    Body="Hello", FailureReason="WhatsApp 返回发送错误", Timestamp=DateTimeOffset.Now
+});
+var deliveryBridge = new WhatsAppConnectionManager();
+var deliveryIpMonitor = new PublicIpMonitor(deliveryRepository, new HttpClient(new MutableIpMonitorHandler("198.51.100.40")) { Timeout=TimeSpan.FromSeconds(2) });
+await using (var deliveryCampaigns = new CampaignAutomationService(deliveryRepository, deliveryBridge, deliveryIpMonitor))
+{
+    await deliveryCampaigns.StartAsync();
+    var repairedRecipient = (await deliveryRepository.GetCampaignRecipientsAsync(deliveryCampaign.Id)).Single();
+    var repairedSummary = (await deliveryCampaigns.GetExecutionHistoryAsync()).Single();
+    Check(repairedRecipient.Status == CampaignRecipientStatus.Failed && repairedRecipient.SentAt is null && repairedSummary.Sent == 0 && repairedSummary.Failed == 1 && repairedSummary.SuccessRate == "0%", "campaign history reconciles persisted WhatsApp failures instead of reporting false success");
+}
+
+var receiptCampaign = new WhatsAppCampaign { Id="receipt-campaign", Name="Receipt accounting", Status=CampaignStatus.Running, ApprovedAt=DateTimeOffset.Now, StartsAt=DateTimeOffset.Now };
+await deliveryRepository.SaveCampaignAsync(receiptCampaign);
+await deliveryRepository.SaveCampaignRecipientAsync(new CampaignRecipient
+{
+    Id="receipt-recipient", CampaignId=receiptCampaign.Id, LeadId=deliveryLead.Id, AccountId="primary", Phone=deliveryLead.PhoneE164,
+    DisplayName=deliveryLead.Name, RenderedMessage="Pending", Status=CampaignRecipientStatus.Sending, ProviderMessageId="receipt-provider",
+    ScheduledAt=DateTimeOffset.Now, NextAttemptAt=DateTimeOffset.Now
+});
+await using (var receiptCampaigns = new CampaignAutomationService(deliveryRepository, deliveryBridge, deliveryIpMonitor))
+{
+    using var receiptJson = System.Text.Json.JsonDocument.Parse("{\"id\":\"receipt-provider\",\"status\":0,\"failureReason\":\"WhatsApp returned send error\"}");
+    var receiptEvent = new WhatsAppBridgeEvent("message_status", "primary", receiptJson.RootElement.Clone());
+    var receiptHandler = typeof(CampaignAutomationService).GetMethod("HandleDeliveryReceiptAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    await (Task)receiptHandler.Invoke(receiptCampaigns, [receiptEvent, CancellationToken.None])!;
+    var failedReceipt = (await deliveryRepository.GetCampaignRecipientsAsync(receiptCampaign.Id)).Single();
+    var receiptSummary = (await receiptCampaigns.GetExecutionHistoryAsync()).Single(item => item.Campaign.Id == receiptCampaign.Id);
+    Check(failedReceipt.Status == CampaignRecipientStatus.Failed && receiptSummary.Sent == 0 && receiptSummary.Failed == 1, "asynchronous WhatsApp error receipts update campaign recipient and aggregate quality statistics");
+}
 await repository.SaveOnboardingStateAsync(new OnboardingState { Completed=true, GuideVersion=6, ModuleGuideVersion=1, SeenModuleGuides=["dashboard", "customers", "settings"], CompletedAt=DateTimeOffset.Now });
 var persistedOnboarding = await repository.GetOnboardingStateAsync();
 Check(persistedOnboarding is { Completed: true, GuideVersion: 6, ModuleGuideVersion: 1 } && persistedOnboarding.SeenModuleGuides.SequenceEqual(["dashboard", "customers", "settings"]), "global and per-module onboarding completion persists");

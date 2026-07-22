@@ -36,6 +36,7 @@ public sealed class WhatsAppConnectionManager : IAsyncDisposable
     public Task<JsonElement> LogoutAsync(CancellationToken cancellationToken = default) => GetClient(ActiveAccountId).LogoutAsync(cancellationToken);
     public Task<JsonElement> SendTextAsync(string phone, string text, CancellationToken cancellationToken = default) => SendTextAsync(ActiveAccountId, phone, text, cancellationToken);
     public Task<JsonElement> SendTextAsync(string accountId, string phone, string text, CancellationToken cancellationToken = default) => GetClient(accountId).SendTextAsync(phone, text, cancellationToken);
+    public Task<JsonElement> ValidateNumberAsync(string accountId, string phone, CancellationToken cancellationToken = default) => GetClient(accountId).ValidateNumberAsync(phone, cancellationToken);
     public Task<JsonElement> SendReplyTextAsync(string accountId, string phone, string text, string quotedMessageId, string quotedText, bool quotedFromMe, CancellationToken cancellationToken = default) => GetClient(accountId).SendReplyTextAsync(phone, text, quotedMessageId, quotedText, quotedFromMe, cancellationToken);
     public Task<JsonElement> SendMediaAsync(string phone, string path, string caption = "", CancellationToken cancellationToken = default) => SendMediaAsync(ActiveAccountId, phone, path, caption, cancellationToken);
     public Task<JsonElement> SendMediaAsync(string accountId, string phone, string path, string caption, CancellationToken cancellationToken = default) => GetClient(accountId).SendMediaAsync(phone, path, caption, cancellationToken);
