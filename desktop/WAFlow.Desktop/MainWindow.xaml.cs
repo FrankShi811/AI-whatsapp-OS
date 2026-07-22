@@ -32,6 +32,7 @@ public partial class MainWindow : Window
     public MainWindow(AppServices services, IApplicationUpdateService updates)
     {
         InitializeComponent();
+        GuideCatalog.ValidateCoverage();
         SidebarVersionText.Text = $"当前版本  v{ReleaseCatalog.CurrentVersion}";
         _services = services;
         _updates = updates;

@@ -28,7 +28,7 @@ AI Sales OS 使用 Velopack 的 Windows 与 macOS 更新客户端，GitHub Relea
 
 ## 首次启用
 
-旧的便携 EXE 或 Inno Setup 版本不受 Velopack 管理，因此从旧版本迁移到 1.16.0 时需要手动运行一次新的 `AI Sales OS Setup.exe`。完成这一次安装后，后续版本即可在程序内自动下载，并由用户点击安装重启。
+旧的便携 EXE 或 Inno Setup 版本不受 Velopack 管理。1.17.1 及之后的便携版可以在版本中心检查 GitHub Release、自动下载正式 `AI Sales OS Setup.exe`，并由用户点击启动安装；完成这一次正式安装后，后续版本即可在程序内自动下载并安装重启。1.17.0 及更早便携版仍需从 GitHub Release 手动运行一次 Setup，因为旧程序本身没有便携版引导安装能力。
 
 ## 本地打包
 

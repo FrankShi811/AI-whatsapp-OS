@@ -100,7 +100,17 @@ public sealed class Lead
     [JsonIgnore] public string PhoneState => PhoneValid ? "有效" : "风险";
     [JsonIgnore] public string TagsLabel => string.Join(" · ", Tags);
     [JsonIgnore] public string CustomFieldsLabel => string.Join(" · ", CustomFields.Where(x => !string.IsNullOrWhiteSpace(x.Value)).Select(x => $"{x.Key}: {x.Value}"));
-    [JsonIgnore] public string AnalysisStateLabel => Labels.Analysis(AnalysisStatus);
+    [JsonIgnore] public string AnalysisStateLabel => AnalysisStatus == AnalysisStatus.RetryableFailed
+        ? AnalysisError switch
+        {
+            var value when value.Contains("invalid_structured_output", StringComparison.OrdinalIgnoreCase) => "AI 格式异常 · 可重试",
+            var value when value.Contains("provider_rate_limited", StringComparison.OrdinalIgnoreCase) => "API 限流 · 可重试",
+            var value when value.Contains("provider_timeout", StringComparison.OrdinalIgnoreCase) || value.Contains("provider_unavailable", StringComparison.OrdinalIgnoreCase) => "网络异常 · 可重试",
+            var value when value.Contains("provider_unauthorized", StringComparison.OrdinalIgnoreCase) || value.Contains("model_not_selected", StringComparison.OrdinalIgnoreCase) || value.Contains("provider_not_configured", StringComparison.OrdinalIgnoreCase) => "AI 配置异常",
+            var value when value.Contains("取消", StringComparison.OrdinalIgnoreCase) => "已停止 · 可重试",
+            _ => "执行失败 · 可重试"
+        }
+        : Labels.Analysis(AnalysisStatus);
     [JsonIgnore] public bool HasCurrentAiScore => AiScoreApplied && AnalysisContractVersion == LeadIntelligenceContract.Version && AnalysisStatus == AnalysisStatus.Succeeded;
 }
 

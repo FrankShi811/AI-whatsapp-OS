@@ -20,7 +20,8 @@ internal sealed record GuideStepDefinition(
 internal static class GuideCatalog
 {
     public const int GlobalGuideVersion = 7;
-    public const int ModuleGuideVersion = 2;
+    public const int ModuleGuideVersion = 3;
+    private static readonly string[] RequiredModuleKeys = ["dashboard", "intelligence", "customers", "inbox", "email", "broadcast", "analytics", "settings"];
 
     public static GuideDefinition Global { get; } = new(
         "global",
@@ -56,7 +57,7 @@ internal static class GuideCatalog
                 "评分用于排优先级，不替代销售人员对客户真实情况的判断。",
                 [
                     new("先建立正确预期", "新客户默认 D 级、0 分，不会用本地关键词偷偷加分。", "AI 分析成功前保持安全基线", ["先导入客户完整资料。", "连接 WhatsApp 后同步历史对话。", "确认 API 和模型已配置。"], "资料越完整，AI 越容易给出有证据的判断。"),
-                    new("批量分析或重试", "页面顶部可以统一分析全部未分析、失败或需要重跑的客户。", "减少逐个点击", ["根据需要筛选客户范围。", "点击批量分析 / 重试。", "观察进度、成功和失败数量。", "失败客户保留 D / 0，可稍后重试。"], "批量分析会消耗所选 Provider 的 API 额度。"),
+                    new("批量分析或重试", "页面顶部可以统一分析全部未分析、失败或需要重跑的客户。", "减少逐个点击", ["根据需要筛选客户范围。", "点击批量分析 / 重试。", "观察进度、成功和失败数量。", "选择失败客户，在右侧查看具体错误原因后再重试。"], "资料不足会生成低置信度 D / 0 结果；“格式异常、API 限流、网络异常或配置异常”才表示执行失败。批量分析会消耗 Provider 额度。"),
                     new("读懂 AI 评分卡", "总分之外，还要看六维得分、WhatsApp 行为修正、置信度和证据。", "理解为什么这个客户重要", ["选择左侧客户。", "查看总分、等级和阶段。", "逐项阅读六维依据。", "核对正向因素、风险和原始证据。"], "不能只看 A/B/C/D；没有证据的判断不应直接用于重要决策。"),
                     new("落实下一步动作", "右侧画像、风险和下一步建议用于帮助销售制定跟进。", "从分析进入执行", ["核对客户当前需求。", "把下一步建议改成具体时间与负责人。", "进入 Inbox 沟通。", "有新回复后重新分析。"], "AI 结果不会覆盖 CRM 原始数据，销售人员仍可人工维护客户资料。")
                 ]),
@@ -110,7 +111,7 @@ internal static class GuideCatalog
                 "报告是决策辅助文件，不应把 AI 推断当成已经核实的客户事实。",
                 [
                     new("选择需要研究的客户", "左侧客户列表用于搜索、选择客户和查看历史报告版本。", "从一个明确客户开始", ["搜索客户姓名或号码。", "选择客户。", "先查看数据覆盖提示。", "确认该客户存在可用资料。"], "聊天和字段越完整，报告越有分析价值。"),
-                    new("一键生成完整报告", "系统按数据整理、事实提取、商业分析、销售策略、报告生成分阶段运行。", "避免一次性生成无依据长文", ["点击生成客户报告。", "观察阶段进度。", "等待全部阶段完成。", "失败时保留原始数据并点击重新分析。"], "报告生成会调用当前选择的 AI 模型并消耗 API 额度。"),
+                    new("一键生成当前资料版本", "系统按数据整理、事实提取、商业分析、销售策略、报告生成分阶段运行。", "有多少可靠资料，就先生成多少可靠结论", ["点击生成客户报告。", "观察阶段进度。", "等待当前版本完成。", "查看顶部“当前资料版本说明”和信息缺口。", "后续新增回复或字段后再次生成新版本。"], "AI 输出异常会先自动纠正重试；仍不合规时，系统基于已核验资料安全降级，不会因信息不全让整份报告报废。"),
                     new("读懂报告结构", "报告固定包含 11 个部分，并明确区分事实、AI 判断和销售建议。", "快速理解客户为什么重要", ["先看顶部评分、等级和成交概率。", "阅读客户画像、痛点和购买动机。", "核对 WhatsApp 原话与中文解释。", "检查产品匹配、风险和下一步。"], "所有重要判断都应回到证据台账和客户原话复核。"),
                     new("查看历史并比较版本", "每次重新分析都会生成新版本，不覆盖过去报告。", "观察客户判断如何随新数据变化", ["选择历史版本。", "点击版本比较。", "查看评分、风险和建议的变化。", "确认变化是否来自新消息或人工编辑。"], "CRM、WhatsApp 和 Lead Intelligence 原始数据不会被报告覆盖。"),
                     new("导出管理层文件", "Word 和 PDF 不是简单文本转换，包含封面、评分卡、图表、页码和证据台账。", "形成可直接汇报的专业文件", ["打开已完成报告。", "选择导出 Word 或 PDF。", "选择保存位置。", "发送前人工复核敏感信息和结论。"], "导出历史会记录在报告版本中，方便后续审计。")
@@ -129,4 +130,12 @@ internal static class GuideCatalog
 
     public static GuideDefinition ForModule(string key) =>
         Modules.TryGetValue(key, out var guide) ? guide : Modules["dashboard"];
+
+    public static void ValidateCoverage()
+    {
+        var missing = RequiredModuleKeys.Where(key => !Modules.ContainsKey(key)).ToList();
+        var incomplete = Modules.Values.Where(guide => guide.Steps.Count == 0 || guide.Steps.Any(step => step.Actions.Count == 0)).Select(guide => guide.Key).ToList();
+        if (missing.Count > 0 || incomplete.Count > 0)
+            throw new InvalidOperationException($"模块引导配置不完整。缺失：{string.Join(',', missing)}；无操作步骤：{string.Join(',', incomplete)}");
+    }
 }

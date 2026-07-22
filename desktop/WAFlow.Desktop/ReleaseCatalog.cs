@@ -13,6 +13,14 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("1.17.1", "2026-07-22", "AI 结构化分析与便携版更新修复",
+        [
+            "AI 结构化输出增加兼容解析、自动纠错重试和严格证据归一化，资料不足不再被误判为程序失败。",
+            "客户智能报告可基于当前全部可用资料生成；AI 阶段异常时使用安全降级结果，并明确标记信息缺口，后续可生成新版本。",
+            "商机智能失败状态区分 AI 格式、API 限流、网络与配置原因，便于判断为何需要重试。",
+            "便携版可检查 GitHub Release 并下载正式安装包；完成一次正式安装后进入标准自动更新通道。",
+            "逐项校验 Dashboard、商机智能、客户列表、WhatsApp Inbox、邮件 Inbox、自动化触达、客户智能分析和 API 设置的独立新手引导。"
+        ], true),
         new("1.17.0", "2026-07-22", "邮件 Inbox 与多渠道销售自动化",
         [
             "新增邮件 Inbox，支持 Gmail、Outlook / Microsoft 365、Yahoo、iCloud 和自定义 IMAP / SMTP 账户连接、收取、发送与本地历史保存。",

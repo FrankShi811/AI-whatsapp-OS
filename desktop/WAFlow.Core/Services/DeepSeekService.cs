@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Infrastructure;
 
@@ -18,6 +20,10 @@ public sealed record AiModelCatalog(IReadOnlyList<string> Models, DateTimeOffset
 
 public sealed class DeepSeekService : IStructuredAiProvider
 {
+    private static readonly JsonSerializerOptions CompatibleJsonOptions = new(Infrastructure.Json.Options)
+    {
+        NumberHandling = JsonNumberHandling.AllowReadingFromString
+    };
     private readonly LocalRepository _repository;
     private readonly ISecretStore _secrets;
     private readonly HttpClient _http;
@@ -55,15 +61,33 @@ public sealed class DeepSeekService : IStructuredAiProvider
             var settings = await _repository.GetAppSettingsAsync(cancellationToken);
             if (string.IsNullOrWhiteSpace(settings.DeepSeekModel))
                 throw new DeepSeekException("model_not_selected", "请先从自动拉取的模型列表中选择一个模型。", false);
-            var content = await CompleteJsonAsync(settings, instructions, Infrastructure.Json.Serialize(payload), cancellationToken);
-            T? result;
-            try { result = Infrastructure.Json.Deserialize<T>(ExtractJson(content)); }
-            catch (Exception error) { throw new DeepSeekException("invalid_structured_output", "AI 返回的结构化 JSON 无法解析。", true, error); }
-            if (result is null) throw new DeepSeekException("invalid_structured_output", "AI 未返回结构化分析结果。", true);
-            var validationError = validate(result);
-            if (!string.IsNullOrWhiteSpace(validationError))
-                throw new DeepSeekException("invalid_structured_output", validationError, true);
-            return result;
+            DeepSeekException? lastError = null;
+            var serializedPayload = Infrastructure.Json.Serialize(payload);
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var attemptInstructions = attempt == 0
+                    ? instructions
+                    : $"{instructions}\n\n上一轮返回未通过结构校验。请修正后只返回一个严格 JSON 对象；不得输出 Markdown、解释或思考过程。校验提示：{lastError?.Message}";
+                var content = await CompleteJsonAsync(settings, attemptInstructions, serializedPayload, cancellationToken);
+                try
+                {
+                    var result = DeserializeCompatibleJson<T>(content);
+                    if (result is null) throw new DeepSeekException("invalid_structured_output", "AI 未返回结构化分析结果。", true);
+                    var validationError = validate(result);
+                    if (!string.IsNullOrWhiteSpace(validationError))
+                        throw new DeepSeekException("invalid_structured_output", validationError, true);
+                    return result;
+                }
+                catch (DeepSeekException error) when (error.Code == "invalid_structured_output")
+                {
+                    lastError = error;
+                }
+                catch (Exception error)
+                {
+                    lastError = new DeepSeekException("invalid_structured_output", "AI 返回的结构化 JSON 无法解析。", true, error);
+                }
+            }
+            throw lastError ?? new DeepSeekException("invalid_structured_output", "AI 返回的结构化 JSON 无法解析。", true);
         }
         finally { _analysisGate.Release(); }
     }
@@ -222,9 +246,30 @@ public sealed class DeepSeekService : IStructuredAiProvider
                 stage must be one of new, contacted, interested, negotiation, waiting, customer, lost. Do not change stage without evidence.
                 Answer customer_profile, customer_segment, reasons, next_action and risk_warning in Simplified Chinese. Keep message excerpts in their original language.
                 """;
-            var content = await CompleteJsonAsync(settings, instructions, Infrastructure.Json.Serialize(payload), cancellationToken);
-            var analysis = ParseAnalysis(content);
-            Validate(analysis);
+            LeadAnalysis? analysis = null;
+            var analysisAccepted = false;
+            DeepSeekException? lastContractError = null;
+            var serializedPayload = Infrastructure.Json.Serialize(payload);
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var attemptInstructions = attempt == 0
+                    ? instructions
+                    : $"{instructions}\n\n上一轮输出未通过 Lead Intelligence V2 校验。请严格补齐六个维度、证据、画像、风险和下一步；未知信息应给 0 分并明确写无可验证证据。校验提示：{lastContractError?.Message}";
+                var content = await CompleteJsonAsync(settings, attemptInstructions, serializedPayload, cancellationToken);
+                try
+                {
+                    analysis = ParseAnalysis(content, lead);
+                    Validate(analysis);
+                    analysisAccepted = true;
+                    break;
+                }
+                catch (DeepSeekException error) when (error.Code == "invalid_structured_output")
+                {
+                    lastContractError = error;
+                }
+            }
+            if (!analysisAccepted || analysis is null)
+                throw lastContractError ?? new DeepSeekException("invalid_structured_output", "AI 未返回 Lead Intelligence V2 结果。", true);
             var target = await _repository.GetLeadAsync(lead.Id, cancellationToken) ?? lead;
             target.Score = analysis.Score; target.Grade = analysis.Grade; target.AnalysisContractVersion = analysis.ContractVersion;
             target.BaseProfileScore = analysis.BaseProfileScore; target.BehaviorSignalScore = analysis.BehaviorSignalScore;
@@ -332,56 +377,86 @@ public sealed class DeepSeekService : IStructuredAiProvider
         }
     }
 
-    private static LeadAnalysis ParseAnalysis(string content)
+    private static LeadAnalysis ParseAnalysis(string content, Lead lead)
     {
         try
         {
-            using var document = JsonDocument.Parse(ExtractJson(content));
-            var root = document.RootElement;
-            var dimensionScores = root.GetProperty("dimension_scores");
-            var dimensionEvidence = root.GetProperty("dimension_evidence");
+            var output = DeserializeCompatibleJson<LeadAnalysisOutput>(content)
+                ?? throw new JsonException("Empty analysis output");
+            if ((output.DimensionScores?.Count ?? 0) == 0 && (output.DimensionEvidence?.Count ?? 0) == 0)
+                throw new JsonException("Missing Lead Intelligence dimensions");
+
             var factors = LeadScoringService.Weights.Select(weight =>
             {
-                var detail = dimensionEvidence.GetProperty(weight.Key);
+                var requestedScore = output.DimensionScores?.GetValueOrDefault(weight.Key) ?? 0;
+                var detail = output.DimensionEvidence?.GetValueOrDefault(weight.Key);
+                var evidence = detail?.Evidence?.Where(value => !string.IsNullOrWhiteSpace(value)).Select(value => value.Trim()).Distinct().ToList() ?? [];
+                var rationale = detail?.Reason?.Trim() ?? "";
+                var score = Math.Clamp(requestedScore, 0, weight.Value);
+                if (score > 0 && (string.IsNullOrWhiteSpace(rationale) || evidence.Count == 0))
+                {
+                    score = 0;
+                    rationale = "AI 未提供可核验证据，本维度不计分。";
+                    evidence = ["当前输入未提供可验证证据"];
+                }
+                else if (score == 0)
+                {
+                    if (string.IsNullOrWhiteSpace(rationale)) rationale = "当前输入未提供该维度的可验证证据。";
+                    if (evidence.Count == 0) evidence.Add("当前输入未提供可验证证据");
+                }
                 return new LeadFactor
                 {
                     Key = weight.Key,
-                    Score = dimensionScores.GetProperty(weight.Key).GetInt32(),
+                    Score = score,
                     MaxScore = weight.Value,
-                    Rationale = detail.GetProperty("reason").GetString() ?? "",
-                    Evidence = detail.GetProperty("evidence").EnumerateArray()
-                        .Select(item => item.GetString() ?? "").Where(item => item.Length > 0).ToList()
+                    Rationale = rationale,
+                    Evidence = evidence
                 };
             }).ToList();
-            var behaviorSignalNames = root.GetProperty("behavior_signals").EnumerateArray()
-                .Select(item => item.GetString() ?? "").Where(item => item.Length > 0).ToList();
-            var behaviorSignals = root.GetProperty("behavior_signal_details").EnumerateArray().Select(item => new LeadBehaviorSignal
+
+            var behaviorSignals = new List<LeadBehaviorSignal>();
+            var behaviorTotal = 0;
+            foreach (var item in output.BehaviorSignalDetails ?? [])
             {
-                Signal = item.GetProperty("signal").GetString() ?? "",
-                Score = item.GetProperty("score").GetInt32(),
-                Evidence = item.GetProperty("evidence").GetString() ?? ""
-            }).ToList();
-            if (behaviorSignalNames.Count != behaviorSignals.Count ||
-                behaviorSignalNames.Except(behaviorSignals.Select(signal => signal.Signal), StringComparer.OrdinalIgnoreCase).Any())
-                throw new JsonException("Behavior signal names and details do not match");
+                var signal = item.Signal?.Trim() ?? "";
+                var evidenceText = item.Evidence?.Trim() ?? "";
+                var score = Math.Clamp(item.Score, LeadIntelligenceContract.BehaviorSignalMinimum, LeadIntelligenceContract.BehaviorSignalMaximum);
+                if (score == 0 || string.IsNullOrWhiteSpace(signal) || string.IsNullOrWhiteSpace(evidenceText)) continue;
+                if (behaviorTotal + score is < LeadIntelligenceContract.BehaviorSignalMinimum or > LeadIntelligenceContract.BehaviorSignalMaximum) continue;
+                behaviorSignals.Add(new LeadBehaviorSignal { Signal = signal, Score = score, Evidence = evidenceText });
+                behaviorTotal += score;
+            }
             var evidence = factors.SelectMany(factor => factor.Evidence.Select(value => new AnalysisEvidence
                 { Field=factor.Key, Value=value, Interpretation=factor.Rationale }))
                 .Concat(behaviorSignals.Select(signal => new AnalysisEvidence
                     { Field="whatsapp_behavior", Value=signal.Evidence, Interpretation=$"{signal.Signal} ({signal.Score:+#;-#;0})" }))
                 .ToList();
-            var stageText = root.GetProperty("stage").GetString();
+            var stageText = output.Stage?.Trim();
             var validStages = new[] { "new", "contacted", "interested", "negotiation", "waiting", "customer", "lost" };
-            if (stageText is null || !validStages.Contains(stageText, StringComparer.OrdinalIgnoreCase)) throw new JsonException("Invalid stage");
-            var riskWarning = root.GetProperty("risk_warning").GetString() ?? "";
+            var stage = stageText is not null && validStages.Contains(stageText, StringComparer.OrdinalIgnoreCase)
+                ? StageParser.Parse(stageText)
+                : lead.Stage;
+            var baseScore = factors.Sum(factor => factor.Score);
+            var finalScore = Math.Clamp(baseScore + behaviorTotal, 0, 100);
+            var profile = string.IsNullOrWhiteSpace(output.CustomerProfile)
+                ? $"{lead.DisplayName}{(string.IsNullOrWhiteSpace(lead.Country) ? "" : $"，来自{lead.Country}")}；当前可验证经营与采购信息有限。"
+                : output.CustomerProfile.Trim();
+            var segment = string.IsNullOrWhiteSpace(output.CustomerSegment) ? "待补充信息客户" : output.CustomerSegment.Trim();
+            var nextAction = string.IsNullOrWhiteSpace(output.NextAction)
+                ? "优先补充经营模式、采购需求、预算与时间计划，并核对 WhatsApp 原始回复。"
+                : output.NextAction.Trim();
+            var riskWarning = string.IsNullOrWhiteSpace(output.RiskWarning)
+                ? "当前可验证信息有限，结论置信度较低，需人工核验。"
+                : output.RiskWarning.Trim();
             return new LeadAnalysis
             {
-                ContractVersion=root.GetProperty("contract_version").GetInt32(),
-                Score=root.GetProperty("lead_score").GetInt32(),
-                BaseProfileScore=root.GetProperty("base_profile_score").GetInt32(),
-                BehaviorSignalScore=root.GetProperty("behavior_signal_score").GetInt32(),
-                Grade=root.GetProperty("grade").GetString() ?? "D", Factors=factors, BehaviorSignals=behaviorSignals, Stage=StageParser.Parse(stageText),
-                Confidence=root.GetProperty("confidence").GetDouble(), Evidence=evidence, ProfileSummary=root.GetProperty("customer_profile").GetString() ?? "",
-                CustomerSegment=root.GetProperty("customer_segment").GetString() ?? "", NextAction=root.GetProperty("next_action").GetString() ?? "",
+                ContractVersion=LeadIntelligenceContract.Version,
+                Score=finalScore,
+                BaseProfileScore=baseScore,
+                BehaviorSignalScore=behaviorTotal,
+                Grade=LeadScoringService.GradeFromScore(finalScore), Factors=factors, BehaviorSignals=behaviorSignals, Stage=stage,
+                Confidence=Math.Clamp(output.Confidence, 0, 1), Evidence=evidence, ProfileSummary=profile,
+                CustomerSegment=segment, NextAction=nextAction,
                 RiskWarning=riskWarning, Risks=string.IsNullOrWhiteSpace(riskWarning) ? [] : [riskWarning]
             };
         }
@@ -412,6 +487,41 @@ public sealed class DeepSeekService : IStructuredAiProvider
             throw new DeepSeekException("invalid_structured_output", "分析缺少画像、分组、风险或下一步动作。", true);
     }
 
+    private static T? DeserializeCompatibleJson<T>(string content) where T : class
+    {
+        try
+        {
+            var normalized = NormalizeJsonKeys(ExtractJson(content));
+            return JsonSerializer.Deserialize<T>(normalized, CompatibleJsonOptions);
+        }
+        catch (DeepSeekException) { throw; }
+        catch (Exception error) { throw new DeepSeekException("invalid_structured_output", "AI 返回的结构化 JSON 无法解析。", true, error); }
+    }
+
+    private static string NormalizeJsonKeys(string json)
+    {
+        var node = JsonNode.Parse(json, documentOptions: new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip });
+        return NormalizeNode(node)?.ToJsonString(Infrastructure.Json.Options) ?? "null";
+    }
+
+    private static JsonNode? NormalizeNode(JsonNode? node) => node switch
+    {
+        JsonObject value => new JsonObject(value.Select(item => KeyValuePair.Create(ShouldPreserveJsonKey(item.Key) ? item.Key : ToCamelCase(item.Key), NormalizeNode(item.Value)))),
+        JsonArray value => new JsonArray(value.Select(NormalizeNode).ToArray()),
+        null => null,
+        _ => node.DeepClone()
+    };
+
+    private static string ToCamelCase(string key)
+    {
+        if (!key.Contains('_')) return key;
+        var parts = key.Split('_', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return key;
+        return parts[0] + string.Concat(parts.Skip(1).Select(part => char.ToUpperInvariant(part[0]) + part[1..]));
+    }
+
+    private static bool ShouldPreserveJsonKey(string key) => LeadScoringService.Weights.ContainsKey(key);
+
     private static string ExtractJson(string content)
     {
         var trimmed = content.Trim();
@@ -420,9 +530,58 @@ public sealed class DeepSeekService : IStructuredAiProvider
             var firstLine = trimmed.IndexOf('\n'); var lastFence = trimmed.LastIndexOf("```", StringComparison.Ordinal);
             if (firstLine >= 0 && lastFence > firstLine) trimmed = trimmed[(firstLine + 1)..lastFence].Trim();
         }
-        var start = trimmed.IndexOf('{'); var end = trimmed.LastIndexOf('}');
-        if (start < 0 || end <= start) throw new DeepSeekException("invalid_structured_output", "AI Provider 未返回 JSON 对象。", true);
-        return trimmed[start..(end + 1)];
+        var start = trimmed.IndexOf('{');
+        if (start < 0) throw new DeepSeekException("invalid_structured_output", "AI Provider 未返回 JSON 对象。", true);
+        var depth = 0;
+        var inString = false;
+        var escaped = false;
+        for (var index = start; index < trimmed.Length; index++)
+        {
+            var character = trimmed[index];
+            if (inString)
+            {
+                if (escaped) escaped = false;
+                else if (character == '\\') escaped = true;
+                else if (character == '"') inString = false;
+                continue;
+            }
+            if (character == '"') { inString = true; continue; }
+            if (character == '{') depth++;
+            else if (character == '}' && --depth == 0) return trimmed[start..(index + 1)];
+        }
+        throw new DeepSeekException("invalid_structured_output", "AI Provider 返回的 JSON 对象不完整。", true);
+    }
+
+    private sealed class LeadAnalysisOutput
+    {
+        public int ContractVersion { get; set; }
+        public int LeadScore { get; set; }
+        public int BaseProfileScore { get; set; }
+        public int BehaviorSignalScore { get; set; }
+        public string Grade { get; set; } = "D";
+        public Dictionary<string, int>? DimensionScores { get; set; }
+        public Dictionary<string, LeadDimensionEvidenceOutput>? DimensionEvidence { get; set; }
+        public List<string>? BehaviorSignals { get; set; }
+        public List<LeadBehaviorOutput>? BehaviorSignalDetails { get; set; }
+        public string CustomerProfile { get; set; } = "";
+        public string CustomerSegment { get; set; } = "";
+        public string Stage { get; set; } = "";
+        public double Confidence { get; set; }
+        public string NextAction { get; set; } = "";
+        public string RiskWarning { get; set; } = "";
+    }
+
+    private sealed class LeadDimensionEvidenceOutput
+    {
+        public string Reason { get; set; } = "";
+        public List<string>? Evidence { get; set; }
+    }
+
+    private sealed class LeadBehaviorOutput
+    {
+        public string Signal { get; set; } = "";
+        public int Score { get; set; }
+        public string Evidence { get; set; } = "";
     }
 
     private sealed class GeneratedDraft

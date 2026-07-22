@@ -1,3 +1,4 @@
+using System.Text;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Infrastructure;
 
@@ -68,9 +69,11 @@ public sealed class CustomerAnalysisService
                 EvidenceLedger = facts.Facts
             };
             report.Status = CustomerReportStatus.Succeeded;
-            report.Error = "";
+            report.Error = facts.InformationGaps.Count == 0
+                ? ""
+                : $"已基于当前全部可用资料生成；信息增加后可再次生成新版本。当前缺口：{string.Join("；", facts.InformationGaps.Take(4))}";
             await _repository.SaveCustomerAnalysisReportAsync(report, cancellationToken);
-            await _repository.LogEventAsync("customer_intelligence_report_generated", lead.Id, null, $"report_id={report.Id};version={report.Version};model={model};whatsapp_messages={snapshot.WhatsAppMessages.Count};email_messages={snapshot.EmailMessages.Count}", cancellationToken);
+            await _repository.LogEventAsync("customer_intelligence_report_generated", lead.Id, null, $"report_id={report.Id};version={report.Version};model={model};whatsapp_messages={snapshot.WhatsAppMessages.Count};email_messages={snapshot.EmailMessages.Count};information_gaps={facts.InformationGaps.Count}", cancellationToken);
             return report;
         }
         catch (OperationCanceledException)
@@ -183,10 +186,17 @@ public sealed class CustomerAnalysisService
                     message.IsRevoked
                 })
             };
-            var extracted = await _provider.CompleteStructuredAsync<CustomerFactSet>(FactExtractionPrompt, payload, ValidateFactSet, cancellationToken);
-            result.Facts.AddRange(extracted.Facts);
-            result.Quotes.AddRange(extracted.Quotes);
-            result.InformationGaps.AddRange(extracted.InformationGaps);
+            try
+            {
+                var extracted = await _provider.CompleteStructuredAsync<CustomerFactSet>(FactExtractionPrompt, payload, NormalizeFactSet, cancellationToken);
+                result.Facts.AddRange(extracted.Facts);
+                result.Quotes.AddRange(extracted.Quotes);
+                result.InformationGaps.AddRange(extracted.InformationGaps);
+            }
+            catch (DeepSeekException error) when (error.Retryable)
+            {
+                result.InformationGaps.Add($"一批 WhatsApp 消息未能完成 AI 事实提取（{error.Code}）；本版报告继续使用 CRM 与其他已核验资料。");
+            }
         }
         result.Facts = result.Facts
             .Where(item => !string.IsNullOrWhiteSpace(item.Statement))
@@ -245,8 +255,17 @@ public sealed class CustomerAnalysisService
             campaignTouches = snapshot.CampaignTouches,
             timeline = snapshot.Timeline
         };
-        var analysis = await _provider.CompleteStructuredAsync<CustomerBusinessAnalysisResult>(BusinessAnalysisPrompt, payload,
-            value => ValidateBusinessAnalysis(value, lead), cancellationToken);
+        CustomerBusinessAnalysisResult analysis;
+        try
+        {
+            analysis = await _provider.CompleteStructuredAsync<CustomerBusinessAnalysisResult>(BusinessAnalysisPrompt, payload,
+                value => ValidateBusinessAnalysis(value, lead), cancellationToken);
+        }
+        catch (DeepSeekException error) when (error.Retryable)
+        {
+            facts.InformationGaps.Add($"商业分析 AI 输出未通过校验（{error.Code}）；本版采用基于已核验事实的安全降级结果。");
+            analysis = BuildFallbackBusinessAnalysis(snapshot, facts);
+        }
         analysis.OpportunityJudgment.AiScore = lead.HasCurrentAiScore ? lead.Score : 0;
         analysis.OpportunityJudgment.Grade = lead.HasCurrentAiScore ? lead.Grade : "D";
         analysis.OpportunityJudgment.DimensionScores = lead.HasCurrentAiScore ? lead.ScoreFactors : [];
@@ -254,7 +273,7 @@ public sealed class CustomerAnalysisService
         return analysis;
     }
 
-    private Task<CustomerSalesStrategy> BuildSalesStrategyAsync(CustomerIntelligenceSourceSnapshot snapshot, CustomerFactSet facts, CustomerBusinessAnalysisResult business, CancellationToken cancellationToken)
+    private async Task<CustomerSalesStrategy> BuildSalesStrategyAsync(CustomerIntelligenceSourceSnapshot snapshot, CustomerFactSet facts, CustomerBusinessAnalysisResult business, CancellationToken cancellationToken)
     {
         var payload = new
         {
@@ -263,13 +282,142 @@ public sealed class CustomerAnalysisService
             business,
             constraint = "只能基于证据提出销售建议，不得承诺价格、库存、认证、交付时间或折扣。"
         };
-        return _provider.CompleteStructuredAsync<CustomerSalesStrategy>(SalesStrategyPrompt, payload, ValidateSalesStrategy, cancellationToken);
+        try
+        {
+            return await _provider.CompleteStructuredAsync<CustomerSalesStrategy>(SalesStrategyPrompt, payload, ValidateSalesStrategy, cancellationToken);
+        }
+        catch (DeepSeekException error) when (error.Retryable)
+        {
+            facts.InformationGaps.Add($"销售策略 AI 输出未通过校验（{error.Code}）；本版采用核实优先的安全推进计划。");
+            return BuildFallbackSalesStrategy(snapshot, facts);
+        }
     }
 
-    private Task<CustomerReportSynthesisResult> SynthesizeReportAsync(CustomerIntelligenceSourceSnapshot snapshot, CustomerFactSet facts, CustomerBusinessAnalysisResult business, CustomerSalesStrategy strategy, CancellationToken cancellationToken)
+    private async Task<CustomerReportSynthesisResult> SynthesizeReportAsync(CustomerIntelligenceSourceSnapshot snapshot, CustomerFactSet facts, CustomerBusinessAnalysisResult business, CustomerSalesStrategy strategy, CancellationToken cancellationToken)
     {
         var payload = new { customer = snapshot.Lead.DisplayName, facts, business, strategy };
-        return _provider.CompleteStructuredAsync<CustomerReportSynthesisResult>(ReportSynthesisPrompt, payload, ValidateSynthesis, cancellationToken);
+        try
+        {
+            return await _provider.CompleteStructuredAsync<CustomerReportSynthesisResult>(ReportSynthesisPrompt, payload, ValidateSynthesis, cancellationToken);
+        }
+        catch (DeepSeekException error) when (error.Retryable)
+        {
+            facts.InformationGaps.Add($"管理层摘要 AI 输出未通过校验（{error.Code}）；本版摘要由当前已核验内容安全汇总。");
+            return BuildFallbackSynthesis(snapshot, facts, business, strategy);
+        }
+    }
+
+    private static CustomerBusinessAnalysisResult BuildFallbackBusinessAnalysis(CustomerIntelligenceSourceSnapshot snapshot, CustomerFactSet facts)
+    {
+        var lead = snapshot.Lead;
+        var knownFacts = facts.Facts.Select(item => item.Statement).Where(value => !string.IsNullOrWhiteSpace(value)).Take(4).ToList();
+        var profile = $"{lead.DisplayName}{(string.IsNullOrWhiteSpace(lead.Country) ? "" : $"（{lead.Country}）")}已进入 CRM；当前经营模式、采购计划与决策条件仍需核实。";
+        var messageCount = snapshot.WhatsAppMessages.Count;
+        var emailCount = snapshot.EmailMessages.Count;
+        return new CustomerBusinessAnalysisResult
+        {
+            ExecutiveSummary = new CustomerExecutiveSummary
+            {
+                OneLinePositioning = profile,
+                CustomerType = "客户类型待核实",
+                BusinessStage = lead.StageLabel,
+                OverallValueJudgment = "现有证据不足以形成高置信度价值判断，应先补齐关键商业信息。",
+                CurrentSalesRecommendation = "优先核实客户业务模式、采购需求、预算、数量与决策时间。"
+            },
+            BasicProfile = new CustomerBasicProfile
+            {
+                CustomerType = "客户类型待核实",
+                BusinessModels = ["现有资料尚未确认主要销售渠道"],
+                ProductDirection = string.IsNullOrWhiteSpace(lead.ProductInterest) ? "产品方向待核实" : lead.ProductInterest,
+                OperatingScale = "经营规模待核实",
+                DevelopmentStage = lead.StageLabel
+            },
+            BusinessBackground = new CustomerBusinessBackground
+            {
+                CurrentBusinessModel = $"当前已核验资料共 {knownFacts.Count} 项，尚不能确认完整业务模式。",
+                CoreAdvantages = ["现有资料不足，暂不作无依据优势判断"],
+                CurrentLimitations = ["经营模式、采购能力或决策链信息不足"],
+                GrowthOpportunities = ["补齐客户渠道、销量、供应链与增长目标后重新分析"]
+            },
+            PainAnalysis = new CustomerPainAnalysis
+            {
+                SurfacePains = ["尚未取得足够客户原话确认表层痛点"],
+                DeepBusinessProblems = ["证据不足，暂不推断深层商业问题"]
+            },
+            PurchaseMotivation = new CustomerPurchaseMotivation
+            {
+                InterestReasons = ["尚无足够证据确认兴趣来源"],
+                TriggerEvents = ["尚无足够证据确认当前触发事件"],
+                DecisionFactors = ["需核实价格、数量、交付、质量和决策时间"]
+            },
+            WhatsAppAnalysis = new CustomerWhatsAppAnalysis
+            {
+                EngagementLevel = $"已同步 WhatsApp {messageCount} 条、邮件 {emailCount} 条；当前版本仅陈述可核验内容。",
+                FocusTopics = ["需从后续真实回复中确认关注主题"],
+                PurchaseSignals = ["尚无经过结构校验的明确采购信号"],
+                Concerns = ["信息不足可能导致当前判断偏保守"],
+                Quotes = facts.Quotes.Take(8).ToList()
+            },
+            OpportunityJudgment = new CustomerOpportunityJudgment
+            {
+                Grade = lead.HasCurrentAiScore ? lead.Grade : "D",
+                AiScore = lead.HasCurrentAiScore ? lead.Score : 0,
+                DealProbability = 0,
+                PositiveFactors = lead.HasCurrentAiScore
+                    ? lead.ScoreFactors.Where(item => item.Score > 0).Select(item => item.Rationale).Where(value => !string.IsNullOrWhiteSpace(value)).ToList()
+                    : [],
+                NegativeFactors = ["当前可验证商业资料不足，成交概率暂不估计"],
+                DimensionScores = lead.HasCurrentAiScore ? lead.ScoreFactors : []
+            },
+            ProductFit = new CustomerProductFit
+            {
+                HighMatchPoints = ["尚无足够产品与需求证据确认高匹配点"],
+                LowMatchPoints = ["卖方方案与客户需求边界尚未确认"],
+                QuestionsToValidate = ["客户当前主营业务和销售渠道是什么？", "本次采购或合作的目标、数量、预算和时间是什么？"]
+            },
+            RiskAnalysis = new CustomerRiskAnalysis
+            {
+                DealRisks = ["信息不足，暂不应据此作高价值成交承诺"],
+                AdoptionRisks = ["实际使用场景和实施条件尚未核实"],
+                ChurnRisks = ["缺少持续沟通证据，后续响应稳定性待观察"]
+            }
+        };
+    }
+
+    private static CustomerSalesStrategy BuildFallbackSalesStrategy(CustomerIntelligenceSourceSnapshot snapshot, CustomerFactSet facts) => new()
+    {
+        Actions =
+        [
+            new() { Timeframe = "24小时", Action = "发送一条简短确认消息，核实客户当前业务、需求和优先问题。", Rationale = "当前版本存在信息缺口，应先取得客户原话。", SuccessCriterion = "获得至少一项可记录的需求、数量、预算或时间信息。" },
+            new() { Timeframe = "7天", Action = "结合客户回复更新 CRM 字段、阶段和跟进记录，并重新运行商机分析。", Rationale = "新证据应进入统一客户档案后再影响评分与策略。", SuccessCriterion = "关键字段得到更新，或明确记录客户暂未回复。" },
+            new() { Timeframe = "30天", Action = "根据新增沟通和触达结果重新生成客户情报报告，比较版本变化。", Rationale = "报告按快照生成，新版本可纳入后续补充信息。", SuccessCriterion = "形成包含新证据的报告版本，或完成低优先级归档判断。" }
+        ],
+        RecommendedTalkTrack = $"您好 {snapshot.Lead.DisplayName}，为了更准确地理解您的需求，想确认一下您目前主要经营的产品、销售渠道，以及近期最希望解决的问题。您方便简单介绍一下吗？",
+        PendingQuestions = facts.InformationGaps.Concat(["客户业务模式与主要渠道", "明确需求、预算、数量和决策时间"]).Distinct().Take(8).ToList()
+    };
+
+    private static CustomerReportSynthesisResult BuildFallbackSynthesis(CustomerIntelligenceSourceSnapshot snapshot, CustomerFactSet facts, CustomerBusinessAnalysisResult business, CustomerSalesStrategy strategy)
+    {
+        var lead = snapshot.Lead;
+        var verified = string.Join("；", facts.Facts.Select(item => item.Statement.Trim()).Where(value => value.Length > 0).Take(5));
+        if (string.IsNullOrWhiteSpace(verified)) verified = "系统目前仅确认该客户已进入 CRM，尚无更多可核验商业事实";
+        var builder = new StringBuilder();
+        builder.Append($"已知事实：{verified}。本报告已读取当前 CRM、WhatsApp、邮件、自动化触达、商机评分与客户轨迹；其中 WhatsApp 共 {snapshot.WhatsAppMessages.Count} 条、邮件共 {snapshot.EmailMessages.Count} 条。")
+            .Append($"AI 判断：{business.ExecutiveSummary.OverallValueJudgment} 由于经营模式、采购规模、预算、决策链或时间计划仍存在信息缺口，当前等级保持为 {(lead.HasCurrentAiScore ? lead.Grade : "D")} 级，评分为 {(lead.HasCurrentAiScore ? lead.Score : 0)}，成交概率暂不作高置信度估计。")
+            .Append($"销售建议：{strategy.Actions.FirstOrDefault()?.Action ?? "先取得客户原话并补齐关键信息。"} 后续应把新增回复同步到客户档案，再重新运行商机分析与客户情报报告，以便新版本纳入最新证据。")
+            .Append("当前结论用于安排核实优先级，不应被理解为对客户价值、预算、采购量或成交结果的确定判断。管理者可先检查证据账本和待验证问题，再决定是否投入更多人工跟进资源。");
+        var summary = builder.ToString();
+        if (summary.Length > 500) summary = summary[..500];
+        while (summary.Length < 300)
+            summary += " 本版严格区分已知事实、AI判断和销售建议，缺少证据的内容均保留为待验证项。";
+        if (summary.Length > 500) summary = summary[..500];
+        return new CustomerReportSynthesisResult
+        {
+            ManagementSummary = summary,
+            OverallValueJudgment = business.ExecutiveSummary.OverallValueJudgment,
+            CurrentSalesRecommendation = strategy.Actions.FirstOrDefault()?.Action ?? "先补充关键信息后再判断推进优先级。",
+            DealProbability = 0
+        };
     }
 
     private static List<List<WhatsAppMessage>> BuildMessageBatches(IReadOnlyList<WhatsAppMessage> messages)
@@ -290,12 +438,16 @@ public sealed class CustomerAnalysisService
         return result;
     }
 
-    private static string? ValidateFactSet(CustomerFactSet value)
+    private static string? NormalizeFactSet(CustomerFactSet value)
     {
-        if (value.Facts.Any(item => item.Nature != "事实" || string.IsNullOrWhiteSpace(item.Topic) || string.IsNullOrWhiteSpace(item.Statement) || string.IsNullOrWhiteSpace(item.Evidence) || string.IsNullOrWhiteSpace(item.Source)))
-            return "事实提取结果缺少事实类型、证据或来源。";
-        if (value.Quotes.Any(item => string.IsNullOrWhiteSpace(item.Original) || string.IsNullOrWhiteSpace(item.ChineseMeaning) || string.IsNullOrWhiteSpace(item.AiAnalysis)))
-            return "WhatsApp 引用必须包含原文、中文含义和 AI 分析。";
+        var factCount = value.Facts.Count;
+        var quoteCount = value.Quotes.Count;
+        value.Facts = value.Facts.Where(item => !string.IsNullOrWhiteSpace(item.Topic) && !string.IsNullOrWhiteSpace(item.Statement) && !string.IsNullOrWhiteSpace(item.Evidence) && !string.IsNullOrWhiteSpace(item.Source)).ToList();
+        foreach (var item in value.Facts) { item.Nature = "事实"; item.Confidence = Math.Clamp(item.Confidence, 0, 1); }
+        value.Quotes = value.Quotes.Where(item => !string.IsNullOrWhiteSpace(item.Original) && !string.IsNullOrWhiteSpace(item.ChineseMeaning) && !string.IsNullOrWhiteSpace(item.AiAnalysis)).ToList();
+        value.InformationGaps ??= [];
+        if (value.Facts.Count < factCount) value.InformationGaps.Add("AI 返回的部分事实缺少证据或来源，已从本版报告剔除。");
+        if (value.Quotes.Count < quoteCount) value.InformationGaps.Add("AI 返回的部分客户引用不完整，已从本版报告剔除。");
         return null;
     }
 

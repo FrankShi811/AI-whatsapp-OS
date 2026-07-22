@@ -39,9 +39,12 @@ public partial class VersionHistoryWindow : Window
 
     private void InstallUpdate_Click(object sender, RoutedEventArgs e)
     {
+        var portableBootstrap = !_updates.State.IsInstalled;
         var result = MessageBox.Show(
-            "AI Sales OS 将关闭、安装已经下载的更新，然后自动重新启动。\n\n客户数据、WhatsApp 账号和配置保存在本地数据目录，不会被覆盖。是否继续？",
-            "安装更新并重启",
+            portableBootstrap
+                ? "AI Sales OS 将关闭并启动已经下载的正式安装包。完成这一次安装后，后续版本即可在程序内自动更新。\n\n客户数据、WhatsApp 账号和配置保存在本地数据目录，不会被覆盖。是否继续？"
+                : "AI Sales OS 将关闭、安装已经下载的更新，然后自动重新启动。\n\n客户数据、WhatsApp 账号和配置保存在本地数据目录，不会被覆盖。是否继续？",
+            portableBootstrap ? "安装正式版" : "安装更新并重启",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question);
         if (result != MessageBoxResult.Yes) return;
@@ -66,6 +69,7 @@ public partial class VersionHistoryWindow : Window
         UpdateProgress.Visibility = state.Stage == ApplicationUpdateStage.Downloading ? Visibility.Visible : Visibility.Collapsed;
         CheckUpdateButton.IsEnabled = state.CanCheck;
         InstallUpdateButton.IsEnabled = state.CanInstall;
+        InstallUpdateButton.Content = state.IsInstalled ? "安装更新并重启" : "安装正式版";
         ReleaseNotesPanel.Visibility = string.IsNullOrWhiteSpace(state.ReleaseNotes) ? Visibility.Collapsed : Visibility.Visible;
         RemoteReleaseNotesText.Text = state.ReleaseNotes;
 

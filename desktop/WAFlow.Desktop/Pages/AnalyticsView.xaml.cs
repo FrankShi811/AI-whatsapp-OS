@@ -114,7 +114,9 @@ public partial class AnalyticsView : UserControl, IRefreshableView
         ActionItems.ItemsSource = content.SalesStrategy.Actions;
         PendingQuestionItems.ItemsSource = content.SalesStrategy.PendingQuestions.Count > 0 ? content.SalesStrategy.PendingQuestions : ["当前没有记录待验证问题"];
         TalkTrackText.Text = ValueOrPlaceholder(content.SalesStrategy.RecommendedTalkTrack);
-        CoverageText.Text = $"CRM 1 份 · WhatsApp {report.SourceSnapshot.WhatsAppMessages.Count} 条 · 自动化触达 {report.SourceSnapshot.CampaignTouches.Count} 次 · 客户轨迹 {report.SourceSnapshot.Timeline.Count} 条 · 历史 AI 分析 {report.SourceSnapshot.LeadAnalysisHistory.Count} 次\n快照时间：{report.SourceSnapshot.CapturedAt.LocalDateTime:yyyy-MM-dd HH:mm}";
+        CoverageText.Text = $"CRM 1 份 · WhatsApp {report.SourceSnapshot.WhatsAppMessages.Count} 条 · 邮件 {report.SourceSnapshot.EmailMessages.Count} 条 · 自动化触达 {report.SourceSnapshot.CampaignTouches.Count} 次 · 客户轨迹 {report.SourceSnapshot.Timeline.Count} 条 · 历史 AI 分析 {report.SourceSnapshot.LeadAnalysisHistory.Count} 次\n快照时间：{report.SourceSnapshot.CapturedAt.LocalDateTime:yyyy-MM-dd HH:mm}" +
+            (string.IsNullOrWhiteSpace(report.Error) ? "" : $"\n生成说明：{report.Error}");
+        if (!string.IsNullOrWhiteSpace(report.Error)) ReportPanel.Children.Add(CreateGenerationNotice(report.Error));
         BuildReport(content);
     }
 
@@ -202,6 +204,24 @@ public partial class AnalyticsView : UserControl, IRefreshableView
         var body = new TextBlock { Text = report.Error.Length > 0 ? report.Error : "报告正在执行多阶段 AI 分析，请稍候。", TextWrapping = TextWrapping.Wrap, Foreground = Brush("Muted"), Margin = new Thickness(0, 9, 0, 0) };
         return new Border { Style = (Style)FindResource("AiCard"), Padding = new Thickness(18), Child = new StackPanel { Children = { title, body } } };
     }
+
+    private Border CreateGenerationNotice(string message) => new()
+    {
+        Background = Brush("WarningSoft"),
+        BorderBrush = Brush("Warning"),
+        BorderThickness = new Thickness(1),
+        CornerRadius = new CornerRadius(12),
+        Padding = new Thickness(15),
+        Margin = new Thickness(0, 0, 0, 13),
+        Child = new StackPanel
+        {
+            Children =
+            {
+                new TextBlock { Text = "当前资料版本说明", FontWeight = FontWeights.Bold, Foreground = Brush("Warning") },
+                new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, Foreground = Brush("InkSecondary"), Margin = new Thickness(0, 6, 0, 0) }
+            }
+        }
+    };
 
     private FrameworkElement Field(string label, string value, string nature = "事实")
     {
@@ -304,7 +324,7 @@ public partial class AnalyticsView : UserControl, IRefreshableView
             await LoadHistoryAsync(_currentLead.Id, report.Id); DataChanged?.Invoke(this, EventArgs.Empty);
         }
         catch (OperationCanceledException) { MessageBox.Show("报告生成已停止，当前版本已标记为可重试。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Information); await LoadHistoryAsync(_currentLead.Id); }
-        catch (Exception error) { MessageBox.Show($"报告生成失败，客户原始数据没有被修改。\n\n{error.Message}", "可重新分析", MessageBoxButton.OK, MessageBoxImage.Warning); await LoadHistoryAsync(_currentLead.Id); }
+        catch (Exception error) { MessageBox.Show($"本次 AI 分析未完成；客户资料已安全保留，可稍后重新生成新版本。\n\n失败原因：{error.Message}", "可重新分析", MessageBoxButton.OK, MessageBoxImage.Warning); await LoadHistoryAsync(_currentLead.Id); }
         finally { _generationCancellation.Dispose(); _generationCancellation = null; SetGenerationState(false); }
     }
 

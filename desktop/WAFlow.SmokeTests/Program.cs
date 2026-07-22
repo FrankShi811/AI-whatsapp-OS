@@ -603,7 +603,7 @@ await using (var embeddedBridge = new WhatsAppConnectionManager())
 var analysisJson = V2AnalysisJson("Could you quote 300 units?");
 var draftJson = WAFlow.Core.Infrastructure.Json.Serialize(new { purpose="follow_up", language="en", body="Hi Elena, thank you for confirming 300 units. I will verify the lead time and share the next details with you.", rationale=new[] { "承接客户的数量与交期问题" }, assumptions=Array.Empty<string>(), risks=new[] { "交期需人工确认" } });
 var invalidAnalysisJson = "{\"score\":99,\"grade\":\"A\",\"factors\":[],\"stage\":\"new\",\"confidence\":0.8,\"evidence\":[],\"profileSummary\":\"x\",\"customerSegment\":\"x\",\"nextAction\":\"x\",\"risks\":[]}";
-var handler = new QueueHandler([Envelope(analysisJson), Envelope(draftJson), Envelope(invalidAnalysisJson)]);
+var handler = new QueueHandler([Envelope(analysisJson), Envelope(draftJson), Envelope(invalidAnalysisJson), Envelope(invalidAnalysisJson)]);
 var deepSeek = new DeepSeekService(repository, new FakeSecretStore("sk-test-redacted"), new HttpClient(handler) { Timeout=TimeSpan.FromSeconds(5) });
 await repository.SaveAppSettingsAsync(new AppSettings { DeepSeekBaseUrl="https://api.deepseek.com", DeepSeekModel="deepseek-chat" });
 var catalog = await deepSeek.DiscoverModelsAsync("https://api.deepseek.com");
@@ -622,7 +622,7 @@ try
 catch (DeepSeekException error) { Check(error.Code == "invalid_structured_output" && error.Retryable, "DeepSeek invalid structure rejected"); }
 var failedAnalysisLead = await repository.GetLeadAsync("lead_ahmed");
 Check(failedAnalysisLead is { Grade: "D", Score: 0, AnalysisStatus: AnalysisStatus.RetryableFailed, AiScoreApplied: false }, "AI analysis failure remains D/0 and is retryable");
-Check(handler.Requests.All(x => x.Authorization == "Bearer sk-test-redacted") && handler.Requests.Count(x => x.Method == "GET" && x.Uri == "https://api.deepseek.com/models") == 1 && handler.Requests.Count(x => x.Method == "POST" && x.Uri == "https://api.deepseek.com/chat/completions") == 3, "AI model discovery and chat requests use the server-side key");
+Check(handler.Requests.All(x => x.Authorization == "Bearer sk-test-redacted") && handler.Requests.Count(x => x.Method == "GET" && x.Uri == "https://api.deepseek.com/models") == 1 && handler.Requests.Count(x => x.Method == "POST" && x.Uri == "https://api.deepseek.com/chat/completions") == 4, "AI model discovery and chat requests use the server-side key");
 Check(handler.RequestBodies.Any(body => body.Contains("dimension_weights") && body.Contains("recentMessages")), "AI request includes the V2 contract, imported CRM fields and WhatsApp history");
 
 var automationLead = new Lead { Id="reply-automation-lead", Name="Reply Buyer", PhoneE164="+8829990000123", PhoneValid=true };
@@ -656,7 +656,7 @@ await bulkRepository.UpsertLeadAsync(new Lead { Id="bulk-one", Name="Bulk One", 
 await bulkRepository.UpsertLeadAsync(new Lead { Id="bulk-two", Name="Bulk Two", PhoneE164="+14155550102", PhoneValid=true });
 await bulkRepository.RemoveDemoLeadsIfRealDataExistsAsync();
 await bulkRepository.SaveAppSettingsAsync(new AppSettings { DeepSeekBaseUrl="https://api.deepseek.com", DeepSeekModel="deepseek-chat" });
-var bulkHandler = new QueueHandler([Envelope(invalidAnalysisJson), Envelope(V2AnalysisJson("Please send a quotation for 500 pcs"))]);
+var bulkHandler = new QueueHandler([Envelope(invalidAnalysisJson), Envelope(invalidAnalysisJson), Envelope(V2AnalysisJson("Please send a quotation for 500 pcs"))]);
 var bulkProvider = new DeepSeekService(bulkRepository, new FakeSecretStore("sk-bulk"), new HttpClient(bulkHandler) { Timeout=TimeSpan.FromSeconds(5) });
 await using (var bulkBridge = new WhatsAppConnectionManager())
 {
@@ -664,7 +664,7 @@ await using (var bulkBridge = new WhatsAppConnectionManager())
     await using var bulkAutomation = new LeadIntelligenceAutomationService(bulkRepository, bulkProvider, bulkSync);
     var bulkResult = await bulkAutomation.AnalyzeAllLeadsAsync();
     var bulkDashboard = await bulkRepository.GetDashboardAsync();
-    Check(bulkResult is { Total: 2, Succeeded: 1, Failed: 1 } && bulkHandler.RequestBodies.Count == 2, "bulk lead analysis continues after one customer fails");
+    Check(bulkResult is { Total: 2, Succeeded: 1, Failed: 1 } && bulkHandler.RequestBodies.Count == 3, "bulk lead analysis continues after one customer fails");
     Check(bulkDashboard.Grades["A"] == 1 && bulkDashboard.Grades["D"] == 1, "bulk AI results update Dashboard while failed customers remain D/0");
 }
 
@@ -721,6 +721,11 @@ var secondReport = await customerAnalysis.GenerateAsync(reportLead.Id);
 var reportHistory = await customerAnalysis.GetHistoryAsync(reportLead.Id);
 Check(secondReport.Version == 2 && reportHistory.Select(report => report.Version).SequenceEqual([2, 1]) && reportHistory.All(report => report.CustomerId == reportLead.Id), "customer intelligence reports support re-analysis, immutable versions and history comparison");
 Check((await reportRepository.GetLeadAsync(reportLead.Id)) is { Score: 86, Grade: "A" }, "customer report generation never overwrites authoritative CRM or Lead Intelligence data");
+var fallbackAnalysis = new CustomerAnalysisService(reportRepository, new AlwaysInvalidStructuredReportProvider());
+var fallbackReport = await fallbackAnalysis.GenerateAsync(reportLead.Id);
+var fallbackSteps = await reportRepository.GetCustomerAnalysisStepsAsync(fallbackReport.Id);
+Check(fallbackReport.Status == CustomerReportStatus.Succeeded && fallbackReport.Version == 3 && fallbackReport.Error.Contains("当前全部可用资料") && fallbackReport.Report.ManagementSummary.Length is >= 300 and <= 500, "customer report falls back to current verified data when AI structured output remains invalid");
+Check(fallbackSteps.Count == 5 && fallbackSteps.All(step => step.Status == CustomerReportStepStatus.Succeeded) && fallbackReport.Report.EvidenceLedger.Count > 0, "partial-data customer report preserves a complete auditable pipeline and evidence ledger");
 var keepArtifactIndex = Array.IndexOf(args, "--keep-report-artifacts");
 if (keepArtifactIndex >= 0 && keepArtifactIndex + 1 < args.Length)
 {
@@ -894,4 +899,12 @@ sealed class FakeStructuredReportProvider : IStructuredAiProvider
         if (!string.IsNullOrWhiteSpace(error)) throw new InvalidOperationException(error);
         return Task.FromResult(typed);
     }
+}
+
+sealed class AlwaysInvalidStructuredReportProvider : IStructuredAiProvider
+{
+    public bool HasApiKey() => true;
+    public Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default) => Task.FromResult("invalid-structured-test");
+    public Task<T> CompleteStructuredAsync<T>(string instructions, object payload, Func<T, string?> validate, CancellationToken cancellationToken = default) where T : class =>
+        throw new DeepSeekException("invalid_structured_output", "测试模型返回的结构化 JSON 无法解析。", true);
 }
