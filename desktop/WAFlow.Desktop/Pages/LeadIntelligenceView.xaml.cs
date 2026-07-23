@@ -14,6 +14,7 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     private CancellationTokenSource? _bulkCancellation;
     private LeadBulkAnalysisProgress? _lastBulkProgress;
     private bool _decisionDrawerExpanded = true;
+    private int _customerBrainRefreshGeneration;
     public event EventHandler? ImportRequested;
     public event EventHandler? DataChanged;
 
@@ -31,7 +32,9 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         BulkAnalyzeButton.Content = $"使用 {settings.DeepSeekModel} 分析 / 重试全部";
         LeadGrid.ItemsSource = _leads;
         LeadGrid.SelectedItem = _leads.FirstOrDefault(x => x.Id == selectedId) ?? _leads.FirstOrDefault();
-        UpdateInspector(LeadGrid.SelectedItem as Lead);
+        var selectedLead = LeadGrid.SelectedItem as Lead;
+        UpdateInspector(selectedLead);
+        await UpdateCustomerBrainAsync(selectedLead);
     }
 
     private void UpdateInspector(Lead? lead)
@@ -40,7 +43,7 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         {
             LeadNameText.Text = "选择一个商机"; CompanyText.Text = ""; GradeText.Text = "—"; ScoreText.Text = "0"; StageText.Text = "—"; AmountText.Text = "—";
             BaseScoreText.Text = "0 / 100"; BehaviorScoreText.Text = "0";
-            ProfileText.Text = "尚未选择客户"; AnalysisMetaText.Text = ""; SignalItems.ItemsSource = null; NextActionText.Text = "—"; FactorItems.ItemsSource = null; RiskItems.ItemsSource = null; AnalysisErrorText.Text = "";
+            ProfileText.Text = "尚未选择客户"; AnalysisMetaText.Text = ""; CustomerBrainMetaText.Text = "CUSTOMER BRAIN · 等待选择客户"; SignalItems.ItemsSource = null; NextActionText.Text = "—"; FactorItems.ItemsSource = null; RiskItems.ItemsSource = null; AnalysisErrorText.Text = "";
             ConfidenceText.Text = "0%"; ConfidenceBar.Value = 0; ScoreRing.SetScore(0, "D", 0); RadarChart.SetValues([]); return;
         }
         LeadNameText.Text = lead.DisplayName; CompanyText.Text = $"{lead.Company} · {lead.Country}"; GradeText.Text = $"{lead.Grade}级"; ScoreText.Text = lead.Score.ToString();
@@ -68,6 +71,38 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         RiskItems.ItemsSource = lead.Risks.Count > 0 ? lead.Risks : !lead.PhoneValid ? new[] { "号码无效，禁止打开 WhatsApp。" } : lead.AiScoreApplied ? new[] { "AI 分析结论仍需人工核对。" } : new[] { "当前 D 级是未分析初始值，不代表低价值客户。" };
         AnalysisErrorText.Text = lead.AnalysisError;
         GradeBadge.Background = (System.Windows.Media.Brush)FindResource(lead.Grade is "A" or "B" ? "SuccessSoft" : lead.Grade == "C" ? "WarningSoft" : "DangerSoft");
+    }
+
+    private async Task UpdateCustomerBrainAsync(Lead? lead)
+    {
+        var generation = ++_customerBrainRefreshGeneration;
+        if (lead is null)
+        {
+            CustomerBrainMetaText.Text = "CUSTOMER BRAIN · 等待选择客户";
+            return;
+        }
+
+        CustomerBrainMetaText.Text = "CUSTOMER BRAIN · 正在整合 CRM、会话、触达与分析证据…";
+        try
+        {
+            var brain = await _services.CustomerBrain.RefreshAsync(lead.Id);
+            if (generation != _customerBrainRefreshGeneration || (LeadGrid.SelectedItem as Lead)?.Id != lead.Id) return;
+
+            var facts = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.Fact);
+            var inferences = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.Inference);
+            var recommendations = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.Recommendation);
+            var gaps = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.InformationGap);
+            CustomerBrainMetaText.Text =
+                $"CUSTOMER BRAIN V{brain.Version} · 覆盖 {brain.Coverage.Percentage}% · 事实 {facts} · AI 判断 {inferences} · 建议 {recommendations} · 缺口 {gaps}";
+            if (!string.IsNullOrWhiteSpace(brain.Summary)) ProfileText.Text = brain.Summary;
+            if (!string.IsNullOrWhiteSpace(brain.NextBestAction)) NextActionText.Text = brain.NextBestAction;
+            if (brain.Risks.Count > 0) RiskItems.ItemsSource = brain.Risks;
+        }
+        catch (Exception error)
+        {
+            if (generation != _customerBrainRefreshGeneration || (LeadGrid.SelectedItem as Lead)?.Id != lead.Id) return;
+            CustomerBrainMetaText.Text = $"CUSTOMER BRAIN · 暂未物化：{error.Message}";
+        }
     }
 
     private async void BulkAnalyze_Click(object sender, RoutedEventArgs e)
@@ -157,7 +192,12 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         CancelBulkButton.IsEnabled = progress.State is not "cancelled";
     }
 
-    private void LeadGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateInspector(LeadGrid.SelectedItem as Lead);
+    private async void LeadGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        var lead = LeadGrid.SelectedItem as Lead;
+        UpdateInspector(lead);
+        await UpdateCustomerBrainAsync(lead);
+    }
     private void ToggleDecisionDrawer_Click(object sender, RoutedEventArgs e)
     {
         _decisionDrawerExpanded = !_decisionDrawerExpanded;

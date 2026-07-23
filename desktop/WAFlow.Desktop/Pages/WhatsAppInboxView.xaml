@@ -184,6 +184,13 @@
                                 <controls:ScoreRing x:Name="AiSidebarScoreRing" Width="100" Height="100"/>
                                 <StackPanel Grid.Column="1" Margin="12,1,0,0">
                                     <TextBlock Text="AI SALES BRIEF" Style="{StaticResource PageEyebrow}"/>
+                                    <TextBlock x:Name="AiSidebarBrainMetaText"
+                                               Text="CUSTOMER BRAIN · 等待客户上下文"
+                                               Foreground="{DynamicResource AiAccent}"
+                                               FontSize="8.5"
+                                               FontWeight="SemiBold"
+                                               Margin="0,3,0,0"
+                                               TextWrapping="Wrap"/>
                                     <TextBlock x:Name="AiSidebarConfidenceText" Text="等待 AI 分析" FontWeight="SemiBold" Margin="0,5,0,4"/>
                                     <ProgressBar x:Name="AiSidebarConfidenceBar" Height="5" Maximum="100" Foreground="{DynamicResource AiAccent}"/>
                                     <TextBlock x:Name="AiSidebarProfileText" Text="选择已关联客户后显示画像" Foreground="{DynamicResource Muted}" FontSize="9.5" TextWrapping="Wrap" Margin="0,7,0,0" MaxHeight="42" TextTrimming="CharacterEllipsis"/>

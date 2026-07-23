@@ -23,6 +23,10 @@ if (-not $QaDirectory.StartsWith($workRoot + [IO.Path]::DirectorySeparatorChar, 
 if (Test-Path -LiteralPath $QaDirectory) { [IO.Directory]::Delete($QaDirectory, $true) }
 
 $database = Join-Path $env:LOCALAPPDATA 'WAFlow\waflow.db'
+$qaDataDirectory = Join-Path $workRoot 'windows-installer-qa-data'
+if (Test-Path -LiteralPath $qaDataDirectory) { [IO.Directory]::Delete($qaDataDirectory, $true) }
+[IO.Directory]::CreateDirectory($qaDataDirectory) | Out-Null
+$qaDatabase = Join-Path $qaDataDirectory 'waflow.db'
 function Get-HashWithRetry([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path)) { return 'MISSING' }
   for ($attempt = 1; $attempt -le 10; $attempt++) {
@@ -49,11 +53,18 @@ if ($installer.ExitCode -ne 0) { throw "Installer exited with code $($installer.
 
 $appPath = Join-Path $QaDirectory 'current\AISalesOS.exe'
 if (-not (Test-Path -LiteralPath $appPath)) { throw "Installed application is missing: $appPath" }
-$app = Start-Process -FilePath $appPath -PassThru
-Start-Sleep -Seconds 8
-if (-not $app.HasExited) {
-  $app.CloseMainWindow() | Out-Null
-  if (-not $app.WaitForExit(5000)) { Stop-Process -Id $app.Id -Force }
+$previousDatabaseOverride = $env:WAFLOW_DATABASE_PATH
+try {
+  $env:WAFLOW_DATABASE_PATH = $qaDatabase
+  $app = Start-Process -FilePath $appPath -PassThru
+  Start-Sleep -Seconds 8
+  if (-not $app.HasExited) {
+    $app.CloseMainWindow() | Out-Null
+    if (-not $app.WaitForExit(5000)) { Stop-Process -Id $app.Id -Force }
+  }
+}
+finally {
+  $env:WAFLOW_DATABASE_PATH = $previousDatabaseOverride
 }
 $qaProcesses = Get-CimInstance Win32_Process | Where-Object {
   $_.ExecutablePath -and $_.ExecutablePath.StartsWith($QaDirectory, [StringComparison]::OrdinalIgnoreCase)
@@ -90,3 +101,4 @@ if (-not $installedVersion.StartsWith($ExpectedVersion + '.', [StringComparison]
 if (-not $result.DatabasePreservationPassed) { throw 'Installer smoke test changed an existing user SQLite database.' }
 if ($result.UninstallExit -ne 0) { throw "Installer smoke uninstall failed with exit code $($result.UninstallExit)." }
 if ($result.QaDirectoryStillExists) { throw "Installer smoke uninstall left the QA directory behind: $QaDirectory" }
+if (Test-Path -LiteralPath $qaDataDirectory) { [IO.Directory]::Delete($qaDataDirectory, $true) }
