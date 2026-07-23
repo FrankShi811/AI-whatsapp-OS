@@ -7,6 +7,7 @@ bridge/dist/sea-manifest.json
 bridge/dist/waflow-bridge.blob
 outputs/
 work/
+.codex/
 /dist/
 *.exe
 *.db

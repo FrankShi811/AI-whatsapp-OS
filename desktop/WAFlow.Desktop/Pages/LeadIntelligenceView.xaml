@@ -96,7 +96,7 @@
                                 <StackPanel Grid.Column="1" Margin="16,4,0,0">
                                     <TextBlock Text="AI 置信度" Style="{StaticResource LabelText}"/>
                                     <TextBlock x:Name="ConfidenceText" Text="0%" FontSize="20" FontWeight="Bold" Margin="0,3,0,6"/>
-                                    <ProgressBar x:Name="ConfidenceBar" Height="6" Maximum="100" Foreground="{DynamicResource AiAccent}"/>
+                                    <ProgressBar x:Name="ConfidenceBar" Style="{StaticResource ConfidenceMeter}" Maximum="100"/>
                                     <Grid Margin="0,14,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="阶段" Style="{StaticResource LabelText}"/><TextBlock x:Name="StageText" Text="—" FontWeight="SemiBold" Margin="0,3,0,0"/></StackPanel><StackPanel Grid.Column="1"><TextBlock Text="预估订单" Style="{StaticResource LabelText}"/><TextBlock x:Name="AmountText" Text="—" FontWeight="SemiBold" Margin="0,3,0,0"/></StackPanel></Grid>
                                     <Grid Margin="0,13,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="画像基础分" Style="{StaticResource LabelText}"/><TextBlock x:Name="BaseScoreText" Text="0 / 100" FontWeight="SemiBold" Margin="0,3,0,0"/></StackPanel><StackPanel Grid.Column="1"><TextBlock Text="行为修正" Style="{StaticResource LabelText}"/><TextBlock x:Name="BehaviorScoreText" Text="0" FontWeight="SemiBold" Margin="0,3,0,0"/></StackPanel></Grid>
                                 </StackPanel>
@@ -104,7 +104,7 @@
 
                             <TextBlock x:Name="AnalysisMetaText" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,9,0,0" TextWrapping="Wrap"/>
 
-                            <Border Style="{StaticResource AiCard}" Padding="14" Margin="0,16,0,0">
+                            <Border Style="{StaticResource HolographicCard}" Padding="14" Margin="0,16,0,0">
                                 <StackPanel>
                                     <TextBlock Text="AI 客户画像" Style="{StaticResource SectionTitle}"/>
                                     <TextBlock x:Name="ProfileText" Text="尚未分析" Foreground="{DynamicResource InkSecondary}" LineHeight="20" Margin="0,7,0,0"/>

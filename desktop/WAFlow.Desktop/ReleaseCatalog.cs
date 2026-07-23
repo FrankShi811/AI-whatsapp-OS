@@ -13,13 +13,21 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("2.0.0", "2026-07-23", "AI 原生桌面设计系统正式版",
+        [
+            "完成 UI Audit 与 Figma Design System：120 个变量、10 套文字样式、4 套深度效果和 7 个核心 AI 组件成为 2.0 视觉基线。",
+            "WPF 全局语义 token 对齐 Figma 的浅色与深色主题，统一执行绿、AI 紫、处理青、状态色、ABCD 等级色和 WhatsApp 消息色。",
+            "统一页面标题、正文、标签、指标、按钮、输入框、表格、卡片与圆角尺度，并建立 Holographic Card、AI Confidence Meter、Reasoning Step、Priority Card、Message Bubble 和 Workflow Node 复用样式。",
+            "AI Score Ring 增加尊重 Windows 减少动画设置的短时缓动；评分颜色与 Dashboard 等级分布统一由主题资源驱动。",
+            "保留 CRM、WhatsApp、邮件、AI Provider、自动化、数据库和自动更新业务逻辑，升级不覆盖任何本地客户或账号数据。"
+        ], true),
         new("1.18.4", "2026-07-22", "桌面工作区布局一致性修复",
         [
             "邮件 Inbox 内容标题区采用与 WhatsApp Inbox 一致的页面外边距、标题层级和内容间距，切换板块时不再突然贴到左上角。",
             "商机智能 AI 决策侧栏改为可收起抽屉；收起后商机队列自动扩宽，并保留窄把手随时恢复。",
             "客户列表取消冻结选择列和客户列，横向滚动条从表格左边缘完整开始，不再为冻结列保留空白占位。",
             "商机智能本页使用手册同步补充抽屉的收起与恢复步骤。"
-        ], true),
+        ]),
         new("1.18.3", "2026-07-22", "WhatsApp 已读气泡跨板块稳定修复",
         [
             "会话已读游标改为只向前推进；后台联系人、聊天和历史同步不能再用较早快照覆盖用户刚刚完成的已读操作。",

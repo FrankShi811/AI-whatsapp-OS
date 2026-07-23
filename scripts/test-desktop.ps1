@@ -14,6 +14,39 @@ $env:NUGET_PACKAGES = Join-Path $work 'nuget'
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $env:DOTNET_NOLOGO = '1'
 
+$desktopProject = Join-Path $root 'desktop\WAFlow.Desktop\WAFlow.Desktop.csproj'
+$coreProject = Join-Path $root 'desktop\WAFlow.Core\WAFlow.Core.csproj'
+$macProject = Join-Path $root 'desktop\WAFlow.Mac\WAFlow.Mac.csproj'
+$appXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\App.xaml')
+$themeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ThemeManager.cs')
+$desktopVersion = ([xml](Get-Content -Raw -Encoding utf8 -LiteralPath $desktopProject)).Project.PropertyGroup.Version | Select-Object -First 1
+$coreVersion = ([xml](Get-Content -Raw -Encoding utf8 -LiteralPath $coreProject)).Project.PropertyGroup.Version | Select-Object -First 1
+$macVersion = ([xml](Get-Content -Raw -Encoding utf8 -LiteralPath $macProject)).Project.PropertyGroup.Version | Select-Object -First 1
+if ($desktopVersion -notmatch '^\d+\.\d+\.\d+$' -or $desktopVersion -ne $coreVersion -or $desktopVersion -ne $macVersion) {
+  throw "Desktop/Core/macOS versions must be the same semantic version. desktop=$desktopVersion core=$coreVersion mac=$macVersion"
+}
+Write-Host "PASS  cross-platform version contract: $desktopVersion"
+
+$requiredBrushes = @(
+  'Ink', 'InkSecondary', 'Muted', 'Primary', 'AiAccent', 'AiProcessing',
+  'Surface', 'Canvas', 'Line', 'Success', 'Warning', 'Danger', 'Info',
+  'GradeA', 'GradeB', 'GradeC', 'GradeD', 'ChatOutbound', 'ChatInbound'
+)
+foreach ($key in $requiredBrushes) {
+  if ($appXaml -notmatch "x:Key=`"$key`"" -or $themeSource -notmatch [regex]::Escape("[`"$key`"]")) {
+    throw "AI Sales OS 2.0 semantic brush is missing from App.xaml or ThemeManager: $key"
+  }
+}
+$requiredStyles = @(
+  'HolographicCard', 'ConfidenceMeter', 'ReasoningStepCard', 'PriorityCard',
+  'InboundMessageBubble', 'OutboundMessageBubble', 'WorkflowNodeCard',
+  'PageTitle', 'SectionTitle', 'BodyText', 'LabelText', 'MicroText'
+)
+foreach ($key in $requiredStyles) {
+  if ($appXaml -notmatch "x:Key=`"$key`"") { throw "AI Sales OS 2.0 component style is missing: $key" }
+}
+Write-Host 'PASS  AI Sales OS 2.0 Figma/WPF design-system contract'
+
 & $dotnet build (Join-Path $root 'desktop\WAFlow.sln') -c Release
 if ($LASTEXITCODE -ne 0) { throw 'WAFlow desktop build failed.' }
 & $dotnet run --project (Join-Path $root 'desktop\WAFlow.SmokeTests\WAFlow.SmokeTests.csproj') -c Release --no-build

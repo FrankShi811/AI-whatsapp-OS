@@ -27,6 +27,12 @@ $env:NUGET_PACKAGES = Join-Path $work 'nuget'
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $env:DOTNET_NOLOGO = '1'
 $env:NUGET_XMLDOC_MODE = 'skip'
+$isMacHost = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+  [Runtime.InteropServices.OSPlatform]::OSX
+)
+if ($Velopack -and -not $isMacHost) {
+  Write-Warning 'Velopack macOS PKG/update packages require a macOS host. This host will validate self-contained .app ZIP assets only; GitHub Actions macOS runners create the PKG and update feed.'
+}
 
 $targets = switch ($Architecture) {
   'AppleSilicon' { @(@{ Rid='osx-arm64'; Arch='arm64'; Label='Apple-Silicon' }) }
@@ -36,6 +42,10 @@ $targets = switch ($Architecture) {
 
 $artifacts = @()
 foreach ($target in $targets) {
+  $friendlyPkg = Join-Path $root "dist\installers\AI Sales OS macOS $($target.Label) Chinese Preview.pkg"
+  if (-not $isMacHost -and (Test-Path -LiteralPath $friendlyPkg)) {
+    Remove-Item -LiteralPath $friendlyPkg -Force
+  }
   $publish = Join-Path $work "macos-publish\$($target.Rid)"
   if (Test-Path -LiteralPath $publish) { [IO.Directory]::Delete($publish, $true) }
   New-Item -ItemType Directory -Force -Path $publish | Out-Null
@@ -57,7 +67,7 @@ foreach ($target in $targets) {
     --icon (Join-Path $root 'desktop\WAFlow.Desktop\Assets\AI-Sales-OS.png') --bundle-output $bundle
   if ($LASTEXITCODE -ne 0) { throw "macOS $($target.Arch) bundle packaging failed." }
 
-  if ($Velopack) {
+  if ($Velopack -and $isMacHost) {
     & $dotnet tool restore
     if ($LASTEXITCODE -ne 0) { throw 'Velopack tool restore failed.' }
     $velopackOutput = Join-Path $root "dist\velopack-macos-$($target.Arch)"
@@ -78,7 +88,6 @@ foreach ($target in $targets) {
     if (-not $portable) { throw "Velopack macOS $($target.Rid) portable zip was not created." }
     Copy-Item -LiteralPath $portable.FullName -Destination $output -Force
     if ($pkg) {
-      $friendlyPkg = Join-Path $root "dist\installers\AI Sales OS macOS $($target.Label) Chinese Preview.pkg"
       Copy-Item -LiteralPath $pkg.FullName -Destination $friendlyPkg -Force
       $artifacts += Get-Item -LiteralPath $friendlyPkg
     }

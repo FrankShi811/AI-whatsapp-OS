@@ -5,47 +5,54 @@
              ShutdownMode="OnMainWindowClose">
     <Application.Resources>
         <local:ComboSelectionTextConverter x:Key="ComboSelectionTextConverter"/>
-        <!-- Signal Glass design tokens. ThemeManager mutates these shared brushes in-place. -->
-        <SolidColorBrush x:Key="Ink" Color="#10211A"/>
-        <SolidColorBrush x:Key="InkSecondary" Color="#31453C"/>
-        <SolidColorBrush x:Key="Muted" Color="#6C7C74"/>
-        <SolidColorBrush x:Key="MutedSubtle" Color="#94A29B"/>
+        <!-- AI Sales OS 2.0 semantic design tokens. ThemeManager mutates these shared brushes in-place. -->
+        <SolidColorBrush x:Key="Ink" Color="#08130F"/>
+        <SolidColorBrush x:Key="InkSecondary" Color="#4A5D56"/>
+        <SolidColorBrush x:Key="Muted" Color="#687B74"/>
+        <SolidColorBrush x:Key="MutedSubtle" Color="#96A8A1"/>
         <SolidColorBrush x:Key="Primary" Color="#0C9A70"/>
-        <SolidColorBrush x:Key="PrimaryDark" Color="#087657"/>
-        <SolidColorBrush x:Key="PrimaryHover" Color="#0A8763"/>
-        <SolidColorBrush x:Key="PrimarySoft" Color="#E4F7F0"/>
-        <SolidColorBrush x:Key="PrimarySurface" Color="#F0FAF6"/>
-        <SolidColorBrush x:Key="AiAccent" Color="#6C63FF"/>
-        <SolidColorBrush x:Key="AiAccentDeep" Color="#5147DB"/>
-        <SolidColorBrush x:Key="AiSoft" Color="#EFEDFF"/>
-        <SolidColorBrush x:Key="AiSurface" Color="#F8F7FF"/>
+        <SolidColorBrush x:Key="PrimaryDark" Color="#087A59"/>
+        <SolidColorBrush x:Key="PrimaryHover" Color="#087A59"/>
+        <SolidColorBrush x:Key="PrimarySoft" Color="#D9F5EB"/>
+        <SolidColorBrush x:Key="PrimarySurface" Color="#ECFAF5"/>
+        <SolidColorBrush x:Key="AiAccent" Color="#7868FF"/>
+        <SolidColorBrush x:Key="AiAccentDeep" Color="#5040D8"/>
+        <SolidColorBrush x:Key="AiProcessing" Color="#31C8E5"/>
+        <SolidColorBrush x:Key="AiSoft" Color="#E8E3FF"/>
+        <SolidColorBrush x:Key="AiSurface" Color="#F4F1FF"/>
         <SolidColorBrush x:Key="Surface" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="SurfaceElevated" Color="#FFFFFF"/>
-        <SolidColorBrush x:Key="SurfaceMuted" Color="#F7FAF8"/>
+        <SolidColorBrush x:Key="SurfaceMuted" Color="#F7FAF9"/>
         <SolidColorBrush x:Key="SurfaceInput" Color="#FFFFFF"/>
-        <SolidColorBrush x:Key="Canvas" Color="#F1F5F3"/>
-        <SolidColorBrush x:Key="CanvasDeep" Color="#E9EFEC"/>
-        <SolidColorBrush x:Key="Line" Color="#DBE5E0"/>
-        <SolidColorBrush x:Key="LineStrong" Color="#C6D4CD"/>
-        <SolidColorBrush x:Key="Sidebar" Color="#091D17"/>
-        <SolidColorBrush x:Key="SidebarElevated" Color="#102C23"/>
+        <SolidColorBrush x:Key="Canvas" Color="#EFF4F2"/>
+        <SolidColorBrush x:Key="CanvasDeep" Color="#E3EBE7"/>
+        <SolidColorBrush x:Key="Line" Color="#D5E0DC"/>
+        <SolidColorBrush x:Key="LineStrong" Color="#B9C9C3"/>
+        <SolidColorBrush x:Key="Sidebar" Color="#081B15"/>
+        <SolidColorBrush x:Key="SidebarElevated" Color="#102A22"/>
         <SolidColorBrush x:Key="SidebarHover" Color="#173B30"/>
-        <SolidColorBrush x:Key="SidebarActive" Color="#1C4A3B"/>
-        <SolidColorBrush x:Key="SidebarText" Color="#C8D9D2"/>
-        <SolidColorBrush x:Key="SidebarMuted" Color="#78998C"/>
-        <SolidColorBrush x:Key="Success" Color="#0C9067"/>
-        <SolidColorBrush x:Key="SuccessSoft" Color="#E3F6EE"/>
-        <SolidColorBrush x:Key="Warning" Color="#B77608"/>
-        <SolidColorBrush x:Key="WarningSoft" Color="#FFF1D4"/>
-        <SolidColorBrush x:Key="Danger" Color="#C34747"/>
-        <SolidColorBrush x:Key="DangerSoft" Color="#FCE7E7"/>
-        <SolidColorBrush x:Key="Info" Color="#2676D9"/>
-        <SolidColorBrush x:Key="InfoSoft" Color="#E8F2FF"/>
+        <SolidColorBrush x:Key="SidebarActive" Color="#1B4A3B"/>
+        <SolidColorBrush x:Key="SidebarText" Color="#D2E1DC"/>
+        <SolidColorBrush x:Key="SidebarMuted" Color="#82A095"/>
+        <SolidColorBrush x:Key="Success" Color="#16B889"/>
+        <SolidColorBrush x:Key="SuccessSoft" Color="#E0F7EF"/>
+        <SolidColorBrush x:Key="Warning" Color="#E0A12B"/>
+        <SolidColorBrush x:Key="WarningSoft" Color="#FFF2D6"/>
+        <SolidColorBrush x:Key="Danger" Color="#E35D5D"/>
+        <SolidColorBrush x:Key="DangerSoft" Color="#FDE7E7"/>
+        <SolidColorBrush x:Key="Info" Color="#4E8CF7"/>
+        <SolidColorBrush x:Key="InfoSoft" Color="#E9F1FF"/>
+        <SolidColorBrush x:Key="GradeA" Color="#16B889"/>
+        <SolidColorBrush x:Key="GradeB" Color="#4E8CF7"/>
+        <SolidColorBrush x:Key="GradeC" Color="#E0A12B"/>
+        <SolidColorBrush x:Key="GradeD" Color="#83958E"/>
+        <SolidColorBrush x:Key="ChatOutbound" Color="#D1F5E8"/>
+        <SolidColorBrush x:Key="ChatInbound" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="Overlay" Color="#B80A1813"/>
 
-        <DropShadowEffect x:Key="CardShadow" Color="#182E25" BlurRadius="18" ShadowDepth="3" Opacity="0.10"/>
-        <DropShadowEffect x:Key="FloatingShadow" Color="#12281F" BlurRadius="30" ShadowDepth="8" Opacity="0.18"/>
-        <DropShadowEffect x:Key="AiGlow" Color="#6C63FF" BlurRadius="22" ShadowDepth="0" Opacity="0.16"/>
+        <DropShadowEffect x:Key="CardShadow" Color="#18342B" BlurRadius="22" ShadowDepth="3" Opacity="0.09"/>
+        <DropShadowEffect x:Key="FloatingShadow" Color="#102A21" BlurRadius="34" ShadowDepth="9" Opacity="0.16"/>
+        <DropShadowEffect x:Key="AiGlow" Color="#7868FF" BlurRadius="26" ShadowDepth="0" Opacity="0.18"/>
 
         <Style TargetType="Window">
             <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI, Microsoft YaHei UI"/>
@@ -83,19 +90,55 @@
             <Setter Property="BorderBrush" Value="{DynamicResource AiSoft}"/>
             <Setter Property="Effect" Value="{StaticResource AiGlow}"/>
         </Style>
+        <Style x:Key="HolographicCard" TargetType="Border" BasedOn="{StaticResource AiCard}">
+            <Setter Property="BorderBrush" Value="{DynamicResource AiAccent}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="18"/>
+            <Setter Property="Padding" Value="22"/>
+        </Style>
+        <Style x:Key="ReasoningStepCard" TargetType="Border" BasedOn="{StaticResource Card}">
+            <Setter Property="Background" Value="{DynamicResource SurfaceMuted}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource AiSoft}"/>
+            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="Padding" Value="14,12"/>
+        </Style>
+        <Style x:Key="PriorityCard" TargetType="Border" BasedOn="{StaticResource ElevatedCard}">
+            <Setter Property="BorderBrush" Value="{DynamicResource PrimarySoft}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="16"/>
+        </Style>
+        <Style x:Key="WorkflowNodeCard" TargetType="Border" BasedOn="{StaticResource Card}">
+            <Setter Property="CornerRadius" Value="14"/>
+            <Setter Property="Padding" Value="16,14"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource LineStrong}"/>
+        </Style>
+        <Style x:Key="InboundMessageBubble" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource ChatInbound}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource Line}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="14,14,14,4"/>
+            <Setter Property="Padding" Value="13,10"/>
+        </Style>
+        <Style x:Key="OutboundMessageBubble" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource ChatOutbound}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource PrimarySoft}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="14,14,4,14"/>
+            <Setter Property="Padding" Value="13,10"/>
+        </Style>
 
         <Style x:Key="ButtonBase" TargetType="Button">
-            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="FontSize" Value="13"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Padding" Value="16,9"/>
-            <Setter Property="MinHeight" Value="36"/>
+            <Setter Property="Padding" Value="17,9"/>
+            <Setter Property="MinHeight" Value="40"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="9" Padding="{TemplateBinding Padding}" RenderTransformOrigin="0.5,0.5">
+                        <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="12" Padding="{TemplateBinding Padding}" RenderTransformOrigin="0.5,0.5">
                             <Border.RenderTransform><ScaleTransform x:Name="Scale" ScaleX="1" ScaleY="1"/></Border.RenderTransform>
                             <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center" RecognizesAccessKey="True"/>
                         </Border>
@@ -135,9 +178,9 @@
             <Setter Property="BorderBrush" Value="{DynamicResource Danger}"/>
         </Style>
         <Style x:Key="IconButton" TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
-            <Setter Property="Width" Value="38"/>
-            <Setter Property="Height" Value="38"/>
-            <Setter Property="MinHeight" Value="38"/>
+            <Setter Property="Width" Value="40"/>
+            <Setter Property="Height" Value="40"/>
+            <Setter Property="MinHeight" Value="40"/>
             <Setter Property="Padding" Value="0"/>
             <Setter Property="FontSize" Value="15"/>
         </Style>
@@ -149,7 +192,8 @@
             <Setter Property="BorderBrush" Value="{DynamicResource LineStrong}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="11,8"/>
-            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="MinHeight" Value="40"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="SelectionBrush" Value="{DynamicResource PrimarySoft}"/>
             <Style.Triggers>
@@ -163,7 +207,8 @@
             <Setter Property="BorderBrush" Value="{DynamicResource LineStrong}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="11,8"/>
-            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="MinHeight" Value="40"/>
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="{DynamicResource SurfaceInput}"/>
@@ -171,8 +216,8 @@
             <Setter Property="BorderBrush" Value="{DynamicResource LineStrong}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="9,7"/>
-            <Setter Property="FontSize" Value="12.5"/>
-            <Setter Property="MinHeight" Value="36"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="MinHeight" Value="40"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ComboBox">
@@ -181,7 +226,7 @@
                                           IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
                                 <ToggleButton.Template>
                                     <ControlTemplate TargetType="ToggleButton">
-                                        <Border x:Name="ComboBorder" Background="{DynamicResource SurfaceInput}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="8" Padding="10,0">
+                                        <Border x:Name="ComboBorder" Background="{DynamicResource SurfaceInput}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="10" Padding="10,0">
                                             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="20"/></Grid.ColumnDefinitions>
                                                 <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}" VerticalAlignment="Center" HorizontalAlignment="Left" RecognizesAccessKey="True"/>
                                                 <Path Grid.Column="1" Data="M 0 0 L 4 4 L 8 0 Z" Fill="{DynamicResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -278,14 +323,37 @@
             <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TabItem"><Border x:Name="TabRoot" Background="{TemplateBinding Background}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8,8,0,0" Padding="{TemplateBinding Padding}" Margin="0,0,4,0"><ContentPresenter ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="TabRoot" Property="Background" Value="{DynamicResource SurfaceMuted}"/></Trigger><Trigger Property="IsSelected" Value="True"><Setter TargetName="TabRoot" Property="Background" Value="{DynamicResource PrimarySoft}"/><Setter Property="Foreground" Value="{DynamicResource Primary}"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
             <Style.Triggers><Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="{DynamicResource Primary}"/><Setter Property="Background" Value="{DynamicResource PrimarySoft}"/></Trigger></Style.Triggers>
         </Style>
-        <Style TargetType="ProgressBar"><Setter Property="Foreground" Value="{DynamicResource Primary}"/><Setter Property="Background" Value="{DynamicResource CanvasDeep}"/><Setter Property="BorderThickness" Value="0"/></Style>
+        <Style TargetType="ProgressBar">
+            <Setter Property="Foreground" Value="{DynamicResource Primary}"/>
+            <Setter Property="Background" Value="{DynamicResource CanvasDeep}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="MinHeight" Value="6"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Grid x:Name="PART_Track" ClipToBounds="True">
+                            <Border Background="{TemplateBinding Background}" CornerRadius="4"/>
+                            <Border x:Name="PART_Indicator" Background="{TemplateBinding Foreground}" CornerRadius="4" HorizontalAlignment="Left"/>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="ConfidenceMeter" TargetType="ProgressBar" BasedOn="{StaticResource {x:Type ProgressBar}}">
+            <Setter Property="Foreground" Value="{DynamicResource AiAccent}"/>
+            <Setter Property="Background" Value="{DynamicResource AiSoft}"/>
+            <Setter Property="Height" Value="7"/>
+            <Setter Property="BorderThickness" Value="0"/>
+        </Style>
 
-        <Style x:Key="PageEyebrow" TargetType="TextBlock"><Setter Property="FontSize" Value="10"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Foreground" Value="{DynamicResource AiAccent}"/></Style>
-        <Style x:Key="PageTitle" TargetType="TextBlock"><Setter Property="FontSize" Value="27"/><Setter Property="FontWeight" Value="Bold"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="LineHeight" Value="34"/></Style>
-        <Style x:Key="SectionTitle" TargetType="TextBlock"><Setter Property="FontSize" Value="15"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/></Style>
-        <Style x:Key="LabelText" TargetType="TextBlock"><Setter Property="FontSize" Value="11"/><Setter Property="Foreground" Value="{DynamicResource Muted}"/></Style>
-        <Style x:Key="MetricValue" TargetType="TextBlock"><Setter Property="FontSize" Value="28"/><Setter Property="FontWeight" Value="Bold"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="FontFamily" Value="Segoe UI Variable Display, Segoe UI"/></Style>
-        <Style x:Key="PillText" TargetType="TextBlock"><Setter Property="FontSize" Value="10.5"/><Setter Property="FontWeight" Value="SemiBold"/></Style>
+        <Style x:Key="PageEyebrow" TargetType="TextBlock"><Setter Property="FontSize" Value="11"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Foreground" Value="{DynamicResource AiAccent}"/></Style>
+        <Style x:Key="PageTitle" TargetType="TextBlock"><Setter Property="FontSize" Value="28"/><Setter Property="FontWeight" Value="Bold"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="LineHeight" Value="38"/></Style>
+        <Style x:Key="SectionTitle" TargetType="TextBlock"><Setter Property="FontSize" Value="18"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="LineHeight" Value="28"/></Style>
+        <Style x:Key="BodyText" TargetType="TextBlock"><Setter Property="FontSize" Value="13"/><Setter Property="LineHeight" Value="21"/><Setter Property="Foreground" Value="{DynamicResource InkSecondary}"/></Style>
+        <Style x:Key="LabelText" TargetType="TextBlock"><Setter Property="FontSize" Value="12"/><Setter Property="LineHeight" Value="18"/><Setter Property="Foreground" Value="{DynamicResource Muted}"/></Style>
+        <Style x:Key="MicroText" TargetType="TextBlock"><Setter Property="FontSize" Value="11"/><Setter Property="LineHeight" Value="16"/><Setter Property="Foreground" Value="{DynamicResource Muted}"/></Style>
+        <Style x:Key="MetricValue" TargetType="TextBlock"><Setter Property="FontSize" Value="30"/><Setter Property="FontWeight" Value="Bold"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="FontFamily" Value="Segoe UI Variable Display, Segoe UI"/></Style>
+        <Style x:Key="PillText" TargetType="TextBlock"><Setter Property="FontSize" Value="11"/><Setter Property="FontWeight" Value="SemiBold"/></Style>
 
         <Style x:Key="NavButton" TargetType="Button">
             <Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="{DynamicResource SidebarText}"/><Setter Property="BorderBrush" Value="Transparent"/>

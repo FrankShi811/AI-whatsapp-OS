@@ -1,17 +1,14 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace WAFlow.Desktop.Controls;
 
 public sealed class GradeDonut : FrameworkElement
 {
     private readonly int[] _values = new int[4];
-    private static readonly Color[] SegmentColors =
-    [
-        Color.FromRgb(20, 166, 117), Color.FromRgb(77, 181, 148),
-        Color.FromRgb(232, 172, 58), Color.FromRgb(210, 100, 103)
-    ];
+    private static readonly string[] SegmentBrushes = ["GradeA", "GradeB", "GradeC", "GradeD"];
 
     public void SetValues(int a, int b, int c, int d)
     {
@@ -34,7 +31,7 @@ public sealed class GradeDonut : FrameworkElement
             {
                 if (_values[index] == 0) continue;
                 var sweep = 360d * _values[index] / total;
-                DrawArc(dc, center, radius, angle + 1.1, Math.Max(0.4, sweep - 2.2), new SolidColorBrush(SegmentColors[index]), 11);
+                DrawArc(dc, center, radius, angle + 1.1, Math.Max(0.4, sweep - 2.2), ResourceBrush(SegmentBrushes[index], Colors.Gray), 11);
                 angle += sweep;
             }
         }
@@ -72,13 +69,53 @@ public sealed class GradeDonut : FrameworkElement
 public sealed class ScoreRing : FrameworkElement
 {
     private int _score;
+    private double _displayScore;
     private string _grade = "D";
     private double _confidence;
+    private readonly DispatcherTimer _animationTimer;
+    private DateTime _animationStartedAt;
+    private double _animationFrom;
+    private double _animationTo;
+
+    public ScoreRing()
+    {
+        _animationTimer = new DispatcherTimer(DispatcherPriority.Render)
+        {
+            Interval = TimeSpan.FromMilliseconds(16)
+        };
+        _animationTimer.Tick += AnimateScore;
+        Unloaded += (_, _) => _animationTimer.Stop();
+    }
 
     public void SetScore(int score, string grade, double confidence)
     {
-        _score = Math.Clamp(score, 0, 100); _grade = string.IsNullOrWhiteSpace(grade) ? "D" : grade; _confidence = Math.Clamp(confidence, 0, 1);
+        _score = Math.Clamp(score, 0, 100);
+        _grade = string.IsNullOrWhiteSpace(grade) ? "D" : grade.Trim().ToUpperInvariant();
+        _confidence = Math.Clamp(confidence, 0, 1);
+        if (!SystemParameters.ClientAreaAnimation || !IsVisible)
+        {
+            _displayScore = _score;
+            _animationTimer.Stop();
+            InvalidateVisual();
+            return;
+        }
+
+        _animationFrom = _displayScore;
+        _animationTo = _score;
+        _animationStartedAt = DateTime.UtcNow;
+        _animationTimer.Start();
+    }
+
+    private void AnimateScore(object? sender, EventArgs e)
+    {
+        const double durationMs = 360;
+        var progress = Math.Clamp((DateTime.UtcNow - _animationStartedAt).TotalMilliseconds / durationMs, 0, 1);
+        var eased = 1 - Math.Pow(1 - progress, 3);
+        _displayScore = _animationFrom + (_animationTo - _animationFrom) * eased;
         InvalidateVisual();
+        if (progress < 1) return;
+        _displayScore = _animationTo;
+        _animationTimer.Stop();
     }
 
     protected override void OnRender(DrawingContext dc)
@@ -90,11 +127,13 @@ public sealed class ScoreRing : FrameworkElement
         dc.DrawEllipse(null, new Pen(GradeDonut.ResourceBrush("CanvasDeep", Colors.LightGray), 8), center, radius, radius);
         var accent = _grade switch
         {
-            "A" => Color.FromRgb(14, 164, 112), "B" => Color.FromRgb(72, 177, 145),
-            "C" => Color.FromRgb(229, 168, 50), _ => Color.FromRgb(204, 93, 98)
+            "A" => GradeDonut.ResourceBrush("GradeA", Color.FromRgb(22, 184, 137)),
+            "B" => GradeDonut.ResourceBrush("GradeB", Color.FromRgb(78, 140, 247)),
+            "C" => GradeDonut.ResourceBrush("GradeC", Color.FromRgb(224, 161, 43)),
+            _ => GradeDonut.ResourceBrush("GradeD", Color.FromRgb(131, 149, 142))
         };
-        GradeDonut.DrawArc(dc, center, radius, -90, Math.Max(1.5, 359.8 * _score / 100d), new SolidColorBrush(accent), 8);
-        DrawCentered(dc, _score.ToString(), center.Y - 18, 28, FontWeights.Bold, GradeDonut.ResourceBrush("Ink", Colors.Black));
+        GradeDonut.DrawArc(dc, center, radius, -90, Math.Max(1.5, 359.8 * _displayScore / 100d), accent, 8);
+        DrawCentered(dc, Math.Round(_displayScore).ToString("0"), center.Y - 18, 28, FontWeights.Bold, GradeDonut.ResourceBrush("Ink", Colors.Black));
         DrawCentered(dc, $"{_grade} 级 · 置信 {_confidence:P0}", center.Y + 17, 9.5, FontWeights.SemiBold, GradeDonut.ResourceBrush("Muted", Colors.Gray));
     }
 

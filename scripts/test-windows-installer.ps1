@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
   [string]$InstallerPath = '',
-  [string]$QaDirectory = ''
+  [string]$QaDirectory = '',
+  [string]$ExpectedVersion = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,6 +10,10 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if (-not $InstallerPath) { $InstallerPath = Join-Path $root 'dist\installers\AI Sales OS Setup.exe' }
 $InstallerPath = [IO.Path]::GetFullPath($InstallerPath)
 if (-not (Test-Path -LiteralPath $InstallerPath)) { throw "Installer is missing: $InstallerPath" }
+if (-not $ExpectedVersion) {
+  $project = Join-Path $root 'desktop\WAFlow.Desktop\WAFlow.Desktop.csproj'
+  $ExpectedVersion = ([xml](Get-Content -Raw -Encoding utf8 -LiteralPath $project)).Project.PropertyGroup.Version | Select-Object -First 1
+}
 if (-not $QaDirectory) { $QaDirectory = Join-Path $root 'work\windows-installer-qa' }
 $QaDirectory = [IO.Path]::GetFullPath($QaDirectory)
 $workRoot = [IO.Path]::GetFullPath((Join-Path $root 'work'))
@@ -21,8 +26,17 @@ $database = Join-Path $env:LOCALAPPDATA 'WAFlow\waflow.db'
 function Get-HashWithRetry([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path)) { return 'MISSING' }
   for ($attempt = 1; $attempt -le 10; $attempt++) {
-    try { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash }
-    catch [System.IO.IOException] {
+    try {
+      $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+      $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+      try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { return [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+        finally { $sha.Dispose() }
+      }
+      finally { $stream.Dispose() }
+    }
+    catch {
       if ($attempt -eq 10) { throw }
       Start-Sleep -Milliseconds 500
     }
@@ -56,7 +70,7 @@ if (Test-Path -LiteralPath $updatePath) {
   $uninstallExit = $uninstall.ExitCode
 }
 
-[pscustomobject]@{
+$result = [pscustomobject]@{
   InstallerExit = $installer.ExitCode
   InstalledExeVersion = $installedVersion
   ApplicationStarted = $true
@@ -66,3 +80,11 @@ if (Test-Path -LiteralPath $updatePath) {
   UninstallExit = $uninstallExit
   QaDirectoryStillExists = Test-Path -LiteralPath $QaDirectory
 }
+$result
+if (-not $installedVersion.StartsWith($ExpectedVersion + '.', [StringComparison]::Ordinal) -and
+    $installedVersion -ne $ExpectedVersion) {
+  throw "Installed version mismatch. expected=$ExpectedVersion actual=$installedVersion"
+}
+if (-not $result.DatabaseUnchanged) { throw 'Installer smoke test changed the user SQLite database.' }
+if ($result.UninstallExit -ne 0) { throw "Installer smoke uninstall failed with exit code $($result.UninstallExit)." }
+if ($result.QaDirectoryStillExists) { throw "Installer smoke uninstall left the QA directory behind: $QaDirectory" }

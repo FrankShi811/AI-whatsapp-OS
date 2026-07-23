@@ -80,6 +80,10 @@ jobs:
         shell: pwsh
         run: .\scripts\test-desktop.ps1
 
+      - name: Smoke test Chinese Windows installer
+        shell: pwsh
+        run: .\scripts\test-windows-installer.ps1 -ExpectedVersion $env:RELEASE_VERSION
+
       - name: Publish GitHub Release assets
         shell: pwsh
         env:
@@ -135,6 +139,9 @@ jobs:
       - name: Build native macOS Chinese preview packages
         shell: pwsh
         run: ./scripts/build-macos-preview.ps1 -Version $env:RELEASE_VERSION -Architecture Both -Velopack -RepositoryUrl "https://github.com/${{ github.repository }}"
+
+      - name: Smoke test macOS application packages
+        run: python scripts/test-macos-packages.py --version "$RELEASE_VERSION"
 
       - name: Upload macOS packages to GitHub Release
         shell: pwsh
