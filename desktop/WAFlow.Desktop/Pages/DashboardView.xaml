@@ -4,6 +4,7 @@
              xmlns:controls="clr-namespace:WAFlow.Desktop.Controls">
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel Margin="30,26,30,38">
+            <Border Style="{StaticResource AmbientHeroCard}">
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <StackPanel>
@@ -18,28 +19,29 @@
                     <Button Content="打开 WhatsApp Inbox" Style="{StaticResource PrimaryButton}" Tag="inbox" Click="Action_Click"/>
                 </StackPanel>
             </Grid>
+            </Border>
 
             <!-- Executive metrics -->
             <UniformGrid Columns="4" Margin="0,22,0,0">
-                <Border Style="{StaticResource MetricCard}" Margin="0,0,7,0">
+                <Border Style="{StaticResource ElevatedMetricCard}" Margin="0,0,7,0">
                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                         <StackPanel><TextBlock Text="全部商机" Style="{StaticResource LabelText}"/><TextBlock x:Name="TotalLeadsText" Text="0" Style="{StaticResource MetricValue}" Margin="0,5,0,0"/><TextBlock Text="统一客户工作区" Foreground="{DynamicResource Muted}" FontSize="10" Margin="0,4,0,0"/></StackPanel>
                         <Border Grid.Column="1" Width="34" Height="34" Background="{DynamicResource PrimarySoft}" CornerRadius="10" VerticalAlignment="Top"><TextBlock Text="◎" Foreground="{DynamicResource Primary}" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
                     </Grid>
                 </Border>
-                <Border Style="{StaticResource MetricCard}" Margin="7,0">
+                <Border Style="{StaticResource ElevatedMetricCard}" Margin="7,0">
                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                         <StackPanel><TextBlock Text="优先商机 A / B" Style="{StaticResource LabelText}"/><TextBlock x:Name="HighValueText" Text="0" Style="{StaticResource MetricValue}" Foreground="{DynamicResource Primary}" Margin="0,5,0,0"/><TextBlock Text="值得优先人工推进" Foreground="{DynamicResource Muted}" FontSize="10" Margin="0,4,0,0"/></StackPanel>
                         <Border Grid.Column="1" Width="34" Height="34" Background="{DynamicResource AiSoft}" CornerRadius="10" VerticalAlignment="Top"><TextBlock Text="✦" Foreground="{DynamicResource AiAccent}" FontSize="15" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
                     </Grid>
                 </Border>
-                <Border Style="{StaticResource MetricCard}" Margin="7,0">
+                <Border Style="{StaticResource ElevatedMetricCard}" Margin="7,0">
                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                         <StackPanel><TextBlock Text="24 小时内待跟进" Style="{StaticResource LabelText}"/><TextBlock x:Name="FollowUpsText" Text="0" Style="{StaticResource MetricValue}" Foreground="{DynamicResource Warning}" Margin="0,5,0,0"/><TextBlock Text="销售承诺与下一步" Foreground="{DynamicResource Muted}" FontSize="10" Margin="0,4,0,0"/></StackPanel>
                         <Border Grid.Column="1" Width="34" Height="34" Background="{DynamicResource WarningSoft}" CornerRadius="10" VerticalAlignment="Top"><TextBlock Text="◷" Foreground="{DynamicResource Warning}" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
                     </Grid>
                 </Border>
-                <Border Style="{StaticResource MetricCard}" Margin="7,0,0,0">
+                <Border Style="{StaticResource ElevatedMetricCard}" Margin="7,0,0,0">
                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                         <StackPanel><TextBlock Text="进行中自动化" Style="{StaticResource LabelText}"/><TextBlock x:Name="ActiveCampaignsText" Text="0" Style="{StaticResource MetricValue}" Margin="0,5,0,0"/><TextBlock x:Name="CampaignSafetyText" Text="排期、运行或暂停" Foreground="{DynamicResource Muted}" FontSize="10" Margin="0,4,0,0"/></StackPanel>
                         <Border Grid.Column="1" Width="34" Height="34" Background="{DynamicResource InfoSoft}" CornerRadius="10" VerticalAlignment="Top"><TextBlock Text="◌" Foreground="{DynamicResource Info}" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>

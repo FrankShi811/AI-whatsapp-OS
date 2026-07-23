@@ -5,6 +5,7 @@
     <Grid Margin="30,26,30,28">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
 
+        <Border Style="{StaticResource AmbientHeroCard}">
         <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel>
@@ -24,6 +25,7 @@
                 </StackPanel>
             </StackPanel>
         </Grid>
+        </Border>
 
         <Border Grid.Row="1" Style="{StaticResource Card}" Padding="12" Margin="0,19,0,14">
             <Grid>

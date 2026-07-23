@@ -2,12 +2,14 @@
 
 ## 架构
 
-AI Sales OS 使用 Velopack 的 Windows 与 macOS 更新客户端，GitHub Releases 是唯一更新源，不需要云服务器或额外托管费用。Windows 首次安装入口为简体中文 Inno Setup 向导，向导内部调用 Velopack 安装核心，因此不会破坏后续自动更新身份；macOS 使用按处理器架构区分的 Velopack `.pkg` / portable ZIP。
+AI Sales OS 使用 Velopack 的 Windows 更新客户端，GitHub Releases 是唯一更新源，不需要云服务器或额外托管费用。Windows 首次安装入口为简体中文 Inno Setup 向导，向导内部调用 Velopack 安装核心，因此不会破坏后续自动更新身份。
+
+macOS 构建目前暂停：缺少 Developer ID、签名和公证条件时，安装包无法达到可正常分发标准。GitHub Actions 的 Mac 任务默认跳过；只有用户明确通知恢复，并在仓库变量中设置 `ENABLE_MACOS_RELEASE=true` 后才会重新生成 Mac 资产。
 
 程序启动后执行以下流程：
 
 1. 读取构建时写入程序集的 GitHub 仓库 URL。
-2. Windows 查询 `releases.win.json`；Apple 芯片 Mac 查询 `releases.osx-arm64.json`；Intel Mac 查询 `releases.osx-x64.json`。
+2. Windows 查询 `releases.win.json`。macOS 更新通道保留在源代码中，但当前不构建和发布新资产。
 3. 有新版本时后台下载并校验更新包。
 4. 左下角版本入口显示当前版本、最新版本、下载进度和更新日志。
 5. 只有用户点击“安装更新并重启”后才真正替换应用。macOS 安装在 `/Applications` 时可能显示系统管理员授权提示。
@@ -64,7 +66,7 @@ git tag v1.16.0
 git push origin v1.16.0
 ```
 
-5. `.github/workflows/release.yml` 先在 `windows-latest` 构建 Bridge、WPF、Velopack 和中文安装向导，再在 `macos-latest` 构建 Apple 芯片/Intel 两个 Avalonia 原生中文测试包；全部通过仓库内置 `GITHUB_TOKEN` 上传到同一个 Release，无需新增服务器或付费服务。
+5. `.github/workflows/release.yml` 在 `windows-latest` 构建 Bridge、WPF、Velopack 和中文安装向导，并通过仓库内置 `GITHUB_TOKEN` 上传 Release。Mac 任务仅在仓库变量 `ENABLE_MACOS_RELEASE=true` 时运行。
 
 也可以从 GitHub Actions 页面手动运行工作流并填写 `1.16.0`。
 

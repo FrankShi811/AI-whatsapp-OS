@@ -13,6 +13,14 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("2.1.0", "2026-07-23", "Stitch 视觉方向落地与 Windows 专注发布",
+        [
+            "评估 Google Stitch 导出的 12 套 Auralis 方案，选定 refined alignment / transparency 方向并转译为 AI Sales OS 原生 WPF 视觉语言。",
+            "新增 Glass Card、Ambient Hero、Intelligence Glass、Elevated Metric 和 Aurora Ambient 等复用组件，强化 AI 决策区域的层级与解释性。",
+            "Dashboard、商机智能和客户智能分析的页头与关键指标升级为克制的半透明层次和低强度环境光，同时保留数据密度、键盘效率和原生性能。",
+            "完成隔离数据库下的 Dashboard、商机智能和客户智能分析视觉冒烟，未覆盖或启动用户根目录的现有安装。",
+            "macOS 构建改为显式启用；在 Developer ID、签名与公证条件恢复前，GitHub Release 默认只生成 Windows 中文安装与自动更新资产。"
+        ], true),
         new("2.0.0", "2026-07-23", "AI 原生桌面设计系统正式版",
         [
             "完成 UI Audit 与 Figma Design System：120 个变量、10 套文字样式、4 套深度效果和 7 个核心 AI 组件成为 2.0 视觉基线。",
@@ -20,7 +28,7 @@ public static class ReleaseCatalog
             "统一页面标题、正文、标签、指标、按钮、输入框、表格、卡片与圆角尺度，并建立 Holographic Card、AI Confidence Meter、Reasoning Step、Priority Card、Message Bubble 和 Workflow Node 复用样式。",
             "AI Score Ring 增加尊重 Windows 减少动画设置的短时缓动；评分颜色与 Dashboard 等级分布统一由主题资源驱动。",
             "保留 CRM、WhatsApp、邮件、AI Provider、自动化、数据库和自动更新业务逻辑，升级不覆盖任何本地客户或账号数据。"
-        ], true),
+        ]),
         new("1.18.4", "2026-07-22", "桌面工作区布局一致性修复",
         [
             "邮件 Inbox 内容标题区采用与 WhatsApp Inbox 一致的页面外边距、标题层级和内容间距，切换板块时不再突然贴到左上角。",

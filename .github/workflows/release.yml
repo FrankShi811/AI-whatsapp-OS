@@ -103,6 +103,10 @@ jobs:
           if-no-files-found: error
 
   macos-preview:
+    # macOS packages are intentionally opt-in until Developer ID signing and
+    # notarization credentials are available. Enable with repository variable
+    # ENABLE_MACOS_RELEASE=true when the user explicitly resumes Mac releases.
+    if: vars.ENABLE_MACOS_RELEASE == 'true'
     needs: windows-release
     runs-on: macos-latest
     env:

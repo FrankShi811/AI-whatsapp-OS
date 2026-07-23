@@ -5,7 +5,7 @@
              ShutdownMode="OnMainWindowClose">
     <Application.Resources>
         <local:ComboSelectionTextConverter x:Key="ComboSelectionTextConverter"/>
-        <!-- AI Sales OS 2.0 semantic design tokens. ThemeManager mutates these shared brushes in-place. -->
+        <!-- AI Sales OS 2.x semantic design tokens. ThemeManager mutates these shared brushes in-place. -->
         <SolidColorBrush x:Key="Ink" Color="#08130F"/>
         <SolidColorBrush x:Key="InkSecondary" Color="#4A5D56"/>
         <SolidColorBrush x:Key="Muted" Color="#687B74"/>
@@ -49,6 +49,22 @@
         <SolidColorBrush x:Key="ChatOutbound" Color="#D1F5E8"/>
         <SolidColorBrush x:Key="ChatInbound" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="Overlay" Color="#B80A1813"/>
+        <SolidColorBrush x:Key="GlassSurface" Color="#EFFFFFFF"/>
+        <SolidColorBrush x:Key="GlassSurfaceStrong" Color="#F8FFFFFF"/>
+        <SolidColorBrush x:Key="GlassLine" Color="#90D9E0DD"/>
+
+        <!-- Stitch/Auralis-inspired ambient light: restrained, static, and GPU-cheap. -->
+        <LinearGradientBrush x:Key="AuroraAmbient" StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Color="#F8FFFFFF" Offset="0"/>
+            <GradientStop Color="#EFF2EEFF" Offset="0.42"/>
+            <GradientStop Color="#E8EAF9FF" Offset="0.68"/>
+            <GradientStop Color="#E7E6FAF3" Offset="1"/>
+        </LinearGradientBrush>
+        <LinearGradientBrush x:Key="AuroraBorder" StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Color="#55FFFFFF" Offset="0"/>
+            <GradientStop Color="#807868FF" Offset="0.52"/>
+            <GradientStop Color="#5031C8E5" Offset="1"/>
+        </LinearGradientBrush>
 
         <DropShadowEffect x:Key="CardShadow" Color="#18342B" BlurRadius="22" ShadowDepth="3" Opacity="0.09"/>
         <DropShadowEffect x:Key="FloatingShadow" Color="#102A21" BlurRadius="34" ShadowDepth="9" Opacity="0.16"/>
@@ -81,13 +97,34 @@
             <Setter Property="Effect" Value="{StaticResource CardShadow}"/>
             <Setter Property="BorderThickness" Value="0"/>
         </Style>
+        <Style x:Key="GlassCard" TargetType="Border" BasedOn="{StaticResource Card}">
+            <Setter Property="Background" Value="{DynamicResource GlassSurface}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource GlassLine}"/>
+            <Setter Property="Effect" Value="{StaticResource CardShadow}"/>
+        </Style>
+        <Style x:Key="AmbientHeroCard" TargetType="Border" BasedOn="{StaticResource GlassCard}">
+            <Setter Property="Background" Value="{StaticResource AuroraAmbient}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource AuroraBorder}"/>
+            <Setter Property="CornerRadius" Value="22"/>
+            <Setter Property="Padding" Value="24,21"/>
+        </Style>
         <Style x:Key="MetricCard" TargetType="Border" BasedOn="{StaticResource Card}">
             <Setter Property="Padding" Value="18,16"/>
             <Setter Property="CornerRadius" Value="14"/>
         </Style>
+        <Style x:Key="ElevatedMetricCard" TargetType="Border" BasedOn="{StaticResource GlassCard}">
+            <Setter Property="Padding" Value="19,17"/>
+            <Setter Property="CornerRadius" Value="17"/>
+        </Style>
         <Style x:Key="AiCard" TargetType="Border" BasedOn="{StaticResource Card}">
             <Setter Property="Background" Value="{DynamicResource AiSurface}"/>
             <Setter Property="BorderBrush" Value="{DynamicResource AiSoft}"/>
+            <Setter Property="Effect" Value="{StaticResource AiGlow}"/>
+        </Style>
+        <Style x:Key="IntelligenceGlassCard" TargetType="Border" BasedOn="{StaticResource AiCard}">
+            <Setter Property="Background" Value="{StaticResource AuroraAmbient}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource AuroraBorder}"/>
+            <Setter Property="CornerRadius" Value="20"/>
             <Setter Property="Effect" Value="{StaticResource AiGlow}"/>
         </Style>
         <Style x:Key="HolographicCard" TargetType="Border" BasedOn="{StaticResource AiCard}">

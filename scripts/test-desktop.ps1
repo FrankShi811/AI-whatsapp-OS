@@ -40,12 +40,13 @@ foreach ($key in $requiredBrushes) {
 $requiredStyles = @(
   'HolographicCard', 'ConfidenceMeter', 'ReasoningStepCard', 'PriorityCard',
   'InboundMessageBubble', 'OutboundMessageBubble', 'WorkflowNodeCard',
-  'PageTitle', 'SectionTitle', 'BodyText', 'LabelText', 'MicroText'
+  'PageTitle', 'SectionTitle', 'BodyText', 'LabelText', 'MicroText',
+  'GlassCard', 'AmbientHeroCard', 'IntelligenceGlassCard', 'ElevatedMetricCard'
 )
 foreach ($key in $requiredStyles) {
   if ($appXaml -notmatch "x:Key=`"$key`"") { throw "AI Sales OS 2.0 component style is missing: $key" }
 }
-Write-Host 'PASS  AI Sales OS 2.0 Figma/WPF design-system contract'
+Write-Host 'PASS  AI Sales OS 2.x Figma/Stitch/WPF design-system contract'
 
 & $dotnet build (Join-Path $root 'desktop\WAFlow.sln') -c Release
 if ($LASTEXITCODE -ne 0) { throw 'WAFlow desktop build failed.' }

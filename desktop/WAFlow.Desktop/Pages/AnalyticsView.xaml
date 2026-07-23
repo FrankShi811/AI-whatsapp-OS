@@ -8,6 +8,7 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
+        <Border Style="{StaticResource AmbientHeroCard}">
         <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel>
@@ -22,6 +23,7 @@
                 <Button x:Name="GenerateButton" Content="✦  一键生成报告" Style="{StaticResource AiButton}" Click="Generate_Click" IsEnabled="False"/>
             </StackPanel>
         </Grid>
+        </Border>
 
         <Border Grid.Row="1" x:Name="ProgressPanel" Style="{StaticResource AiCard}" Padding="14,11" Margin="0,17,0,14" Visibility="Collapsed">
             <Grid>

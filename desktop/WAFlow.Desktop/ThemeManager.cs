@@ -27,11 +27,11 @@ internal static class ThemeManager
             ["AiSurface"] = ("#F4F1FF", "#292066"),
             ["Surface"] = ("#FFFFFF", "#10221C"),
             ["SurfaceElevated"] = ("#FFFFFF", "#1D3029"),
-            ["SurfaceMuted"] = ("#F7FAF9", "#172A23"),
+            ["SurfaceMuted"] = ("#F3F2EF", "#172A23"),
             ["SurfaceInput"] = ("#FFFFFF", "#10221C"),
-            ["Canvas"] = ("#EFF4F2", "#08130F"),
-            ["CanvasDeep"] = ("#E3EBE7", "#1D3029"),
-            ["Line"] = ("#D5E0DC", "#32453E"),
+            ["Canvas"] = ("#F7F7F5", "#08130F"),
+            ["CanvasDeep"] = ("#ECEDE9", "#1D3029"),
+            ["Line"] = ("#E3E5E2", "#32453E"),
             ["LineStrong"] = ("#B9C9C3", "#4A5D56"),
             ["Sidebar"] = ("#081B15", "#050D0A"),
             ["SidebarElevated"] = ("#102A22", "#10221C"),
@@ -53,7 +53,10 @@ internal static class ThemeManager
             ["GradeD"] = ("#83958E", "#96A8A1"),
             ["ChatOutbound"] = ("#D1F5E8", "#153D31"),
             ["ChatInbound"] = ("#FFFFFF", "#1D3029"),
-            ["Overlay"] = ("#B80A1813", "#D9060D0A")
+            ["Overlay"] = ("#B80A1813", "#D9060D0A"),
+            ["GlassSurface"] = ("#EFFFFFFF", "#E61D3029"),
+            ["GlassSurfaceStrong"] = ("#F8FFFFFF", "#F21D3029"),
+            ["GlassLine"] = ("#90D9E0DD", "#8032453E")
         };
 
     public static string CurrentMode { get; private set; } = "System";
