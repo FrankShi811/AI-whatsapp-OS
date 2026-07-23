@@ -963,6 +963,13 @@ Check(followUpTasks.Single() is { Status: FollowUpTaskStatus.Proposed, Priority:
     && customerEvents.Any(item => item.EventType == "follow_up_proposed")
     && customerEvents.Any(item => item.EventType == "customer_brain_analyzed"), "Customer Brain turns its recommendation into an auditable personal follow-up task and customer event timeline");
 Check(leadAfterDecision is { Score: 86, Grade: "A", Stage: LeadStage.Negotiation, PurchaseProbability: 0 }, "Customer Brain decision remains advisory and never overwrites CRM stage or Lead Intelligence output");
+var brainAwareAssistantProvider = new CapturingConversationAssistantProvider();
+var brainAwareAssistant = new ConversationAssistantService(reportRepository, brainAwareAssistantProvider);
+await brainAwareAssistant.AnalyzeAsync(reportConversation.Id, reportLead);
+Check(brainAwareAssistantProvider.PayloadJson.Contains("\"customerBrain\"", StringComparison.Ordinal)
+    && brainAwareAssistantProvider.PayloadJson.Contains(decisionBrain.NextBestAction, StringComparison.Ordinal)
+    && brainAwareAssistantProvider.PayloadJson.Contains("\"latestIncomingMessage\":\"I need 500 pcs monthly.\"", StringComparison.Ordinal),
+    "WhatsApp AI assistant receives the latest Customer Brain decision while retaining current incoming evidence");
 var dashboardAfterBrain = await reportRepository.GetDashboardAsync();
 Check(dashboardAfterBrain.PendingFollowUps >= 1, "personal sales command center counts due Customer Brain follow-up tasks");
 try
@@ -985,22 +992,62 @@ Check(changedBrain.Version == decisionBrain.Version + 1 && changedBrain.SourceSn
     && changedBrain.PurchaseProbability == decisionBrain.PurchaseProbability, "Customer Brain marks the previous AI decision stale when source semantics change without discarding it");
 Check(unchangedLeadAfterBrain is { Score: 86, Grade: "A", AnalysisStatus: AnalysisStatus.Succeeded } && unchangedLeadAfterBrain.CustomFields["目标价格状态"] == "待确认", "Customer Brain never overwrites authoritative CRM or Lead Intelligence fields");
 var brainRecommendation = (await reportRepository.GetAiRecommendationHistoryAsync(reportLead.Id)).First();
-var brainAction = new SalesActionRecord
+var actionLifecycle = new CustomerActionLifecycleService(reportRepository);
+await actionLifecycle.AcceptAsync(reportLead.Id, brainRecommendation.Id);
+Check((await reportRepository.GetAiRecommendationHistoryAsync(reportLead.Id)).First(item => item.Id == brainRecommendation.Id).Status == AiRecommendationStatus.Accepted
+    && (await reportRepository.GetFollowUpTasksAsync(reportLead.Id)).Single(item => item.RecommendationId == brainRecommendation.Id).Status == FollowUpTaskStatus.Open
+    && (await reportRepository.GetSalesActionsAsync(reportLead.Id)).Single(item => item.RecommendationId == brainRecommendation.Id).Status == SalesActionStatus.Approved,
+    "accepted Customer Brain recommendation synchronizes recommendation, task and sales action");
+await actionLifecycle.DeferAsync(reportLead.Id, brainRecommendation.Id, TimeSpan.FromHours(24));
+var deferredTask = (await reportRepository.GetFollowUpTasksAsync(reportLead.Id)).Single(item => item.RecommendationId == brainRecommendation.Id);
+Check(deferredTask.Status == FollowUpTaskStatus.Open && deferredTask.DueAt > DateTimeOffset.Now.AddHours(23),
+    "accepted Customer Brain recommendation can be deferred without losing its execution state");
+await actionLifecycle.StartAsync(reportLead.Id, brainRecommendation.Id);
+var activeBrief = await new TodayBriefService(reportRepository).GetAsync();
+Check(activeBrief.Items.Any(item => item.CustomerId == reportLead.Id && item.RecommendationId == brainRecommendation.Id && item.Status == FollowUpTaskStatus.InProgress)
+    && activeBrief.InProgressCount >= 1,
+    "Today Brief prioritizes active Customer Brain follow-up work");
+await actionLifecycle.CompleteAsync(reportLead.Id, brainRecommendation.Id, "客户已回复并补充采购条件");
+Check((await reportRepository.GetAiRecommendationHistoryAsync(reportLead.Id)).First(item => item.Id == brainRecommendation.Id).Status == AiRecommendationStatus.Completed
+    && (await reportRepository.GetFollowUpTasksAsync(reportLead.Id)).Single(item => item.RecommendationId == brainRecommendation.Id).Status == FollowUpTaskStatus.Completed
+    && (await reportRepository.GetSalesActionsAsync(reportLead.Id)).Single(item => item.RecommendationId == brainRecommendation.Id).Status == SalesActionStatus.Completed
+    && (await reportRepository.GetAiLearningFeedbackAsync(reportLead.Id)).Single(item => item.RecommendationId == brainRecommendation.Id).Helpful,
+    "completed recommendation records a durable helpful outcome across the action lifecycle");
+var failedRecommendation = new AiRecommendationRecord
 {
-    CustomerId=reportLead.Id, RecommendationId=brainRecommendation.Id, ActionType="follow_up",
-    Description="确认SKU、价格和交期", Owner="Frank", Status=SalesActionStatus.Completed, CompletedAt=DateTimeOffset.Now, Outcome="客户已回复"
+    Id="recommendation-failed",
+    CustomerId=reportLead.Id,
+    RecommendationType="follow_up",
+    Title="验证次要采购条件",
+    Action="联系客户验证次要采购条件",
+    Rationale="补齐决策信息",
+    Evidence=["客户尚未确认交期"],
+    Confidence=.65
 };
-await reportRepository.SaveSalesActionAsync(brainAction);
-await reportRepository.SaveAiLearningFeedbackAsync(new AiLearningFeedback
+await reportRepository.SaveAiRecommendationAsync(failedRecommendation);
+await reportRepository.UpsertFollowUpTaskAsync(new FollowUpTask
 {
-    CustomerId=reportLead.Id, RecommendationId=brainRecommendation.Id, ActionId=brainAction.Id,
-    Outcome="客户回复并补充采购条件", Helpful=true, Note="建议有助于推进需求确认"
+    Id="task-failed",
+    CustomerId=reportLead.Id,
+    RecommendationId=failedRecommendation.Id,
+    Title=failedRecommendation.Title,
+    Reason=failedRecommendation.Rationale,
+    Priority=FollowUpPriority.Normal,
+    DueAt=DateTimeOffset.Now
 });
+await actionLifecycle.FailAsync(reportLead.Id, failedRecommendation.Id, "客户明确表示暂不推进");
+var learningBrief = await new TodayBriefService(reportRepository).GetAsync();
+Check(learningBrief.Learning.Accepted == 2
+    && learningBrief.Learning.Completed == 1
+    && learningBrief.Learning.Failed == 1
+    && learningBrief.Learning.FeedbackCount == 2
+    && learningBrief.Learning.HelpfulFeedback == 1,
+    "personal recommendation learning metrics distinguish completion, failure and helpful outcomes");
 await reportRepository.InitializeAsync();
 Check((await reportRepository.GetCustomerIntelligenceProfileAsync(reportLead.Id))?.Version == changedBrain.Version
-    && (await reportRepository.GetSalesActionsAsync(reportLead.Id)).Single().Status == SalesActionStatus.Completed
-    && (await reportRepository.GetAiLearningFeedbackAsync(reportLead.Id)).Single().Helpful
-    && (await reportRepository.GetFollowUpTasksAsync(reportLead.Id)).Single().Priority == FollowUpPriority.High, "Customer Brain migration is additive and preserves tasks, actions and outcome learning across restarts");
+    && (await reportRepository.GetSalesActionsAsync(reportLead.Id)).Count == 2
+    && (await reportRepository.GetAiLearningFeedbackAsync(reportLead.Id)).Count == 2
+    && (await reportRepository.GetFollowUpTasksAsync(reportLead.Id)).Single(item => item.RecommendationId == brainRecommendation.Id).Priority == FollowUpPriority.High, "Customer Brain migration is additive and preserves tasks, actions and outcome learning across restarts");
 var keepArtifactIndex = Array.IndexOf(args, "--keep-report-artifacts");
 if (keepArtifactIndex >= 0 && keepArtifactIndex + 1 < args.Length)
 {
@@ -1183,6 +1230,45 @@ sealed class AlwaysInvalidStructuredReportProvider : IStructuredAiProvider
     public Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default) => Task.FromResult("invalid-structured-test");
     public Task<T> CompleteStructuredAsync<T>(string instructions, object payload, Func<T, string?> validate, CancellationToken cancellationToken = default) where T : class =>
         throw new DeepSeekException("invalid_structured_output", "测试模型返回的结构化 JSON 无法解析。", true);
+}
+
+sealed class CapturingConversationAssistantProvider : IStructuredAiProvider
+{
+    public string PayloadJson { get; private set; } = "";
+    public bool HasApiKey() => true;
+    public Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default) => Task.FromResult("conversation-brain-test");
+
+    public Task<T> CompleteStructuredAsync<T>(
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        PayloadJson = System.Text.Json.JsonSerializer.Serialize(
+            payload,
+            new System.Text.Json.JsonSerializerOptions
+            {
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            });
+        if (typeof(T) != typeof(ConversationAssistantResult))
+            throw new InvalidOperationException($"Unsupported conversation assistant type: {typeof(T).Name}");
+        var result = new ConversationAssistantResult
+        {
+            ReplyText = "Thanks for confirming 500 pcs monthly. Which SKU, target price and delivery date should we quote?",
+            ReplyLanguage = "en",
+            NeedsSummary = "客户明确表达每月采购500件，但SKU、目标价格和交期仍待确认。",
+            CustomerIntent = "持续采购意向明确，正在补齐报价条件。",
+            PurchaseSignals = ["每月采购500件"],
+            Risks = ["SKU、价格和交期尚未确认"],
+            RecommendedNextAction = "确认SKU、目标价格和交期后发送报价。",
+            Confidence = .9,
+            FieldUpdates = []
+        };
+        var typed = (T)(object)result;
+        var error = validate(typed);
+        if (!string.IsNullOrWhiteSpace(error)) throw new InvalidOperationException(error);
+        return Task.FromResult(typed);
+    }
 }
 
 sealed class FakeCustomerBrainProvider : IStructuredAiProvider

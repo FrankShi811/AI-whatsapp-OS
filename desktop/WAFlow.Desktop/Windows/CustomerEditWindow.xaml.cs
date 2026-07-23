@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.IO;
 using System.Windows;
+using System.Windows.Controls;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Services;
@@ -113,8 +114,11 @@ public partial class CustomerEditWindow : Window
 
             var recommendations = await _services.Repository.GetAiRecommendationHistoryAsync(_lead.Id);
             BrainRecommendationItems.ItemsSource = recommendations.Count == 0
-                ? new[] { "暂无 AI 建议历史" }
-                : recommendations.Take(5).Select(item => $"{item.Action} · {RecommendationStatusLabel(item.Status)}").ToList();
+                ? new[] { new RecommendationOption(null, "暂无 AI 建议历史") }
+                : recommendations.Take(5)
+                    .Select(item => new RecommendationOption(item, $"{item.Action} · {RecommendationStatusLabel(item.Status)}"))
+                    .ToList();
+            BrainRecommendationItems.SelectedIndex = recommendations.Count == 0 ? -1 : 0;
 
             var tasks = await _services.Repository.GetFollowUpTasksAsync(_lead.Id);
             BrainTaskItems.ItemsSource = tasks.Count == 0
@@ -139,6 +143,53 @@ public partial class CustomerEditWindow : Window
         catch (Exception error)
         {
             BrainStatusText.Text = $"Customer 360 暂时无法加载：{error.Message}";
+        }
+        finally
+        {
+            SetBrainButtonsEnabled(true);
+        }
+    }
+
+    private async void RecommendationAction_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string action }
+            || BrainRecommendationItems.SelectedItem is not RecommendationOption { Item: { } recommendation })
+        {
+            MessageBox.Show("请先选择一条 AI 建议。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        SetBrainButtonsEnabled(false);
+        try
+        {
+            switch (action)
+            {
+                case "accept":
+                    await _services.CustomerActions.AcceptAsync(_lead.Id, recommendation.Id);
+                    break;
+                case "defer":
+                    await _services.CustomerActions.DeferAsync(_lead.Id, recommendation.Id, TimeSpan.FromHours(24));
+                    break;
+                case "start":
+                    await _services.CustomerActions.StartAsync(_lead.Id, recommendation.Id);
+                    break;
+                case "complete":
+                    await _services.CustomerActions.CompleteAsync(_lead.Id, recommendation.Id, "用户确认建议已完成");
+                    break;
+                case "fail":
+                    await _services.CustomerActions.FailAsync(_lead.Id, recommendation.Id, "用户确认本次执行未达到预期");
+                    break;
+                case "dismiss":
+                    await _services.CustomerActions.DismissAsync(_lead.Id, recommendation.Id, "用户选择暂不采用该建议");
+                    break;
+                default:
+                    return;
+            }
+            await LoadCustomerBrainAsync(refresh: false);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(error.Message, "更新 AI 建议失败", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
         {
@@ -307,6 +358,7 @@ public partial class CustomerEditWindow : Window
     };
 
     private sealed record StageOption(string Label, LeadStage Value);
+    private sealed record RecommendationOption(AiRecommendationRecord? Item, string DisplayText);
 
     private sealed class EditableDimension(string header, string value)
     {

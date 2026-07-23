@@ -21,6 +21,8 @@ public sealed class AppServices
     public CustomerReportExportService CustomerReportExports { get; }
     public ConversationAssistantService ConversationAssistant { get; }
     public CustomerBrainService CustomerBrain { get; }
+    public CustomerActionLifecycleService CustomerActions { get; }
+    public TodayBriefService TodayBrief { get; }
 
     public AppServices(LocalRepository? repository = null)
     {
@@ -39,6 +41,8 @@ public sealed class AppServices
         CustomerReportExports = new CustomerReportExportService(Repository);
         ConversationAssistant = new ConversationAssistantService(Repository, DeepSeek);
         CustomerBrain = new CustomerBrainService(Repository, DeepSeek);
+        CustomerActions = new CustomerActionLifecycleService(Repository);
+        TodayBrief = new TodayBriefService(Repository);
     }
 
     public Task InitializeAsync(CancellationToken cancellationToken = default) => Repository.InitializeAsync(cancellationToken);

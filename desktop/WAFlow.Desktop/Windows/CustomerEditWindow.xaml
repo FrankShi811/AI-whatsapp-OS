@@ -133,7 +133,15 @@
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                             <StackPanel>
                                 <TextBlock Text="AI 建议历史" Style="{StaticResource LabelText}" Margin="0,0,0,5"/>
-                                <ItemsControl x:Name="BrainRecommendationItems"><ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding StringFormat=• {0}}" TextWrapping="Wrap" Margin="0,2,0,4"/></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                                <ListBox x:Name="BrainRecommendationItems" DisplayMemberPath="DisplayText" MinHeight="70" MaxHeight="150"/>
+                                <WrapPanel Margin="0,7,0,0">
+                                    <Button Content="接受" Tag="accept" Click="RecommendationAction_Click" Style="{StaticResource GhostButton}" Margin="0,0,5,5"/>
+                                    <Button Content="延期 24h" Tag="defer" Click="RecommendationAction_Click" Style="{StaticResource GhostButton}" Margin="0,0,5,5"/>
+                                    <Button Content="开始" Tag="start" Click="RecommendationAction_Click" Style="{StaticResource GhostButton}" Margin="0,0,5,5"/>
+                                    <Button Content="完成" Tag="complete" Click="RecommendationAction_Click" Style="{StaticResource GhostButton}" Margin="0,0,5,5"/>
+                                    <Button Content="失败" Tag="fail" Click="RecommendationAction_Click" Style="{StaticResource GhostButton}" Margin="0,0,5,5"/>
+                                    <Button Content="忽略" Tag="dismiss" Click="RecommendationAction_Click" Style="{StaticResource GhostButton}" Margin="0,0,5,5"/>
+                                </WrapPanel>
                             </StackPanel>
                             <StackPanel Grid.Column="2">
                                 <TextBlock Text="待办任务" Style="{StaticResource LabelText}" Margin="0,0,0,5"/>

@@ -1875,6 +1875,18 @@ public sealed class LocalRepository
         return items;
     }
 
+    public async Task<List<SalesActionRecord>> GetAllSalesActionsAsync(CancellationToken cancellationToken = default)
+    {
+        var items = new List<SalesActionRecord>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM sales_action_logs ORDER BY updated_at DESC";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<SalesActionRecord>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
     public async Task SaveAiLearningFeedbackAsync(AiLearningFeedback feedback, CancellationToken cancellationToken = default)
     {
         await using var db = Open(); await db.OpenAsync(cancellationToken);
@@ -1902,6 +1914,18 @@ public sealed class LocalRepository
         await using var command = db.CreateCommand();
         command.CommandText = "SELECT data_json FROM ai_learning_feedback WHERE customer_id=$customer ORDER BY created_at DESC";
         command.Parameters.AddWithValue("$customer", customerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<AiLearningFeedback>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task<List<AiLearningFeedback>> GetAllAiLearningFeedbackAsync(CancellationToken cancellationToken = default)
+    {
+        var items = new List<AiLearningFeedback>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM ai_learning_feedback ORDER BY created_at DESC";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
             if (Json.Deserialize<AiLearningFeedback>(reader.GetString(0)) is { } item) items.Add(item);

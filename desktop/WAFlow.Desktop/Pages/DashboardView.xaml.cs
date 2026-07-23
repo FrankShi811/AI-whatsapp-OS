@@ -33,6 +33,17 @@ public partial class DashboardView : UserControl, IRefreshableView
         var maximum = Math.Max(1, data.Stages.Values.DefaultIfEmpty(0).Max());
         StageItems.ItemsSource = Enum.GetValues<LeadStage>().Select(stage => new StageMetric(Labels.Stage(stage), data.Stages.GetValueOrDefault(stage), data.Stages.GetValueOrDefault(stage) * 100d / maximum)).ToList();
         PriorityGrid.ItemsSource = data.PriorityLeads;
+        var brief = await _services.TodayBrief.GetAsync();
+        TodayBriefSummaryText.Text = $"逾期 {brief.OverdueCount} · 今日到期 {brief.DueTodayCount} · 执行中 {brief.InProgressCount}";
+        TodayBriefItems.ItemsSource = brief.Items.Take(6).ToList();
+        LearningCompletionText.Text = brief.Learning.Accepted == 0
+            ? "完成率 —"
+            : $"完成率 {brief.Learning.CompletionRate:0.#}%";
+        LearningHelpfulText.Text = brief.Learning.FeedbackCount == 0
+            ? "有效反馈 —"
+            : $"有效反馈 {brief.Learning.HelpfulRate:0.#}%";
+        LearningDetailText.Text =
+            $"已接受 {brief.Learning.Accepted} · 已完成 {brief.Learning.Completed} · 失败 {brief.Learning.Failed} · 忽略 {brief.Learning.Dismissed}";
         return;
         void SetGrade(string grade, TextBlock text, Border bar) { var count = data.Grades.GetValueOrDefault(grade); text.Text = count.ToString(); bar.Height = 20 + (data.TotalLeads == 0 ? 0 : 100d * count / data.TotalLeads); }
     }

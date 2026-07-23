@@ -285,3 +285,62 @@ public sealed class CustomerEventLogEntry
     public DateTimeOffset OccurredAt { get; set; } = DateTimeOffset.Now;
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
 }
+
+public sealed class TodayBriefItem
+{
+    public string CustomerId { get; set; } = "";
+    public string CustomerName { get; set; } = "";
+    public string RecommendationId { get; set; } = "";
+    public string Action { get; set; } = "";
+    public string Reason { get; set; } = "";
+    public FollowUpPriority Priority { get; set; } = FollowUpPriority.Normal;
+    public FollowUpTaskStatus Status { get; set; } = FollowUpTaskStatus.Proposed;
+    public DateTimeOffset DueAt { get; set; } = DateTimeOffset.Now;
+    public int PurchaseProbability { get; set; }
+    public double Confidence { get; set; }
+    public LeadStage SuggestedStage { get; set; } = LeadStage.New;
+
+    [JsonIgnore] public string PriorityLabel => Priority switch
+    {
+        FollowUpPriority.Urgent => "紧急",
+        FollowUpPriority.High => "高优先",
+        FollowUpPriority.Normal => "普通",
+        _ => "低优先"
+    };
+
+    [JsonIgnore] public string DueLabel
+    {
+        get
+        {
+            var now = DateTimeOffset.Now;
+            if (DueAt <= now) return $"已逾期 {Math.Max(1, (int)Math.Ceiling((now - DueAt).TotalHours))} 小时";
+            if (DueAt.Date == now.Date) return $"今天 {DueAt:HH:mm}";
+            if (DueAt.Date == now.Date.AddDays(1)) return $"明天 {DueAt:HH:mm}";
+            return DueAt.ToString("MM-dd HH:mm");
+        }
+    }
+}
+
+public sealed class PersonalLearningSummary
+{
+    public int Proposed { get; set; }
+    public int Accepted { get; set; }
+    public int Completed { get; set; }
+    public int Failed { get; set; }
+    public int Dismissed { get; set; }
+    public int FeedbackCount { get; set; }
+    public int HelpfulFeedback { get; set; }
+
+    [JsonIgnore] public double CompletionRate => Accepted == 0 ? 0 : Math.Round(100d * Completed / Accepted, 1);
+    [JsonIgnore] public double HelpfulRate => FeedbackCount == 0 ? 0 : Math.Round(100d * HelpfulFeedback / FeedbackCount, 1);
+}
+
+public sealed class TodayBriefSnapshot
+{
+    public DateTimeOffset GeneratedAt { get; set; } = DateTimeOffset.Now;
+    public int OverdueCount { get; set; }
+    public int DueTodayCount { get; set; }
+    public int InProgressCount { get; set; }
+    public List<TodayBriefItem> Items { get; set; } = [];
+    public PersonalLearningSummary Learning { get; set; } = new();
+}

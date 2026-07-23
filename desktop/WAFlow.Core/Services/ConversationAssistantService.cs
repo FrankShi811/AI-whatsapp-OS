@@ -34,6 +34,7 @@ public sealed class ConversationAssistantService
         3. 只在客户原话明确支持时，提出 CRM 字段更新。field 必须逐字来自 allowedFields 的 key；evidenceQuote 必须逐字摘录客户发送的 incoming 消息。无法确认就不要提出更新。
         4. 不得根据销售人员自己发送的 outgoing 消息反推客户需求。不得改写姓名、电话、WhatsApp 号码、负责人、退订状态或 AI 分数。
         5. stage 仅允许 new、contacted、interested、negotiation、waiting、customer、lost；没有明确阶段证据时不要返回 stage 更新。
+        6. customerBrain 是最近一次 Customer Brain 的结构化判断，只能作为建议上下文；如果它与最新 incoming 客户原话冲突，以最新客户原话为准，不得把推断当成已确认事实。
 
         只返回一个严格 JSON 对象，字段固定为：
         {
@@ -76,12 +77,40 @@ public sealed class ConversationAssistantService
 
         var allowedFields = BuildAllowedFields(lead);
         var incomingEvidence = incoming.Select(message => message.Body).ToList();
+        var customerBrain = lead is null
+            ? null
+            : await _repository.GetCustomerIntelligenceProfileAsync(lead.Id, cancellationToken);
         var payload = new
         {
             crm = lead is null ? null : new
             {
                 lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.Stage, lead.Tags,
                 lead.PreferredLanguage, lead.EstimatedOrderValue, lead.Currency, lead.CustomFields
+            },
+            customerBrain = customerBrain is null ? null : new
+            {
+                customerBrain.Summary,
+                customerBrain.CustomerType,
+                customerBrain.BusinessModels,
+                customerBrain.PurchaseMotivations,
+                customerBrain.PainPoints,
+                customerBrain.OpportunitySignals,
+                customerBrain.Risks,
+                customerBrain.NextBestAction,
+                customerBrain.PurchaseProbability,
+                customerBrain.Confidence,
+                customerBrain.SuggestedStage,
+                evidence = customerBrain.Statements
+                    .Where(statement => statement.Nature == IntelligenceStatementNature.Fact)
+                    .Take(12)
+                    .Select(statement => new
+                    {
+                        statement.Topic,
+                        statement.Text,
+                        statement.Evidence,
+                        statement.Source,
+                        statement.Confidence
+                    })
             },
             allowedFields = allowedFields.Select(field => new { key = field.Key, label = field.Value, currentValue = GetCurrentValue(lead, field.Key) }),
             conversation = messages.Select(message => new
@@ -187,6 +216,16 @@ public sealed class ConversationAssistantService
                 appliedFields = selectedUpdates.Select(update => new { update.Field, update.Value, update.EvidenceQuote, update.Reason })
             }),
             cancellationToken);
+        await _repository.UpsertCustomerEventAsync(new CustomerEventLogEntry
+        {
+            CustomerId = lead.Id,
+            EventType = "ai_assistant_context_applied",
+            Title = "AI 会话助理已同步客户上下文",
+            Detail = $"模型 {result.Model}；应用 {selectedUpdates.Count} 项字段建议；下一步：{result.RecommendedNextAction}",
+            SourceType = "conversation_assistant",
+            SourceId = $"assistant-{Guid.NewGuid():N}",
+            OccurredAt = now
+        }, cancellationToken);
         return lead;
     }
 
