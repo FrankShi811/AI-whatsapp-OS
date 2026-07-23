@@ -804,6 +804,35 @@ var fallbackReport = await fallbackAnalysis.GenerateAsync(reportLead.Id);
 var fallbackSteps = await reportRepository.GetCustomerAnalysisStepsAsync(fallbackReport.Id);
 Check(fallbackReport.Status == CustomerReportStatus.Succeeded && fallbackReport.Version == 3 && fallbackReport.Error.Contains("当前全部可用资料") && fallbackReport.Report.ManagementSummary.Length is >= 300 and <= 500, "customer report falls back to current verified data when AI structured output remains invalid");
 Check(fallbackSteps.Count == 5 && fallbackSteps.All(step => step.Status == CustomerReportStepStatus.Succeeded) && fallbackReport.Report.EvidenceLedger.Count > 0, "partial-data customer report preserves a complete auditable pipeline and evidence ledger");
+var customerBrain = new CustomerBrainService(reportRepository);
+var firstBrain = await customerBrain.RefreshAsync(reportLead.Id);
+var firstBrainAgain = await customerBrain.RefreshAsync(reportLead.Id);
+var firstRecommendations = await reportRepository.GetAiRecommendationHistoryAsync(reportLead.Id);
+var behaviorTimeline = await reportRepository.GetCustomerBehaviorTimelineAsync(reportLead.Id);
+Check(firstBrain is { Version: 1, CustomerId: "report-customer" } && firstBrain.Coverage.HasCrmData && firstBrain.Coverage.HasWhatsAppHistory && firstBrain.Coverage.HasLeadAnalysis && firstBrain.Coverage.HasCustomerReport && firstBrain.Coverage.HasCampaignHistory, "Customer Brain materializes one cross-channel profile with explicit data coverage");
+Check(firstBrain.Statements.Any(item => item.Nature == IntelligenceStatementNature.Fact && item.Source == "CRM") && firstBrain.Statements.Any(item => item.Nature == IntelligenceStatementNature.Inference) && firstBrain.Statements.Any(item => item.Nature == IntelligenceStatementNature.Recommendation), "Customer Brain keeps facts, AI inference and sales recommendations distinct");
+Check(firstBrainAgain.Version == firstBrain.Version && firstRecommendations.Count == 1, "Customer Brain refresh is idempotent and does not duplicate versions or recommendations");
+Check(behaviorTimeline.Count >= 88 && behaviorTimeline.Any(item => item.SourceType == "whatsapp_message") && behaviorTimeline.Any(item => item.SourceType == "campaign_recipient") && behaviorTimeline.Any(item => item.SourceType == "customer_analysis_report"), "Customer Brain builds an idempotent behavior timeline from conversations, campaigns and reports");
+reportLead.CustomFields["目标价格状态"] = "待确认";
+await reportRepository.UpsertLeadAsync(reportLead);
+var changedBrain = await customerBrain.RefreshAsync(reportLead.Id);
+var unchangedLeadAfterBrain = await reportRepository.GetLeadAsync(reportLead.Id);
+Check(changedBrain.Version == 2 && changedBrain.SourceSnapshotHash != firstBrain.SourceSnapshotHash && changedBrain.CreatedAt == firstBrain.CreatedAt, "Customer Brain creates a new version only after its source semantics change");
+Check(unchangedLeadAfterBrain is { Score: 86, Grade: "A", AnalysisStatus: AnalysisStatus.Succeeded } && unchangedLeadAfterBrain.CustomFields["目标价格状态"] == "待确认", "Customer Brain never overwrites authoritative CRM or Lead Intelligence fields");
+var brainRecommendation = (await reportRepository.GetAiRecommendationHistoryAsync(reportLead.Id)).First();
+var brainAction = new SalesActionRecord
+{
+    CustomerId=reportLead.Id, RecommendationId=brainRecommendation.Id, ActionType="follow_up",
+    Description="确认SKU、价格和交期", Owner="Frank", Status=SalesActionStatus.Completed, CompletedAt=DateTimeOffset.Now, Outcome="客户已回复"
+};
+await reportRepository.SaveSalesActionAsync(brainAction);
+await reportRepository.SaveAiLearningFeedbackAsync(new AiLearningFeedback
+{
+    CustomerId=reportLead.Id, RecommendationId=brainRecommendation.Id, ActionId=brainAction.Id,
+    Outcome="客户回复并补充采购条件", Helpful=true, Note="建议有助于推进需求确认"
+});
+await reportRepository.InitializeAsync();
+Check((await reportRepository.GetCustomerIntelligenceProfileAsync(reportLead.Id))?.Version == 2 && (await reportRepository.GetSalesActionsAsync(reportLead.Id)).Single().Status == SalesActionStatus.Completed && (await reportRepository.GetAiLearningFeedbackAsync(reportLead.Id)).Single().Helpful, "Customer Brain migration is additive and preserves action/outcome learning across restarts");
 var keepArtifactIndex = Array.IndexOf(args, "--keep-report-artifacts");
 if (keepArtifactIndex >= 0 && keepArtifactIndex + 1 < args.Length)
 {

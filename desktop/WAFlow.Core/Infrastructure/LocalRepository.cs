@@ -236,6 +236,66 @@ public sealed class LocalRepository
             CREATE INDEX IF NOT EXISTS ix_whatsapp_campaign_recipients_due ON whatsapp_campaign_recipients(account_id, status, next_attempt_at);
             CREATE INDEX IF NOT EXISTS ix_whatsapp_campaign_recipients_campaign ON whatsapp_campaign_recipients(campaign_id, scheduled_at);
             CREATE INDEX IF NOT EXISTS ix_whatsapp_campaign_recipients_sent ON whatsapp_campaign_recipients(account_id, sent_at) WHERE status='Sent';
+            CREATE TABLE IF NOT EXISTS customer_intelligence_profiles (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL UNIQUE REFERENCES leads(id) ON DELETE CASCADE,
+              version INTEGER NOT NULL,
+              confidence REAL NOT NULL,
+              source_snapshot_hash TEXT NOT NULL,
+              source_captured_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_customer_intelligence_profiles_recent ON customer_intelligence_profiles(updated_at DESC);
+            CREATE TABLE IF NOT EXISTS ai_recommendation_history (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              recommendation_type TEXT NOT NULL,
+              status TEXT NOT NULL,
+              source_profile_id TEXT NOT NULL,
+              source_profile_version INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_ai_recommendations_customer ON ai_recommendation_history(customer_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_ai_recommendations_status ON ai_recommendation_history(status, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS customer_behavior_timeline (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              channel TEXT NOT NULL,
+              event_type TEXT NOT NULL,
+              source_type TEXT NOT NULL,
+              source_id TEXT NOT NULL,
+              occurred_at TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              data_json TEXT NOT NULL,
+              UNIQUE(customer_id, source_type, source_id, event_type)
+            );
+            CREATE INDEX IF NOT EXISTS ix_customer_behavior_timeline_customer ON customer_behavior_timeline(customer_id, occurred_at DESC);
+            CREATE TABLE IF NOT EXISTS sales_action_logs (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              recommendation_id TEXT,
+              action_type TEXT NOT NULL,
+              status TEXT NOT NULL,
+              due_at TEXT,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_sales_action_logs_customer ON sales_action_logs(customer_id, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_sales_action_logs_due ON sales_action_logs(status, due_at) WHERE due_at IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS ai_learning_feedback (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              recommendation_id TEXT,
+              action_id TEXT,
+              outcome TEXT NOT NULL,
+              helpful INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_ai_learning_feedback_customer ON ai_learning_feedback(customer_id, created_at DESC);
             """;
         await using var command = db.CreateCommand();
         command.CommandText = sql;
@@ -1623,6 +1683,176 @@ public sealed class LocalRepository
             await version.ExecuteNonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<CustomerIntelligenceProfile?> GetCustomerIntelligenceProfileAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM customer_intelligence_profiles WHERE customer_id=$customer";
+        command.Parameters.AddWithValue("$customer", customerId);
+        var json = await command.ExecuteScalarAsync(cancellationToken) as string;
+        return Json.Deserialize<CustomerIntelligenceProfile>(json);
+    }
+
+    public async Task SaveCustomerIntelligenceProfileAsync(CustomerIntelligenceProfile profile, CancellationToken cancellationToken = default)
+    {
+        profile.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO customer_intelligence_profiles(id,customer_id,version,confidence,source_snapshot_hash,source_captured_at,updated_at,data_json)
+            VALUES($id,$customer,$version,$confidence,$hash,$captured,$updated,$json)
+            ON CONFLICT(customer_id) DO UPDATE SET id=excluded.id,version=excluded.version,confidence=excluded.confidence,
+              source_snapshot_hash=excluded.source_snapshot_hash,source_captured_at=excluded.source_captured_at,
+              updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", profile.Id);
+        command.Parameters.AddWithValue("$customer", profile.CustomerId);
+        command.Parameters.AddWithValue("$version", profile.Version);
+        command.Parameters.AddWithValue("$confidence", profile.Confidence);
+        command.Parameters.AddWithValue("$hash", profile.SourceSnapshotHash);
+        command.Parameters.AddWithValue("$captured", profile.SourceCapturedAt.ToString("O"));
+        command.Parameters.AddWithValue("$updated", profile.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(profile));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<AiRecommendationRecord>> GetAiRecommendationHistoryAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        var items = new List<AiRecommendationRecord>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM ai_recommendation_history WHERE customer_id=$customer ORDER BY created_at DESC";
+        command.Parameters.AddWithValue("$customer", customerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<AiRecommendationRecord>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task SaveAiRecommendationAsync(AiRecommendationRecord recommendation, CancellationToken cancellationToken = default)
+    {
+        recommendation.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO ai_recommendation_history(id,customer_id,recommendation_type,status,source_profile_id,source_profile_version,created_at,updated_at,data_json)
+            VALUES($id,$customer,$type,$status,$profile,$version,$created,$updated,$json)
+            ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", recommendation.Id);
+        command.Parameters.AddWithValue("$customer", recommendation.CustomerId);
+        command.Parameters.AddWithValue("$type", recommendation.RecommendationType);
+        command.Parameters.AddWithValue("$status", recommendation.Status.ToString());
+        command.Parameters.AddWithValue("$profile", recommendation.SourceProfileId);
+        command.Parameters.AddWithValue("$version", recommendation.SourceProfileVersion);
+        command.Parameters.AddWithValue("$created", recommendation.CreatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$updated", recommendation.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(recommendation));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<bool> UpsertCustomerBehaviorEventAsync(CustomerBehaviorEvent behaviorEvent, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO customer_behavior_timeline(id,customer_id,channel,event_type,source_type,source_id,occurred_at,created_at,data_json)
+            VALUES($id,$customer,$channel,$type,$sourceType,$source,$occurred,$created,$json)
+            ON CONFLICT(customer_id,source_type,source_id,event_type) DO UPDATE SET
+              channel=excluded.channel,occurred_at=excluded.occurred_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", behaviorEvent.Id);
+        command.Parameters.AddWithValue("$customer", behaviorEvent.CustomerId);
+        command.Parameters.AddWithValue("$channel", behaviorEvent.Channel);
+        command.Parameters.AddWithValue("$type", behaviorEvent.EventType);
+        command.Parameters.AddWithValue("$sourceType", behaviorEvent.SourceType);
+        command.Parameters.AddWithValue("$source", behaviorEvent.SourceId);
+        command.Parameters.AddWithValue("$occurred", behaviorEvent.OccurredAt.ToString("O"));
+        command.Parameters.AddWithValue("$created", behaviorEvent.CreatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(behaviorEvent));
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task<List<CustomerBehaviorEvent>> GetCustomerBehaviorTimelineAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        var items = new List<CustomerBehaviorEvent>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM customer_behavior_timeline WHERE customer_id=$customer ORDER BY occurred_at DESC";
+        command.Parameters.AddWithValue("$customer", customerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<CustomerBehaviorEvent>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task SaveSalesActionAsync(SalesActionRecord action, CancellationToken cancellationToken = default)
+    {
+        action.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO sales_action_logs(id,customer_id,recommendation_id,action_type,status,due_at,updated_at,data_json)
+            VALUES($id,$customer,$recommendation,$type,$status,$due,$updated,$json)
+            ON CONFLICT(id) DO UPDATE SET status=excluded.status,due_at=excluded.due_at,updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", action.Id);
+        command.Parameters.AddWithValue("$customer", action.CustomerId);
+        command.Parameters.AddWithValue("$recommendation", string.IsNullOrWhiteSpace(action.RecommendationId) ? DBNull.Value : action.RecommendationId);
+        command.Parameters.AddWithValue("$type", action.ActionType);
+        command.Parameters.AddWithValue("$status", action.Status.ToString());
+        command.Parameters.AddWithValue("$due", action.DueAt is null ? DBNull.Value : action.DueAt.Value.ToString("O"));
+        command.Parameters.AddWithValue("$updated", action.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(action));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<SalesActionRecord>> GetSalesActionsAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        var items = new List<SalesActionRecord>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM sales_action_logs WHERE customer_id=$customer ORDER BY updated_at DESC";
+        command.Parameters.AddWithValue("$customer", customerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<SalesActionRecord>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task SaveAiLearningFeedbackAsync(AiLearningFeedback feedback, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO ai_learning_feedback(id,customer_id,recommendation_id,action_id,outcome,helpful,created_at,data_json)
+            VALUES($id,$customer,$recommendation,$action,$outcome,$helpful,$created,$json)
+            ON CONFLICT(id) DO UPDATE SET outcome=excluded.outcome,helpful=excluded.helpful,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", feedback.Id);
+        command.Parameters.AddWithValue("$customer", feedback.CustomerId);
+        command.Parameters.AddWithValue("$recommendation", string.IsNullOrWhiteSpace(feedback.RecommendationId) ? DBNull.Value : feedback.RecommendationId);
+        command.Parameters.AddWithValue("$action", string.IsNullOrWhiteSpace(feedback.ActionId) ? DBNull.Value : feedback.ActionId);
+        command.Parameters.AddWithValue("$outcome", feedback.Outcome);
+        command.Parameters.AddWithValue("$helpful", feedback.Helpful ? 1 : 0);
+        command.Parameters.AddWithValue("$created", feedback.CreatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(feedback));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<AiLearningFeedback>> GetAiLearningFeedbackAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        var items = new List<AiLearningFeedback>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM ai_learning_feedback WHERE customer_id=$customer ORDER BY created_at DESC";
+        command.Parameters.AddWithValue("$customer", customerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<AiLearningFeedback>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
     }
 
     public async Task LogEventAsync(string eventType, string? leadId, string? draftId, string detail = "", CancellationToken cancellationToken = default)

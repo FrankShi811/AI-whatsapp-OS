@@ -13,6 +13,15 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("2.2.0", "2026-07-23", "Customer Brain 跨渠道客户大脑",
+        [
+            "恢复并继续使用 v2.1.0 已发布的正式 UI，撤销未获验收的 Aurora Nexus 视觉实验，不改变现有页面操作习惯。",
+            "新增统一 Customer Brain：整合 CRM、自定义字段、WhatsApp 会话、邮件、自动化触达、商机分析与客户轨迹，形成可审计的客户智能快照。",
+            "客户情报严格区分事实、AI 判断、销售建议和信息缺口，并保存证据来源、覆盖率、版本与时间，避免把推断伪装成事实。",
+            "商机智能和 WhatsApp 客户侧栏接入 Customer Brain 摘要、证据覆盖与下一步行动，同时保留原有评分、Inbox 和自动化业务逻辑。",
+            "新增客户大脑数据库迁移、推荐历史、行为时间线、销售动作与 AI 学习反馈表，并完成数据库往返、幂等刷新和回归测试。",
+            "本版本只发布 Windows 中文安装与 GitHub 自动更新资产；macOS 构建继续暂停，用户电脑上的正式程序不由开发流程覆盖。"
+        ], true),
         new("2.1.0", "2026-07-23", "Stitch 视觉方向落地与 Windows 专注发布",
         [
             "评估 Google Stitch 导出的 12 套 Auralis 方案，选定 refined alignment / transparency 方向并转译为 AI Sales OS 原生 WPF 视觉语言。",
@@ -20,7 +29,7 @@ public static class ReleaseCatalog
             "Dashboard、商机智能和客户智能分析的页头与关键指标升级为克制的半透明层次和低强度环境光，同时保留数据密度、键盘效率和原生性能。",
             "完成隔离数据库下的 Dashboard、商机智能和客户智能分析视觉冒烟，未覆盖或启动用户根目录的现有安装。",
             "macOS 构建改为显式启用；在 Developer ID、签名与公证条件恢复前，GitHub Release 默认只生成 Windows 中文安装与自动更新资产。"
-        ], true),
+        ]),
         new("2.0.0", "2026-07-23", "AI 原生桌面设计系统正式版",
         [
             "完成 UI Audit 与 Figma Design System：120 个变量、10 套文字样式、4 套深度效果和 7 个核心 AI 组件成为 2.0 视觉基线。",

@@ -22,10 +22,18 @@ $themeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'de
 $desktopVersion = ([xml](Get-Content -Raw -Encoding utf8 -LiteralPath $desktopProject)).Project.PropertyGroup.Version | Select-Object -First 1
 $coreVersion = ([xml](Get-Content -Raw -Encoding utf8 -LiteralPath $coreProject)).Project.PropertyGroup.Version | Select-Object -First 1
 $macVersion = ([xml](Get-Content -Raw -Encoding utf8 -LiteralPath $macProject)).Project.PropertyGroup.Version | Select-Object -First 1
-if ($desktopVersion -notmatch '^\d+\.\d+\.\d+$' -or $desktopVersion -ne $coreVersion -or $desktopVersion -ne $macVersion) {
-  throw "Desktop/Core/macOS versions must be the same semantic version. desktop=$desktopVersion core=$coreVersion mac=$macVersion"
+if ($desktopVersion -notmatch '^\d+\.\d+\.\d+$' -or $desktopVersion -ne $coreVersion) {
+  throw "Desktop/Core versions must be the same semantic version. desktop=$desktopVersion core=$coreVersion"
 }
-Write-Host "PASS  cross-platform version contract: $desktopVersion"
+if ($env:ENABLE_MACOS_RELEASE -eq 'true') {
+  if ($desktopVersion -ne $macVersion) {
+    throw "macOS release is enabled, so Desktop/Core/macOS versions must match. desktop=$desktopVersion core=$coreVersion mac=$macVersion"
+  }
+  Write-Host "PASS  cross-platform version contract: $desktopVersion"
+}
+else {
+  Write-Host "PASS  Windows release version contract: $desktopVersion (macOS release paused at $macVersion)"
+}
 
 $requiredBrushes = @(
   'Ink', 'InkSecondary', 'Muted', 'Primary', 'AiAccent', 'AiProcessing',

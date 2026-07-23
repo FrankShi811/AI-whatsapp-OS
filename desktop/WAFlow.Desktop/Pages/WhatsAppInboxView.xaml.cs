@@ -33,6 +33,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private bool _initialLeadLinkCompleted;
     private bool _sending;
     private bool _aiAssisting;
+    private int _customerBrainRefreshGeneration;
     private string _attachmentPath = "";
     private MessageItem? _replyingTo;
     private string _composerConversationId = "";
@@ -510,7 +511,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         CustomFieldsBox.Text = _currentLead is null ? "" : string.Join(Environment.NewLine, _currentLead.CustomFields.Select(x => $"{x.Key}={x.Value}"));
         StageCombo.SelectedItem = (StageCombo.ItemsSource as IEnumerable<StageOption>)?.FirstOrDefault(x => x.Value == (_currentLead?.Stage ?? LeadStage.New));
         UpdateLeadIntelligenceSummary(_currentLead);
-        await Task.CompletedTask;
+        await UpdateCustomerBrainSummaryAsync(_currentLead);
     }
 
     private async void SaveLead_Click(object sender, RoutedEventArgs e)
@@ -548,6 +549,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             conversation.DisplayName = lead.DisplayName;
             LeadLinkStateText.Text = $"已关联：{lead.Grade} 级 · {Labels.Stage(lead.Stage)}";
             UpdateLeadIntelligenceSummary(lead);
+            await UpdateCustomerBrainSummaryAsync(lead);
             DataChanged?.Invoke(this, EventArgs.Empty);
             MessageBox.Show("客户资料已同步到 AI Sales OS。", "WhatsApp Inbox", MessageBoxButton.OK, MessageBoxImage.Information);
         }
@@ -981,9 +983,38 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         var confidence = current ? lead!.AnalysisConfidence : 0;
         AiSidebarScoreRing.SetScore(score, grade, confidence);
         AiSidebarConfidenceBar.Value = Math.Clamp(confidence * 100, 0, 100);
+        AiSidebarBrainMetaText.Text = lead is null ? "CUSTOMER BRAIN · 等待客户上下文" : "CUSTOMER BRAIN · 正在整合跨渠道证据…";
         AiSidebarConfidenceText.Text = current ? $"AI 置信度 {confidence:P0}" : lead is null ? "等待关联客户" : $"{lead.AnalysisStateLabel} · D / 0";
         AiSidebarProfileText.Text = current && !string.IsNullOrWhiteSpace(lead!.ProfileSummary) ? lead.ProfileSummary : lead is null ? "选择会话后显示对应客户画像" : "尚无经过验证的 AI 客户画像";
         AiSidebarNextActionText.Text = current && !string.IsNullOrWhiteSpace(lead!.NextAction) ? $"下一步：{lead.NextAction}" : "下一步：等待 AI 分析或人工判断";
+    }
+
+    private async Task UpdateCustomerBrainSummaryAsync(Lead? lead)
+    {
+        var generation = ++_customerBrainRefreshGeneration;
+        if (lead is null)
+        {
+            AiSidebarBrainMetaText.Text = "CUSTOMER BRAIN · 等待客户上下文";
+            return;
+        }
+
+        try
+        {
+            var brain = await _services.CustomerBrain.RefreshAsync(lead.Id);
+            if (generation != _customerBrainRefreshGeneration || _currentLead?.Id != lead.Id) return;
+
+            var facts = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.Fact);
+            var inferences = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.Inference);
+            var gaps = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.InformationGap);
+            AiSidebarBrainMetaText.Text = $"BRAIN V{brain.Version} · 覆盖 {brain.Coverage.Percentage}% · 事实 {facts} / 判断 {inferences} / 缺口 {gaps}";
+            if (!string.IsNullOrWhiteSpace(brain.Summary)) AiSidebarProfileText.Text = brain.Summary;
+            if (!string.IsNullOrWhiteSpace(brain.NextBestAction)) AiSidebarNextActionText.Text = $"下一步：{brain.NextBestAction}";
+        }
+        catch (Exception error)
+        {
+            if (generation != _customerBrainRefreshGeneration || _currentLead?.Id != lead.Id) return;
+            AiSidebarBrainMetaText.Text = $"CUSTOMER BRAIN · 暂不可用：{error.Message}";
+        }
     }
 
     private void ScrollMessages(ConversationItem conversation)

@@ -105,6 +105,13 @@
                             </Grid>
 
                             <TextBlock x:Name="AnalysisMetaText" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,9,0,0" TextWrapping="Wrap"/>
+                            <TextBlock x:Name="CustomerBrainMetaText"
+                                       Text="CUSTOMER BRAIN · 等待物化"
+                                       Foreground="{DynamicResource AiAccent}"
+                                       FontSize="9.5"
+                                       FontWeight="SemiBold"
+                                       Margin="0,5,0,0"
+                                       TextWrapping="Wrap"/>
 
                             <Border Style="{StaticResource HolographicCard}" Padding="14" Margin="0,16,0,0">
                                 <StackPanel>
