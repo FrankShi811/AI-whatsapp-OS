@@ -296,6 +296,46 @@ public sealed class LocalRepository
               data_json TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS ix_ai_learning_feedback_customer ON ai_learning_feedback(customer_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS customer_brain_runs (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              status TEXT NOT NULL,
+              ai_model TEXT NOT NULL,
+              source_snapshot_hash TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              completed_at TEXT,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_customer_brain_runs_customer ON customer_brain_runs(customer_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_customer_brain_runs_status ON customer_brain_runs(status, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS follow_up_tasks (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              recommendation_id TEXT,
+              status TEXT NOT NULL,
+              priority TEXT NOT NULL,
+              due_at TEXT NOT NULL,
+              source_type TEXT NOT NULL,
+              source_id TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL,
+              UNIQUE(customer_id, source_type, source_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_follow_up_tasks_customer ON follow_up_tasks(customer_id, due_at);
+            CREATE INDEX IF NOT EXISTS ix_follow_up_tasks_due ON follow_up_tasks(status, due_at);
+            CREATE TABLE IF NOT EXISTS customer_event_log (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              event_type TEXT NOT NULL,
+              source_type TEXT NOT NULL,
+              source_id TEXT NOT NULL,
+              occurred_at TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              data_json TEXT NOT NULL,
+              UNIQUE(customer_id, event_type, source_type, source_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_customer_event_log_customer ON customer_event_log(customer_id, occurred_at DESC);
             """;
         await using var command = db.CreateCommand();
         command.CommandText = sql;
@@ -1461,6 +1501,7 @@ public sealed class LocalRepository
     {
         var leads = await GetLeadsAsync(cancellationToken: cancellationToken);
         var campaigns = await GetCampaignsAsync(null, cancellationToken);
+        var followUpTasks = await GetFollowUpTasksAsync(null, cancellationToken);
         var recipients = new List<CampaignRecipient>();
         foreach (var campaign in campaigns) recipients.AddRange(await GetCampaignRecipientsAsync(campaign.Id, cancellationToken));
         var lastImport = await GetLastImportTextAsync(cancellationToken);
@@ -1471,7 +1512,13 @@ public sealed class LocalRepository
                 grade => grade,
                 grade => leads.Count(lead => (lead.HasCurrentAiScore ? lead.Grade : "D") == grade)),
             Stages = Enum.GetValues<LeadStage>().ToDictionary(x => x, x => leads.Count(l => l.Stage == x)),
-            PendingFollowUps = leads.Count(l => l.NextFollowUpAt is not null && l.NextFollowUpAt <= DateTimeOffset.Now.AddDays(1)),
+            PendingFollowUps = followUpTasks.Count(task =>
+                    (task.Status is FollowUpTaskStatus.Proposed or FollowUpTaskStatus.Open or FollowUpTaskStatus.InProgress)
+                    && task.DueAt <= DateTimeOffset.Now.AddDays(1))
+                + leads.Count(lead => lead.NextFollowUpAt is not null
+                    && lead.NextFollowUpAt <= DateTimeOffset.Now.AddDays(1)
+                    && !followUpTasks.Any(task => task.CustomerId == lead.Id
+                        && (task.Status is FollowUpTaskStatus.Proposed or FollowUpTaskStatus.Open or FollowUpTaskStatus.InProgress))),
             ActiveCampaigns = campaigns.Count(item => item.Status is CampaignStatus.Scheduled or CampaignStatus.Running or CampaignStatus.Paused or CampaignStatus.SafetyStopped),
             FailedAnalyses = leads.Count(l => l.AnalysisStatus == AnalysisStatus.RetryableFailed),
             AnalyzedLeads = leads.Count(l => l.HasCurrentAiScore),
@@ -1852,6 +1899,117 @@ public sealed class LocalRepository
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
             if (Json.Deserialize<AiLearningFeedback>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task SaveCustomerBrainRunAsync(CustomerBrainRun run, CancellationToken cancellationToken = default)
+    {
+        run.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO customer_brain_runs(id,customer_id,status,ai_model,source_snapshot_hash,created_at,updated_at,completed_at,data_json)
+            VALUES($id,$customer,$status,$model,$hash,$created,$updated,$completed,$json)
+            ON CONFLICT(id) DO UPDATE SET status=excluded.status,ai_model=excluded.ai_model,
+              source_snapshot_hash=excluded.source_snapshot_hash,updated_at=excluded.updated_at,
+              completed_at=excluded.completed_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", run.Id);
+        command.Parameters.AddWithValue("$customer", run.CustomerId);
+        command.Parameters.AddWithValue("$status", run.Status.ToString());
+        command.Parameters.AddWithValue("$model", run.AiModel);
+        command.Parameters.AddWithValue("$hash", run.SourceSnapshotHash);
+        command.Parameters.AddWithValue("$created", run.CreatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$updated", run.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$completed", run.CompletedAt is null ? DBNull.Value : run.CompletedAt.Value.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(run));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<CustomerBrainRun>> GetCustomerBrainRunsAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        var items = new List<CustomerBrainRun>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM customer_brain_runs WHERE customer_id=$customer ORDER BY created_at DESC";
+        command.Parameters.AddWithValue("$customer", customerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<CustomerBrainRun>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task UpsertFollowUpTaskAsync(FollowUpTask task, CancellationToken cancellationToken = default)
+    {
+        task.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO follow_up_tasks(id,customer_id,recommendation_id,status,priority,due_at,source_type,source_id,updated_at,data_json)
+            VALUES($id,$customer,$recommendation,$status,$priority,$due,$sourceType,$source,$updated,$json)
+            ON CONFLICT(customer_id,source_type,source_id) DO UPDATE SET
+              recommendation_id=excluded.recommendation_id,status=excluded.status,priority=excluded.priority,
+              due_at=excluded.due_at,updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", task.Id);
+        command.Parameters.AddWithValue("$customer", task.CustomerId);
+        command.Parameters.AddWithValue("$recommendation", string.IsNullOrWhiteSpace(task.RecommendationId) ? DBNull.Value : task.RecommendationId);
+        command.Parameters.AddWithValue("$status", task.Status.ToString());
+        command.Parameters.AddWithValue("$priority", task.Priority.ToString());
+        command.Parameters.AddWithValue("$due", task.DueAt.ToString("O"));
+        command.Parameters.AddWithValue("$sourceType", task.SourceType);
+        command.Parameters.AddWithValue("$source", task.SourceId);
+        command.Parameters.AddWithValue("$updated", task.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(task));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<FollowUpTask>> GetFollowUpTasksAsync(string? customerId = null, CancellationToken cancellationToken = default)
+    {
+        var items = new List<FollowUpTask>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = customerId is null
+            ? "SELECT data_json FROM follow_up_tasks ORDER BY due_at, updated_at DESC"
+            : "SELECT data_json FROM follow_up_tasks WHERE customer_id=$customer ORDER BY due_at, updated_at DESC";
+        if (customerId is not null) command.Parameters.AddWithValue("$customer", customerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<FollowUpTask>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task<bool> UpsertCustomerEventAsync(CustomerEventLogEntry customerEvent, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO customer_event_log(id,customer_id,event_type,source_type,source_id,occurred_at,created_at,data_json)
+            VALUES($id,$customer,$type,$sourceType,$source,$occurred,$created,$json)
+            ON CONFLICT(customer_id,event_type,source_type,source_id) DO UPDATE SET
+              occurred_at=excluded.occurred_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", customerEvent.Id);
+        command.Parameters.AddWithValue("$customer", customerEvent.CustomerId);
+        command.Parameters.AddWithValue("$type", customerEvent.EventType);
+        command.Parameters.AddWithValue("$sourceType", customerEvent.SourceType);
+        command.Parameters.AddWithValue("$source", customerEvent.SourceId);
+        command.Parameters.AddWithValue("$occurred", customerEvent.OccurredAt.ToString("O"));
+        command.Parameters.AddWithValue("$created", customerEvent.CreatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(customerEvent));
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task<List<CustomerEventLogEntry>> GetCustomerEventsAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        var items = new List<CustomerEventLogEntry>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM customer_event_log WHERE customer_id=$customer ORDER BY occurred_at DESC";
+        command.Parameters.AddWithValue("$customer", customerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<CustomerEventLogEntry>(reader.GetString(0)) is { } item) items.Add(item);
         return items;
     }
 

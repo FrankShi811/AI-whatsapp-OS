@@ -234,6 +234,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
                   "customer_segment": "",
                   "stage": "new",
                   "confidence": 0.0,
+                  "purchase_probability": 0,
                   "next_action": "",
                   "risk_warning": ""
                 }
@@ -245,7 +246,9 @@ public sealed class DeepSeekService : IStructuredAiProvider
                 Negative evidence may include prolonged non-response (-5), price-only inquiry without intent (-5), or explicit rejection (-15); interpret full context, not words alone.
                 lead_score must equal clamp(base_profile_score + behavior_signal_score, 0, 100). Grade: A>=80, B=60..79, C=40..59, D<40.
                 Every dimension must contain a non-empty Chinese reason and at least one evidence string. For a zero score, explicitly state that the supplied input contains no evidence.
-                stage must be one of new, contacted, interested, negotiation, waiting, customer, lost. Do not change stage without evidence.
+                stage must be one of new, contacted, interested, requirement_confirmed, quotation, negotiation, waiting, customer, repeat_purchase, lost. Do not change stage without evidence.
+                purchase_probability must be an integer from 0 to 100. It is a forward-looking opportunity estimate, not the same as lead_score.
+                Use supplied purchase intent, decision timing, quantity, budget, objections and engagement evidence. When evidence is insufficient, return 0 and explain the gap.
                 Answer customer_profile, customer_segment, reasons, next_action and risk_warning in Simplified Chinese. Keep message excerpts in their original language.
                 """;
             LeadAnalysis? analysis = null;
@@ -279,6 +282,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
             target.ScoreReasons = analysis.Factors.Select(f => f.Rationale).ToList();
             target.ScoreFactors = analysis.Factors; target.BehaviorSignals = analysis.BehaviorSignals;
             target.Stage = analysis.Stage; target.AnalysisConfidence = analysis.Confidence; target.Evidence = analysis.Evidence;
+            target.PurchaseProbability = analysis.PurchaseProbability;
             target.ProfileSummary = analysis.ProfileSummary; target.CustomerSegment = analysis.CustomerSegment; target.NextAction = analysis.NextAction;
             target.RiskWarning = analysis.RiskWarning; target.Risks = analysis.Risks;
             target.LatestReplySignals = analysis.BehaviorSignals.Select(signal => $"{signal.Signal} ({signal.Score:+#;-#;0})").ToList();
@@ -434,7 +438,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
                     { Field="whatsapp_behavior", Value=signal.Evidence, Interpretation=$"{signal.Signal} ({signal.Score:+#;-#;0})" }))
                 .ToList();
             var stageText = output.Stage?.Trim();
-            var validStages = new[] { "new", "contacted", "interested", "negotiation", "waiting", "customer", "lost" };
+            var validStages = new[] { "new", "contacted", "interested", "requirement_confirmed", "quotation", "negotiation", "waiting", "customer", "repeat_purchase", "lost" };
             var stage = stageText is not null && validStages.Contains(stageText, StringComparer.OrdinalIgnoreCase)
                 ? StageParser.Parse(stageText)
                 : lead.Stage;
@@ -457,7 +461,8 @@ public sealed class DeepSeekService : IStructuredAiProvider
                 BaseProfileScore=baseScore,
                 BehaviorSignalScore=behaviorTotal,
                 Grade=LeadScoringService.GradeFromScore(finalScore), Factors=factors, BehaviorSignals=behaviorSignals, Stage=stage,
-                Confidence=Math.Clamp(output.Confidence, 0, 1), Evidence=evidence, ProfileSummary=profile,
+                Confidence=Math.Clamp(output.Confidence, 0, 1), PurchaseProbability=Math.Clamp(output.PurchaseProbability, 0, 100),
+                Evidence=evidence, ProfileSummary=profile,
                 CustomerSegment=segment, NextAction=nextAction,
                 RiskWarning=riskWarning, Risks=string.IsNullOrWhiteSpace(riskWarning) ? [] : [riskWarning]
             };
@@ -484,6 +489,8 @@ public sealed class DeepSeekService : IStructuredAiProvider
         var expectedScore = Math.Clamp(analysis.BaseProfileScore + analysis.BehaviorSignalScore, 0, 100);
         if (analysis.Score != expectedScore || LeadScoringService.GradeFromScore(analysis.Score) != analysis.Grade)
             throw new DeepSeekException("invalid_structured_output", "最终分、行为修正分与等级不一致。", true);
+        if (analysis.PurchaseProbability is < 0 or > 100)
+            throw new DeepSeekException("invalid_structured_output", "AI \u91c7\u8d2d\u6982\u7387\u5fc5\u987b\u4ecb\u4e8e 0 \u81f3 100\u3002", true);
         if (analysis.Confidence is < 0 or > 1 || string.IsNullOrWhiteSpace(analysis.ProfileSummary) || string.IsNullOrWhiteSpace(analysis.CustomerSegment) ||
             string.IsNullOrWhiteSpace(analysis.NextAction) || string.IsNullOrWhiteSpace(analysis.RiskWarning))
             throw new DeepSeekException("invalid_structured_output", "分析缺少画像、分组、风险或下一步动作。", true);
@@ -569,6 +576,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
         public string CustomerSegment { get; set; } = "";
         public string Stage { get; set; } = "";
         public double Confidence { get; set; }
+        public int PurchaseProbability { get; set; }
         public string NextAction { get; set; } = "";
         public string RiskWarning { get; set; } = "";
     }

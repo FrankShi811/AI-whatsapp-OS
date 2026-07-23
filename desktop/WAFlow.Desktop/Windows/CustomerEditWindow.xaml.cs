@@ -12,6 +12,7 @@ public partial class CustomerEditWindow : Window
 {
     private readonly AppServices _services;
     private readonly Lead _lead;
+    private readonly LeadStage _originalStage;
     private readonly ObservableCollection<EditableDimension> _dimensions;
 
     public CustomerEditWindow(AppServices services, Lead lead)
@@ -19,6 +20,7 @@ public partial class CustomerEditWindow : Window
         InitializeComponent();
         _services = services;
         _lead = lead;
+        _originalStage = lead.Stage;
         _dimensions = new ObservableCollection<EditableDimension>(lead.CustomFields.Select(pair => new EditableDimension(pair.Key, pair.Value)));
         OriginalDimensions.ItemsSource = _dimensions;
 
@@ -42,6 +44,7 @@ public partial class CustomerEditWindow : Window
         AiGradeText.Text = $"{lead.Grade}级";
         AiBaseScoreText.Text = $"{lead.BaseProfileScore} / 100";
         AiBehaviorScoreText.Text = $"{lead.BehaviorSignalScore:+#;-#;0} / ±20";
+        AiPurchaseProbabilityText.Text = $"{lead.PurchaseProbability}%";
         AiScoreStateText.Text = lead.HasCurrentAiScore
             ? $"Lead Intelligence V{lead.AnalysisContractVersion} · {lead.AnalysisStateLabel} · {lead.ProfileSummary}"
             : $"等待 Lead Intelligence V2 分析 · {lead.AnalysisStateLabel}";
@@ -55,6 +58,97 @@ public partial class CustomerEditWindow : Window
 
         StageBox.ItemsSource = Enum.GetValues<LeadStage>().Select(stage => new StageOption(Labels.Stage(stage), stage)).ToList();
         StageBox.SelectedItem = ((IEnumerable<StageOption>)StageBox.ItemsSource).First(option => option.Value == lead.Stage);
+    }
+
+    private async void Window_Loaded(object sender, RoutedEventArgs e) => await LoadCustomerBrainAsync(refresh: true);
+
+    private async void RefreshBrain_Click(object sender, RoutedEventArgs e) => await LoadCustomerBrainAsync(refresh: true);
+
+    private async void AnalyzeBrain_Click(object sender, RoutedEventArgs e)
+    {
+        SetBrainButtonsEnabled(false);
+        BrainStatusText.Text = "Customer Brain 正在分阶段理解客户、评估机会并生成下一步行动…";
+        try
+        {
+            await _services.CustomerBrain.AnalyzeAsync(_lead.Id);
+            await LoadCustomerBrainAsync(refresh: false);
+            MessageBox.Show("Customer Brain 分析完成。购买概率、建议阶段、AI 建议和跟进任务已经更新。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception error)
+        {
+            BrainStatusText.Text = "分析失败，可在保留现有客户资料和上一次有效结论的前提下重试。";
+            MessageBox.Show(error.Message, "Customer Brain 分析失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            SetBrainButtonsEnabled(true);
+        }
+    }
+
+    private async Task LoadCustomerBrainAsync(bool refresh)
+    {
+        SetBrainButtonsEnabled(false);
+        try
+        {
+            var brain = refresh
+                ? await _services.CustomerBrain.RefreshAsync(_lead.Id)
+                : await _services.CustomerBrain.GetAsync(_lead.Id) ?? await _services.CustomerBrain.RefreshAsync(_lead.Id);
+            BrainProbabilityText.Text = $"{brain.PurchaseProbability}%";
+            BrainConfidenceText.Text = $"{brain.Confidence:P0}";
+            BrainCoverageText.Text = $"{brain.Coverage.Percentage}%";
+            BrainStageText.Text = Labels.Stage(brain.SuggestedStage);
+            BrainSummaryText.Text = brain.Summary;
+            BrainNextActionText.Text = brain.NextBestAction;
+            BrainStatusText.Text = brain.DecisionStatus switch
+            {
+                CustomerBrainDecisionStatus.Current =>
+                    $"{brain.VersionLabel} · {brain.AiModel} · 结论与当前数据一致 · {brain.LastBrainAnalyzedAt:yyyy-MM-dd HH:mm}",
+                CustomerBrainDecisionStatus.Stale =>
+                    $"{brain.VersionLabel} · 客户数据已经变化，上一次 AI 结论保留但已标记过期，请重新分析。",
+                CustomerBrainDecisionStatus.RetryableFailed =>
+                    $"{brain.VersionLabel} · 上一次 AI 分析失败，原始资料未改变，可安全重试。",
+                _ => $"{brain.VersionLabel} · 已整合客户资料，尚未运行 Customer Brain AI 决策。"
+            };
+
+            var recommendations = await _services.Repository.GetAiRecommendationHistoryAsync(_lead.Id);
+            BrainRecommendationItems.ItemsSource = recommendations.Count == 0
+                ? new[] { "暂无 AI 建议历史" }
+                : recommendations.Take(5).Select(item => $"{item.Action} · {RecommendationStatusLabel(item.Status)}").ToList();
+
+            var tasks = await _services.Repository.GetFollowUpTasksAsync(_lead.Id);
+            BrainTaskItems.ItemsSource = tasks.Count == 0
+                ? new[] { "暂无跟进任务" }
+                : tasks.Take(5).Select(item => $"{item.DueAt:MM-dd HH:mm} · {item.Title} · {TaskStatusLabel(item.Status)}").ToList();
+
+            var events = await _services.Repository.GetCustomerEventsAsync(_lead.Id);
+            if (events.Count > 0)
+            {
+                BrainEventItems.ItemsSource = events.Take(6)
+                    .Select(item => $"{item.OccurredAt:MM-dd HH:mm} · {item.Title}")
+                    .ToList();
+            }
+            else
+            {
+                var timeline = await _services.Repository.GetCustomerBehaviorTimelineAsync(_lead.Id);
+                BrainEventItems.ItemsSource = timeline.Count == 0
+                    ? new[] { "暂无客户互动轨迹" }
+                    : timeline.Take(6).Select(item => $"{item.OccurredAt:MM-dd HH:mm} · {item.Channel} · {item.Summary}").ToList();
+            }
+        }
+        catch (Exception error)
+        {
+            BrainStatusText.Text = $"Customer 360 暂时无法加载：{error.Message}";
+        }
+        finally
+        {
+            SetBrainButtonsEnabled(true);
+        }
+    }
+
+    private void SetBrainButtonsEnabled(bool enabled)
+    {
+        RefreshBrainButton.IsEnabled = enabled;
+        AnalyzeBrainButton.IsEnabled = enabled;
     }
 
     private void AddDimension_Click(object sender, RoutedEventArgs e)
@@ -115,6 +209,30 @@ public partial class CustomerEditWindow : Window
             }
             await _services.Repository.UpsertLeadAsync(_lead);
             await _services.Repository.LogEventAsync("customer_edited", _lead.Id, null, $"edited core fields and {_lead.CustomFields.Count} table dimensions");
+            await _services.Repository.UpsertCustomerEventAsync(new CustomerEventLogEntry
+            {
+                CustomerId = _lead.Id,
+                EventType = "customer_edited",
+                Title = "客户资料已人工更新",
+                Detail = $"已更新系统字段和 {_lead.CustomFields.Count} 个原表维度。",
+                SourceType = "customer_edit",
+                SourceId = Guid.NewGuid().ToString("N"),
+                OccurredAt = DateTimeOffset.Now
+            });
+            if (_originalStage != _lead.Stage)
+            {
+                await _services.Repository.UpsertCustomerEventAsync(new CustomerEventLogEntry
+                {
+                    CustomerId = _lead.Id,
+                    EventType = "stage_changed",
+                    Title = $"商机阶段：{Labels.Stage(_originalStage)} → {Labels.Stage(_lead.Stage)}",
+                    Detail = "由用户在客户资料中手动调整。",
+                    SourceType = "customer_edit",
+                    SourceId = Guid.NewGuid().ToString("N"),
+                    OccurredAt = DateTimeOffset.Now
+                });
+            }
+            await _services.CustomerBrain.RefreshAsync(_lead.Id);
             DialogResult = true;
         }
         catch (Exception error)
@@ -159,6 +277,29 @@ public partial class CustomerEditWindow : Window
             return Math.Max(0, amount);
         throw new InvalidDataException("预计订单额必须是数字。");
     }
+
+    private static string RecommendationStatusLabel(AiRecommendationStatus status) => status switch
+    {
+        AiRecommendationStatus.Proposed => "待确认",
+        AiRecommendationStatus.Accepted => "已接受",
+        AiRecommendationStatus.InProgress => "进行中",
+        AiRecommendationStatus.Completed => "已完成",
+        AiRecommendationStatus.Dismissed => "已忽略",
+        AiRecommendationStatus.Failed => "执行失败",
+        AiRecommendationStatus.Superseded => "已被新建议替代",
+        _ => status.ToString()
+    };
+
+    private static string TaskStatusLabel(FollowUpTaskStatus status) => status switch
+    {
+        FollowUpTaskStatus.Proposed => "待确认",
+        FollowUpTaskStatus.Open => "待处理",
+        FollowUpTaskStatus.InProgress => "进行中",
+        FollowUpTaskStatus.Completed => "已完成",
+        FollowUpTaskStatus.Dismissed => "已忽略",
+        FollowUpTaskStatus.Failed => "执行失败",
+        _ => status.ToString()
+    };
 
     private sealed record StageOption(string Label, LeadStage Value);
 

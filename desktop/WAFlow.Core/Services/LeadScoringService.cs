@@ -28,6 +28,7 @@ public sealed class LeadScoringService
         lead.BehaviorSignals = [];
         lead.LatestReplySignals = [];
         lead.AnalysisConfidence = 0;
+        lead.PurchaseProbability = 0;
         lead.Evidence = [];
         lead.Risks = [];
         lead.RiskWarning = "";

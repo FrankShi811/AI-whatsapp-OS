@@ -7,14 +7,19 @@ namespace WAFlow.Core.Services;
 
 /// <summary>
 /// Materializes one evidence-aware customer view from the existing CRM, channel,
-/// analysis and campaign stores. This service deliberately does not score a lead,
-/// call an AI provider or overwrite authoritative CRM fields.
+/// analysis and campaign stores. AI decisions are generated through the configured
+/// structured provider, while authoritative CRM fields remain user-controlled.
 /// </summary>
 public sealed class CustomerBrainService
 {
     private readonly LocalRepository _repository;
+    private readonly IStructuredAiProvider? _provider;
 
-    public CustomerBrainService(LocalRepository repository) => _repository = repository;
+    public CustomerBrainService(LocalRepository repository, IStructuredAiProvider? provider = null)
+    {
+        _repository = repository;
+        _provider = provider;
+    }
 
     public async Task<CustomerIntelligenceProfile> RefreshAsync(string customerId, CancellationToken cancellationToken = default)
     {
@@ -61,6 +66,180 @@ public sealed class CustomerBrainService
 
     public Task<CustomerIntelligenceProfile?> GetAsync(string customerId, CancellationToken cancellationToken = default) =>
         _repository.GetCustomerIntelligenceProfileAsync(customerId, cancellationToken);
+
+    public async Task<CustomerIntelligenceProfile> AnalyzeAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        var profile = await RefreshAsync(customerId, cancellationToken);
+        var lead = await _repository.GetLeadAsync(customerId, cancellationToken)
+            ?? throw new InvalidOperationException("\u5ba2\u6237\u4e0d\u5b58\u5728\u6216\u5df2\u88ab\u5220\u9664\u3002");
+        if (_provider is null || !_provider.HasApiKey())
+            throw new InvalidOperationException("\u8bf7\u5148\u5728 API \u5bf9\u63a5\u4e2d\u914d\u7f6e\u53ef\u7528\u7684 AI Provider \u548c\u6a21\u578b\u3002");
+
+        var timeline = await _repository.GetCustomerBehaviorTimelineAsync(customerId, cancellationToken);
+        var reports = await _repository.GetCustomerAnalysisReportsAsync(customerId, cancellationToken);
+        var recommendations = await _repository.GetAiRecommendationHistoryAsync(customerId, cancellationToken);
+        var actions = await _repository.GetSalesActionsAsync(customerId, cancellationToken);
+        var feedback = await _repository.GetAiLearningFeedbackAsync(customerId, cancellationToken);
+        var sourceSnapshot = new
+        {
+            customer = new
+            {
+                lead.Id, lead.Name, lead.Company, lead.Country, lead.PhoneE164, lead.Email,
+                lead.ProductInterest, lead.EstimatedOrderValue, lead.Currency, lead.Tags, lead.CustomFields,
+                stage = lead.Stage.ToString(), lead.Score, lead.Grade, lead.PurchaseProbability,
+                lead.ProfileSummary, lead.CustomerSegment, lead.NextAction, lead.Risks, lead.Evidence
+            },
+            coverage = profile.Coverage,
+            verifiedStatements = profile.Statements.Where(statement => statement.Nature == IntelligenceStatementNature.Fact).Take(200),
+            behaviorTimeline = timeline.Take(500),
+            latestReport = reports.FirstOrDefault(report => report.Status == CustomerReportStatus.Succeeded)?.Report,
+            recommendationHistory = recommendations.Take(20),
+            salesActions = actions.Take(30),
+            learningFeedback = feedback.Take(30)
+        };
+        var run = new CustomerBrainRun
+        {
+            CustomerId = customerId,
+            Status = CustomerBrainRunStatus.Collecting,
+            AiModel = await _provider.GetSelectedModelAsync(cancellationToken),
+            SourceSnapshotHash = profile.SourceSnapshotHash,
+            SourceSnapshotJson = Json.Serialize(sourceSnapshot)
+        };
+        await _repository.SaveCustomerBrainRunAsync(run, cancellationToken);
+
+        try
+        {
+            run.Status = CustomerBrainRunStatus.Understanding;
+            await _repository.SaveCustomerBrainRunAsync(run, cancellationToken);
+            var understanding = await _provider.CompleteStructuredAsync<CustomerUnderstandingResult>(
+                """
+                You are the Customer Understanding stage of AI Sales OS, a personal AI sales employee.
+                Use only the supplied customer snapshot. Return one camelCase JSON object without markdown.
+                Required shape:
+                {
+                  "customerDna":"",
+                  "profileSummary":"",
+                  "customerType":"",
+                  "businessModels":[""],
+                  "painPoints":[""],
+                  "purchaseMotivations":[""],
+                  "informationGaps":[""],
+                  "statements":[{"nature":"inference","topic":"","text":"","evidence":"","source":"","sourceId":"","confidence":0.0,"observedAt":"2026-01-01T00:00:00Z"}]
+                }
+                Write analysis in Simplified Chinese; preserve customer quotes in their original language.
+                Never invent company, budget, quantity, channel, intent or decision timing.
+                AI statements must be inference or informationGap. Facts remain authoritative only in the supplied verifiedStatements.
+                Every inference needs non-empty evidence and source. Unknown information belongs in informationGaps.
+                """,
+                sourceSnapshot,
+                ValidateUnderstanding,
+                cancellationToken);
+            run.UnderstandingJson = Json.Serialize(understanding);
+
+            run.Status = CustomerBrainRunStatus.EvaluatingOpportunity;
+            await _repository.SaveCustomerBrainRunAsync(run, cancellationToken);
+            var opportunity = await _provider.CompleteStructuredAsync<CustomerOpportunityEvaluation>(
+                """
+                You are the Opportunity Evaluation stage of AI Sales OS.
+                Return one camelCase JSON object without markdown:
+                {
+                  "purchaseProbability":0,
+                  "confidence":0.0,
+                  "suggestedStage":"new",
+                  "positiveSignals":[""],
+                  "riskSignals":[""],
+                  "evidence":[""],
+                  "rationale":""
+                }
+                purchaseProbability is 0..100 and is not the Lead Intelligence score.
+                suggestedStage must be one of new, contacted, interested, requirementConfirmed, quotation, negotiation, waiting, customer, repeatPurchase, lost.
+                Evaluate from explicit demand, quantity, budget, timing, objections, engagement and verified customer context.
+                When evidence is insufficient, use a low probability/confidence and explain the information gap. Do not invent evidence.
+                Write rationale and signals in Simplified Chinese; preserve quoted evidence in its original language.
+                """,
+                new { sourceSnapshot, understanding },
+                ValidateOpportunity,
+                cancellationToken);
+            run.OpportunityJson = Json.Serialize(opportunity);
+
+            run.Status = CustomerBrainRunStatus.Recommending;
+            await _repository.SaveCustomerBrainRunAsync(run, cancellationToken);
+            var recommendation = await _provider.CompleteStructuredAsync<CustomerSalesRecommendation>(
+                """
+                You are the Sales Recommendation stage of AI Sales OS, serving one salesperson.
+                Return one camelCase JSON object without markdown:
+                {
+                  "nextBestAction":"",
+                  "rationale":"",
+                  "suggestedTalkTrack":"",
+                  "questionsToVerify":[""],
+                  "evidence":[""],
+                  "dueInHours":24,
+                  "priority":"normal"
+                }
+                priority must be low, normal, high or urgent. dueInHours must be 1..720.
+                Give one concrete, human-controlled next action. Do not send messages, change CRM fields or promise price, stock or delivery.
+                Base the recommendation only on supplied evidence and make missing validation questions explicit.
+                Write in Simplified Chinese except for any suggested customer-facing talk track requested by context.
+                """,
+                new { sourceSnapshot, understanding, opportunity },
+                ValidateRecommendation,
+                cancellationToken);
+            run.RecommendationJson = Json.Serialize(recommendation);
+
+            ApplyDecision(profile, understanding, opportunity, recommendation, run);
+            await _repository.SaveCustomerIntelligenceProfileAsync(profile, cancellationToken);
+            var recommendationRecord = await SynchronizeRecommendationAsync(profile, cancellationToken);
+            await SynchronizeFollowUpTaskAsync(profile, recommendation, recommendationRecord, run, cancellationToken);
+
+            run.Status = CustomerBrainRunStatus.Succeeded;
+            run.CompletedAt = DateTimeOffset.Now;
+            await _repository.SaveCustomerBrainRunAsync(run, cancellationToken);
+            await _repository.UpsertCustomerEventAsync(new CustomerEventLogEntry
+            {
+                Id = StableId("event", customerId, "customer_brain_run", run.Id),
+                CustomerId = customerId,
+                EventType = "customer_brain_analyzed",
+                Title = "Customer Brain \u5206\u6790\u5b8c\u6210",
+                Detail = $"\u91c7\u8d2d\u6982\u7387 {profile.PurchaseProbability}%\uff0c\u7f6e\u4fe1\u5ea6 {profile.Confidence:P0}\uff0c\u5efa\u8bae\u9636\u6bb5 {Labels.Stage(profile.SuggestedStage)}\u3002",
+                SourceType = "customer_brain_run",
+                SourceId = run.Id,
+                OccurredAt = run.CompletedAt.Value
+            }, cancellationToken);
+            await _repository.LogEventAsync(
+                "customer_brain_analyzed",
+                customerId,
+                null,
+                $"run_id={run.Id};model={run.AiModel};purchase_probability={profile.PurchaseProbability};confidence={profile.Confidence:F2}",
+                cancellationToken);
+            return profile;
+        }
+        catch (Exception error)
+        {
+            run.Status = CustomerBrainRunStatus.RetryableFailed;
+            run.Error = error.Message;
+            run.CompletedAt = DateTimeOffset.Now;
+            await _repository.SaveCustomerBrainRunAsync(run, CancellationToken.None);
+            if (!profile.HasCurrentDecision)
+            {
+                profile.DecisionStatus = CustomerBrainDecisionStatus.RetryableFailed;
+                profile.LastBrainRunId = run.Id;
+                await _repository.SaveCustomerIntelligenceProfileAsync(profile, CancellationToken.None);
+            }
+            await _repository.UpsertCustomerEventAsync(new CustomerEventLogEntry
+            {
+                Id = StableId("event", customerId, "customer_brain_failed", run.Id),
+                CustomerId = customerId,
+                EventType = "customer_brain_failed",
+                Title = "Customer Brain \u5206\u6790\u5931\u8d25\uff0c\u53ef\u91cd\u8bd5",
+                Detail = error.Message,
+                SourceType = "customer_brain_run",
+                SourceId = run.Id,
+                OccurredAt = run.CompletedAt.Value
+            }, CancellationToken.None);
+            throw;
+        }
+    }
 
     private async Task<List<CustomerCampaignTouch>> GetCampaignTouchesAsync(string customerId, CancellationToken cancellationToken)
     {
@@ -178,34 +357,45 @@ public sealed class CustomerBrainService
             Version = (current?.Version ?? 0) + 1,
             CustomerName = lead.DisplayName,
             Summary = FirstUseful(
+                current?.Summary,
                 report?.ExecutiveSummary.OneLinePositioning,
                 lead.HasCurrentAiScore ? lead.ProfileSummary : null,
                 $"{lead.DisplayName} 已进入客户工作区；当前商业背景和采购条件仍需通过沟通核实。"),
-            CustomerType = FirstUseful(report?.BasicProfile.CustomerType, lead.CustomerSegment, "客户类型待核实"),
-            BusinessModels = Clean(report?.BasicProfile.BusinessModels),
+            CustomerType = FirstUseful(current?.CustomerType, report?.BasicProfile.CustomerType, lead.CustomerSegment, "客户类型待核实"),
+            BusinessModels = Clean(current?.BusinessModels, report?.BasicProfile.BusinessModels),
             PurchaseMotivations = Clean(
+                current?.PurchaseMotivations,
                 report?.PurchaseMotivation.InterestReasons,
                 report?.PurchaseMotivation.TriggerEvents),
-            PainPoints = Clean(report?.PainAnalysis.SurfacePains, report?.PainAnalysis.DeepBusinessProblems),
+            PainPoints = Clean(current?.PainPoints, report?.PainAnalysis.SurfacePains, report?.PainAnalysis.DeepBusinessProblems),
             OpportunitySignals = Clean(
+                current?.OpportunitySignals,
                 report?.OpportunityJudgment.PositiveFactors,
                 report?.WhatsAppAnalysis.PurchaseSignals,
                 lead.BehaviorSignals.Select(signal => signal.Signal)),
             Risks = Clean(
+                current?.Risks,
                 report?.RiskAnalysis.DealRisks,
                 report?.RiskAnalysis.AdoptionRisks,
                 report?.RiskAnalysis.ChurnRisks,
                 lead.Risks,
                 string.IsNullOrWhiteSpace(lead.RiskWarning) ? [] : [lead.RiskWarning]),
             NextBestAction = FirstUseful(
+                current?.NextBestAction,
                 report?.ExecutiveSummary.CurrentSalesRecommendation,
                 report?.SalesStrategy.Actions.FirstOrDefault()?.Action,
                 lead.HasCurrentAiScore ? lead.NextAction : null,
                 "补齐客户业务模式、需求、预算、数量与决策时间后重新分析。"),
-            Confidence = lead.HasCurrentAiScore
+            Confidence = current?.Confidence ?? (lead.HasCurrentAiScore
                 ? Math.Clamp(lead.AnalysisConfidence, 0, 1)
-                : latestReport is null ? 0 : Math.Min(.75, Math.Max(.35, coverage.Percentage / 100d)),
-            AiModel = latestReport?.AiModel ?? "",
+                : latestReport is null ? 0 : Math.Min(.75, Math.Max(.35, coverage.Percentage / 100d))),
+            PurchaseProbability = current?.PurchaseProbability ?? lead.PurchaseProbability,
+            SuggestedStage = current?.SuggestedStage ?? lead.Stage,
+            DecisionStatus = ResolveDecisionStatus(current),
+            DecisionSourceSnapshotHash = current?.DecisionSourceSnapshotHash ?? "",
+            LastBrainRunId = current?.LastBrainRunId ?? "",
+            LastBrainAnalyzedAt = current?.LastBrainAnalyzedAt,
+            AiModel = FirstUseful(current?.AiModel, latestReport?.AiModel),
             Coverage = coverage,
             SourceSnapshotHash = sourceHash,
             SourceCapturedAt = DateTimeOffset.Now,
@@ -282,22 +472,22 @@ public sealed class CustomerBrainService
         return profile;
     }
 
-    private async Task SynchronizeRecommendationAsync(CustomerIntelligenceProfile profile, CancellationToken cancellationToken)
+    private async Task<AiRecommendationRecord?> SynchronizeRecommendationAsync(CustomerIntelligenceProfile profile, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(profile.NextBestAction)) return;
+        if (string.IsNullOrWhiteSpace(profile.NextBestAction)) return null;
         var history = await _repository.GetAiRecommendationHistoryAsync(profile.CustomerId, cancellationToken);
         var active = history.FirstOrDefault(item => item.Status is AiRecommendationStatus.Proposed
             or AiRecommendationStatus.Accepted
             or AiRecommendationStatus.InProgress);
         if (active is not null && string.Equals(active.Action.Trim(), profile.NextBestAction.Trim(), StringComparison.OrdinalIgnoreCase))
-            return;
+            return active;
 
         if (active is not null)
         {
             active.Status = AiRecommendationStatus.Superseded;
             await _repository.SaveAiRecommendationAsync(active, cancellationToken);
         }
-        await _repository.SaveAiRecommendationAsync(new AiRecommendationRecord
+        var created = new AiRecommendationRecord
         {
             CustomerId = profile.CustomerId,
             Title = "Customer Brain 下一步建议",
@@ -313,7 +503,178 @@ public sealed class CustomerBrainService
             Confidence = profile.Confidence,
             SourceProfileId = profile.Id,
             SourceProfileVersion = profile.Version
+        };
+        await _repository.SaveAiRecommendationAsync(created, cancellationToken);
+        return created;
+    }
+
+    private static CustomerBrainDecisionStatus ResolveDecisionStatus(CustomerIntelligenceProfile? current)
+    {
+        if (current is null) return CustomerBrainDecisionStatus.NotAnalyzed;
+        if (!string.IsNullOrWhiteSpace(current.DecisionSourceSnapshotHash))
+            return CustomerBrainDecisionStatus.Stale;
+        return current.DecisionStatus == CustomerBrainDecisionStatus.RetryableFailed
+            ? CustomerBrainDecisionStatus.RetryableFailed
+            : CustomerBrainDecisionStatus.NotAnalyzed;
+    }
+
+    private static void ApplyDecision(
+        CustomerIntelligenceProfile profile,
+        CustomerUnderstandingResult understanding,
+        CustomerOpportunityEvaluation opportunity,
+        CustomerSalesRecommendation recommendation,
+        CustomerBrainRun run)
+    {
+        profile.Version++;
+        profile.Summary = understanding.ProfileSummary.Trim();
+        profile.CustomerType = understanding.CustomerType.Trim();
+        profile.BusinessModels = Clean(understanding.BusinessModels);
+        profile.PurchaseMotivations = Clean(understanding.PurchaseMotivations);
+        profile.PainPoints = Clean(understanding.PainPoints);
+        profile.OpportunitySignals = Clean(opportunity.PositiveSignals);
+        profile.Risks = Clean(opportunity.RiskSignals);
+        profile.NextBestAction = recommendation.NextBestAction.Trim();
+        profile.Confidence = Math.Clamp(opportunity.Confidence, 0, 1);
+        profile.PurchaseProbability = Math.Clamp(opportunity.PurchaseProbability, 0, 100);
+        profile.SuggestedStage = opportunity.SuggestedStage;
+        profile.DecisionStatus = CustomerBrainDecisionStatus.Current;
+        profile.DecisionSourceSnapshotHash = profile.SourceSnapshotHash;
+        profile.LastBrainRunId = run.Id;
+        profile.LastBrainAnalyzedAt = DateTimeOffset.Now;
+        profile.AiModel = run.AiModel;
+
+        var facts = profile.Statements
+            .Where(statement => statement.Nature == IntelligenceStatementNature.Fact)
+            .ToList();
+        var statements = new List<CustomerIntelligenceStatement>(facts);
+        foreach (var statement in understanding.Statements)
+        {
+            statement.Nature = statement.Nature == IntelligenceStatementNature.InformationGap
+                ? IntelligenceStatementNature.InformationGap
+                : IntelligenceStatementNature.Inference;
+            statement.Confidence = Math.Clamp(statement.Confidence, 0, 1);
+            statement.ObservedAt = statement.ObservedAt == default ? DateTimeOffset.Now : statement.ObservedAt;
+            statements.Add(statement);
+        }
+        foreach (var gap in understanding.InformationGaps.Where(value => !string.IsNullOrWhiteSpace(value)))
+        {
+            statements.Add(new CustomerIntelligenceStatement
+            {
+                Nature = IntelligenceStatementNature.InformationGap,
+                Topic = "待核实问题",
+                Text = gap.Trim(),
+                Source = $"Customer Brain · {run.AiModel}",
+                SourceId = run.Id,
+                Confidence = 1,
+                ObservedAt = DateTimeOffset.Now
+            });
+        }
+        statements.Add(new CustomerIntelligenceStatement
+        {
+            Nature = IntelligenceStatementNature.Inference,
+            Topic = "商机机会判断",
+            Text = opportunity.Rationale.Trim(),
+            Evidence = string.Join("；", opportunity.Evidence),
+            Source = $"Customer Brain · {run.AiModel}",
+            SourceId = run.Id,
+            Confidence = profile.Confidence,
+            ObservedAt = DateTimeOffset.Now
+        });
+        statements.Add(new CustomerIntelligenceStatement
+        {
+            Nature = IntelligenceStatementNature.Recommendation,
+            Topic = "下一步动作",
+            Text = profile.NextBestAction,
+            Evidence = string.Join("；", recommendation.Evidence),
+            Source = $"Customer Brain · {run.AiModel}",
+            SourceId = run.Id,
+            Confidence = profile.Confidence,
+            ObservedAt = DateTimeOffset.Now
+        });
+        profile.Statements = statements
+            .Where(statement => !string.IsNullOrWhiteSpace(statement.Text))
+            .GroupBy(statement => $"{statement.Nature}|{statement.Topic}|{statement.Text}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+
+        if (profile.BusinessModels.Count == 0) profile.BusinessModels.Add("主要经营渠道待核实");
+        if (profile.PurchaseMotivations.Count == 0) profile.PurchaseMotivations.Add("尚无足够证据确认购买动机");
+        if (profile.PainPoints.Count == 0) profile.PainPoints.Add("尚无足够客户原话确认核心痛点");
+        if (profile.OpportunitySignals.Count == 0) profile.OpportunitySignals.Add("尚无 AI 验证的明确购买信号");
+        if (profile.Risks.Count == 0) profile.Risks.Add("当前资料有限，销售结论需要人工复核");
+    }
+
+    private async Task SynchronizeFollowUpTaskAsync(
+        CustomerIntelligenceProfile profile,
+        CustomerSalesRecommendation recommendation,
+        AiRecommendationRecord? recommendationRecord,
+        CustomerBrainRun run,
+        CancellationToken cancellationToken)
+    {
+        var sourceId = recommendationRecord?.Id ?? run.Id;
+        var task = new FollowUpTask
+        {
+            Id = StableId("follow_up", profile.CustomerId, "customer_brain", sourceId),
+            CustomerId = profile.CustomerId,
+            RecommendationId = recommendationRecord?.Id ?? "",
+            Title = recommendation.NextBestAction.Trim(),
+            Reason = recommendation.Rationale.Trim(),
+            Priority = recommendation.Priority,
+            Status = FollowUpTaskStatus.Proposed,
+            DueAt = DateTimeOffset.Now.AddHours(recommendation.DueInHours),
+            SourceType = "customer_brain",
+            SourceId = sourceId
+        };
+        await _repository.UpsertFollowUpTaskAsync(task, cancellationToken);
+        await _repository.UpsertCustomerEventAsync(new CustomerEventLogEntry
+        {
+            Id = StableId("event", profile.CustomerId, "follow_up_proposed", sourceId),
+            CustomerId = profile.CustomerId,
+            EventType = "follow_up_proposed",
+            Title = "AI 提出新的跟进任务",
+            Detail = $"{task.Title}；建议在 {task.DueAt:yyyy-MM-dd HH:mm} 前处理。",
+            SourceType = "follow_up_task",
+            SourceId = sourceId,
+            OccurredAt = DateTimeOffset.Now
         }, cancellationToken);
+    }
+
+    private static string? ValidateUnderstanding(CustomerUnderstandingResult result)
+    {
+        if (string.IsNullOrWhiteSpace(result.CustomerDna)) return "customerDna 不能为空。";
+        if (string.IsNullOrWhiteSpace(result.ProfileSummary)) return "profileSummary 不能为空。";
+        if (string.IsNullOrWhiteSpace(result.CustomerType)) return "customerType 不能为空。";
+        foreach (var statement in result.Statements)
+        {
+            if (statement.Nature is not IntelligenceStatementNature.Inference and not IntelligenceStatementNature.InformationGap)
+                return "Customer Understanding 只能返回 inference 或 informationGap，不能把 AI 判断写成事实。";
+            if (string.IsNullOrWhiteSpace(statement.Text)) return "statements.text 不能为空。";
+            if (statement.Nature == IntelligenceStatementNature.Inference
+                && (string.IsNullOrWhiteSpace(statement.Evidence) || string.IsNullOrWhiteSpace(statement.Source)))
+                return "每条 inference 都必须提供 evidence 和 source。";
+            if (statement.Confidence is < 0 or > 1) return "statements.confidence 必须在 0 到 1 之间。";
+        }
+        return null;
+    }
+
+    private static string? ValidateOpportunity(CustomerOpportunityEvaluation result)
+    {
+        if (result.PurchaseProbability is < 0 or > 100) return "purchaseProbability 必须在 0 到 100 之间。";
+        if (result.Confidence is < 0 or > 1) return "confidence 必须在 0 到 1 之间。";
+        if (string.IsNullOrWhiteSpace(result.Rationale)) return "rationale 不能为空。";
+        if (result.Evidence.Count == 0 || result.Evidence.All(string.IsNullOrWhiteSpace))
+            return "机会判断必须包含至少一条 evidence；资料不足也要明确写出缺口证据。";
+        return null;
+    }
+
+    private static string? ValidateRecommendation(CustomerSalesRecommendation result)
+    {
+        if (string.IsNullOrWhiteSpace(result.NextBestAction)) return "nextBestAction 不能为空。";
+        if (string.IsNullOrWhiteSpace(result.Rationale)) return "rationale 不能为空。";
+        if (result.DueInHours is < 1 or > 720) return "dueInHours 必须在 1 到 720 之间。";
+        if (result.Evidence.Count == 0 || result.Evidence.All(string.IsNullOrWhiteSpace))
+            return "销售建议必须包含至少一条 evidence。";
+        return null;
     }
 
     private static void AddCrmFacts(ICollection<CustomerIntelligenceStatement> statements, Lead lead)
@@ -382,7 +743,7 @@ public sealed class CustomerBrainService
                 lead.Name, lead.Company, lead.Country, lead.PhoneE164, lead.Email, lead.ProductInterest, lead.Tags, lead.CustomFields,
                 lead.Stage, lead.Score, lead.Grade, lead.AnalysisContractVersion, lead.AiScoreApplied, lead.AnalysisStatus,
                 lead.ProfileSummary, lead.CustomerSegment, lead.NextAction, lead.RiskWarning, lead.Risks, lead.ScoreFactors,
-                lead.BehaviorSignals, lead.Evidence, lead.AnalysisConfidence, lead.LastAnalyzedAt
+                lead.BehaviorSignals, lead.Evidence, lead.AnalysisConfidence, lead.PurchaseProbability, lead.LastAnalyzedAt
             },
             whatsApp = whatsApp.Select(message => new
             {

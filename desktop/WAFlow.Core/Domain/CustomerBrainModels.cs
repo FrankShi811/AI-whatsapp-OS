@@ -34,6 +34,47 @@ public enum SalesActionStatus
     Cancelled
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum CustomerBrainRunStatus
+{
+    Queued,
+    Collecting,
+    Understanding,
+    EvaluatingOpportunity,
+    Recommending,
+    Succeeded,
+    RetryableFailed
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum CustomerBrainDecisionStatus
+{
+    NotAnalyzed,
+    Current,
+    Stale,
+    RetryableFailed
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum FollowUpTaskStatus
+{
+    Proposed,
+    Open,
+    InProgress,
+    Completed,
+    Dismissed,
+    Failed
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum FollowUpPriority
+{
+    Low,
+    Normal,
+    High,
+    Urgent
+}
+
 public sealed class CustomerIntelligenceStatement
 {
     public IntelligenceStatementNature Nature { get; set; }
@@ -81,6 +122,12 @@ public sealed class CustomerIntelligenceProfile
     public List<string> Risks { get; set; } = [];
     public string NextBestAction { get; set; } = "";
     public double Confidence { get; set; }
+    public int PurchaseProbability { get; set; }
+    public LeadStage SuggestedStage { get; set; } = LeadStage.New;
+    public CustomerBrainDecisionStatus DecisionStatus { get; set; } = CustomerBrainDecisionStatus.NotAnalyzed;
+    public string DecisionSourceSnapshotHash { get; set; } = "";
+    public string LastBrainRunId { get; set; } = "";
+    public DateTimeOffset? LastBrainAnalyzedAt { get; set; }
     public string AiModel { get; set; } = "";
     public CustomerIntelligenceCoverage Coverage { get; set; } = new();
     public List<CustomerIntelligenceStatement> Statements { get; set; } = [];
@@ -91,6 +138,61 @@ public sealed class CustomerIntelligenceProfile
 
     [JsonIgnore] public string VersionLabel => $"Brain V{Version}";
     [JsonIgnore] public string CoverageLabel => $"数据覆盖 {Coverage.Percentage}%";
+    [JsonIgnore] public bool HasCurrentDecision =>
+        DecisionStatus == CustomerBrainDecisionStatus.Current
+        && !string.IsNullOrWhiteSpace(DecisionSourceSnapshotHash)
+        && string.Equals(DecisionSourceSnapshotHash, SourceSnapshotHash, StringComparison.Ordinal);
+}
+
+public sealed class CustomerUnderstandingResult
+{
+    public string CustomerDna { get; set; } = "";
+    public string ProfileSummary { get; set; } = "";
+    public string CustomerType { get; set; } = "";
+    public List<string> BusinessModels { get; set; } = [];
+    public List<string> PainPoints { get; set; } = [];
+    public List<string> PurchaseMotivations { get; set; } = [];
+    public List<string> InformationGaps { get; set; } = [];
+    public List<CustomerIntelligenceStatement> Statements { get; set; } = [];
+}
+
+public sealed class CustomerOpportunityEvaluation
+{
+    public int PurchaseProbability { get; set; }
+    public double Confidence { get; set; }
+    public LeadStage SuggestedStage { get; set; } = LeadStage.New;
+    public List<string> PositiveSignals { get; set; } = [];
+    public List<string> RiskSignals { get; set; } = [];
+    public List<string> Evidence { get; set; } = [];
+    public string Rationale { get; set; } = "";
+}
+
+public sealed class CustomerSalesRecommendation
+{
+    public string NextBestAction { get; set; } = "";
+    public string Rationale { get; set; } = "";
+    public string SuggestedTalkTrack { get; set; } = "";
+    public List<string> QuestionsToVerify { get; set; } = [];
+    public List<string> Evidence { get; set; } = [];
+    public int DueInHours { get; set; } = 24;
+    public FollowUpPriority Priority { get; set; } = FollowUpPriority.Normal;
+}
+
+public sealed class CustomerBrainRun
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string CustomerId { get; set; } = "";
+    public CustomerBrainRunStatus Status { get; set; } = CustomerBrainRunStatus.Queued;
+    public string AiModel { get; set; } = "";
+    public string SourceSnapshotHash { get; set; } = "";
+    public string SourceSnapshotJson { get; set; } = "";
+    public string UnderstandingJson { get; set; } = "";
+    public string OpportunityJson { get; set; } = "";
+    public string RecommendationJson { get; set; } = "";
+    public string Error { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
+    public DateTimeOffset? CompletedAt { get; set; }
 }
 
 public sealed class AiRecommendationRecord
@@ -150,5 +252,36 @@ public sealed class AiLearningFeedback
     public bool Helpful { get; set; }
     public string FeedbackSource { get; set; } = "human";
     public string Note { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
+}
+
+public sealed class FollowUpTask
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string CustomerId { get; set; } = "";
+    public string RecommendationId { get; set; } = "";
+    public string Title { get; set; } = "";
+    public string Reason { get; set; } = "";
+    public FollowUpPriority Priority { get; set; } = FollowUpPriority.Normal;
+    public FollowUpTaskStatus Status { get; set; } = FollowUpTaskStatus.Proposed;
+    public DateTimeOffset DueAt { get; set; } = DateTimeOffset.Now.AddDays(1);
+    public string SourceType { get; set; } = "customer_brain";
+    public string SourceId { get; set; } = "";
+    public string Outcome { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
+    public DateTimeOffset? CompletedAt { get; set; }
+}
+
+public sealed class CustomerEventLogEntry
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string CustomerId { get; set; } = "";
+    public string EventType { get; set; } = "";
+    public string Title { get; set; } = "";
+    public string Detail { get; set; } = "";
+    public string SourceType { get; set; } = "";
+    public string SourceId { get; set; } = "";
+    public DateTimeOffset OccurredAt { get; set; } = DateTimeOffset.Now;
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
 }

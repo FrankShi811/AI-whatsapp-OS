@@ -3,7 +3,19 @@ using System.Text.Json.Serialization;
 namespace WAFlow.Core.Domain;
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum LeadStage { New, Contacted, Interested, Negotiation, Waiting, Customer, Lost }
+public enum LeadStage
+{
+    New,
+    Contacted,
+    Interested,
+    RequirementConfirmed,
+    Quotation,
+    Negotiation,
+    Waiting,
+    Customer,
+    RepeatPurchase,
+    Lost
+}
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum AnalysisStatus { NotRun, Queued, Running, Succeeded, RetryableFailed }
@@ -81,6 +93,7 @@ public sealed class Lead
     public List<string> Risks { get; set; } = [];
     public List<AnalysisEvidence> Evidence { get; set; } = [];
     public double AnalysisConfidence { get; set; }
+    public int PurchaseProbability { get; set; }
     public AnalysisStatus AnalysisStatus { get; set; } = AnalysisStatus.NotRun;
     public string AnalysisError { get; set; } = "";
     public bool AiScoreApplied { get; set; }
@@ -406,6 +419,7 @@ public sealed class LeadAnalysis
     public List<LeadBehaviorSignal> BehaviorSignals { get; set; } = [];
     public LeadStage Stage { get; set; }
     public double Confidence { get; set; }
+    public int PurchaseProbability { get; set; }
     public List<AnalysisEvidence> Evidence { get; set; } = [];
     public string ProfileSummary { get; set; } = "";
     public string CustomerSegment { get; set; } = "";
@@ -485,6 +499,9 @@ public static class Labels
 {
     public static string Stage(LeadStage value) => value switch
     {
+        LeadStage.RequirementConfirmed => "\u9700\u6c42\u5df2\u786e\u8ba4",
+        LeadStage.Quotation => "\u62a5\u4ef7\u4e2d",
+        LeadStage.RepeatPurchase => "\u590d\u8d2d\u5ba2\u6237",
         LeadStage.New => "新商机", LeadStage.Contacted => "已联系", LeadStage.Interested => "有兴趣",
         LeadStage.Negotiation => "谈判中", LeadStage.Waiting => "等待中", LeadStage.Customer => "已成交",
         LeadStage.Lost => "已流失", _ => value.ToString()

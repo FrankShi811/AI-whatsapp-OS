@@ -89,6 +89,9 @@ Check(!badPhone.Valid && badPhone.E164 == "+12345", "invalid phone is retained w
 var wa = PhoneNormalizer.BuildWaMeUrl("+44 7700 900123", "Hello Elena & team");
 Check(wa == "https://wa.me/447700900123?text=Hello%20Elena%20%26%20team", "wa.me encoding");
 Check(StageParser.Parse("qualified") == WAFlow.Core.Domain.LeadStage.Interested && StageParser.Parse("won") == WAFlow.Core.Domain.LeadStage.Customer, "legacy stage migration");
+Check(StageParser.Parse("requirement_confirmed") == LeadStage.RequirementConfirmed
+    && StageParser.Parse("quotation") == LeadStage.Quotation
+    && StageParser.Parse("repeat_purchase") == LeadStage.RepeatPurchase, "personal sales lifecycle stages parse without collapsing into legacy stages");
 
 var baselineRoot = Path.Combine(root, "ai-baseline");
 var baselineRepository = new LocalRepository(Path.Combine(baselineRoot, "baseline.db"));
@@ -687,7 +690,7 @@ await repository.SaveAppSettingsAsync(new AppSettings { DeepSeekBaseUrl="https:/
 var catalog = await deepSeek.DiscoverModelsAsync("https://api.deepseek.com");
 Check(catalog.Models.SequenceEqual(["deepseek-chat", "deepseek-reasoner"]), "AI provider model catalog is fetched and sorted");
 var analyzed = await deepSeek.AnalyzeLeadAsync((await repository.GetLeadAsync("lead_elena"))!);
-Check(analyzed is { AnalysisStatus: AnalysisStatus.Succeeded, Score: 88, BaseProfileScore: 78, BehaviorSignalScore: 10, AnalysisContractVersion: 2, AiScoreApplied: true } && analyzed.ScoreFactors.Count == 6 && analyzed.Evidence.Count >= 7, "DeepSeek V2 structured analysis success");
+Check(analyzed is { AnalysisStatus: AnalysisStatus.Succeeded, Score: 88, BaseProfileScore: 78, BehaviorSignalScore: 10, PurchaseProbability: 76, AnalysisContractVersion: 2, AiScoreApplied: true } && analyzed.ScoreFactors.Count == 6 && analyzed.Evidence.Count >= 7, "DeepSeek V2 structured analysis success");
 var analyzedDashboard = await repository.GetDashboardAsync();
 Check(analyzedDashboard.Grades["A"] >= 1 && analyzedDashboard.PriorityLeads.Any(lead => lead.Id == analyzed.Id), "Dashboard grade distribution reads validated V2 AI scores");
 var generated = await deepSeek.GenerateDraftAsync(analyzed, "follow_up", "en", "");
@@ -813,11 +816,42 @@ Check(firstBrain is { Version: 1, CustomerId: "report-customer" } && firstBrain.
 Check(firstBrain.Statements.Any(item => item.Nature == IntelligenceStatementNature.Fact && item.Source == "CRM") && firstBrain.Statements.Any(item => item.Nature == IntelligenceStatementNature.Inference) && firstBrain.Statements.Any(item => item.Nature == IntelligenceStatementNature.Recommendation), "Customer Brain keeps facts, AI inference and sales recommendations distinct");
 Check(firstBrainAgain.Version == firstBrain.Version && firstRecommendations.Count == 1, "Customer Brain refresh is idempotent and does not duplicate versions or recommendations");
 Check(behaviorTimeline.Count >= 88 && behaviorTimeline.Any(item => item.SourceType == "whatsapp_message") && behaviorTimeline.Any(item => item.SourceType == "campaign_recipient") && behaviorTimeline.Any(item => item.SourceType == "customer_analysis_report"), "Customer Brain builds an idempotent behavior timeline from conversations, campaigns and reports");
+var stagedBrainService = new CustomerBrainService(reportRepository, new FakeCustomerBrainProvider());
+var decisionBrain = await stagedBrainService.AnalyzeAsync(reportLead.Id);
+var brainRuns = await reportRepository.GetCustomerBrainRunsAsync(reportLead.Id);
+var followUpTasks = await reportRepository.GetFollowUpTasksAsync(reportLead.Id);
+var customerEvents = await reportRepository.GetCustomerEventsAsync(reportLead.Id);
+var leadAfterDecision = await reportRepository.GetLeadAsync(reportLead.Id);
+Check(decisionBrain is { DecisionStatus: CustomerBrainDecisionStatus.Current, PurchaseProbability: 74, SuggestedStage: LeadStage.RequirementConfirmed }
+    && decisionBrain.HasCurrentDecision && decisionBrain.Confidence == .82, "Customer Brain staged AI pipeline produces a current evidence-bound opportunity decision");
+Check(brainRuns.First() is { Status: CustomerBrainRunStatus.Succeeded }
+    && !string.IsNullOrWhiteSpace(brainRuns.First().UnderstandingJson)
+    && !string.IsNullOrWhiteSpace(brainRuns.First().OpportunityJson)
+    && !string.IsNullOrWhiteSpace(brainRuns.First().RecommendationJson), "Customer Brain persists structured intermediate results for understanding, opportunity and recommendation stages");
+Check(followUpTasks.Single() is { Status: FollowUpTaskStatus.Proposed, Priority: FollowUpPriority.High }
+    && customerEvents.Any(item => item.EventType == "follow_up_proposed")
+    && customerEvents.Any(item => item.EventType == "customer_brain_analyzed"), "Customer Brain turns its recommendation into an auditable personal follow-up task and customer event timeline");
+Check(leadAfterDecision is { Score: 86, Grade: "A", Stage: LeadStage.Negotiation, PurchaseProbability: 0 }, "Customer Brain decision remains advisory and never overwrites CRM stage or Lead Intelligence output");
+var dashboardAfterBrain = await reportRepository.GetDashboardAsync();
+Check(dashboardAfterBrain.PendingFollowUps >= 1, "personal sales command center counts due Customer Brain follow-up tasks");
+try
+{
+    await new CustomerBrainService(reportRepository, new AlwaysInvalidStructuredReportProvider()).AnalyzeAsync(reportLead.Id);
+}
+catch (DeepSeekException)
+{
+}
+var preservedDecision = await reportRepository.GetCustomerIntelligenceProfileAsync(reportLead.Id);
+var failedBrainRun = (await reportRepository.GetCustomerBrainRunsAsync(reportLead.Id)).First();
+Check(preservedDecision is { DecisionStatus: CustomerBrainDecisionStatus.Current, PurchaseProbability: 74 }
+    && failedBrainRun.Status == CustomerBrainRunStatus.RetryableFailed, "Customer Brain provider failure is retryable and preserves the last valid decision");
 reportLead.CustomFields["目标价格状态"] = "待确认";
 await reportRepository.UpsertLeadAsync(reportLead);
-var changedBrain = await customerBrain.RefreshAsync(reportLead.Id);
+var changedBrain = await stagedBrainService.RefreshAsync(reportLead.Id);
 var unchangedLeadAfterBrain = await reportRepository.GetLeadAsync(reportLead.Id);
-Check(changedBrain.Version == 2 && changedBrain.SourceSnapshotHash != firstBrain.SourceSnapshotHash && changedBrain.CreatedAt == firstBrain.CreatedAt, "Customer Brain creates a new version only after its source semantics change");
+Check(changedBrain.Version == decisionBrain.Version + 1 && changedBrain.SourceSnapshotHash != decisionBrain.SourceSnapshotHash
+    && changedBrain.CreatedAt == firstBrain.CreatedAt && changedBrain.DecisionStatus == CustomerBrainDecisionStatus.Stale
+    && changedBrain.PurchaseProbability == decisionBrain.PurchaseProbability, "Customer Brain marks the previous AI decision stale when source semantics change without discarding it");
 Check(unchangedLeadAfterBrain is { Score: 86, Grade: "A", AnalysisStatus: AnalysisStatus.Succeeded } && unchangedLeadAfterBrain.CustomFields["目标价格状态"] == "待确认", "Customer Brain never overwrites authoritative CRM or Lead Intelligence fields");
 var brainRecommendation = (await reportRepository.GetAiRecommendationHistoryAsync(reportLead.Id)).First();
 var brainAction = new SalesActionRecord
@@ -832,7 +866,10 @@ await reportRepository.SaveAiLearningFeedbackAsync(new AiLearningFeedback
     Outcome="客户回复并补充采购条件", Helpful=true, Note="建议有助于推进需求确认"
 });
 await reportRepository.InitializeAsync();
-Check((await reportRepository.GetCustomerIntelligenceProfileAsync(reportLead.Id))?.Version == 2 && (await reportRepository.GetSalesActionsAsync(reportLead.Id)).Single().Status == SalesActionStatus.Completed && (await reportRepository.GetAiLearningFeedbackAsync(reportLead.Id)).Single().Helpful, "Customer Brain migration is additive and preserves action/outcome learning across restarts");
+Check((await reportRepository.GetCustomerIntelligenceProfileAsync(reportLead.Id))?.Version == changedBrain.Version
+    && (await reportRepository.GetSalesActionsAsync(reportLead.Id)).Single().Status == SalesActionStatus.Completed
+    && (await reportRepository.GetAiLearningFeedbackAsync(reportLead.Id)).Single().Helpful
+    && (await reportRepository.GetFollowUpTasksAsync(reportLead.Id)).Single().Priority == FollowUpPriority.High, "Customer Brain migration is additive and preserves tasks, actions and outcome learning across restarts");
 var keepArtifactIndex = Array.IndexOf(args, "--keep-report-artifacts");
 if (keepArtifactIndex >= 0 && keepArtifactIndex + 1 < args.Length)
 {
@@ -894,6 +931,7 @@ static string V2AnalysisJson(string behaviorEvidence) => WAFlow.Core.Infrastruct
     customer_segment="高潜力电商买家",
     stage="negotiation",
     confidence=.91,
+    purchase_probability=76,
     next_action="发送报价与历史客户案例。",
     risk_warning="价格敏感，报价需说明价值差异。"
 });
@@ -1014,4 +1052,79 @@ sealed class AlwaysInvalidStructuredReportProvider : IStructuredAiProvider
     public Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default) => Task.FromResult("invalid-structured-test");
     public Task<T> CompleteStructuredAsync<T>(string instructions, object payload, Func<T, string?> validate, CancellationToken cancellationToken = default) where T : class =>
         throw new DeepSeekException("invalid_structured_output", "测试模型返回的结构化 JSON 无法解析。", true);
+}
+
+sealed class FakeCustomerBrainProvider : IStructuredAiProvider
+{
+    public bool HasApiKey() => true;
+    public Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default) => Task.FromResult("customer-brain-test");
+
+    public Task<T> CompleteStructuredAsync<T>(
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        object result;
+        if (typeof(T) == typeof(CustomerUnderstandingResult))
+        {
+            result = new CustomerUnderstandingResult
+            {
+                CustomerDna = "美国 Amazon 家居用品买家，已明确表达持续月度采购需求。",
+                ProfileSummary = "客户经营 Amazon 家居用品业务，并通过 WhatsApp 明确提出每月采购500件，目标价格和交期仍待确认。",
+                CustomerType = "跨境电商卖家",
+                BusinessModels = ["Amazon"],
+                PainPoints = ["需要稳定的月度供货能力"],
+                PurchaseMotivations = ["补充每月500件的持续采购需求"],
+                InformationGaps = ["目标SKU、价格区间和交期尚未确认"],
+                Statements =
+                [
+                    new CustomerIntelligenceStatement
+                    {
+                        Nature = IntelligenceStatementNature.Inference,
+                        Topic = "需求成熟度",
+                        Text = "客户具备较明确的持续采购意向。",
+                        Evidence = "I need 500 pcs monthly.",
+                        Source = "WhatsApp report-84",
+                        Confidence = .88
+                    }
+                ]
+            };
+        }
+        else if (typeof(T) == typeof(CustomerOpportunityEvaluation))
+        {
+            result = new CustomerOpportunityEvaluation
+            {
+                PurchaseProbability = 74,
+                Confidence = .82,
+                SuggestedStage = LeadStage.RequirementConfirmed,
+                PositiveSignals = ["客户明确提出每月500件采购数量", "已有 Amazon 销售渠道"],
+                RiskSignals = ["目标价格、SKU和交期尚未确认"],
+                Evidence = ["I need 500 pcs monthly.", "CRM 销售渠道：Amazon"],
+                Rationale = "明确数量和已有销售渠道构成正向信号，但成交条件仍需销售人员核实。"
+            };
+        }
+        else if (typeof(T) == typeof(CustomerSalesRecommendation))
+        {
+            result = new CustomerSalesRecommendation
+            {
+                NextBestAction = "24小时内确认目标SKU、价格区间和期望交期。",
+                Rationale = "客户已经给出持续采购数量，当前最影响报价和成交的是关键询价参数缺失。",
+                SuggestedTalkTrack = "感谢您确认每月500件需求。为了给出准确报价，请确认目标SKU、价格区间和期望交期。",
+                QuestionsToVerify = ["目标SKU是什么", "可接受价格区间是多少", "期望交期是什么"],
+                Evidence = ["I need 500 pcs monthly.", "目标价格状态待确认"],
+                DueInHours = 24,
+                Priority = FollowUpPriority.High
+            };
+        }
+        else
+        {
+            throw new InvalidOperationException($"Unsupported Customer Brain stage type: {typeof(T).Name}");
+        }
+
+        var typed = (T)result;
+        var error = validate(typed);
+        if (!string.IsNullOrWhiteSpace(error)) throw new InvalidOperationException(error);
+        return Task.FromResult(typed);
+    }
 }

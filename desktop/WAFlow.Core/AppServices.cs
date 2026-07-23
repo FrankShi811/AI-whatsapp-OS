@@ -38,7 +38,7 @@ public sealed class AppServices
         CustomerAnalysis = new CustomerAnalysisService(Repository, DeepSeek);
         CustomerReportExports = new CustomerReportExportService(Repository);
         ConversationAssistant = new ConversationAssistantService(Repository, DeepSeek);
-        CustomerBrain = new CustomerBrainService(Repository);
+        CustomerBrain = new CustomerBrainService(Repository, DeepSeek);
     }
 
     public Task InitializeAsync(CancellationToken cancellationToken = default) => Repository.InitializeAsync(cancellationToken);
