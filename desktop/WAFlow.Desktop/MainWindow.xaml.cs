@@ -91,8 +91,10 @@ public partial class MainWindow : Window
         await UpdateThemeStateAsync();
         await NavigateAsync("dashboard", DashboardButton);
         _onboardingState = await _services.Repository.GetOnboardingStateAsync();
+        if (GuideCatalog.MigrateLegacyState(_onboardingState))
+            await _services.Repository.SaveOnboardingStateAsync(_onboardingState);
         _onboardingReady = true;
-        if (!_onboardingState.Completed || _onboardingState.GuideVersion < GuideCatalog.GlobalGuideVersion)
+        if (!GuideCatalog.IsSeen(_onboardingState, "global"))
             OnboardingGuide.ShowGuide(GuideCatalog.Global);
         else
             await ShowModuleGuideIfNeededAsync(_currentPage);
@@ -220,22 +222,14 @@ public partial class MainWindow : Window
     private async Task ShowModuleGuideIfNeededAsync(string page)
     {
         if (!_onboardingReady || OnboardingGuide.IsOpen) return;
-        var seen = _onboardingState.ModuleGuideVersion >= GuideCatalog.ModuleGuideVersion &&
-                   (_onboardingState.SeenModuleGuides ?? []).Any(key => key.Equals(page, StringComparison.OrdinalIgnoreCase));
-        if (!seen) OnboardingGuide.ShowGuide(GuideCatalog.ForModule(page));
+        if (!GuideCatalog.IsSeen(_onboardingState, page))
+            OnboardingGuide.ShowGuide(GuideCatalog.ForModule(page));
         await Task.CompletedTask;
     }
 
     private async Task MarkModuleGuideSeenAsync(string key)
     {
-        if (_onboardingState.ModuleGuideVersion < GuideCatalog.ModuleGuideVersion)
-        {
-            _onboardingState.ModuleGuideVersion = GuideCatalog.ModuleGuideVersion;
-            _onboardingState.SeenModuleGuides = [];
-        }
-        _onboardingState.SeenModuleGuides ??= [];
-        if (!_onboardingState.SeenModuleGuides.Any(item => item.Equals(key, StringComparison.OrdinalIgnoreCase)))
-            _onboardingState.SeenModuleGuides.Add(key);
+        GuideCatalog.MarkSeen(_onboardingState, key);
         await _services.Repository.SaveOnboardingStateAsync(_onboardingState);
     }
 
@@ -246,7 +240,11 @@ public partial class MainWindow : Window
         if (definition is { IsGlobal: false })
             await MarkModuleGuideSeenAsync(definition.Key);
         else
+        {
+            GuideCatalog.MarkSeen(_onboardingState, "global");
+            await _services.Repository.SaveOnboardingStateAsync(_onboardingState);
             await ShowModuleGuideIfNeededAsync(_currentPage);
+        }
     }
 
     private async void OnboardingGuide_CloseRequested(object? sender, EventArgs e) => await CloseGuideAsync();
@@ -262,9 +260,7 @@ public partial class MainWindow : Window
                 await OpenSettingsAsync();
                 if (!_services.DeepSeek.HasApiKey()) return;
             }
-            _onboardingState.Completed = true;
-            _onboardingState.GuideVersion = GuideCatalog.GlobalGuideVersion;
-            _onboardingState.CompletedAt = DateTimeOffset.Now;
+            GuideCatalog.MarkSeen(_onboardingState, "global");
             await _services.Repository.SaveOnboardingStateAsync(_onboardingState);
             OnboardingGuide.HideGuide();
             await ShowModuleGuideIfNeededAsync(_currentPage);

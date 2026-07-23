@@ -493,6 +493,12 @@ public sealed class LocalRepository
     public Task SaveAppSettingsAsync(AppSettings settings, CancellationToken cancellationToken = default) =>
         SaveSettingAsync("app_settings", settings, cancellationToken);
 
+    public async Task<LeadBulkAnalysisRunState?> GetLeadBulkAnalysisRunStateAsync(CancellationToken cancellationToken = default) =>
+        await GetSettingAsync<LeadBulkAnalysisRunState>("lead_bulk_analysis_run_state", cancellationToken);
+
+    public Task SaveLeadBulkAnalysisRunStateAsync(LeadBulkAnalysisRunState state, CancellationToken cancellationToken = default) =>
+        SaveSettingAsync("lead_bulk_analysis_run_state", state, cancellationToken);
+
     public async Task<OnboardingState> GetOnboardingStateAsync(CancellationToken cancellationToken = default) =>
         await GetSettingAsync<OnboardingState>("onboarding_state", cancellationToken) ?? new OnboardingState();
 
@@ -962,7 +968,7 @@ public sealed class LocalRepository
                 existingCommand.Parameters.AddWithValue("$id", conversation.Id);
                 if (Json.Deserialize<WhatsAppConversation>(await existingCommand.ExecuteScalarAsync(cancellationToken) as string) is { } existing &&
                     existing.LastReadAt is { } persistedReadAt &&
-                    (conversation.LastReadAt is null || conversation.LastReadAt < persistedReadAt))
+                    (conversation.LastReadAt is null || conversation.LastReadAt <= persistedReadAt))
                 {
                     // A history/contact sync may finish after the user opened the chat.
                     // Read cursors are monotonic: an older snapshot must never restore
@@ -1164,7 +1170,7 @@ public sealed class LocalRepository
         while (await reader.ReadAsync(cancellationToken))
         {
             var message = Json.Deserialize<WhatsAppMessage>(reader.GetString(0));
-            if (message is { IsRevoked: false }) count++;
+            if (message is { IsRevoked: false, IsStatusUpdate: false }) count++;
         }
         return count;
     }

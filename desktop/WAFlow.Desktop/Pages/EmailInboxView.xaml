@@ -16,7 +16,7 @@
             </WrapPanel>
         </Grid>
 
-        <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition Width="285"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="360"/></Grid.ColumnDefinitions>
+        <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition Width="285"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition x:Name="CustomerDrawerColumn" Width="360"/></Grid.ColumnDefinitions>
             <Border Style="{StaticResource Card}" Padding="0"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                 <StackPanel Margin="16,15,16,12"><TextBlock Text="邮件会话" Style="{StaticResource SectionTitle}"/><TextBox x:Name="SearchBox" Margin="0,10,0,0" TextChanged="SearchBox_TextChanged" ToolTip="搜索姓名、邮箱、主题或正文"/></StackPanel>
                 <ListBox x:Name="ConversationList" Grid.Row="1" BorderThickness="0" SelectionChanged="ConversationList_SelectionChanged">
@@ -44,8 +44,14 @@
                 </StackPanel></Border>
             </Grid></Border>
 
-            <Border Grid.Column="4" Style="{StaticResource Card}" Padding="0"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                <Border Padding="17,14" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1"><StackPanel><TextBlock Text="Customer Intelligence" FontWeight="SemiBold" FontSize="17"/><TextBlock x:Name="LinkStateText" Text="按邮箱自动匹配客户" Foreground="{DynamicResource Muted}" Margin="0,3,0,0"/></StackPanel></Border>
+            <Border x:Name="CustomerDrawerCollapsedRail" Grid.Column="4" Style="{StaticResource Card}" Padding="0" Visibility="Collapsed">
+                <Button Content="‹" Style="{StaticResource SecondaryButton}" Width="38" Height="48" Margin="3,14" VerticalAlignment="Top" Click="ToggleCustomerDrawer_Click" ToolTip="展开客户智能侧栏"/>
+            </Border>
+            <Border x:Name="CustomerDrawerBorder" Grid.Column="4" Style="{StaticResource Card}" Padding="0"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <Border Padding="17,14" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <StackPanel><TextBlock Text="Customer Intelligence" FontWeight="SemiBold" FontSize="17"/><TextBlock x:Name="LinkStateText" Text="按邮箱自动匹配客户" Foreground="{DynamicResource Muted}" Margin="0,3,0,0"/></StackPanel>
+                    <Button Grid.Column="1" Content="›" Style="{StaticResource SecondaryButton}" Width="38" Height="38" Padding="0" Click="ToggleCustomerDrawer_Click" ToolTip="收起客户智能侧栏"/>
+                </Grid></Border>
                 <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"><StackPanel Margin="17,15">
                     <Border Background="{DynamicResource PrimarySoft}" CornerRadius="12" Padding="12"><StackPanel><TextBlock Text="邮件与 CRM 已联动" Foreground="{DynamicResource Primary}" FontWeight="SemiBold"/><TextBlock Text="保存后，客户列表、商机智能、客户分析和邮件自动化任务都会读取这份资料。" Foreground="{DynamicResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,4,0,0"/></StackPanel></Border>
                     <TextBlock Text="姓名" Style="{StaticResource LabelText}" Margin="0,14,0,4"/><TextBox x:Name="NameBox"/>

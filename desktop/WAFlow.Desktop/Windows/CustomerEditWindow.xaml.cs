@@ -58,6 +58,7 @@ public partial class CustomerEditWindow : Window
 
         StageBox.ItemsSource = Enum.GetValues<LeadStage>().Select(stage => new StageOption(Labels.Stage(stage), stage)).ToList();
         StageBox.SelectedItem = ((IEnumerable<StageOption>)StageBox.ItemsSource).First(option => option.Value == lead.Stage);
+        StageLockCheck.IsChecked = lead.StageManuallyLocked;
     }
 
     private async void Window_Loaded(object sender, RoutedEventArgs e) => await LoadCustomerBrainAsync(refresh: true);
@@ -201,6 +202,10 @@ public partial class CustomerEditWindow : Window
             _lead.WhatsAppOptIn = OptInCheck.IsChecked == true;
             _lead.OptedOut = OptedOutCheck.IsChecked == true;
             if (StageBox.SelectedItem is StageOption stage) _lead.Stage = stage.Value;
+            var stageChangedByUser = _originalStage != _lead.Stage;
+            _lead.StageManuallyLocked = stageChangedByUser || StageLockCheck.IsChecked == true;
+            _lead.StageSource = _lead.StageManuallyLocked ? "user" : "ai";
+            _lead.StageManuallyUpdatedAt = stageChangedByUser ? DateTimeOffset.Now : _lead.StageManuallyUpdatedAt;
             _lead.CustomFields = _dimensions.ToDictionary(item => item.Header, item => item.Value ?? "", StringComparer.OrdinalIgnoreCase);
 
             if (!_lead.AiScoreApplied)

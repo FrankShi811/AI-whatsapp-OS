@@ -281,7 +281,12 @@ public sealed class DeepSeekService : IStructuredAiProvider
             target.ScoreBreakdown = analysis.Factors.ToDictionary(f => f.Key, f => f.Score);
             target.ScoreReasons = analysis.Factors.Select(f => f.Rationale).ToList();
             target.ScoreFactors = analysis.Factors; target.BehaviorSignals = analysis.BehaviorSignals;
-            target.Stage = analysis.Stage; target.AnalysisConfidence = analysis.Confidence; target.Evidence = analysis.Evidence;
+            if (!target.StageManuallyLocked)
+            {
+                target.Stage = analysis.Stage;
+                target.StageSource = "ai";
+            }
+            target.AnalysisConfidence = analysis.Confidence; target.Evidence = analysis.Evidence;
             target.PurchaseProbability = analysis.PurchaseProbability;
             target.ProfileSummary = analysis.ProfileSummary; target.CustomerSegment = analysis.CustomerSegment; target.NextAction = analysis.NextAction;
             target.RiskWarning = analysis.RiskWarning; target.Risks = analysis.Risks;

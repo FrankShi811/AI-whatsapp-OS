@@ -257,12 +257,29 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
             var version = assembly.GetName().Version?.ToString() ?? "1.0.0";
             var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WAFlow", "runtime", version);
             Directory.CreateDirectory(directory);
-            var destination = Path.Combine(directory, "WAFlow.WhatsApp.Bridge.exe");
-            if (File.Exists(destination) && new FileInfo(destination).Length == resource.Length) return destination;
-            var temporary = destination + $".{Environment.ProcessId}.tmp";
-            using (var output = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None)) resource.CopyTo(output);
-            try { File.Move(temporary, destination, true); }
-            catch when (File.Exists(destination) && new FileInfo(destination).Length == resource.Length) { File.Delete(temporary); }
+            var temporary = Path.Combine(directory, $"WAFlow.WhatsApp.Bridge.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
+            string hash;
+            using var sha256 = SHA256.Create();
+            using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var hashing = new CryptoStream(output, sha256, CryptoStreamMode.Write))
+            {
+                resource.CopyTo(hashing);
+                hashing.FlushFinalBlock();
+                hash = Convert.ToHexString(sha256.Hash!)[..16].ToLowerInvariant();
+            }
+
+            // The product version can stay unchanged while the embedded bridge changes during
+            // development or a hotfix. A content-addressed filename avoids replacing a bridge
+            // executable that is still in use by another AI Sales OS process.
+            var destination = Path.Combine(directory, $"WAFlow.WhatsApp.Bridge-{hash}.exe");
+            if (File.Exists(destination))
+            {
+                File.Delete(temporary);
+                return destination;
+            }
+
+            try { File.Move(temporary, destination); }
+            catch when (File.Exists(destination)) { File.Delete(temporary); }
             return destination;
         }
 

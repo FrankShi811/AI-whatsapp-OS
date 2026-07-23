@@ -759,6 +759,13 @@ async function closeSocket() {
   state.connection = 'disconnected'
 }
 
+async function resetSessionForQr() {
+  if (!state.sessionDir) return
+  await fs.rm(state.sessionDir, { recursive: true, force: true })
+  await fs.mkdir(state.sessionDir, { recursive: true })
+  state.existingSession = false
+}
+
 async function connect() {
   if (!state.sessionDir) throw new Error('bridge_not_initialized')
   await closeSocket()
@@ -896,11 +903,15 @@ async function connect() {
       return
     }
     if (update.connection !== 'close') return
-    state.connection = 'disconnected'
     const statusCode = update.lastDisconnect?.error?.output?.statusCode
       ?? update.lastDisconnect?.error?.statusCode
       ?? null
     const loggedOut = statusCode === DisconnectReason.loggedOut
+    state.connection = loggedOut ? 'logged_out' : 'disconnected'
+    if (loggedOut) {
+      state.socket = null
+      await resetSessionForQr()
+    }
     emit({
       type: 'event', event: 'connection', accountId: state.accountId,
       data: { state: loggedOut ? 'logged_out' : 'disconnected', statusCode, error: safeError(update.lastDisconnect?.error) }

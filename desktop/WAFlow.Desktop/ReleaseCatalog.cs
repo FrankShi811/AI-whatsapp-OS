@@ -13,6 +13,16 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("2.2.1", "2026-07-23", "AI 工作台稳定性与自动化恢复",
+        [
+            "重构深色主题为高对比海军蓝与石墨色体系，统一修复标题、卡片、表单、图表和弹窗在夜间模式下的可读性。",
+            "邮件 Inbox 的 Customer Intelligence 改为可收起抽屉；八个核心板块的新手引导按内容版本记录，程序升级不再重复展示未变化的教程。",
+            "AI 设置新增 DeepSeek、OpenAI、Gemini、xAI、OpenRouter、Groq、Together、Mistral、Qwen、Kimi、GLM、SiliconFlow 等 Provider 目录，支持默认 Base URL、API Key 验证、实时模型拉取和多配置保存。",
+            "人工修改商机阶段后自动锁定，AI 后续分析不会覆盖；批量分析队列支持中断续跑，只继续尚未完成的客户，并取消多余的二次确认。",
+            "修复 WhatsApp 登录失效后无法重新生成二维码、已读气泡跨页面恢复、动态消息重复进入聊天和动态误计未读等问题。",
+            "更新安装改为点击后直接安装并重启；WhatsApp Bridge 使用内容哈希版本并存，升级时不再覆盖正在运行的旧桥接程序。",
+            "本版本仅通过 GitHub Release 发布 Windows 中文安装包与 Velopack 自动更新资产；macOS 构建继续保持暂停。"
+        ], true),
         new("2.2.0", "2026-07-23", "Customer Brain 跨渠道客户大脑",
         [
             "恢复并继续使用 v2.1.0 已发布的正式 UI，撤销未获验收的 Aurora Nexus 视觉实验，不改变现有页面操作习惯。",
@@ -21,7 +31,7 @@ public static class ReleaseCatalog
             "商机智能和 WhatsApp 客户侧栏接入 Customer Brain 摘要、证据覆盖与下一步行动，同时保留原有评分、Inbox 和自动化业务逻辑。",
             "新增客户大脑数据库迁移、推荐历史、行为时间线、销售动作与 AI 学习反馈表，并完成数据库往返、幂等刷新和回归测试。",
             "本版本只发布 Windows 中文安装与 GitHub 自动更新资产；macOS 构建继续暂停，用户电脑上的正式程序不由开发流程覆盖。"
-        ], true),
+        ]),
         new("2.1.0", "2026-07-23", "Stitch 视觉方向落地与 Windows 专注发布",
         [
             "评估 Google Stitch 导出的 12 套 Auralis 方案，选定 refined alignment / transparency 方向并转译为 AI Sales OS 原生 WPF 视觉语言。",

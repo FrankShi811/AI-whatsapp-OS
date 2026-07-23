@@ -17,6 +17,7 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     private EmailConversation? _conversation;
     private Lead? _lead;
     private bool _loading;
+    private bool _customerDrawerExpanded = true;
 
     public event EventHandler? DataChanged;
 
@@ -26,6 +27,14 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         _services = services;
         AccountBox.ItemsSource = _accounts; ConversationList.ItemsSource = _conversations; MessageList.ItemsSource = _messages;
         StageBox.ItemsSource = Enum.GetValues<LeadStage>().Select(stage => new StageChoice(Labels.Stage(stage), stage)).ToList();
+    }
+
+    private void ToggleCustomerDrawer_Click(object sender, RoutedEventArgs e)
+    {
+        _customerDrawerExpanded = !_customerDrawerExpanded;
+        CustomerDrawerColumn.Width = new GridLength(_customerDrawerExpanded ? 360 : 44);
+        CustomerDrawerBorder.Visibility = _customerDrawerExpanded ? Visibility.Visible : Visibility.Collapsed;
+        CustomerDrawerCollapsedRail.Visibility = _customerDrawerExpanded ? Visibility.Collapsed : Visibility.Visible;
     }
 
     public async Task RefreshAsync()
@@ -122,7 +131,14 @@ public partial class EmailInboxView : UserControl, IRefreshableView
             _lead ??= new Lead { Name = NameBox.Text.Trim(), Email = CustomerEmailBox.Text.Trim(), Grade = "D", Score = 0, Stage = LeadStage.New };
             _lead.Name = NameBox.Text.Trim(); _lead.Email = CustomerEmailBox.Text.Trim(); _lead.Company = CompanyBox.Text.Trim();
             _lead.Country = CountryBox.Text.Trim(); _lead.Owner = OwnerBox.Text.Trim();
-            _lead.Stage = (StageBox.SelectedItem as StageChoice)?.Value ?? LeadStage.New;
+            var selectedStage = (StageBox.SelectedItem as StageChoice)?.Value ?? LeadStage.New;
+            if (selectedStage != _lead.Stage)
+            {
+                _lead.Stage = selectedStage;
+                _lead.StageManuallyLocked = true;
+                _lead.StageSource = "user";
+                _lead.StageManuallyUpdatedAt = DateTimeOffset.Now;
+            }
             _lead.Tags = TagsBox.Text.Split([',', '，'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.CurrentCultureIgnoreCase).ToList();
             _lead.LatestMessage = NotesBox.Text.Trim();
             await _services.Repository.UpsertLeadAsync(_lead);

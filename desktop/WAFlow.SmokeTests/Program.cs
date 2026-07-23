@@ -411,6 +411,15 @@ await repository.UpsertWhatsAppConversationAsync(new WhatsAppConversation
 });
 readConversation = (await repository.GetWhatsAppConversationsAsync()).Single(x => x.Id == conversation.Id);
 Check(readConversation.UnreadCount == 0 && readConversation.LastReadAt > olderReadCursor, "stale WhatsApp sync snapshots with older cursors cannot restore cleared unread badges");
+var currentReadCursor = readConversation.LastReadAt ?? throw new InvalidOperationException("WhatsApp read cursor disappeared.");
+await repository.UpsertWhatsAppConversationAsync(new WhatsAppConversation
+{
+    Id=conversation.Id, AccountId=conversation.AccountId, Phone=conversation.Phone, LeadId=conversation.LeadId,
+    DisplayName=conversation.DisplayName, LastMessage=conversation.LastMessage, LastMessageAt=conversation.LastMessageAt,
+    UnreadCount=7, LastReadAt=currentReadCursor
+});
+readConversation = (await repository.GetWhatsAppConversationsAsync()).Single(x => x.Id == conversation.Id);
+Check(readConversation.UnreadCount == 0 && readConversation.LastReadAt == currentReadCursor, "equal WhatsApp read cursors cannot replay a stale unread count");
 await using (var unreadBridge = new WhatsAppConnectionManager())
 {
     var unreadSync = new WhatsAppSyncService(repository, unreadBridge);
@@ -446,6 +455,26 @@ await repository.UpsertWhatsAppMessageAsync(statusUpdate);
 var storedStatusUpdate = (await repository.GetWhatsAppMessagesAsync(statusUpdate.ConversationId)).Single();
 Check(storedStatusUpdate.IsStatusUpdate && storedStatusUpdate.StatusExpiresAt is not null, "WhatsApp Status/update classification and 24-hour expiry persist");
 Check(!LeadConnectionStatus.ApplyFromMessage(statusLead, statusUpdate) && statusLead.LatestMessage == "normal customer reply", "WhatsApp Status/update never becomes CRM reply evidence");
+await using (var statusBridge = new WhatsAppConnectionManager())
+{
+    var statusSync = new WhatsAppSyncService(repository, statusBridge);
+    using var statusDocument = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        phone = "14155550101",
+        id = "wamid-status-live",
+        fromMe = false,
+        timestamp = DateTimeOffset.Now.ToString("O"),
+        source = "live",
+        kind = "text",
+        text = "https://example.com/status-live",
+        isStatusUpdate = true,
+        statusExpiresAt = DateTimeOffset.Now.AddHours(24).ToString("O")
+    }));
+    var ingestStatus = typeof(WhatsAppSyncService).GetMethod("IngestMessageAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    await (Task)ingestStatus.Invoke(statusSync, ["primary", statusDocument.RootElement.Clone()])!;
+}
+var statusConversation = (await repository.GetWhatsAppConversationsAsync()).Single(item => item.Id == statusUpdate.ConversationId);
+Check(statusConversation.UnreadCount == 0, "WhatsApp Status/update stays pinned without creating a chat unread badge");
 Check((await repository.GetLeadAsync("lead_james"))?.WhatsAppOptIn == true, "WhatsApp opt-in audit fields persisted");
 await repository.SynchronizeLeadConnectionsFromInboxAsync([whatsappLead]);
 var connectionLead = await repository.GetLeadAsync("lead_james");
@@ -669,9 +698,62 @@ await using (var receiptCampaigns = new CampaignAutomationService(deliveryReposi
     var receiptSummary = (await receiptCampaigns.GetExecutionHistoryAsync()).Single(item => item.Campaign.Id == receiptCampaign.Id);
     Check(failedReceipt.Status == CampaignRecipientStatus.Failed && receiptSummary.Sent == 0 && receiptSummary.Failed == 1, "asynchronous WhatsApp error receipts update campaign recipient and aggregate quality statistics");
 }
-await repository.SaveOnboardingStateAsync(new OnboardingState { Completed=true, GuideVersion=6, ModuleGuideVersion=1, SeenModuleGuides=["dashboard", "customers", "settings"], CompletedAt=DateTimeOffset.Now });
+await repository.SaveOnboardingStateAsync(new OnboardingState
+{
+    Completed=true,
+    GuideVersion=6,
+    ModuleGuideVersion=1,
+    SeenModuleGuides=["dashboard", "customers", "settings"],
+    SeenGuideVersions=new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["global"]=7,
+        ["dashboard"]=4,
+        ["settings"]=4
+    },
+    CompletedAt=DateTimeOffset.Now
+});
 var persistedOnboarding = await repository.GetOnboardingStateAsync();
-Check(persistedOnboarding is { Completed: true, GuideVersion: 6, ModuleGuideVersion: 1 } && persistedOnboarding.SeenModuleGuides.SequenceEqual(["dashboard", "customers", "settings"]), "global and per-module onboarding completion persists");
+Check(
+    persistedOnboarding is { Completed: true, GuideVersion: 6, ModuleGuideVersion: 1 }
+    && persistedOnboarding.SeenModuleGuides.SequenceEqual(["dashboard", "customers", "settings"])
+    && persistedOnboarding.SeenGuideVersions.GetValueOrDefault("global") == 7
+    && persistedOnboarding.SeenGuideVersions.GetValueOrDefault("dashboard") == 4
+    && persistedOnboarding.SeenGuideVersions.GetValueOrDefault("settings") == 4,
+    "global and per-module onboarding completion persists by content version");
+
+await repository.SaveAppSettingsAsync(new AppSettings
+{
+    DeepSeekBaseUrl="https://api.openai.com/v1",
+    DeepSeekModel="gpt-4.1-mini",
+    ActiveProviderId="openai",
+    ConfiguredAiProviders=
+    [
+        new AiProviderProfile
+        {
+            ProviderId="deepseek",
+            DisplayName="DeepSeek",
+            BaseUrl="https://api.deepseek.com",
+            Model="deepseek-chat",
+            AvailableModels=["deepseek-chat", "deepseek-reasoner"],
+            IsConfigured=true
+        },
+        new AiProviderProfile
+        {
+            ProviderId="openai",
+            DisplayName="OpenAI",
+            BaseUrl="https://api.openai.com/v1",
+            Model="gpt-4.1-mini",
+            AvailableModels=["gpt-4.1-mini"],
+            IsConfigured=true
+        }
+    ]
+});
+var persistedProviderSettings = await repository.GetAppSettingsAsync();
+Check(
+    persistedProviderSettings.ActiveProviderId == "openai"
+    && persistedProviderSettings.ConfiguredAiProviders.Count == 2
+    && persistedProviderSettings.ConfiguredAiProviders.Single(profile => profile.ProviderId == "openai").Model == "gpt-4.1-mini",
+    "multiple configured AI providers and their selected models persist");
 
 await using (var embeddedBridge = new WhatsAppConnectionManager())
 {
@@ -705,6 +787,29 @@ var failedAnalysisLead = await repository.GetLeadAsync("lead_ahmed");
 Check(failedAnalysisLead is { Grade: "D", Score: 0, AnalysisStatus: AnalysisStatus.RetryableFailed, AiScoreApplied: false }, "AI analysis failure remains D/0 and is retryable");
 Check(handler.Requests.All(x => x.Authorization == "Bearer sk-test-redacted") && handler.Requests.Count(x => x.Method == "GET" && x.Uri == "https://api.deepseek.com/models") == 1 && handler.Requests.Count(x => x.Method == "POST" && x.Uri == "https://api.deepseek.com/chat/completions") == 4, "AI model discovery and chat requests use the server-side key");
 Check(handler.RequestBodies.Any(body => body.Contains("dimension_weights") && body.Contains("recentMessages")), "AI request includes the V2 contract, imported CRM fields and WhatsApp history");
+
+var stageLockRoot = Path.Combine(root, "manual-stage-lock");
+var stageLockRepository = new LocalRepository(Path.Combine(stageLockRoot, "stage-lock.db"));
+await stageLockRepository.InitializeAsync();
+var manuallyStagedLead = new Lead
+{
+    Id="manual-stage-customer",
+    Name="Manual Stage Customer",
+    PhoneE164="+14155550333",
+    PhoneValid=true,
+    Stage=LeadStage.Waiting,
+    StageManuallyLocked=true,
+    StageSource="user",
+    StageManuallyUpdatedAt=DateTimeOffset.Now
+};
+await stageLockRepository.UpsertLeadAsync(manuallyStagedLead);
+await stageLockRepository.SaveAppSettingsAsync(new AppSettings { DeepSeekBaseUrl="https://api.deepseek.com", DeepSeekModel="deepseek-chat" });
+var stageLockHandler = new QueueHandler([Envelope(V2AnalysisJson("Please send a quotation for 500 pcs"))]);
+var stageLockProvider = new DeepSeekService(stageLockRepository, new FakeSecretStore("sk-stage-lock"), new HttpClient(stageLockHandler) { Timeout=TimeSpan.FromSeconds(5) });
+var stageLockedAnalysis = await stageLockProvider.AnalyzeLeadAsync(manuallyStagedLead);
+Check(
+    stageLockedAnalysis is { Stage: LeadStage.Waiting, StageManuallyLocked: true, StageSource: "user", Grade: "A", Score: 88, AnalysisStatus: AnalysisStatus.Succeeded },
+    "AI analysis updates intelligence but never overwrites a user-locked opportunity stage");
 
 var automationLead = new Lead { Id="reply-automation-lead", Name="Reply Buyer", PhoneE164="+8829990000123", PhoneValid=true };
 await repository.UpsertLeadAsync(automationLead);
@@ -747,6 +852,32 @@ await using (var bulkBridge = new WhatsAppConnectionManager())
     var bulkDashboard = await bulkRepository.GetDashboardAsync();
     Check(bulkResult is { Total: 2, Succeeded: 1, Failed: 1 } && bulkHandler.RequestBodies.Count == 3, "bulk lead analysis continues after one customer fails");
     Check(bulkDashboard.Grades["A"] == 1 && bulkDashboard.Grades["D"] == 1, "bulk AI results update Dashboard while failed customers remain D/0");
+}
+
+var bulkLeadIds = (await bulkRepository.GetLeadsAsync()).Select(lead => lead.Id).OrderBy(id => id, StringComparer.Ordinal).ToList();
+await bulkRepository.SaveLeadBulkAnalysisRunStateAsync(new LeadBulkAnalysisRunState
+{
+    ProviderId="deepseek",
+    Model="deepseek-chat",
+    AllLeadIds=bulkLeadIds,
+    PendingLeadIds=[bulkLeadIds[1]],
+    Succeeded=1,
+    Failed=0,
+    IsComplete=false
+});
+var resumedBulkHandler = new QueueHandler([Envelope(V2AnalysisJson("Please confirm the remaining order"))]);
+var resumedBulkProvider = new DeepSeekService(bulkRepository, new FakeSecretStore("sk-bulk-resume"), new HttpClient(resumedBulkHandler) { Timeout=TimeSpan.FromSeconds(5) });
+await using (var resumedBulkBridge = new WhatsAppConnectionManager())
+{
+    var resumedBulkSync = new WhatsAppSyncService(bulkRepository, resumedBulkBridge);
+    await using var resumedBulkAutomation = new LeadIntelligenceAutomationService(bulkRepository, resumedBulkProvider, resumedBulkSync);
+    var resumedResult = await resumedBulkAutomation.AnalyzeAllLeadsAsync();
+    var resumedState = await bulkRepository.GetLeadBulkAnalysisRunStateAsync();
+    Check(
+        resumedResult is { Total: 2, Succeeded: 2, Failed: 0 }
+        && resumedBulkHandler.RequestBodies.Count == 1
+        && resumedState is { IsComplete: true, PendingLeadIds.Count: 0 },
+        "interrupted bulk analysis resumes only the unfinished customers without replaying completed AI requests");
 }
 
 var reportRoot = Path.Combine(root, "customer-intelligence-report");

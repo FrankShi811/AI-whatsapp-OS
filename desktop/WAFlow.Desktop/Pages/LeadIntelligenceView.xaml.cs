@@ -119,15 +119,6 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
             MessageBox.Show("请先在“API 对接”中配置 API Key 并选择模型。", "无法开始批量分析", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        var settings = await _services.Repository.GetAppSettingsAsync();
-        var confirmation = MessageBox.Show(
-            $"将使用 {settings.DeepSeekModel} 对全部 {allLeads.Count} 位客户逐一进行 AI 分析或重试。\n\n" +
-            $"预计产生 {allLeads.Count} 次 AI 请求；每条结果独立保存，失败客户保持 D / 0 并可再次重试。是否继续？",
-            "确认批量分析全部客户",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Question);
-        if (confirmation != MessageBoxResult.Yes) return;
-
         _bulkCancellation = new CancellationTokenSource();
         _lastBulkProgress = null;
         BulkAnalyzeButton.IsEnabled = false;

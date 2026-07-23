@@ -261,7 +261,13 @@ public sealed class ConversationAssistantService
                 break;
             case "currency": lead.Currency = value.ToUpperInvariant(); break;
             case "preferred_language": lead.PreferredLanguage = value; break;
-            case "stage": lead.Stage = StageParser.Parse(value); break;
+            case "stage":
+                if (!lead.StageManuallyLocked)
+                {
+                    lead.Stage = StageParser.Parse(value);
+                    lead.StageSource = "ai";
+                }
+                break;
             case "tags":
                 lead.Tags = lead.Tags.Concat(value.Split([',', '，', ';', '；', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                     .Distinct(StringComparer.CurrentCultureIgnoreCase).ToList();

@@ -77,6 +77,9 @@ public sealed class Lead
     public Dictionary<string, string> CustomFields { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public string Owner { get; set; } = "";
     public LeadStage Stage { get; set; } = LeadStage.New;
+    public bool StageManuallyLocked { get; set; }
+    public string StageSource { get; set; } = "system";
+    public DateTimeOffset? StageManuallyUpdatedAt { get; set; }
     public int Score { get; set; }
     public string Grade { get; set; } = "D";
     public int AnalysisContractVersion { get; set; }
@@ -480,10 +483,37 @@ public sealed class AppSettings
 {
     public string DeepSeekBaseUrl { get; set; } = "https://api.deepseek.com";
     public string DeepSeekModel { get; set; } = "deepseek-chat";
+    public string ActiveProviderId { get; set; } = "deepseek";
+    public List<AiProviderProfile> ConfiguredAiProviders { get; set; } = [];
     public string ThemeMode { get; set; } = "System";
     public List<string> AvailableModels { get; set; } = [];
     public string ModelsBaseUrl { get; set; } = "";
     public DateTimeOffset? ModelsFetchedAt { get; set; }
+}
+
+public sealed class AiProviderProfile
+{
+    public string ProviderId { get; set; } = "deepseek";
+    public string DisplayName { get; set; } = "DeepSeek";
+    public string BaseUrl { get; set; } = "https://api.deepseek.com";
+    public string Model { get; set; } = "";
+    public List<string> AvailableModels { get; set; } = [];
+    public DateTimeOffset? ModelsFetchedAt { get; set; }
+    public bool IsConfigured { get; set; }
+}
+
+public sealed class LeadBulkAnalysisRunState
+{
+    public string RunId { get; set; } = Guid.NewGuid().ToString("N");
+    public string ProviderId { get; set; } = "";
+    public string Model { get; set; } = "";
+    public List<string> AllLeadIds { get; set; } = [];
+    public List<string> PendingLeadIds { get; set; } = [];
+    public int Succeeded { get; set; }
+    public int Failed { get; set; }
+    public bool IsComplete { get; set; }
+    public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.Now;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
 }
 
 public sealed class OnboardingState
@@ -493,6 +523,7 @@ public sealed class OnboardingState
     public DateTimeOffset? CompletedAt { get; set; }
     public int ModuleGuideVersion { get; set; }
     public List<string> SeenModuleGuides { get; set; } = [];
+    public Dictionary<string, int> SeenGuideVersions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 public static class Labels

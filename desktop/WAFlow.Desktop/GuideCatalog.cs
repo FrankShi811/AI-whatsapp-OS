@@ -1,3 +1,5 @@
+using WAFlow.Core.Domain;
+
 namespace WAFlow.Desktop;
 
 internal sealed record GuideDefinition(
@@ -22,6 +24,62 @@ internal static class GuideCatalog
     public const int GlobalGuideVersion = 7;
     public const int ModuleGuideVersion = 4;
     private static readonly string[] RequiredModuleKeys = ["dashboard", "intelligence", "customers", "inbox", "email", "broadcast", "analytics", "settings"];
+    private static readonly IReadOnlyDictionary<string, int> ContentVersions =
+        new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["global"] = GlobalGuideVersion,
+            ["dashboard"] = ModuleGuideVersion,
+            ["intelligence"] = ModuleGuideVersion + 1,
+            ["customers"] = ModuleGuideVersion + 1,
+            ["inbox"] = ModuleGuideVersion + 1,
+            ["email"] = ModuleGuideVersion + 1,
+            ["broadcast"] = ModuleGuideVersion,
+            ["analytics"] = ModuleGuideVersion,
+            ["settings"] = ModuleGuideVersion + 1
+        };
+
+    public static int VersionFor(string key) => ContentVersions.TryGetValue(key, out var version) ? version : 1;
+
+    public static bool MigrateLegacyState(OnboardingState state)
+    {
+        state.SeenGuideVersions ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var changed = false;
+        if (state.Completed && !state.SeenGuideVersions.ContainsKey("global"))
+        {
+            state.SeenGuideVersions["global"] = Math.Max(1, state.GuideVersion);
+            changed = true;
+        }
+        foreach (var key in state.SeenModuleGuides ?? [])
+        {
+            if (state.SeenGuideVersions.ContainsKey(key)) continue;
+            state.SeenGuideVersions[key] = Math.Max(1, state.ModuleGuideVersion);
+            changed = true;
+        }
+        return changed;
+    }
+
+    public static bool IsSeen(OnboardingState state, string key)
+    {
+        MigrateLegacyState(state);
+        return state.SeenGuideVersions.TryGetValue(key, out var version) && version >= VersionFor(key);
+    }
+
+    public static void MarkSeen(OnboardingState state, string key)
+    {
+        MigrateLegacyState(state);
+        state.SeenGuideVersions[key] = VersionFor(key);
+        if (key.Equals("global", StringComparison.OrdinalIgnoreCase))
+        {
+            state.Completed = true;
+            state.GuideVersion = GlobalGuideVersion;
+            state.CompletedAt ??= DateTimeOffset.Now;
+            return;
+        }
+        state.ModuleGuideVersion = Math.Max(state.ModuleGuideVersion, ModuleGuideVersion);
+        state.SeenModuleGuides ??= [];
+        if (!state.SeenModuleGuides.Any(item => item.Equals(key, StringComparison.OrdinalIgnoreCase)))
+            state.SeenModuleGuides.Add(key);
+    }
 
     public static GuideDefinition Global { get; } = new(
         "global",

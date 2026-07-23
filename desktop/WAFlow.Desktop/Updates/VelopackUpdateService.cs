@@ -147,7 +147,7 @@ public sealed class VelopackUpdateService : IApplicationUpdateService
 
         if (_manager is null || _downloadedRelease is null)
             throw new InvalidOperationException("更新尚未下载完成。");
-        _manager.WaitExitThenApplyUpdates(_downloadedRelease, silent: false, restart: true, restartArgs: null);
+        _manager.WaitExitThenApplyUpdates(_downloadedRelease, silent: true, restart: true, restartArgs: null);
     }
 
     private async Task CheckPortableReleaseAsync(CancellationToken cancellationToken)

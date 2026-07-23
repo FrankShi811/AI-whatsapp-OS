@@ -370,7 +370,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             var connection = e.Data.TryGetProperty("state", out var state) ? state.GetString() ?? "disconnected" : "disconnected";
             _connected = connection == "connected";
             _existingSession = Bool(e.Data, "existingSession");
-            SetConnectionText(connection switch { "connected" => "已连接", "connecting" => "连接中", "logged_out" => "已退出", _ => "已断开" }, _connected);
+            SetConnectionText(connection switch { "connected" => "已连接", "connecting" => "连接中", "logged_out" => "登录已失效", _ => "已断开" }, _connected);
             DisconnectButton.IsEnabled = _connected || connection == "connecting";
             LogoutButton.IsEnabled = _connected;
             UpdateComposerState();
@@ -382,6 +382,12 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 _ = SaveLinkedAccountAsync(e);
                 SyncStatusText.Text = _existingSession ? "正在获取最新变更；旧历史缺失时需重新扫码一次" : "正在接收首次历史与联系人…";
                 if (_existingSession && _automaticSyncRequested.Add(CurrentAccountId)) _ = StartSyncAsync(showError: false);
+            }
+            else if (connection == "logged_out")
+            {
+                QrHintText.Text = "登录凭据已失效。点击“连接 / 显示二维码”将创建新二维码，请重新扫码登录。";
+                QrPanel.Visibility = Visibility.Visible;
+                MessageList.Visibility = Visibility.Collapsed;
             }
             return;
         }
@@ -423,7 +429,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         var preview = MessagePreview(text, kind, fileName);
         conversation.LastMessage = isStatusUpdate ? $"[最新动态] {preview}" : preview;
         conversation.LastAt = timestamp;
-        if (!fromMe && ConversationList.SelectedItem != conversation) conversation.Unread++;
+        if (!fromMe && !isStatusUpdate && ConversationList.SelectedItem != conversation) conversation.Unread++;
         else if (!fromMe) _ = PersistConversationReadAfterSyncAsync(conversation);
         ReorderConversations(conversation);
         if (ConversationList.SelectedItem == conversation)
@@ -487,7 +493,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         foreach (var message in persistedMessages)
             if (!conversation.Messages.Any(x => x.Id == message.ProviderMessageId))
                 conversation.Messages.Add(new MessageItem(message.ProviderMessageId, message.Body, message.Timestamp, message.Direction == WhatsAppMessageDirection.Outgoing, message.Kind, message.FileName, message.MimeType, message.MediaPath, message.MediaDownloadError, message.Status, message.StatusUpdatedAt, message.DeliveredAt, message.ReadAt, message.FailureReason, message.QuotedMessageId, message.QuotedText, message.QuotedFromMe, message.IsRevoked, message.RevokedAt, message.IsStatusUpdate, message.StatusExpiresAt));
-        MessageList.ItemsSource = conversation.Messages;
+        MessageList.ItemsSource = VisibleMessages(conversation);
         if (_connected) { QrPanel.Visibility = Visibility.Collapsed; MessageList.Visibility = Visibility.Visible; }
         SaveLeadButton.IsEnabled = !string.IsNullOrWhiteSpace(conversation.Phone);
         await LoadLeadAsync(conversation);
@@ -522,7 +528,14 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         {
             var lead = _currentLead ?? new Lead { PhoneE164 = "+" + conversation.Phone, PhoneValid = true, Source = "WhatsApp QR session" };
             lead.Name = NameBox.Text.Trim(); lead.Company = CompanyBox.Text.Trim(); lead.Owner = OwnerBox.Text.Trim(); lead.LatestMessage = NotesBox.Text.Trim();
-            lead.Stage = (StageCombo.SelectedItem as StageOption)?.Value ?? LeadStage.New;
+            var selectedStage = (StageCombo.SelectedItem as StageOption)?.Value ?? LeadStage.New;
+            if (selectedStage != lead.Stage)
+            {
+                lead.Stage = selectedStage;
+                lead.StageManuallyLocked = true;
+                lead.StageSource = "user";
+                lead.StageManuallyUpdatedAt = DateTimeOffset.Now;
+            }
             lead.Tags = TagsBox.Text.Split([',','，',';','；','|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.CurrentCultureIgnoreCase).ToList();
             var wasOptedIn = lead.WhatsAppOptIn;
             lead.WhatsAppOptIn = OptInCheck.IsChecked == true;
@@ -1019,9 +1032,13 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
     private void ScrollMessages(ConversationItem conversation)
     {
-        MessageList.ItemsSource = conversation.Messages;
-        if (conversation.Messages.LastOrDefault() is { } last) MessageList.ScrollIntoView(last);
+        var visibleMessages = VisibleMessages(conversation);
+        MessageList.ItemsSource = visibleMessages;
+        if (visibleMessages.LastOrDefault() is { } last) MessageList.ScrollIntoView(last);
     }
+
+    private static List<MessageItem> VisibleMessages(ConversationItem conversation) =>
+        conversation.Messages.Where(message => !message.IsStatusUpdate).ToList();
 
     private void UpdateStatusUpdateBanner(ConversationItem conversation)
     {
@@ -1081,7 +1098,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private void UpdateConnectionControls()
     {
         var state = _services.WhatsApp.ConnectionStateFor(CurrentAccountId);
-        SetConnectionText(state switch { "connected" => "已连接", "connecting" => "连接中", "logged_out" => "已退出", _ => "未连接" }, state == "connected");
+        SetConnectionText(state switch { "connected" => "已连接", "connecting" => "连接中", "logged_out" => "登录已失效", _ => "未连接" }, state == "connected");
         DisconnectButton.IsEnabled = state is "connected" or "connecting"; LogoutButton.IsEnabled = state == "connected";
         SyncButton.IsEnabled = state == "connected";
         CreateGroupButton.IsEnabled = state == "connected";

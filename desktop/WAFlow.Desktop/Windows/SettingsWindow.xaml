@@ -19,11 +19,14 @@
             <StackPanel Margin="28,22,28,28">
                 <Border Style="{StaticResource AiCard}">
                     <StackPanel>
-                        <Grid><StackPanel><TextBlock Text="AI Provider" Style="{StaticResource SectionTitle}"/><TextBlock Text="DeepSeek / OpenAI 兼容接口" Style="{StaticResource LabelText}" Margin="0,3,0,0"/></StackPanel><Border HorizontalAlignment="Right" Background="{DynamicResource SuccessSoft}" CornerRadius="10" Padding="9,5"><TextBlock x:Name="ApiStatusText" Text="未配置" Foreground="{DynamicResource Success}" FontSize="10.5" FontWeight="SemiBold"/></Border></Grid>
+                        <Grid><StackPanel><TextBlock Text="AI Provider" Style="{StaticResource SectionTitle}"/><TextBlock Text="选择主流 Provider，自动带入默认 Base URL，再拉取该 Key 可用的真实模型。" Style="{StaticResource LabelText}" Margin="0,3,0,0"/></StackPanel><Border HorizontalAlignment="Right" Background="{DynamicResource SuccessSoft}" CornerRadius="10" Padding="9,5"><TextBlock x:Name="ApiStatusText" Text="未配置" Foreground="{DynamicResource Success}" FontSize="10.5" FontWeight="SemiBold"/></Border></Grid>
                         <Border Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource AiSoft}" BorderThickness="1" CornerRadius="11" Padding="15" Margin="0,16,0,0">
                             <StackPanel>
+                                <TextBlock Text="AI 服务商" Style="{StaticResource LabelText}"/>
+                                <ComboBox x:Name="AiProviderBox" DisplayMemberPath="DisplayName" Margin="0,5,0,0" SelectionChanged="AiProviderBox_SelectionChanged"/>
+                                <TextBlock x:Name="ProviderDescriptionText" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,5,0,10" TextWrapping="Wrap"/>
                                 <TextBlock Text="API Key" Style="{StaticResource LabelText}"/><PasswordBox x:Name="ApiKeyBox" Margin="0,5,0,0" PasswordChanged="ProviderInput_Changed"/>
-                                <TextBlock Text="留空会保留现有 Key；凭据只写入 Windows 凭据管理器。" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,5,0,0"/>
+                                <TextBlock Text="留空会保留当前服务商已保存的 Key；每个 Provider 独立写入 Windows 凭据管理器。" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,5,0,0"/>
                                 <Grid Margin="0,13,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                     <StackPanel Margin="0,0,8,0"><TextBlock Text="Base URL" Style="{StaticResource LabelText}"/><TextBox x:Name="BaseUrlBox" Text="https://api.deepseek.com" Margin="0,5,0,0" TextChanged="ProviderInput_Changed"/></StackPanel>
                                     <StackPanel Grid.Column="1" Margin="8,0,0,0"><TextBlock Text="工作模型" Style="{StaticResource LabelText}"/><Grid Margin="0,5,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><ComboBox x:Name="ModelBox" IsEditable="False" IsTextSearchEnabled="True" MinWidth="190" ToolTip="从 Provider 的 /models 接口自动拉取"/><Button x:Name="ReloadModelsButton" Grid.Column="1" Content="↻ 拉取" Style="{StaticResource SecondaryButton}" Padding="11,7" Margin="8,0,0,0" Click="ReloadModels_Click"/></Grid></StackPanel>
@@ -32,6 +35,27 @@
                             </StackPanel>
                         </Border>
                         <Border Background="{DynamicResource WarningSoft}" CornerRadius="9" Padding="11" Margin="0,12,0,0"><TextBlock Text="AI 分析只在结构校验成功后更新商机分数与 Dashboard；失败客户继续保持 D / 0 并进入重试。" Foreground="{DynamicResource Warning}" FontSize="9.5" TextWrapping="Wrap"/></Border>
+                        <Border Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="10" Padding="12" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Text="已配置的 AI 服务" Style="{StaticResource LabelText}"/>
+                                <ItemsControl x:Name="ConfiguredProvidersItems" Margin="0,8,0,0">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,3">
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Ellipse Width="7" Height="7" Fill="{DynamicResource Success}" Margin="0,0,8,0"/>
+                                                    <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
+                                                    <TextBlock Text="{Binding ModelLabel}" Foreground="{DynamicResource Muted}" Margin="8,0,0,0"/>
+                                                </StackPanel>
+                                                <TextBlock Grid.Column="1" Text="{Binding StatusLabel}" Foreground="{DynamicResource Success}" FontSize="9.5"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock x:Name="NoConfiguredProvidersText" Text="尚未配置 Provider。填写并验证 API Key 后会显示在这里。" Foreground="{DynamicResource Muted}" FontSize="9.5"/>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </Border>
 
