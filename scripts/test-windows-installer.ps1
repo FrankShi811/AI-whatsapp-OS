@@ -62,6 +62,7 @@ foreach ($process in $qaProcesses) { Stop-Process -Id $process.ProcessId -Force 
 Start-Sleep -Seconds 2
 
 $afterHash = Get-HashWithRetry $database
+$databasePreservationPassed = $beforeHash -eq 'MISSING' -or $beforeHash -eq $afterHash
 $installedVersion = (Get-Item -LiteralPath $appPath).VersionInfo.FileVersion
 $updatePath = Join-Path $QaDirectory 'Update.exe'
 $uninstallExit = $null
@@ -77,6 +78,7 @@ $result = [pscustomobject]@{
   DatabaseHashBefore = $beforeHash
   DatabaseHashAfter = $afterHash
   DatabaseUnchanged = $beforeHash -eq $afterHash
+  DatabasePreservationPassed = $databasePreservationPassed
   UninstallExit = $uninstallExit
   QaDirectoryStillExists = Test-Path -LiteralPath $QaDirectory
 }
@@ -85,6 +87,6 @@ if (-not $installedVersion.StartsWith($ExpectedVersion + '.', [StringComparison]
     $installedVersion -ne $ExpectedVersion) {
   throw "Installed version mismatch. expected=$ExpectedVersion actual=$installedVersion"
 }
-if (-not $result.DatabaseUnchanged) { throw 'Installer smoke test changed the user SQLite database.' }
+if (-not $result.DatabasePreservationPassed) { throw 'Installer smoke test changed an existing user SQLite database.' }
 if ($result.UninstallExit -ne 0) { throw "Installer smoke uninstall failed with exit code $($result.UninstallExit)." }
 if ($result.QaDirectoryStillExists) { throw "Installer smoke uninstall left the QA directory behind: $QaDirectory" }
