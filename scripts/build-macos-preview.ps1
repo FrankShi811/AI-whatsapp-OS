@@ -86,7 +86,6 @@ foreach ($target in $targets) {
     $portable = Get-ChildItem -LiteralPath $velopackOutput -File -Filter '*.zip' | Sort-Object Length -Descending | Select-Object -First 1
     $pkg = Get-ChildItem -LiteralPath $velopackOutput -File -Filter '*.pkg' | Sort-Object Length -Descending | Select-Object -First 1
     if (-not $portable) { throw "Velopack macOS $($target.Rid) portable zip was not created." }
-    Copy-Item -LiteralPath $portable.FullName -Destination $output -Force
     if ($pkg) {
       Copy-Item -LiteralPath $pkg.FullName -Destination $friendlyPkg -Force
       $artifacts += Get-Item -LiteralPath $friendlyPkg
