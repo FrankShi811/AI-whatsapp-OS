@@ -35,6 +35,14 @@ public enum SalesActionStatus
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
+public enum LearningObservationStatus
+{
+    Pending,
+    Observed,
+    Expired
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum CustomerBrainRunStatus
 {
     Queued,
@@ -121,6 +129,7 @@ public sealed class CustomerIntelligenceProfile
     public List<string> OpportunitySignals { get; set; } = [];
     public List<string> Risks { get; set; } = [];
     public string NextBestAction { get; set; } = "";
+    public string SuggestedTalkTrack { get; set; } = "";
     public double Confidence { get; set; }
     public int PurchaseProbability { get; set; }
     public LeadStage SuggestedStage { get; set; } = LeadStage.New;
@@ -203,6 +212,7 @@ public sealed class AiRecommendationRecord
     public string Title { get; set; } = "";
     public string Action { get; set; } = "";
     public string Rationale { get; set; } = "";
+    public string SuggestedTalkTrack { get; set; } = "";
     public List<string> Evidence { get; set; } = [];
     public double Confidence { get; set; }
     public AiRecommendationStatus Status { get; set; } = AiRecommendationStatus.Proposed;
@@ -236,6 +246,12 @@ public sealed class SalesActionRecord
     public string Owner { get; set; } = "";
     public SalesActionStatus Status { get; set; } = SalesActionStatus.Planned;
     public DateTimeOffset? DueAt { get; set; }
+    public LeadStage? BaselineStage { get; set; }
+    public DateTimeOffset? BaselineCapturedAt { get; set; }
+    public DateTimeOffset? ExecutedAt { get; set; }
+    public string ExecutionChannel { get; set; } = "";
+    public string ExecutedContent { get; set; } = "";
+    public string ExecutedSourceId { get; set; } = "";
     public DateTimeOffset? CompletedAt { get; set; }
     public string Outcome { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
@@ -252,7 +268,40 @@ public sealed class AiLearningFeedback
     public bool Helpful { get; set; }
     public string FeedbackSource { get; set; } = "human";
     public string Note { get; set; } = "";
+    public LearningObservationStatus ObservationStatus { get; set; } = LearningObservationStatus.Pending;
+    public string Channel { get; set; } = "";
+    public DateTimeOffset? ActionAt { get; set; }
+    public LeadStage? BaselineStage { get; set; }
+    public LeadStage? ObservedStage { get; set; }
+    public bool Replied { get; set; }
+    public DateTimeOffset? FirstReplyAt { get; set; }
+    public double? ReplyLatencyMinutes { get; set; }
+    public bool StageProgressed { get; set; }
+    public int StageDelta { get; set; }
+    public bool Converted { get; set; }
+    public bool RepeatPurchase { get; set; }
+    public string TalkTrack { get; set; } = "";
+    public string SourceMessageId { get; set; } = "";
+    public DateTimeOffset? ObservationWindowEndsAt { get; set; }
+    public DateTimeOffset ObservedAt { get; set; } = DateTimeOffset.Now;
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
+}
+
+public sealed class TalkTrackPerformance
+{
+    public string Key { get; set; } = "";
+    public string Channel { get; set; } = "";
+    public string TalkTrack { get; set; } = "";
+    public int SentCount { get; set; }
+    public int Replies { get; set; }
+    public int StageProgressions { get; set; }
+    public int Deals { get; set; }
+    public double? AverageReplyMinutes { get; set; }
+
+    [JsonIgnore] public double ResponseRate => SentCount == 0 ? 0 : Math.Round(100d * Replies / SentCount, 1);
+    [JsonIgnore] public double ProgressionRate => SentCount == 0 ? 0 : Math.Round(100d * StageProgressions / SentCount, 1);
+    [JsonIgnore] public double DealRate => SentCount == 0 ? 0 : Math.Round(100d * Deals / SentCount, 1);
+    [JsonIgnore] public bool HasReliableSample => SentCount >= 3;
 }
 
 public sealed class FollowUpTask
@@ -330,9 +379,22 @@ public sealed class PersonalLearningSummary
     public int Dismissed { get; set; }
     public int FeedbackCount { get; set; }
     public int HelpfulFeedback { get; set; }
+    public int Executed { get; set; }
+    public int AwaitingOutcome { get; set; }
+    public int ObservedActions { get; set; }
+    public int Replies { get; set; }
+    public int StageProgressions { get; set; }
+    public int Deals { get; set; }
+    public int RepeatPurchases { get; set; }
+    public double? AverageReplyMinutes { get; set; }
+    public List<TalkTrackPerformance> TopTalkTracks { get; set; } = [];
+    public string StrategyReview { get; set; } = "";
 
     [JsonIgnore] public double CompletionRate => Accepted == 0 ? 0 : Math.Round(100d * Completed / Accepted, 1);
     [JsonIgnore] public double HelpfulRate => FeedbackCount == 0 ? 0 : Math.Round(100d * HelpfulFeedback / FeedbackCount, 1);
+    [JsonIgnore] public double ResponseRate => Executed == 0 ? 0 : Math.Round(100d * Replies / Executed, 1);
+    [JsonIgnore] public double ProgressionRate => Executed == 0 ? 0 : Math.Round(100d * StageProgressions / Executed, 1);
+    [JsonIgnore] public double DealRate => Executed == 0 ? 0 : Math.Round(100d * Deals / Executed, 1);
 }
 
 public sealed class TodayBriefSnapshot

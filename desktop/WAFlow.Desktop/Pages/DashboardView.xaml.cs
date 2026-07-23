@@ -42,8 +42,12 @@ public partial class DashboardView : UserControl, IRefreshableView
         LearningHelpfulText.Text = brief.Learning.FeedbackCount == 0
             ? "有效反馈 —"
             : $"有效反馈 {brief.Learning.HelpfulRate:0.#}%";
+        LearningOutcomeText.Text = brief.Learning.Executed == 0
+            ? "真实结果尚未形成"
+            : $"真实回复 {brief.Learning.ResponseRate:0.#}% · 阶段推进 {brief.Learning.ProgressionRate:0.#}% · 成交归因 {brief.Learning.DealRate:0.#}%";
         LearningDetailText.Text =
-            $"已接受 {brief.Learning.Accepted} · 已完成 {brief.Learning.Completed} · 失败 {brief.Learning.Failed} · 忽略 {brief.Learning.Dismissed}";
+            $"已接受 {brief.Learning.Accepted} · 已执行 {brief.Learning.Executed} · 观察中 {brief.Learning.AwaitingOutcome} · 复购 {brief.Learning.RepeatPurchases}";
+        LearningStrategyText.Text = brief.Learning.StrategyReview;
         return;
         void SetGrade(string grade, TextBlock text, Border bar) { var count = data.Grades.GetValueOrDefault(grade); text.Text = count.ToString(); bar.Height = 20 + (data.TotalLeads == 0 ? 0 : 100d * count / data.TotalLeads); }
     }

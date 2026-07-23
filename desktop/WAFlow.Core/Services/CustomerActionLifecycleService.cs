@@ -36,6 +36,7 @@ public sealed class CustomerActionLifecycleService
         var state = await LoadStateAsync(customerId, recommendationId, cancellationToken);
         var now = DateTimeOffset.Now;
         var dueAt = now.Add(delay <= TimeSpan.Zero ? TimeSpan.FromHours(24) : delay);
+        CaptureBaseline(state.Action, state.Lead, now);
 
         state.Recommendation.Status = AiRecommendationStatus.Accepted;
         state.Recommendation.UpdatedAt = now;
@@ -68,6 +69,59 @@ public sealed class CustomerActionLifecycleService
         CancellationToken cancellationToken = default) =>
         SaveEventAsync(customerId, sourceId, "ai_assistant_action_executed", title, detail, cancellationToken);
 
+    public async Task<bool> RecordMessageExecutionAsync(
+        string customerId,
+        string channel,
+        string content,
+        string sourceId,
+        DateTimeOffset occurredAt,
+        CancellationToken cancellationToken = default)
+    {
+        var recommendation = (await _repository.GetAiRecommendationHistoryAsync(customerId, cancellationToken))
+            .Where(item => item.Status is AiRecommendationStatus.Accepted or AiRecommendationStatus.InProgress)
+            .OrderByDescending(item => item.UpdatedAt)
+            .FirstOrDefault();
+        if (recommendation is null)
+        {
+            await SaveEventAsync(
+                customerId,
+                sourceId,
+                "ai_assistant_action_executed",
+                "AI 会话助理回复已发送",
+                $"{channel} 已接受消息，但当前没有已接受或执行中的 Customer Brain 建议。",
+                cancellationToken);
+            return false;
+        }
+
+        var state = await LoadStateAsync(customerId, recommendation.Id, cancellationToken);
+        CaptureBaseline(state.Action, state.Lead, occurredAt);
+
+        state.Recommendation.Status = AiRecommendationStatus.InProgress;
+        state.Recommendation.UpdatedAt = occurredAt;
+        await _repository.SaveAiRecommendationAsync(state.Recommendation, cancellationToken);
+
+        state.Task.Status = FollowUpTaskStatus.InProgress;
+        state.Task.UpdatedAt = occurredAt;
+        await _repository.UpsertFollowUpTaskAsync(state.Task, cancellationToken);
+
+        state.Action.Status = SalesActionStatus.InProgress;
+        state.Action.ExecutedAt = occurredAt;
+        state.Action.ExecutionChannel = channel.Trim();
+        state.Action.ExecutedContent = content.Trim();
+        state.Action.ExecutedSourceId = sourceId.Trim();
+        state.Action.UpdatedAt = occurredAt;
+        await _repository.SaveSalesActionAsync(state.Action, cancellationToken);
+
+        await SaveEventAsync(
+            customerId,
+            sourceId,
+            "sales_action_message_executed",
+            "Customer Brain 建议已执行",
+            $"{channel} 消息已发送并关联建议：{recommendation.Action}",
+            cancellationToken);
+        return true;
+    }
+
     private async Task TransitionAsync(
         string customerId,
         string recommendationId,
@@ -80,6 +134,11 @@ public sealed class CustomerActionLifecycleService
     {
         var state = await LoadStateAsync(customerId, recommendationId, cancellationToken);
         var now = DateTimeOffset.Now;
+        if (recommendationStatus is AiRecommendationStatus.Accepted
+            or AiRecommendationStatus.InProgress
+            or AiRecommendationStatus.Completed
+            or AiRecommendationStatus.Failed)
+            CaptureBaseline(state.Action, state.Lead, now);
 
         state.Recommendation.Status = recommendationStatus;
         state.Recommendation.UpdatedAt = now;
@@ -110,6 +169,14 @@ public sealed class CustomerActionLifecycleService
             _ => SalesActionStatus.Planned
         };
         state.Action.Outcome = outcome;
+        if (state.Action.ExecutedAt is null
+            && (recommendationStatus is AiRecommendationStatus.Completed or AiRecommendationStatus.Failed))
+        {
+            state.Action.ExecutedAt = now;
+            state.Action.ExecutionChannel = "manual_action";
+            state.Action.ExecutedContent = state.Action.Description;
+            state.Action.ExecutedSourceId = recommendationId;
+        }
         state.Action.CompletedAt = recommendationStatus is AiRecommendationStatus.Completed
             or AiRecommendationStatus.Failed
             or AiRecommendationStatus.Dismissed ? now : null;
@@ -173,7 +240,14 @@ public sealed class CustomerActionLifecycleService
                 Owner = lead?.Owner ?? "",
                 DueAt = task.DueAt
             };
-        return new ActionState(recommendation, task, action);
+        return new ActionState(recommendation, task, action, lead);
+    }
+
+    private static void CaptureBaseline(SalesActionRecord action, Lead? lead, DateTimeOffset capturedAt)
+    {
+        if (action.BaselineStage is not null || lead is null) return;
+        action.BaselineStage = lead.Stage;
+        action.BaselineCapturedAt = capturedAt;
     }
 
     private async Task SaveEventAsync(
@@ -199,5 +273,6 @@ public sealed class CustomerActionLifecycleService
     private sealed record ActionState(
         AiRecommendationRecord Recommendation,
         FollowUpTask Task,
-        SalesActionRecord Action);
+        SalesActionRecord Action,
+        Lead? Lead);
 }

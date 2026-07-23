@@ -1043,10 +1043,86 @@ Check(learningBrief.Learning.Accepted == 2
     && learningBrief.Learning.FeedbackCount == 2
     && learningBrief.Learning.HelpfulFeedback == 1,
     "personal recommendation learning metrics distinguish completion, failure and helpful outcomes");
+var outcomeNow = DateTimeOffset.Now;
+var outcomeLead = new Lead
+{
+    Id = "learning-outcome-lead",
+    Name = "Learning Outcome Customer",
+    PhoneE164 = "+14155558888",
+    PhoneValid = true,
+    Stage = LeadStage.Interested,
+    UpdatedAt = outcomeNow.AddMinutes(-20)
+};
+await reportRepository.UpsertLeadAsync(outcomeLead);
+var outcomeConversation = new WhatsAppConversation
+{
+    Id = "primary:14155558888",
+    AccountId = "primary",
+    Phone = "14155558888",
+    LeadId = outcomeLead.Id,
+    DisplayName = outcomeLead.Name,
+    LastMessage = "Can you send the quotation?",
+    LastMessageAt = outcomeNow.AddMinutes(-6)
+};
+await reportRepository.UpsertWhatsAppConversationAsync(outcomeConversation);
+var outcomeRecommendation = new AiRecommendationRecord
+{
+    Id = "recommendation-real-outcome",
+    CustomerId = outcomeLead.Id,
+    RecommendationType = "whatsapp_follow_up",
+    Title = "确认报价需求",
+    Action = "发送报价确认话术",
+    Rationale = "客户已表现出明确合作意向",
+    Evidence = ["客户处于有兴趣阶段"],
+    Confidence = .8,
+    SuggestedTalkTrack = "Hi, I can prepare the quotation today. Could you confirm the quantity and delivery country?"
+};
+await reportRepository.SaveAiRecommendationAsync(outcomeRecommendation);
+await actionLifecycle.AcceptAsync(outcomeLead.Id, outcomeRecommendation.Id);
+var outcomeSentAt = outcomeNow.AddMinutes(-12);
+var outcomeRecorded = await actionLifecycle.RecordMessageExecutionAsync(
+    outcomeLead.Id,
+    "whatsapp",
+    outcomeRecommendation.SuggestedTalkTrack,
+    "wamid-learning-outbound",
+    outcomeSentAt);
+await reportRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id = "primary:wamid-learning-inbound",
+    ProviderMessageId = "wamid-learning-inbound",
+    AccountId = "primary",
+    ConversationId = outcomeConversation.Id,
+    LeadId = outcomeLead.Id,
+    Phone = outcomeConversation.Phone,
+    Direction = WhatsAppMessageDirection.Incoming,
+    Status = WhatsAppMessageStatus.Received,
+    Body = "Yes, please send the quotation for 500 pcs.",
+    Timestamp = outcomeNow.AddMinutes(-7)
+});
+outcomeLead.Stage = LeadStage.Customer;
+outcomeLead.UpdatedAt = outcomeNow.AddMinutes(-5);
+await reportRepository.UpsertLeadAsync(outcomeLead);
+var salesLearning = new PersonalSalesLearningService(reportRepository);
+var outcomeLearning = await salesLearning.GetCustomerSummaryAsync(outcomeLead.Id);
+Check(outcomeRecorded
+    && outcomeLearning.Executed == 1
+    && outcomeLearning.Replies == 1
+    && outcomeLearning.StageProgressions == 1
+    && outcomeLearning.Deals == 1
+    && outcomeLearning.TopTalkTracks.Single().TalkTrack == outcomeRecommendation.SuggestedTalkTrack,
+    "personal sales learning attributes real WhatsApp reply, stage progression, deal and talk-track outcome");
+var learningAwareAssistantProvider = new CapturingConversationAssistantProvider();
+var learningAwareAssistant = new ConversationAssistantService(reportRepository, learningAwareAssistantProvider, salesLearning);
+await learningAwareAssistant.AnalyzeAsync(outcomeConversation.Id, outcomeLead);
+Check(learningAwareAssistantProvider.PayloadJson.Contains("\"personalPlaybooks\"", StringComparison.Ordinal)
+    && learningAwareAssistantProvider.PayloadJson.Contains(outcomeRecommendation.SuggestedTalkTrack, StringComparison.Ordinal),
+    "WhatsApp AI assistant receives only persisted real-outcome talk-track playbooks");
 await reportRepository.InitializeAsync();
+var persistedLearning = await reportRepository.GetAiLearningFeedbackAsync(reportLead.Id);
 Check((await reportRepository.GetCustomerIntelligenceProfileAsync(reportLead.Id))?.Version == changedBrain.Version
     && (await reportRepository.GetSalesActionsAsync(reportLead.Id)).Count == 2
-    && (await reportRepository.GetAiLearningFeedbackAsync(reportLead.Id)).Count == 2
+    && persistedLearning.Count(item => item.FeedbackSource == "human") == 2
+    && persistedLearning.Any(item => item.FeedbackSource == "system_observed")
     && (await reportRepository.GetFollowUpTasksAsync(reportLead.Id)).Single(item => item.RecommendationId == brainRecommendation.Id).Priority == FollowUpPriority.High, "Customer Brain migration is additive and preserves tasks, actions and outcome learning across restarts");
 var keepArtifactIndex = Array.IndexOf(args, "--keep-report-artifacts");
 if (keepArtifactIndex >= 0 && keepArtifactIndex + 1 < args.Length)

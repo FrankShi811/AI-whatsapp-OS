@@ -844,11 +844,12 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 await _services.Repository.LogEventAsync("whatsapp_message_sent", _currentLead.Id, null, $"message_id={id}; kind={kind}; origin={origin}");
                 if (origin == "ai_conversation_assistant")
                 {
-                    await _services.CustomerActions.RecordExecutionEventAsync(
+                    await _services.CustomerActions.RecordMessageExecutionAsync(
                         _currentLead.Id,
-                        "AI 会话助理回复已发送",
-                        $"WhatsApp 已接受消息；类型：{kind}；消息 ID：{id}",
-                        $"whatsapp-{conversation.AccountId}-{id}");
+                        "WhatsApp",
+                        text,
+                        $"whatsapp-{conversation.AccountId}-{id}",
+                        timestamp);
                 }
             }
             accepted = true;

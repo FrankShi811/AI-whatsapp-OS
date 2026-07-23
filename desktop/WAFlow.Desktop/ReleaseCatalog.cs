@@ -13,6 +13,17 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("3.2.0", "2026-07-23", "个人 AI 销售员工 · 真实结果学习闭环",
+        [
+            "完成 Customer Brain Learning 阶段：仅根据真实 WhatsApp / Email 客户回复、CRM 阶段推进、成交与复购结果进行归因，不使用关键词或演示规则伪造效果。",
+            "销售行动保存执行前基线、实际发送渠道、话术、发送时间与来源；成功发送会自动关联当前建议、跟进任务和行动，发送失败不会计入学习样本。",
+            "新增 30 天观察窗口与待观察、已观察、已过期状态，计算首次回复时间、回复率、推进率、成交率和可审计的样本数量。",
+            "Dashboard 与 Customer 360 展示真实学习结果、个人策略复盘和高效话术；样本不足时明确显示数据边界，不输出虚构结论。",
+            "WhatsApp AI 助手可读取已验证的历史高效话术作为表达策略参考，但不得复制客户事实、价格、承诺或其他客户的专属信息。",
+            "系统观察反馈与人工反馈分开保存；AI 失败或新结果尚未产生时继续保留最近一次有效 Customer Brain 判断。",
+            "数据升级继续使用兼容 JSON 扩展，不删除或覆盖客户、WhatsApp 账号、邮件、Campaign、报告、历史分析或人工 CRM 字段。",
+            "本版本仅通过 GitHub Release 发布 Windows 中文安装包、Velopack 全量/增量包和自动更新清单；不覆盖本机正式程序，macOS 构建继续暂停。"
+        ], true),
         new("3.1.0", "2026-07-23", "个人 AI 销售员工 · 行动闭环",
         [
             "补齐 Customer Brain 建议的完整行动生命周期：接受、延期、开始、完成、失败和忽略会同步更新建议、跟进任务、销售行动、客户事件与结果反馈。",
@@ -23,7 +34,7 @@ public static class ReleaseCatalog
             "AI 回复发送成功后记录为客户行动事件，使会话执行、客户时间线、Today Brief 和后续客户分析能够使用同一份事实轨迹。",
             "数据库升级仅新增兼容数据，不删除客户、WhatsApp 账号、邮件、Campaign、报告或既有 AI 分析；失败时继续保留最近一次有效判断。",
             "本版本仅通过 GitHub Release 发布 Windows 中文安装包、Velopack 全量/增量包和自动更新清单；不覆盖本机正式程序，macOS 构建继续暂停。"
-        ], true),
+        ]),
         new("3.0.0", "2026-07-23", "个人 AI 销售员工 · Customer Brain 第一阶段",
         [
             "新增 Customer Brain 分阶段 AI 管线：资料整理、客户理解、商机评估与销售建议，每一步均保存结构化中间结果、运行记录和失败重试状态。",

@@ -22,6 +22,7 @@ public sealed class AppServices
     public ConversationAssistantService ConversationAssistant { get; }
     public CustomerBrainService CustomerBrain { get; }
     public CustomerActionLifecycleService CustomerActions { get; }
+    public PersonalSalesLearningService SalesLearning { get; }
     public TodayBriefService TodayBrief { get; }
 
     public AppServices(LocalRepository? repository = null)
@@ -39,10 +40,11 @@ public sealed class AppServices
         Campaigns = new CampaignAutomationService(Repository, WhatsApp, PublicIp, Email);
         CustomerAnalysis = new CustomerAnalysisService(Repository, DeepSeek);
         CustomerReportExports = new CustomerReportExportService(Repository);
-        ConversationAssistant = new ConversationAssistantService(Repository, DeepSeek);
         CustomerBrain = new CustomerBrainService(Repository, DeepSeek);
         CustomerActions = new CustomerActionLifecycleService(Repository);
-        TodayBrief = new TodayBriefService(Repository);
+        SalesLearning = new PersonalSalesLearningService(Repository);
+        ConversationAssistant = new ConversationAssistantService(Repository, DeepSeek, SalesLearning);
+        TodayBrief = new TodayBriefService(Repository, SalesLearning);
     }
 
     public Task InitializeAsync(CancellationToken cancellationToken = default) => Repository.InitializeAsync(cancellationToken);

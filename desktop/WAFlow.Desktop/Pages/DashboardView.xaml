@@ -85,7 +85,9 @@
                             <TextBlock Text="个人 AI 建议效果" Style="{StaticResource SectionTitle}"/>
                             <TextBlock x:Name="LearningCompletionText" Text="完成率 —" FontSize="18" FontWeight="Bold" Margin="0,14,0,0"/>
                             <TextBlock x:Name="LearningHelpfulText" Text="有效反馈 —" Foreground="{DynamicResource AiAccentDeep}" FontWeight="SemiBold" Margin="0,6,0,0"/>
+                            <TextBlock x:Name="LearningOutcomeText" Text="真实结果尚未形成" Foreground="{DynamicResource AiAccent}" FontWeight="SemiBold" Margin="0,6,0,0" TextWrapping="Wrap"/>
                             <TextBlock x:Name="LearningDetailText" Text="完成建议后开始形成个人经验" Style="{StaticResource LabelText}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                            <TextBlock x:Name="LearningStrategyText" Text="系统仅基于真实回复和 CRM 阶段变化复盘" Style="{StaticResource LabelText}" TextWrapping="Wrap" Margin="0,8,0,0"/>
                         </StackPanel>
                     </Border>
                 </Grid>

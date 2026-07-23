@@ -128,6 +128,14 @@
                                 <TextBlock x:Name="BrainNextActionText" Text="等待分析" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,5,0,0"/>
                             </StackPanel>
                         </Border>
+                        <Border Background="{StaticResource AiSoft}" BorderBrush="{StaticResource AiLine}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,10,0,0">
+                            <StackPanel>
+                                <TextBlock Text="真实结果与个人经验" Style="{StaticResource LabelText}"/>
+                                <TextBlock x:Name="BrainLearningMetricsText" Text="尚无已执行行动的真实结果" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,5,0,0"/>
+                                <TextBlock x:Name="BrainLearningStrategyText" Text="执行建议后，系统会根据真实回复、阶段推进和成交结果持续总结个人经验。" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
+                                <TextBlock x:Name="BrainTalkTrackText" Text="高表现话术：等待真实样本" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
+                            </StackPanel>
+                        </Border>
 
                         <Grid Margin="0,16,0,0">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>

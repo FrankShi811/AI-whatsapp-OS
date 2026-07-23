@@ -35,6 +35,7 @@ public sealed class ConversationAssistantService
         4. 不得根据销售人员自己发送的 outgoing 消息反推客户需求。不得改写姓名、电话、WhatsApp 号码、负责人、退订状态或 AI 分数。
         5. stage 仅允许 new、contacted、interested、negotiation、waiting、customer、lost；没有明确阶段证据时不要返回 stage 更新。
         6. customerBrain 是最近一次 Customer Brain 的结构化判断，只能作为建议上下文；如果它与最新 incoming 客户原话冲突，以最新客户原话为准，不得把推断当成已确认事实。
+        7. personalPlaybooks 是本机根据真实发送、客户回复和阶段结果统计出的历史话术。仅在样本与当前场景匹配时借鉴其表达方式，不得复制其中的客户事实、价格、承诺或专属信息；样本不足时忽略。
 
         只返回一个严格 JSON 对象，字段固定为：
         {
@@ -52,11 +53,16 @@ public sealed class ConversationAssistantService
 
     private readonly LocalRepository _repository;
     private readonly IStructuredAiProvider _provider;
+    private readonly PersonalSalesLearningService? _learning;
 
-    public ConversationAssistantService(LocalRepository repository, IStructuredAiProvider provider)
+    public ConversationAssistantService(
+        LocalRepository repository,
+        IStructuredAiProvider provider,
+        PersonalSalesLearningService? learning = null)
     {
         _repository = repository;
         _provider = provider;
+        _learning = learning;
     }
 
     public async Task<ConversationAssistantResult> AnalyzeAsync(
@@ -80,6 +86,9 @@ public sealed class ConversationAssistantService
         var customerBrain = lead is null
             ? null
             : await _repository.GetCustomerIntelligenceProfileAsync(lead.Id, cancellationToken);
+        var playbooks = _learning is null
+            ? []
+            : await _learning.GetTopTalkTracksAsync(3, cancellationToken);
         var payload = new
         {
             crm = lead is null ? null : new
@@ -112,6 +121,17 @@ public sealed class ConversationAssistantService
                         statement.Confidence
                     })
             },
+            personalPlaybooks = playbooks.Select(item => new
+            {
+                item.Channel,
+                item.TalkTrack,
+                item.SentCount,
+                item.Replies,
+                item.ResponseRate,
+                item.StageProgressions,
+                item.Deals,
+                item.HasReliableSample
+            }),
             allowedFields = allowedFields.Select(field => new { key = field.Key, label = field.Value, currentValue = GetCurrentValue(lead, field.Key) }),
             conversation = messages.Select(message => new
             {

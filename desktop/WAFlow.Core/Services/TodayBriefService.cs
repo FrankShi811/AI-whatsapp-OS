@@ -6,10 +6,12 @@ namespace WAFlow.Core.Services;
 public sealed class TodayBriefService
 {
     private readonly LocalRepository _repository;
+    private readonly PersonalSalesLearningService _learning;
 
-    public TodayBriefService(LocalRepository repository)
+    public TodayBriefService(LocalRepository repository, PersonalSalesLearningService? learning = null)
     {
         _repository = repository;
+        _learning = learning ?? new PersonalSalesLearningService(repository);
     }
 
     public async Task<TodayBriefSnapshot> GetAsync(CancellationToken cancellationToken = default)
@@ -45,22 +47,7 @@ public sealed class TodayBriefService
             });
         }
 
-        var actions = await _repository.GetAllSalesActionsAsync(cancellationToken);
-        var feedback = await _repository.GetAllAiLearningFeedbackAsync(cancellationToken);
-        var accepted = actions.Count(item => item.Status is SalesActionStatus.Approved
-            or SalesActionStatus.InProgress
-            or SalesActionStatus.Completed
-            or SalesActionStatus.Failed);
-        var learning = new PersonalLearningSummary
-        {
-            Proposed = actions.Count(item => item.Status == SalesActionStatus.Planned),
-            Accepted = accepted,
-            Completed = actions.Count(item => item.Status == SalesActionStatus.Completed),
-            Failed = actions.Count(item => item.Status == SalesActionStatus.Failed),
-            Dismissed = actions.Count(item => item.Status == SalesActionStatus.Cancelled),
-            FeedbackCount = feedback.Count,
-            HelpfulFeedback = feedback.Count(item => item.Helpful)
-        };
+        var learning = await _learning.RefreshAsync(cancellationToken);
 
         return new TodayBriefSnapshot
         {

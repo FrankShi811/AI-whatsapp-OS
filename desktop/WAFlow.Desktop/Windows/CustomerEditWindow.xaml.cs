@@ -101,6 +101,15 @@ public partial class CustomerEditWindow : Window
             BrainStageText.Text = Labels.Stage(brain.SuggestedStage);
             BrainSummaryText.Text = brain.Summary;
             BrainNextActionText.Text = brain.NextBestAction;
+            var learning = await _services.SalesLearning.GetCustomerSummaryAsync(_lead.Id);
+            BrainLearningMetricsText.Text = learning.Executed == 0
+                ? "尚无已执行行动的真实结果"
+                : $"已执行 {learning.Executed} 次 · 回复率 {learning.ResponseRate:0.#}% · 阶段推进率 {learning.ProgressionRate:0.#}% · 成交归因率 {learning.DealRate:0.#}%";
+            BrainLearningStrategyText.Text = learning.StrategyReview;
+            var topTalkTrack = learning.TopTalkTracks.FirstOrDefault();
+            BrainTalkTrackText.Text = topTalkTrack is null
+                ? "高表现话术：等待真实样本"
+                : $"高表现话术：{topTalkTrack.TalkTrack}（{topTalkTrack.SentCount} 次发送，回复率 {topTalkTrack.ResponseRate:0.#}%）";
             BrainStatusText.Text = brain.DecisionStatus switch
             {
                 CustomerBrainDecisionStatus.Current =>

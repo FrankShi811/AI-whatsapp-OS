@@ -480,7 +480,14 @@ public sealed class CustomerBrainService
             or AiRecommendationStatus.Accepted
             or AiRecommendationStatus.InProgress);
         if (active is not null && string.Equals(active.Action.Trim(), profile.NextBestAction.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(active.SuggestedTalkTrack) && !string.IsNullOrWhiteSpace(profile.SuggestedTalkTrack))
+            {
+                active.SuggestedTalkTrack = profile.SuggestedTalkTrack;
+                await _repository.SaveAiRecommendationAsync(active, cancellationToken);
+            }
             return active;
+        }
 
         if (active is not null)
         {
@@ -493,6 +500,7 @@ public sealed class CustomerBrainService
             Title = "Customer Brain 下一步建议",
             Action = profile.NextBestAction,
             Rationale = profile.Summary,
+            SuggestedTalkTrack = profile.SuggestedTalkTrack,
             Evidence = profile.Statements
                 .Where(statement => statement.Nature is IntelligenceStatementNature.Fact or IntelligenceStatementNature.Inference)
                 .Select(statement => statement.Evidence)
@@ -534,6 +542,7 @@ public sealed class CustomerBrainService
         profile.OpportunitySignals = Clean(opportunity.PositiveSignals);
         profile.Risks = Clean(opportunity.RiskSignals);
         profile.NextBestAction = recommendation.NextBestAction.Trim();
+        profile.SuggestedTalkTrack = recommendation.SuggestedTalkTrack.Trim();
         profile.Confidence = Math.Clamp(opportunity.Confidence, 0, 1);
         profile.PurchaseProbability = Math.Clamp(opportunity.PurchaseProbability, 0, 100);
         profile.SuggestedStage = opportunity.SuggestedStage;
