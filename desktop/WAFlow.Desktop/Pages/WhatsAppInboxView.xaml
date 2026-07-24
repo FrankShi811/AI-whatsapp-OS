@@ -179,6 +179,56 @@
                         </Grid>
                     </Border>
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"><StackPanel Margin="16">
+                        <Border Background="{DynamicResource SurfaceAlt}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="10" Padding="12" Margin="0,0,0,13">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="DHgate Customer Success Agent" FontWeight="SemiBold" FontSize="13"/>
+                                        <TextBlock x:Name="CustomerIdentityText" Text="等待会话身份" Foreground="{DynamicResource Muted}" FontSize="9.5" TextWrapping="Wrap" Margin="0,3,8,0"/>
+                                    </StackPanel>
+                                    <Border Grid.Column="1" Background="{DynamicResource PrimarySurface}" CornerRadius="8" Padding="8,4" VerticalAlignment="Top">
+                                        <TextBlock x:Name="AgentModeBadgeText" Text="仅建议" Foreground="{DynamicResource PrimaryDark}" FontSize="9.5" FontWeight="SemiBold"/>
+                                    </Border>
+                                </Grid>
+                                <TextBlock x:Name="LinkedAccountsText" Text="关联账号：—" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="AccountRelationshipText" Text="本账号关系：尚无摘要" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                                <Grid Margin="0,9,0,0">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <ComboBox x:Name="AgentModeCombo" DisplayMemberPath="Label" MinHeight="30"/>
+                                    <Button Grid.Column="1" Content="应用" Style="{StaticResource SecondaryButton}" Click="ApplyAgentMode_Click" Padding="10,4" Margin="7,0,0,0"/>
+                                </Grid>
+                                <TextBlock x:Name="AgentStateReasonText" Text="选择客户后可设置" Foreground="{DynamicResource Muted}" FontSize="9" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Background="{DynamicResource PrimarySurface}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="10" Padding="12" Margin="0,0,0,13">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <TextBlock Text="采购需求五要素" FontWeight="SemiBold" FontSize="12"/>
+                                    <TextBlock x:Name="SourcingProgressText" Grid.Column="1" Text="0%" Foreground="{DynamicResource Primary}" FontWeight="SemiBold"/>
+                                </Grid>
+                                <ProgressBar x:Name="SourcingProgressBar" Maximum="100" Height="6" Margin="0,8,0,7"/>
+                                <TextBlock x:Name="SourcingStatusText" Text="尚未建立采购需求" Foreground="{DynamicResource Muted}" FontSize="9.5" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="SourcingFieldsText" Text="缺失：产品图片/链接、数量、目标价、目的地、运输偏好" FontSize="9.5" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                                <TextBlock x:Name="SourcingConflictText" Text="" Foreground="{DynamicResource Warning}" FontSize="9.5" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                <TextBlock x:Name="PendingQuestionText" Text="待确认：—" Foreground="{DynamicResource Muted}" FontSize="9.5" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                            </StackPanel>
+                        </Border>
+                        <Border x:Name="HandoffPanel" Background="{DynamicResource WarningSoft}" BorderBrush="{DynamicResource Warning}" BorderThickness="1" CornerRadius="10" Padding="12" Margin="0,0,0,13" Visibility="Collapsed">
+                            <StackPanel>
+                                <TextBlock Text="需要人工处理" Foreground="{DynamicResource Warning}" FontWeight="SemiBold" FontSize="12"/>
+                                <TextBlock x:Name="HandoffReasonText" Text="" FontSize="9.5" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                                <TextBlock x:Name="HandoffOriginalText" Text="" FontSize="9.5" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                                <TextBlock x:Name="HandoffTranslationText" Text="" Foreground="{DynamicResource Muted}" FontSize="9.5" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                <TextBlock x:Name="HandoffPausedText" Text="" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,3,0,0"/>
+                                <WrapPanel Margin="0,8,0,0">
+                                    <Button Content="人工接管" Style="{StaticResource SecondaryButton}" Click="TakeOverHandoff_Click" Padding="9,4" Margin="0,0,6,0"/>
+                                    <Button Content="标记解决" Style="{StaticResource SecondaryButton}" Click="ResolveHandoff_Click" Padding="9,4" Margin="0,0,6,0"/>
+                                    <Button Content="复核并恢复" Style="{StaticResource PrimaryButton}" Click="ResumeAgent_Click" Padding="9,4"/>
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
                         <Border Style="{StaticResource AiCard}" Padding="13" Margin="0,0,0,15">
                             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="105"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <controls:ScoreRing x:Name="AiSidebarScoreRing" Width="100" Height="100"/>

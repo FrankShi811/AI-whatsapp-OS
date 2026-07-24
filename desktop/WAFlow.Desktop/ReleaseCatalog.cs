@@ -13,6 +13,18 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("4.1.0", "2026-07-24", "DHgate Customer Success Agent · 跨 WhatsApp 账号客户连续性",
+        [
+            "新增 DHgate Customer Success Conversation Agent：以客户成功经理身份理解采购需求、澄清缺失信息、协调人工跟进，不冒充商户、工厂或供应商，也不承诺库存、价格、物流、退款或平台政策。",
+            "建立全局客户身份层：统一保存号码原值、数字体、E.164、JID、LID、来源账号、会话、匹配方式与置信度；人工绑定、精确身份和唯一无冲突推断可关联，歧义、无匹配和冲突一律阻断自动回复。",
+            "同一客户跨多个 WhatsApp 账号共享 Customer Brain、Customer 360、采购需求、时间线、待办与全局人工交接，同时保留每个账号独立的 Persona 和关系记忆。",
+            "新增八态 Agent 状态机与全局客户锁；同一客户只能由一个账号自动回复，身份待确认、人工接管和恢复审核状态不会因重启或新消息自动恢复。",
+            "采购需求按产品、规格、数量、目标价与币种、目的地五要素管理，每项占 20%；每个值必须绑定客户消息证据，跨账号冲突并存，只有人工确认后才成为当前事实。",
+            "高风险请求、退款承诺、提示注入和秘密索取会立即保存原话、发送一次同语言占位回复并冻结该客户全部账号；人工接管、解决、恢复及账号切换均可审计。",
+            "WhatsApp Inbox 客户抽屉加入身份结果、关联账号、Agent 模式、采购五要素、冲突、交接状态和人工操作；Dashboard Today Brief 增加身份待确认、人工交接、采购完成和跨账号工作。",
+            "数据库升级仅新增旁路表与索引，旧客户、消息、账号、Brain、Lead Intelligence、任务、邮件和自动化数据均保留；跨账号人工确认关系在重启后继续持久化。",
+            "本版本通过 GitHub Release 发布 Windows 中文安装包与 Velopack 自动更新资产；不覆盖本机正式程序，macOS 构建继续暂停。"
+        ], true),
         new("3.2.0", "2026-07-23", "个人 AI 销售员工 · 真实结果学习闭环",
         [
             "完成 Customer Brain Learning 阶段：仅根据真实 WhatsApp / Email 客户回复、CRM 阶段推进、成交与复购结果进行归因，不使用关键词或演示规则伪造效果。",
@@ -23,7 +35,7 @@ public static class ReleaseCatalog
             "系统观察反馈与人工反馈分开保存；AI 失败或新结果尚未产生时继续保留最近一次有效 Customer Brain 判断。",
             "数据升级继续使用兼容 JSON 扩展，不删除或覆盖客户、WhatsApp 账号、邮件、Campaign、报告、历史分析或人工 CRM 字段。",
             "本版本仅通过 GitHub Release 发布 Windows 中文安装包、Velopack 全量/增量包和自动更新清单；不覆盖本机正式程序，macOS 构建继续暂停。"
-        ], true),
+        ]),
         new("3.1.0", "2026-07-23", "个人 AI 销售员工 · 行动闭环",
         [
             "补齐 Customer Brain 建议的完整行动生命周期：接受、延期、开始、完成、失败和忽略会同步更新建议、跟进任务、销售行动、客户事件与结果反馈。",

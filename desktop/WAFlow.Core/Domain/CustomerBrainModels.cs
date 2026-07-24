@@ -348,6 +348,9 @@ public sealed class TodayBriefItem
     public int PurchaseProbability { get; set; }
     public double Confidence { get; set; }
     public LeadStage SuggestedStage { get; set; } = LeadStage.New;
+    public string Category { get; set; } = "follow_up";
+    public string SourceAccountId { get; set; } = "";
+    public string SourceConversationId { get; set; } = "";
 
     [JsonIgnore] public string PriorityLabel => Priority switch
     {
@@ -355,6 +358,15 @@ public sealed class TodayBriefItem
         FollowUpPriority.High => "高优先",
         FollowUpPriority.Normal => "普通",
         _ => "低优先"
+    };
+
+    [JsonIgnore] public string CategoryLabel => Category switch
+    {
+        "identity" => "身份待确认",
+        "handoff" => "人工接管",
+        "sourcing_complete" => "采购需求完整",
+        "cross_account" => "跨账号跟进",
+        _ => PriorityLabel
     };
 
     [JsonIgnore] public string DueLabel
@@ -403,6 +415,10 @@ public sealed class TodayBriefSnapshot
     public int OverdueCount { get; set; }
     public int DueTodayCount { get; set; }
     public int InProgressCount { get; set; }
+    public int IdentityPendingCount { get; set; }
+    public int HumanHandoffCount { get; set; }
+    public int SourcingCompleteCount { get; set; }
+    public int CrossAccountFollowUpCount { get; set; }
     public List<TodayBriefItem> Items { get; set; } = [];
     public PersonalLearningSummary Learning { get; set; } = new();
 }

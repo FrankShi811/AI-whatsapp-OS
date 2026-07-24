@@ -1,5 +1,7 @@
 using Microsoft.Data.Sqlite;
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Services;
 
@@ -336,10 +338,152 @@ public sealed class LocalRepository
               UNIQUE(customer_id, event_type, source_type, source_id)
             );
             CREATE INDEX IF NOT EXISTS ix_customer_event_log_customer ON customer_event_log(customer_id, occurred_at DESC);
+            CREATE TABLE IF NOT EXISTS global_customer_identities (
+              customer_id TEXT PRIMARY KEY REFERENCES leads(id) ON DELETE CASCADE,
+              canonical_name TEXT NOT NULL DEFAULT '',
+              primary_account_id TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS customer_phone_identities (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              digits TEXT NOT NULL,
+              e164 TEXT NOT NULL,
+              jid TEXT NOT NULL,
+              lid TEXT NOT NULL,
+              source_account_id TEXT NOT NULL,
+              manually_confirmed INTEGER NOT NULL DEFAULT 0,
+              confidence REAL NOT NULL DEFAULT 0,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_customer_phone_identity_digits ON customer_phone_identities(digits);
+            CREATE INDEX IF NOT EXISTS ix_customer_phone_identity_jid ON customer_phone_identities(jid) WHERE jid <> '';
+            CREATE INDEX IF NOT EXISTS ix_customer_phone_identity_customer ON customer_phone_identities(customer_id, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS whatsapp_identity_links (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              account_id TEXT NOT NULL,
+              conversation_id TEXT NOT NULL,
+              contact_jid TEXT NOT NULL,
+              match_result TEXT NOT NULL,
+              is_active INTEGER NOT NULL DEFAULT 1,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL,
+              UNIQUE(account_id, conversation_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_whatsapp_identity_link_customer ON whatsapp_identity_links(customer_id, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS account_personas (
+              account_id TEXT PRIMARY KEY,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS account_relationship_memories (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              account_id TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL,
+              UNIQUE(customer_id, account_id)
+            );
+            CREATE TABLE IF NOT EXISTS customer_identity_match_logs (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL,
+              account_id TEXT NOT NULL,
+              conversation_id TEXT NOT NULL,
+              result TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_customer_identity_match_logs_conversation ON customer_identity_match_logs(account_id, conversation_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS global_customer_agent_locks (
+              customer_id TEXT PRIMARY KEY REFERENCES leads(id) ON DELETE CASCADE,
+              active_account_id TEXT NOT NULL DEFAULT '',
+              account_id TEXT NOT NULL DEFAULT '',
+              conversation_id TEXT NOT NULL DEFAULT '',
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS conversation_agent_states (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL,
+              account_id TEXT NOT NULL,
+              conversation_id TEXT NOT NULL,
+              mode TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL,
+              UNIQUE(account_id, conversation_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_conversation_agent_states_customer ON conversation_agent_states(customer_id, mode, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS relationship_memories (
+              customer_id TEXT PRIMARY KEY REFERENCES leads(id) ON DELETE CASCADE,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS sourcing_requests (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              version INTEGER NOT NULL,
+              status TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL,
+              UNIQUE(customer_id, version)
+            );
+            CREATE INDEX IF NOT EXISTS ix_sourcing_requests_customer ON sourcing_requests(customer_id, version DESC);
+            CREATE TABLE IF NOT EXISTS human_handoff_events (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              account_id TEXT NOT NULL,
+              conversation_id TEXT NOT NULL,
+              status TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_human_handoff_customer ON human_handoff_events(customer_id, status, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS pending_questions (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              account_id TEXT NOT NULL,
+              safety TEXT NOT NULL,
+              is_resolved INTEGER NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_pending_questions_customer ON pending_questions(customer_id, is_resolved, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS customer_merge_audits (
+              id TEXT PRIMARY KEY,
+              source_customer_id TEXT NOT NULL,
+              target_customer_id TEXT NOT NULL,
+              identity_link_id TEXT NOT NULL,
+              action TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS agent_turn_logs (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL,
+              account_id TEXT NOT NULL,
+              conversation_id TEXT NOT NULL,
+              source_message_id TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_agent_turn_logs_customer ON agent_turn_logs(customer_id, created_at DESC);
             """;
         await using var command = db.CreateCommand();
         command.CommandText = sql;
         await command.ExecuteNonQueryAsync(cancellationToken);
+        // CREATE TABLE IF NOT EXISTS does not evolve tables created by an earlier
+        // preview build. 4.1 is an in-place upgrade, so add every promoted column
+        // idempotently before backfill touches it.
+        await EnsureColumnAsync(db, "global_customer_identities", "canonical_name", "TEXT NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(db, "customer_phone_identities", "manually_confirmed", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "customer_phone_identities", "confidence", "REAL NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "whatsapp_identity_links", "is_active", "INTEGER NOT NULL DEFAULT 1", cancellationToken);
+        await EnsureColumnAsync(db, "global_customer_agent_locks", "active_account_id", "TEXT NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(db, "global_customer_agent_locks", "account_id", "TEXT NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(db, "global_customer_agent_locks", "conversation_id", "TEXT NOT NULL DEFAULT ''", cancellationToken);
         await using (var removeLegacySalesProfile = db.CreateCommand())
         {
             removeLegacySalesProfile.CommandText = "DELETE FROM settings WHERE key='sales_profile'";
@@ -350,7 +494,27 @@ public sealed class LocalRepository
         await RemoveDemoLeadsIfRealDataExistsInternalAsync(db, cleanup as SqliteTransaction, cancellationToken);
         await AlignLeadAiBaselineInternalAsync(db, cleanup as SqliteTransaction, cancellationToken);
         await RepairWhatsAppTextEncodingInternalAsync(db, cleanup as SqliteTransaction, cancellationToken);
+        await BackfillCustomerSuccessIdentityInternalAsync(db, cleanup as SqliteTransaction, cancellationToken);
         await cleanup.CommitAsync(cancellationToken);
+    }
+
+    private static async Task EnsureColumnAsync(
+        SqliteConnection db,
+        string table,
+        string column,
+        string declaration,
+        CancellationToken cancellationToken)
+    {
+        await using var inspect = db.CreateCommand();
+        inspect.CommandText = $"PRAGMA table_info({table})";
+        await using var reader = await inspect.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase))
+                return;
+
+        await using var alter = db.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {declaration}";
+        await alter.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task RepairWhatsAppTextEncodingInternalAsync(SqliteConnection db, SqliteTransaction? transaction, CancellationToken cancellationToken)
@@ -427,6 +591,238 @@ public sealed class LocalRepository
             await update.ExecuteNonQueryAsync(cancellationToken);
         }
 
+    }
+
+    private static async Task BackfillCustomerSuccessIdentityInternalAsync(
+        SqliteConnection db,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        var leads = new Dictionary<string, Lead>(StringComparer.OrdinalIgnoreCase);
+        await using (var select = db.CreateCommand())
+        {
+            select.Transaction = transaction;
+            select.CommandText = "SELECT data_json FROM leads";
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<Lead>(reader.GetString(0)) is { } lead)
+                    leads[lead.Id] = lead;
+        }
+
+        foreach (var lead in leads.Values)
+        {
+            var identity = new GlobalCustomerIdentity
+            {
+                CustomerId = lead.Id,
+                CanonicalName = lead.DisplayName,
+                ConfirmedAliases = string.IsNullOrWhiteSpace(lead.Name) ? [] : [lead.Name],
+                CreatedAt = lead.CreatedAt == default ? DateTimeOffset.Now : lead.CreatedAt,
+                UpdatedAt = DateTimeOffset.Now
+            };
+            await using var insert = db.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = """
+                INSERT INTO global_customer_identities(customer_id,canonical_name,primary_account_id,updated_at,data_json)
+                VALUES($customer,$name,'',$updated,$json)
+                ON CONFLICT(customer_id) DO NOTHING
+                """;
+            insert.Parameters.AddWithValue("$customer", identity.CustomerId);
+            insert.Parameters.AddWithValue("$name", identity.CanonicalName);
+            insert.Parameters.AddWithValue("$updated", identity.UpdatedAt.ToString("O"));
+            insert.Parameters.AddWithValue("$json", Json.Serialize(identity));
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var conversations = new List<WhatsAppConversation>();
+        await using (var select = db.CreateCommand())
+        {
+            select.Transaction = transaction;
+            select.CommandText = "SELECT data_json FROM whatsapp_conversations WHERE lead_id IS NOT NULL AND lead_id <> ''";
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<WhatsAppConversation>(reader.GetString(0)) is { } conversation)
+                    conversations.Add(conversation);
+        }
+
+        var contacts = new List<WhatsAppContact>();
+        await using (var select = db.CreateCommand())
+        {
+            select.Transaction = transaction;
+            select.CommandText = "SELECT data_json FROM whatsapp_contacts";
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<WhatsAppContact>(reader.GetString(0)) is { } contact)
+                    contacts.Add(contact);
+        }
+
+        foreach (var conversation in conversations.Where(item => leads.ContainsKey(item.LeadId)))
+        {
+            var lead = leads[conversation.LeadId];
+            var digits = PhoneIdentity.Digits(
+                string.IsNullOrWhiteSpace(conversation.Phone) ? lead.PhoneE164 : conversation.Phone);
+            var contact = contacts.FirstOrDefault(item =>
+                item.AccountId.Equals(conversation.AccountId, StringComparison.OrdinalIgnoreCase) &&
+                (PhoneIdentity.Digits(item.Phone) == digits ||
+                 item.Jid.Equals(conversation.Phone, StringComparison.OrdinalIgnoreCase)));
+            var phoneId = StableId("phone", lead.Id, conversation.AccountId, digits, contact?.Jid ?? "");
+            var linkId = StableId("link", conversation.AccountId, conversation.Id);
+            var now = DateTimeOffset.Now;
+            var phone = new CustomerPhoneIdentity
+            {
+                Id = phoneId,
+                CustomerId = lead.Id,
+                RawValue = string.IsNullOrWhiteSpace(conversation.Phone) ? lead.PhoneE164 : conversation.Phone,
+                Digits = digits,
+                E164 = PhoneNormalizer.Normalize(lead.PhoneE164, null).Valid ? lead.PhoneE164 : "",
+                Jid = contact?.Jid ?? "",
+                Lid = contact?.SourceJid?.EndsWith("@lid", StringComparison.OrdinalIgnoreCase) == true
+                    ? contact.SourceJid : "",
+                SourceAccountId = conversation.AccountId,
+                SourceConversationId = conversation.Id,
+                ManuallyConfirmed = true,
+                Confidence = 1,
+                Method = CustomerIdentityMatchMethod.ManualBinding,
+                UpdatedAt = now
+            };
+            await using (var insert = db.CreateCommand())
+            {
+                insert.Transaction = transaction;
+                insert.CommandText = """
+                    INSERT INTO customer_phone_identities(id,customer_id,digits,e164,jid,lid,source_account_id,manually_confirmed,confidence,updated_at,data_json)
+                    VALUES($id,$customer,$digits,$e164,$jid,$lid,$account,1,1,$updated,$json)
+                    ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at,data_json=excluded.data_json
+                    """;
+                insert.Parameters.AddWithValue("$id", phone.Id);
+                insert.Parameters.AddWithValue("$customer", phone.CustomerId);
+                insert.Parameters.AddWithValue("$digits", phone.Digits);
+                insert.Parameters.AddWithValue("$e164", phone.E164);
+                insert.Parameters.AddWithValue("$jid", phone.Jid);
+                insert.Parameters.AddWithValue("$lid", phone.Lid);
+                insert.Parameters.AddWithValue("$account", phone.SourceAccountId);
+                insert.Parameters.AddWithValue("$updated", now.ToString("O"));
+                insert.Parameters.AddWithValue("$json", Json.Serialize(phone));
+                await insert.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            var link = new WhatsAppIdentityLink
+            {
+                Id = linkId,
+                CustomerId = lead.Id,
+                AccountId = conversation.AccountId,
+                ConversationId = conversation.Id,
+                ContactJid = contact?.Jid ?? "",
+                ContactLid = phone.Lid,
+                PhoneIdentityId = phone.Id,
+                MatchResult = CustomerIdentityMatchResult.ExactMatch,
+                MatchMethod = CustomerIdentityMatchMethod.ManualBinding,
+                Confidence = 1,
+                ManuallyConfirmed = true,
+                UpdatedAt = now
+            };
+            await using (var insert = db.CreateCommand())
+            {
+                insert.Transaction = transaction;
+                insert.CommandText = """
+                    INSERT INTO whatsapp_identity_links(id,customer_id,account_id,conversation_id,contact_jid,match_result,is_active,updated_at,data_json)
+                    VALUES($id,$customer,$account,$conversation,$jid,$result,1,$updated,$json)
+                    ON CONFLICT(account_id,conversation_id) DO NOTHING
+                    """;
+                insert.Parameters.AddWithValue("$id", link.Id);
+                insert.Parameters.AddWithValue("$customer", link.CustomerId);
+                insert.Parameters.AddWithValue("$account", link.AccountId);
+                insert.Parameters.AddWithValue("$conversation", link.ConversationId);
+                insert.Parameters.AddWithValue("$jid", link.ContactJid);
+                insert.Parameters.AddWithValue("$result", link.MatchResult.ToString());
+                insert.Parameters.AddWithValue("$updated", now.ToString("O"));
+                insert.Parameters.AddWithValue("$json", Json.Serialize(link));
+                await insert.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            var state = new ConversationAgentState
+            {
+                Id = StableId("agent-state", conversation.AccountId, conversation.Id),
+                CustomerId = lead.Id,
+                AccountId = conversation.AccountId,
+                ConversationId = conversation.Id,
+                Mode = ConversationAgentMode.SuggestOnly,
+                StateReason = "由已有 CRM 与 WhatsApp 明确关联无损回填。",
+                UpdatedAt = now
+            };
+            await using (var insert = db.CreateCommand())
+            {
+                insert.Transaction = transaction;
+                insert.CommandText = """
+                    INSERT INTO conversation_agent_states(id,customer_id,account_id,conversation_id,mode,updated_at,data_json)
+                    VALUES($id,$customer,$account,$conversation,$mode,$updated,$json)
+                    ON CONFLICT(account_id,conversation_id) DO NOTHING
+                    """;
+                insert.Parameters.AddWithValue("$id", state.Id);
+                insert.Parameters.AddWithValue("$customer", state.CustomerId);
+                insert.Parameters.AddWithValue("$account", state.AccountId);
+                insert.Parameters.AddWithValue("$conversation", state.ConversationId);
+                insert.Parameters.AddWithValue("$mode", state.Mode.ToString());
+                insert.Parameters.AddWithValue("$updated", now.ToString("O"));
+                insert.Parameters.AddWithValue("$json", Json.Serialize(state));
+                await insert.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+
+        foreach (var lead in leads.Values)
+        {
+            await using var select = db.CreateCommand();
+            select.Transaction = transaction;
+            select.CommandText = "SELECT data_json FROM global_customer_identities WHERE customer_id=$customer";
+            select.Parameters.AddWithValue("$customer", lead.Id);
+            var identity = Json.Deserialize<GlobalCustomerIdentity>(await select.ExecuteScalarAsync(cancellationToken) as string);
+            if (identity is null) continue;
+
+            // Rebuild the account projection from the durable identity links, not
+            // only from conversations currently present in the local inbox. A
+            // manually confirmed cross-account alias can legitimately exist before
+            // that account's history has been synchronized; dropping it here would
+            // split one customer back into multiple identities after every restart.
+            var linkedAccounts = new List<string>();
+            await using (var linked = db.CreateCommand())
+            {
+                linked.Transaction = transaction;
+                linked.CommandText = """
+                    SELECT account_id
+                    FROM whatsapp_identity_links
+                    WHERE customer_id=$customer AND is_active=1
+                    ORDER BY account_id COLLATE NOCASE
+                    """;
+                linked.Parameters.AddWithValue("$customer", lead.Id);
+                await using var reader = await linked.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    var accountId = reader.GetString(0);
+                    if (!string.IsNullOrWhiteSpace(accountId)) linkedAccounts.Add(accountId);
+                }
+            }
+
+            identity.LinkedAccountIds = linkedAccounts
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(item => item, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (!identity.LinkedAccountIds.Contains(identity.PrimaryAccountId, StringComparer.OrdinalIgnoreCase))
+                identity.PrimaryAccountId = identity.LinkedAccountIds.FirstOrDefault() ?? "";
+            identity.UpdatedAt = DateTimeOffset.Now;
+            await using var update = db.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE global_customer_identities SET canonical_name=$name,primary_account_id=$primary,updated_at=$updated,data_json=$json WHERE customer_id=$customer";
+            update.Parameters.AddWithValue("$name", identity.CanonicalName);
+            update.Parameters.AddWithValue("$primary", identity.PrimaryAccountId);
+            update.Parameters.AddWithValue("$updated", identity.UpdatedAt.ToString("O"));
+            update.Parameters.AddWithValue("$json", Json.Serialize(identity));
+            update.Parameters.AddWithValue("$customer", identity.CustomerId);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private static string StableId(params string[] parts)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\u001f", parts)));
+        return Convert.ToHexString(bytes).ToLowerInvariant()[..32];
     }
 
     private static async Task SeedIfEmptyAsync(SqliteConnection db, CancellationToken cancellationToken)
@@ -2049,6 +2445,541 @@ public sealed class LocalRepository
         await using var command = db.CreateCommand(); command.CommandText = "INSERT INTO audit_events(event_type,lead_id,draft_id,detail,created_at) VALUES($type,$lead,$draft,$detail,$at)";
         command.Parameters.AddWithValue("$type", eventType); command.Parameters.AddWithValue("$lead", (object?)leadId ?? DBNull.Value); command.Parameters.AddWithValue("$draft", (object?)draftId ?? DBNull.Value); command.Parameters.AddWithValue("$detail", detail); command.Parameters.AddWithValue("$at", DateTimeOffset.Now.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<GlobalCustomerIdentity?> GetGlobalCustomerIdentityAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM global_customer_identities WHERE customer_id=$customer";
+        command.Parameters.AddWithValue("$customer", customerId);
+        return Json.Deserialize<GlobalCustomerIdentity>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task UpsertGlobalCustomerIdentityAsync(GlobalCustomerIdentity identity, CancellationToken cancellationToken = default)
+    {
+        identity.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO global_customer_identities(customer_id,canonical_name,primary_account_id,updated_at,data_json)
+            VALUES($customer,$name,$primary,$updated,$json)
+            ON CONFLICT(customer_id) DO UPDATE SET canonical_name=excluded.canonical_name,
+              primary_account_id=excluded.primary_account_id,updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$customer", identity.CustomerId);
+        command.Parameters.AddWithValue("$name", identity.CanonicalName);
+        command.Parameters.AddWithValue("$primary", identity.PrimaryAccountId);
+        command.Parameters.AddWithValue("$updated", identity.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(identity));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<CustomerPhoneIdentity>> GetCustomerPhoneIdentitiesAsync(string? customerId = null, CancellationToken cancellationToken = default)
+    {
+        var items = new List<CustomerPhoneIdentity>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = customerId is null
+            ? "SELECT data_json FROM customer_phone_identities ORDER BY updated_at DESC"
+            : "SELECT data_json FROM customer_phone_identities WHERE customer_id=$customer ORDER BY updated_at DESC";
+        if (customerId is not null) command.Parameters.AddWithValue("$customer", customerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<CustomerPhoneIdentity>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task UpsertCustomerPhoneIdentityAsync(CustomerPhoneIdentity identity, CancellationToken cancellationToken = default)
+    {
+        identity.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO customer_phone_identities(id,customer_id,digits,e164,jid,lid,source_account_id,manually_confirmed,confidence,updated_at,data_json)
+            VALUES($id,$customer,$digits,$e164,$jid,$lid,$account,$confirmed,$confidence,$updated,$json)
+            ON CONFLICT(id) DO UPDATE SET customer_id=excluded.customer_id,digits=excluded.digits,e164=excluded.e164,
+              jid=excluded.jid,lid=excluded.lid,source_account_id=excluded.source_account_id,manually_confirmed=excluded.manually_confirmed,
+              confidence=excluded.confidence,updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", identity.Id);
+        command.Parameters.AddWithValue("$customer", identity.CustomerId);
+        command.Parameters.AddWithValue("$digits", identity.Digits);
+        command.Parameters.AddWithValue("$e164", identity.E164);
+        command.Parameters.AddWithValue("$jid", identity.Jid);
+        command.Parameters.AddWithValue("$lid", identity.Lid);
+        command.Parameters.AddWithValue("$account", identity.SourceAccountId);
+        command.Parameters.AddWithValue("$confirmed", identity.ManuallyConfirmed ? 1 : 0);
+        command.Parameters.AddWithValue("$confidence", identity.Confidence);
+        command.Parameters.AddWithValue("$updated", identity.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(identity));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<WhatsAppIdentityLink?> GetWhatsAppIdentityLinkAsync(string accountId, string conversationId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM whatsapp_identity_links WHERE account_id=$account AND conversation_id=$conversation";
+        command.Parameters.AddWithValue("$account", accountId);
+        command.Parameters.AddWithValue("$conversation", conversationId);
+        return Json.Deserialize<WhatsAppIdentityLink>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task<List<WhatsAppIdentityLink>> GetWhatsAppIdentityLinksAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        var items = new List<WhatsAppIdentityLink>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM whatsapp_identity_links WHERE customer_id=$customer AND is_active=1 ORDER BY updated_at DESC";
+        command.Parameters.AddWithValue("$customer", customerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<WhatsAppIdentityLink>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task UpsertWhatsAppIdentityLinkAsync(WhatsAppIdentityLink link, CancellationToken cancellationToken = default)
+    {
+        link.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO whatsapp_identity_links(id,customer_id,account_id,conversation_id,contact_jid,match_result,is_active,updated_at,data_json)
+            VALUES($id,$customer,$account,$conversation,$jid,$result,$active,$updated,$json)
+            ON CONFLICT(account_id,conversation_id) DO UPDATE SET id=excluded.id,customer_id=excluded.customer_id,
+              contact_jid=excluded.contact_jid,match_result=excluded.match_result,is_active=excluded.is_active,
+              updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", link.Id);
+        command.Parameters.AddWithValue("$customer", link.CustomerId);
+        command.Parameters.AddWithValue("$account", link.AccountId);
+        command.Parameters.AddWithValue("$conversation", link.ConversationId);
+        command.Parameters.AddWithValue("$jid", link.ContactJid);
+        command.Parameters.AddWithValue("$result", link.MatchResult.ToString());
+        command.Parameters.AddWithValue("$active", link.IsActive ? 1 : 0);
+        command.Parameters.AddWithValue("$updated", link.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(link));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task SaveIdentityMatchLogAsync(CustomerIdentityMatchLog log, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO customer_identity_match_logs(id,customer_id,account_id,conversation_id,result,created_at,data_json)
+            VALUES($id,$customer,$account,$conversation,$result,$created,$json)
+            """;
+        command.Parameters.AddWithValue("$id", log.Id);
+        command.Parameters.AddWithValue("$customer", log.CustomerId);
+        command.Parameters.AddWithValue("$account", log.AccountId);
+        command.Parameters.AddWithValue("$conversation", log.ConversationId);
+        command.Parameters.AddWithValue("$result", log.Result.ToString());
+        command.Parameters.AddWithValue("$created", log.CreatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(log));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<AccountPersona?> GetAccountPersonaAsync(string accountId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM account_personas WHERE account_id=$account";
+        command.Parameters.AddWithValue("$account", accountId);
+        return Json.Deserialize<AccountPersona>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task UpsertAccountPersonaAsync(AccountPersona persona, CancellationToken cancellationToken = default)
+    {
+        persona.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO account_personas(account_id,updated_at,data_json) VALUES($account,$updated,$json)
+            ON CONFLICT(account_id) DO UPDATE SET updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$account", persona.AccountId);
+        command.Parameters.AddWithValue("$updated", persona.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(persona));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<AccountRelationshipMemory?> GetAccountRelationshipMemoryAsync(string customerId, string accountId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM account_relationship_memories WHERE customer_id=$customer AND account_id=$account";
+        command.Parameters.AddWithValue("$customer", customerId);
+        command.Parameters.AddWithValue("$account", accountId);
+        return Json.Deserialize<AccountRelationshipMemory>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task UpsertAccountRelationshipMemoryAsync(AccountRelationshipMemory memory, CancellationToken cancellationToken = default)
+    {
+        memory.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO account_relationship_memories(id,customer_id,account_id,updated_at,data_json)
+            VALUES($id,$customer,$account,$updated,$json)
+            ON CONFLICT(customer_id,account_id) DO UPDATE SET updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", memory.Id);
+        command.Parameters.AddWithValue("$customer", memory.CustomerId);
+        command.Parameters.AddWithValue("$account", memory.AccountId);
+        command.Parameters.AddWithValue("$updated", memory.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(memory));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<ConversationAgentState?> GetConversationAgentStateAsync(string accountId, string conversationId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM conversation_agent_states WHERE account_id=$account AND conversation_id=$conversation";
+        command.Parameters.AddWithValue("$account", accountId);
+        command.Parameters.AddWithValue("$conversation", conversationId);
+        return Json.Deserialize<ConversationAgentState>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task<List<ConversationAgentState>> GetCustomerAgentStatesAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        var items = new List<ConversationAgentState>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM conversation_agent_states WHERE customer_id=$customer ORDER BY updated_at DESC";
+        command.Parameters.AddWithValue("$customer", customerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<ConversationAgentState>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task<List<ConversationAgentState>> GetAgentStatesAsync(
+        ConversationAgentMode? mode = null, CancellationToken cancellationToken = default)
+    {
+        var items = new List<ConversationAgentState>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = mode is null
+            ? "SELECT data_json FROM conversation_agent_states ORDER BY updated_at DESC"
+            : "SELECT data_json FROM conversation_agent_states WHERE mode=$mode ORDER BY updated_at DESC";
+        if (mode is not null) command.Parameters.AddWithValue("$mode", mode.Value.ToString());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<ConversationAgentState>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task UpsertConversationAgentStateAsync(ConversationAgentState state, CancellationToken cancellationToken = default)
+    {
+        state.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO conversation_agent_states(id,customer_id,account_id,conversation_id,mode,updated_at,data_json)
+            VALUES($id,$customer,$account,$conversation,$mode,$updated,$json)
+            ON CONFLICT(account_id,conversation_id) DO UPDATE SET customer_id=excluded.customer_id,
+              mode=excluded.mode,updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", state.Id);
+        command.Parameters.AddWithValue("$customer", state.CustomerId);
+        command.Parameters.AddWithValue("$account", state.AccountId);
+        command.Parameters.AddWithValue("$conversation", state.ConversationId);
+        command.Parameters.AddWithValue("$mode", state.Mode.ToString());
+        command.Parameters.AddWithValue("$updated", state.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(state));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<GlobalCustomerAgentLock?> GetGlobalCustomerAgentLockAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM global_customer_agent_locks WHERE customer_id=$customer";
+        command.Parameters.AddWithValue("$customer", customerId);
+        return Json.Deserialize<GlobalCustomerAgentLock>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task<bool> TryAcquireGlobalCustomerAgentLockAsync(GlobalCustomerAgentLock agentLock, CancellationToken cancellationToken = default)
+    {
+        agentLock.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO global_customer_agent_locks(customer_id,active_account_id,account_id,conversation_id,updated_at,data_json)
+            VALUES($customer,$account,$account,$conversation,$updated,$json)
+            ON CONFLICT(customer_id) DO UPDATE SET
+              account_id=excluded.account_id,conversation_id=excluded.conversation_id,
+              updated_at=excluded.updated_at,data_json=excluded.data_json
+            WHERE global_customer_agent_locks.account_id=excluded.account_id
+              AND global_customer_agent_locks.conversation_id=excluded.conversation_id
+            """;
+        command.Parameters.AddWithValue("$customer", agentLock.CustomerId);
+        command.Parameters.AddWithValue("$account", agentLock.ActiveAccountId);
+        command.Parameters.AddWithValue("$conversation", agentLock.ActiveConversationId);
+        command.Parameters.AddWithValue("$updated", agentLock.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(agentLock));
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task SwitchGlobalCustomerAgentLockAsync(GlobalCustomerAgentLock agentLock, CancellationToken cancellationToken = default)
+    {
+        agentLock.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO global_customer_agent_locks(customer_id,active_account_id,account_id,conversation_id,updated_at,data_json)
+            VALUES($customer,$account,$account,$conversation,$updated,$json)
+            ON CONFLICT(customer_id) DO UPDATE SET account_id=excluded.account_id,conversation_id=excluded.conversation_id,
+              updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$customer", agentLock.CustomerId);
+        command.Parameters.AddWithValue("$account", agentLock.ActiveAccountId);
+        command.Parameters.AddWithValue("$conversation", agentLock.ActiveConversationId);
+        command.Parameters.AddWithValue("$updated", agentLock.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(agentLock));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task ReleaseGlobalCustomerAgentLockAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "DELETE FROM global_customer_agent_locks WHERE customer_id=$customer";
+        command.Parameters.AddWithValue("$customer", customerId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<RelationshipMemory?> GetRelationshipMemoryAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM relationship_memories WHERE customer_id=$customer";
+        command.Parameters.AddWithValue("$customer", customerId);
+        return Json.Deserialize<RelationshipMemory>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task UpsertRelationshipMemoryAsync(RelationshipMemory memory, CancellationToken cancellationToken = default)
+    {
+        memory.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO relationship_memories(customer_id,updated_at,data_json) VALUES($customer,$updated,$json)
+            ON CONFLICT(customer_id) DO UPDATE SET updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$customer", memory.CustomerId);
+        command.Parameters.AddWithValue("$updated", memory.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(memory));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<SourcingRequest?> GetLatestSourcingRequestAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM sourcing_requests WHERE customer_id=$customer ORDER BY version DESC,updated_at DESC LIMIT 1";
+        command.Parameters.AddWithValue("$customer", customerId);
+        return Json.Deserialize<SourcingRequest>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task<List<SourcingRequest>> GetLatestSourcingRequestsAsync(CancellationToken cancellationToken = default)
+    {
+        var items = new List<SourcingRequest>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            SELECT data_json FROM sourcing_requests source
+            WHERE NOT EXISTS (
+              SELECT 1 FROM sourcing_requests newer
+              WHERE newer.customer_id=source.customer_id
+                AND (newer.version>source.version OR
+                  (newer.version=source.version AND newer.updated_at>source.updated_at)))
+            ORDER BY updated_at DESC
+            """;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<SourcingRequest>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task UpsertSourcingRequestAsync(SourcingRequest request, CancellationToken cancellationToken = default)
+    {
+        request.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO sourcing_requests(id,customer_id,version,status,updated_at,data_json)
+            VALUES($id,$customer,$version,$status,$updated,$json)
+            ON CONFLICT(id) DO UPDATE SET version=excluded.version,status=excluded.status,
+              updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", request.Id);
+        command.Parameters.AddWithValue("$customer", request.CustomerId);
+        command.Parameters.AddWithValue("$version", request.Version);
+        command.Parameters.AddWithValue("$status", request.Status.ToString());
+        command.Parameters.AddWithValue("$updated", request.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(request));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<HumanHandoffEvent?> GetOpenHumanHandoffAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM human_handoff_events WHERE customer_id=$customer AND status IN ('Open','TakenOver') ORDER BY updated_at DESC LIMIT 1";
+        command.Parameters.AddWithValue("$customer", customerId);
+        return Json.Deserialize<HumanHandoffEvent>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task<HumanHandoffEvent?> GetLatestHumanHandoffAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM human_handoff_events WHERE customer_id=$customer ORDER BY updated_at DESC LIMIT 1";
+        command.Parameters.AddWithValue("$customer", customerId);
+        return Json.Deserialize<HumanHandoffEvent>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task<List<HumanHandoffEvent>> GetOpenHumanHandoffsAsync(CancellationToken cancellationToken = default)
+    {
+        var items = new List<HumanHandoffEvent>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM human_handoff_events WHERE status IN ('Open','TakenOver') ORDER BY updated_at DESC";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<HumanHandoffEvent>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task UpsertHumanHandoffAsync(HumanHandoffEvent handoff, CancellationToken cancellationToken = default)
+    {
+        handoff.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO human_handoff_events(id,customer_id,account_id,conversation_id,status,updated_at,data_json)
+            VALUES($id,$customer,$account,$conversation,$status,$updated,$json)
+            ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", handoff.Id);
+        command.Parameters.AddWithValue("$customer", handoff.CustomerId);
+        command.Parameters.AddWithValue("$account", handoff.AccountId);
+        command.Parameters.AddWithValue("$conversation", handoff.ConversationId);
+        command.Parameters.AddWithValue("$status", handoff.Status.ToString());
+        command.Parameters.AddWithValue("$updated", handoff.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(handoff));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<PendingQuestion>> GetPendingQuestionsAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        var items = new List<PendingQuestion>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM pending_questions WHERE customer_id=$customer AND is_resolved=0 ORDER BY updated_at DESC";
+        command.Parameters.AddWithValue("$customer", customerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<PendingQuestion>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task UpsertPendingQuestionAsync(PendingQuestion question, CancellationToken cancellationToken = default)
+    {
+        question.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO pending_questions(id,customer_id,account_id,safety,is_resolved,updated_at,data_json)
+            VALUES($id,$customer,$account,$safety,$resolved,$updated,$json)
+            ON CONFLICT(id) DO UPDATE SET safety=excluded.safety,is_resolved=excluded.is_resolved,
+              updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", question.Id);
+        command.Parameters.AddWithValue("$customer", question.CustomerId);
+        command.Parameters.AddWithValue("$account", question.AccountId);
+        command.Parameters.AddWithValue("$safety", question.Safety.ToString());
+        command.Parameters.AddWithValue("$resolved", question.IsResolved ? 1 : 0);
+        command.Parameters.AddWithValue("$updated", question.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(question));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task SaveCustomerMergeAuditAsync(CustomerMergeAudit audit, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO customer_merge_audits(id,source_customer_id,target_customer_id,identity_link_id,action,created_at,data_json)
+            VALUES($id,$source,$target,$link,$action,$created,$json)
+            """;
+        command.Parameters.AddWithValue("$id", audit.Id);
+        command.Parameters.AddWithValue("$source", audit.SourceCustomerId);
+        command.Parameters.AddWithValue("$target", audit.TargetCustomerId);
+        command.Parameters.AddWithValue("$link", audit.IdentityLinkId);
+        command.Parameters.AddWithValue("$action", audit.Action);
+        command.Parameters.AddWithValue("$created", audit.CreatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(audit));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task SaveAgentTurnLogAsync(AgentTurnLog log, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO agent_turn_logs(id,customer_id,account_id,conversation_id,source_message_id,created_at,data_json)
+            VALUES($id,$customer,$account,$conversation,$message,$created,$json)
+            """;
+        command.Parameters.AddWithValue("$id", log.Id);
+        command.Parameters.AddWithValue("$customer", log.CustomerId);
+        command.Parameters.AddWithValue("$account", log.AccountId);
+        command.Parameters.AddWithValue("$conversation", log.ConversationId);
+        command.Parameters.AddWithValue("$message", log.SourceMessageId);
+        command.Parameters.AddWithValue("$created", log.CreatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(log));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<AgentTurnLog>> GetAgentTurnLogsAsync(string customerId, int limit = 100, CancellationToken cancellationToken = default)
+    {
+        var items = new List<AgentTurnLog>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM agent_turn_logs WHERE customer_id=$customer ORDER BY created_at DESC LIMIT $limit";
+        command.Parameters.AddWithValue("$customer", customerId);
+        command.Parameters.AddWithValue("$limit", limit);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<AgentTurnLog>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task<List<WhatsAppMessage>> GetWhatsAppMessagesForCustomerAsync(string customerId, int limit = 500, CancellationToken cancellationToken = default)
+    {
+        var items = new List<WhatsAppMessage>();
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            SELECT m.data_json
+            FROM whatsapp_messages m
+            LEFT JOIN whatsapp_identity_links l
+              ON l.account_id=m.account_id AND l.conversation_id=m.conversation_id AND l.is_active=1
+            WHERE m.lead_id=$customer OR l.customer_id=$customer
+            ORDER BY m.timestamp DESC LIMIT $limit
+            """;
+        command.Parameters.AddWithValue("$customer", customerId);
+        command.Parameters.AddWithValue("$limit", limit);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<WhatsAppMessage>(reader.GetString(0)) is { } item && seen.Add(item.Id)) items.Add(item);
+        items.Reverse();
+        return items;
     }
 
     public async Task SaveImportSummaryAsync(string fileName, int total, int created, int updated, int invalid, CancellationToken cancellationToken = default)

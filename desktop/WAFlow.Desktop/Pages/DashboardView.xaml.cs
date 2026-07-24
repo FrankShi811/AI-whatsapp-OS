@@ -34,7 +34,8 @@ public partial class DashboardView : UserControl, IRefreshableView
         StageItems.ItemsSource = Enum.GetValues<LeadStage>().Select(stage => new StageMetric(Labels.Stage(stage), data.Stages.GetValueOrDefault(stage), data.Stages.GetValueOrDefault(stage) * 100d / maximum)).ToList();
         PriorityGrid.ItemsSource = data.PriorityLeads;
         var brief = await _services.TodayBrief.GetAsync();
-        TodayBriefSummaryText.Text = $"逾期 {brief.OverdueCount} · 今日到期 {brief.DueTodayCount} · 执行中 {brief.InProgressCount}";
+        TodayBriefSummaryText.Text =
+            $"逾期 {brief.OverdueCount} · 人工接管 {brief.HumanHandoffCount} · 身份待确认 {brief.IdentityPendingCount} · 采购完整 {brief.SourcingCompleteCount}";
         TodayBriefItems.ItemsSource = brief.Items.Take(6).ToList();
         LearningCompletionText.Text = brief.Learning.Accepted == 0
             ? "完成率 —"

@@ -25,6 +25,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private readonly ObservableCollection<WhatsAppAccount> _accounts = [];
     private readonly List<Lead> _leads = [];
     private Lead? _currentLead;
+    private CustomerIdentityResolution? _currentIdentityResolution;
+    private CustomerSuccessContext? _currentCustomerSuccessContext;
     private bool _connected;
     private bool _switchingAccount;
     private bool _existingSession;
@@ -60,6 +62,11 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         ConversationList.ItemsSource = _conversations;
         AccountCombo.ItemsSource = _accounts;
         StageCombo.ItemsSource = Enum.GetValues<LeadStage>().Select(x => new StageOption(Labels.Stage(x), x)).ToList();
+        AgentModeCombo.ItemsSource = new[]
+        {
+            ConversationAgentMode.AutoOff, ConversationAgentMode.SuggestOnly,
+            ConversationAgentMode.CopilotActive, ConversationAgentMode.AutoActive
+        }.Select(value => new AgentModeOption(CustomerSuccessAgentLabels.Mode(value), value)).ToList();
         _services.WhatsApp.EventReceived += WhatsApp_EventReceived;
         _services.WhatsAppSync.MessageSynchronized += (_, _) => Dispatcher.InvokeAsync(() => DataChanged?.Invoke(this, EventArgs.Empty));
         _services.WhatsAppSync.SynchronizationChanged += WhatsAppSync_SynchronizationChanged;
@@ -504,8 +511,19 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
     private async Task LoadLeadAsync(ConversationItem conversation)
     {
-        _currentLead = string.IsNullOrWhiteSpace(conversation.Phone) ? null : FindLead(conversation.Phone);
-        LeadLinkStateText.Text = _currentLead is null ? "未关联客户；保存时将创建" : $"已关联：{_currentLead.Grade} 级 · {Labels.Stage(_currentLead.Stage)}";
+        _currentIdentityResolution = string.IsNullOrWhiteSpace(conversation.Phone)
+            ? new CustomerIdentityResolution { Result = CustomerIdentityMatchResult.NoMatch, Reason = "WhatsApp 尚未提供号码。" }
+            : await _services.CustomerIdentity.ResolveAsync(
+                conversation.AccountId, conversation.Id, conversation.Phone, conversation.Jid, "", conversation.DisplayName);
+        _currentLead = _currentIdentityResolution.AllowsAutomation && !string.IsNullOrWhiteSpace(_currentIdentityResolution.CustomerId)
+            ? await _services.Repository.GetLeadAsync(_currentIdentityResolution.CustomerId)
+            : null;
+        _currentCustomerSuccessContext = _currentLead is null
+            ? null
+            : await _services.CustomerSuccessAgent.GetContextAsync(conversation.AccountId, conversation.Id);
+        LeadLinkStateText.Text = _currentLead is null
+            ? $"{CustomerSuccessAgentLabels.Match(_currentIdentityResolution.Result)}；保存时可人工确认"
+            : $"全局客户：{_currentLead.Grade} 级 · {Labels.Stage(_currentLead.Stage)}";
         NameBox.Text = _currentLead?.Name ?? "";
         CompanyBox.Text = _currentLead?.Company ?? "";
         OwnerBox.Text = _currentLead?.Owner ?? "";
@@ -517,6 +535,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         CustomFieldsBox.Text = _currentLead is null ? "" : string.Join(Environment.NewLine, _currentLead.CustomFields.Select(x => $"{x.Key}={x.Value}"));
         StageCombo.SelectedItem = (StageCombo.ItemsSource as IEnumerable<StageOption>)?.FirstOrDefault(x => x.Value == (_currentLead?.Stage ?? LeadStage.New));
         UpdateLeadIntelligenceSummary(_currentLead);
+        UpdateCustomerSuccessPanel(_currentIdentityResolution, _currentCustomerSuccessContext);
         await UpdateCustomerBrainSummaryAsync(_currentLead);
     }
 
@@ -545,6 +564,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             lead.OptedOut = OptedOutCheck.IsChecked == true;
             lead.CustomFields = ParseCustomFields(CustomFieldsBox.Text);
             await _services.Repository.UpsertLeadAsync(lead);
+            await _services.CustomerIdentity.ConfirmBindingAsync(
+                lead.Id, conversation.AccountId, conversation.Id, conversation.Phone,
+                conversation.Jid, "", "inbox_sidebar");
             await _services.Repository.LogEventAsync("whatsapp_customer_sidebar_saved", lead.Id, null, "客户侧栏人工保存");
             _currentLead = lead;
             if (!_leads.Any(x => x.Id == lead.Id)) _leads.Add(lead);
@@ -562,6 +584,17 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             conversation.DisplayName = lead.DisplayName;
             LeadLinkStateText.Text = $"已关联：{lead.Grade} 级 · {Labels.Stage(lead.Stage)}";
             UpdateLeadIntelligenceSummary(lead);
+            _currentIdentityResolution = new CustomerIdentityResolution
+            {
+                Result = CustomerIdentityMatchResult.ExactMatch,
+                Method = CustomerIdentityMatchMethod.ManualBinding,
+                CustomerId = lead.Id,
+                CandidateCustomerIds = [lead.Id],
+                Confidence = 1,
+                Reason = "用户已在 WhatsApp Inbox 明确确认绑定。"
+            };
+            _currentCustomerSuccessContext = await _services.CustomerSuccessAgent.GetContextAsync(conversation.AccountId, conversation.Id);
+            UpdateCustomerSuccessPanel(_currentIdentityResolution, _currentCustomerSuccessContext);
             await UpdateCustomerBrainSummaryAsync(lead);
             DataChanged?.Invoke(this, EventArgs.Empty);
             MessageBox.Show("客户资料已同步到 AI Sales OS。", "WhatsApp Inbox", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -590,41 +623,30 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         UpdateComposerState();
         try
         {
-            var result = await _services.ConversationAssistant.AnalyzeAsync(conversation.Id, _currentLead);
-            var canSend = _connected && _currentLead?.OptedOut != true;
-            var dialog = new AiConversationAssistantWindow(result, canSend) { Owner = Window.GetWindow(this) };
-            if (dialog.ShowDialog() != true || dialog.Action == ConversationAssistantAction.Cancel) return;
-
-            result.ReplyText = dialog.ReplyText;
-            ComposerBox.Text = dialog.ReplyText;
-            ComposerBox.CaretIndex = ComposerBox.Text.Length;
-            if (dialog.Action == ConversationAssistantAction.FillComposer)
+            var result = await _services.CustomerSuccessAgent.AnalyzeAsync(
+                conversation.AccountId, conversation.Id, conversation.Phone,
+                conversation.DisplayName, conversation.Jid);
+            if (result.Decision is null)
             {
-                ComposerBox.Focus();
+                await LoadLeadAsync(conversation);
+                MessageBox.Show(
+                    string.IsNullOrWhiteSpace(result.BlockReason) ? "当前会话暂不允许 AI 自动处理。" : result.BlockReason,
+                    "DHgate Customer Success Agent", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
-            var lead = await _services.ConversationAssistant.ApplyAsync(
-                _currentLead,
-                conversation.Phone,
-                conversation.DisplayName,
-                result,
-                dialog.SelectedUpdates);
-            _currentLead = lead;
-            var existingIndex = _leads.FindIndex(item => item.Id == lead.Id);
-            if (existingIndex >= 0) _leads[existingIndex] = lead; else _leads.Add(lead);
-            conversation.LeadId = lead.Id;
-            conversation.DisplayName = lead.DisplayName;
-            await _services.Repository.SynchronizeLeadConnectionsFromInboxAsync([lead]);
+            ComposerBox.Text = result.Decision.ReplyText;
+            ComposerBox.CaretIndex = ComposerBox.Text.Length;
             await LoadLeadAsync(conversation);
-            var latestReply = (await _services.Repository.GetWhatsAppMessagesForLeadAsync(lead, 80))
-                .LastOrDefault(message => !message.IsStatusUpdate && message.Direction == WhatsAppMessageDirection.Incoming && !string.IsNullOrWhiteSpace(message.Body));
-            if (latestReply is not null)
-                await _services.LeadAutomation.QueueLeadForReplyAsync(latestReply);
             DataChanged?.Invoke(this, EventArgs.Empty);
-            var sent = await SendCurrentAsync("ai_conversation_assistant");
-            if (!sent)
-                MessageBox.Show("AI 提取的客户需求已经同步，但 WhatsApp 回复尚未得到成功回执。请先同步会话确认状态，不要重复发送。", "AI 会话助理", MessageBoxButton.OK, MessageBoxImage.Information);
+            ComposerBox.Focus();
+            MessageBox.Show(
+                $"需求摘要：{result.Decision.ChineseSummary}\n\n" +
+                $"下一步：{result.Decision.RecommendedNextAction}\n\n" +
+                $"安全判断：{result.Decision.Safety}（{result.Decision.SafetyReason}）\n\n" +
+                "回复已填入输入框，采购五要素和待确认问题已写入客户全局上下文；发送前仍由你确认。",
+                "DHgate Customer Success Agent", MessageBoxButton.OK,
+                result.Decision.RequiresHuman ? MessageBoxImage.Warning : MessageBoxImage.Information);
         }
         catch (DeepSeekException error)
         {
@@ -993,9 +1015,136 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private void ClearLead()
     {
         _currentLead = null; LeadLinkStateText.Text = "选择会话后关联客户"; NameBox.Clear(); CompanyBox.Clear(); OwnerBox.Clear(); TagsBox.Clear(); OptInCheck.IsChecked = false; OptInSourceBox.Clear(); OptedOutCheck.IsChecked = false; NotesBox.Clear(); CustomFieldsBox.Clear(); SaveLeadButton.IsEnabled = false;
+        _currentIdentityResolution = null;
+        _currentCustomerSuccessContext = null;
+        UpdateCustomerSuccessPanel(null, null);
         UpdateLeadIntelligenceSummary(null);
         UpdateComposerState();
     }
+
+    private async void ApplyAgentMode_Click(object sender, RoutedEventArgs e)
+    {
+        if (_currentLead is null || ConversationList.SelectedItem is not ConversationItem conversation ||
+            AgentModeCombo.SelectedItem is not AgentModeOption option) return;
+        try
+        {
+            await _services.CustomerSuccessAgent.SetModeAsync(
+                _currentLead.Id, conversation.AccountId, conversation.Id, option.Value, true);
+            await LoadLeadAsync(conversation);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(error.Message, "Agent 模式切换失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private async void TakeOverHandoff_Click(object sender, RoutedEventArgs e)
+    {
+        if (_currentLead is null || ConversationList.SelectedItem is not ConversationItem conversation) return;
+        try
+        {
+            await _services.CustomerSuccessAgent.TakeOverAsync(_currentLead.Id, "user");
+            await LoadLeadAsync(conversation);
+        }
+        catch (Exception error) { MessageBox.Show(error.Message, "人工接管失败", MessageBoxButton.OK, MessageBoxImage.Warning); }
+    }
+
+    private async void ResolveHandoff_Click(object sender, RoutedEventArgs e)
+    {
+        if (_currentLead is null || ConversationList.SelectedItem is not ConversationItem conversation) return;
+        try
+        {
+            await _services.CustomerSuccessAgent.ResolveHandoffAsync(_currentLead.Id, "用户已在 Inbox 标记处理完成");
+            await LoadLeadAsync(conversation);
+        }
+        catch (Exception error) { MessageBox.Show(error.Message, "交接处理失败", MessageBoxButton.OK, MessageBoxImage.Warning); }
+    }
+
+    private async void ResumeAgent_Click(object sender, RoutedEventArgs e)
+    {
+        if (_currentLead is null || ConversationList.SelectedItem is not ConversationItem conversation) return;
+        try
+        {
+            var mode = AgentModeCombo.SelectedItem is AgentModeOption option
+                ? option.Value : ConversationAgentMode.SuggestOnly;
+            await _services.CustomerSuccessAgent.ResumeAsync(
+                _currentLead.Id, conversation.AccountId, conversation.Id, mode);
+            await LoadLeadAsync(conversation);
+        }
+        catch (Exception error) { MessageBox.Show(error.Message, "恢复失败", MessageBoxButton.OK, MessageBoxImage.Warning); }
+    }
+
+    private void UpdateCustomerSuccessPanel(
+        CustomerIdentityResolution? identity, CustomerSuccessContext? context)
+    {
+        CustomerIdentityText.Text = identity is null
+            ? "等待会话身份"
+            : $"{CustomerSuccessAgentLabels.Match(identity.Result)} · 置信度 {identity.Confidence:P0} · {identity.Reason}";
+        LinkedAccountsText.Text = context?.IdentityLinks.Count > 0
+            ? $"关联账号：{string.Join("、", context.IdentityLinks.Select(item => item.AccountId).Distinct(StringComparer.OrdinalIgnoreCase))}；主账号：{context.Identity?.PrimaryAccountId}"
+            : "关联账号：—";
+        AccountRelationshipText.Text = string.IsNullOrWhiteSpace(context?.AccountRelationship?.Summary)
+            ? "本账号关系：尚无摘要"
+            : $"本账号关系：{context.AccountRelationship.Summary}";
+
+        var state = context?.AgentState;
+        AgentModeBadgeText.Text = CustomerSuccessAgentLabels.Mode(state?.Mode ?? ConversationAgentMode.SuggestOnly);
+        AgentStateReasonText.Text = state is null
+            ? "身份确认后可设置处理模式"
+            : $"{state.StateReason}；暂停消息 {state.PausedMessageCount} 条";
+        var selectableMode = state?.Mode is ConversationAgentMode.AutoOff or ConversationAgentMode.SuggestOnly or
+            ConversationAgentMode.CopilotActive or ConversationAgentMode.AutoActive
+            ? state.Mode : ConversationAgentMode.SuggestOnly;
+        AgentModeCombo.SelectedItem = (AgentModeCombo.ItemsSource as IEnumerable<AgentModeOption>)
+            ?.FirstOrDefault(item => item.Value == selectableMode);
+        AgentModeCombo.IsEnabled = context is not null;
+
+        var sourcing = context?.SourcingRequest;
+        var completeness = sourcing?.Completeness ?? 0;
+        SourcingProgressBar.Value = completeness;
+        SourcingProgressText.Text = $"{completeness}%";
+        SourcingStatusText.Text = sourcing is null
+            ? "尚未建立采购需求"
+            : $"状态：{SourcingStatusLabel(sourcing.Status)} · 版本 V{sourcing.Version}";
+        SourcingFieldsText.Text = sourcing is null || sourcing.MissingFields.Count > 0
+            ? $"缺失：{string.Join("、", (sourcing?.MissingFields ?? Enum.GetValues<SourcingFieldKey>()).Select(SourcingFieldLabel))}"
+            : "五个采购要素已齐全，等待人工复核后提交供应链。";
+        var conflicts = sourcing?.Conflicts.Where(item => !item.IsResolved).Select(item => SourcingFieldLabel(item.Field)).ToList() ?? [];
+        SourcingConflictText.Text = conflicts.Count == 0 ? "" : $"冲突待处理：{string.Join("、", conflicts)}";
+        PendingQuestionText.Text = context?.PendingQuestions.FirstOrDefault(item => !item.IsResolved) is { } question
+            ? $"待确认：{question.Question}（{question.Safety}）" : "待确认：—";
+
+        var handoff = context?.OpenHandoff;
+        HandoffPanel.Visibility = handoff is null ? Visibility.Collapsed : Visibility.Visible;
+        HandoffReasonText.Text = handoff is null ? "" : $"原因：{handoff.Reason} · 账号 {handoff.AccountId}";
+        HandoffOriginalText.Text = handoff is null ? "" : $"客户原话：{handoff.OriginalMessage}";
+        HandoffTranslationText.Text = handoff is null || string.IsNullOrWhiteSpace(handoff.ChineseAssistTranslation)
+            ? "" : $"中文辅助：{handoff.ChineseAssistTranslation}";
+        HandoffPausedText.Text = handoff is null ? "" : $"状态：{handoff.Status} · 已暂停 {handoff.PausedMessageCount} 条消息";
+    }
+
+    private static string SourcingFieldLabel(SourcingFieldKey value) => value switch
+    {
+        SourcingFieldKey.ProductImage => "产品图片/链接",
+        SourcingFieldKey.Quantity => "数量",
+        SourcingFieldKey.TargetPrice => "目标价",
+        SourcingFieldKey.Destination => "目的地",
+        SourcingFieldKey.ShippingPreference => "运输偏好",
+        _ => value.ToString()
+    };
+
+    private static string SourcingStatusLabel(SourcingRequestStatus value) => value switch
+    {
+        SourcingRequestStatus.Draft => "草稿",
+        SourcingRequestStatus.Collecting => "收集中",
+        SourcingRequestStatus.FieldConflict => "字段冲突",
+        SourcingRequestStatus.Complete => "已完整",
+        SourcingRequestStatus.HumanReview => "人工复核",
+        SourcingRequestStatus.Acknowledged => "已确认",
+        SourcingRequestStatus.Submitted => "已提交",
+        SourcingRequestStatus.Cancelled => "已取消",
+        _ => value.ToString()
+    };
 
     private void UpdateLeadIntelligenceSummary(Lead? lead)
     {
@@ -1171,6 +1320,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         _ => "WhatsApp 数据"
     };
     private sealed record StageOption(string Label, LeadStage Value);
+    private sealed record AgentModeOption(string Label, ConversationAgentMode Value);
 
     private sealed class ConversationItem(string accountId, string phone, string displayName, string jid) : INotifyPropertyChanged
     {
