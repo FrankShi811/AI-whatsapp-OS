@@ -13,6 +13,14 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("4.1.1", "2026-07-24", "Customer Intelligence 摘要展示与版本规范",
+        [
+            "WhatsApp Inbox 的 AI Sales Brief 改为自适应两行布局，客户画像不再受固定高度和省略号裁切，完整内容会自然换行展示。",
+            "下一步行动区域不再依赖固定像素边距，长画像与长建议可以随内容扩展，并继续由客户侧栏统一滚动。",
+            "正式采用 MAJOR.MINOR.PATCH 三段式版本规则：大规模或不兼容升级递增主版本，中等规模兼容功能递增次版本，小型修复递增补丁版本。",
+            "本次属于不扩展产品范围的显示缺陷修复，因此从 4.1.0 升级为 4.1.1。",
+            "本版本仅通过 GitHub Release 发布 Windows 中文安装包与 Velopack 自动更新资产；不覆盖本机正式程序，macOS 构建继续暂停。"
+        ], true),
         new("4.1.0", "2026-07-24", "DHgate Customer Success Agent · 跨 WhatsApp 账号客户连续性",
         [
             "新增 DHgate Customer Success Conversation Agent：以客户成功经理身份理解采购需求、澄清缺失信息、协调人工跟进，不冒充商户、工厂或供应商，也不承诺库存、价格、物流、退款或平台政策。",
@@ -24,7 +32,7 @@ public static class ReleaseCatalog
             "WhatsApp Inbox 客户抽屉加入身份结果、关联账号、Agent 模式、采购五要素、冲突、交接状态和人工操作；Dashboard Today Brief 增加身份待确认、人工交接、采购完成和跨账号工作。",
             "数据库升级仅新增旁路表与索引，旧客户、消息、账号、Brain、Lead Intelligence、任务、邮件和自动化数据均保留；跨账号人工确认关系在重启后继续持久化。",
             "本版本通过 GitHub Release 发布 Windows 中文安装包与 Velopack 自动更新资产；不覆盖本机正式程序，macOS 构建继续暂停。"
-        ], true),
+        ]),
         new("3.2.0", "2026-07-23", "个人 AI 销售员工 · 真实结果学习闭环",
         [
             "完成 Customer Brain Learning 阶段：仅根据真实 WhatsApp / Email 客户回复、CRM 阶段推进、成交与复购结果进行归因，不使用关键词或演示规则伪造效果。",

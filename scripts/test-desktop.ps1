@@ -19,11 +19,16 @@ $coreProject = Join-Path $root 'desktop\WAFlow.Core\WAFlow.Core.csproj'
 $macProject = Join-Path $root 'desktop\WAFlow.Mac\WAFlow.Mac.csproj'
 $appXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\App.xaml')
 $themeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ThemeManager.cs')
+$whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml')
+$releaseCatalogSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ReleaseCatalog.cs')
 $desktopVersion = ([xml](Get-Content -Raw -Encoding utf8 -LiteralPath $desktopProject)).Project.PropertyGroup.Version | Select-Object -First 1
 $coreVersion = ([xml](Get-Content -Raw -Encoding utf8 -LiteralPath $coreProject)).Project.PropertyGroup.Version | Select-Object -First 1
 $macVersion = ([xml](Get-Content -Raw -Encoding utf8 -LiteralPath $macProject)).Project.PropertyGroup.Version | Select-Object -First 1
 if ($desktopVersion -notmatch '^\d+\.\d+\.\d+$' -or $desktopVersion -ne $coreVersion) {
   throw "Desktop/Core versions must be the same semantic version. desktop=$desktopVersion core=$coreVersion"
+}
+if ($releaseCatalogSource -notmatch [regex]::Escape("new(`"$desktopVersion`"")) {
+  throw "ReleaseCatalog must contain the current Desktop/Core semantic version. version=$desktopVersion"
 }
 if ($env:ENABLE_MACOS_RELEASE -eq 'true') {
   if ($desktopVersion -ne $macVersion) {
@@ -55,6 +60,24 @@ foreach ($key in $requiredStyles) {
   if ($appXaml -notmatch "x:Key=`"$key`"") { throw "AI Sales OS 2.0 component style is missing: $key" }
 }
 Write-Host 'PASS  AI Sales OS 2.x Figma/Stitch/WPF design-system contract'
+
+$profileTextMatch = [regex]::Match(
+  $whatsAppInboxXaml,
+  '<TextBlock\s+x:Name="AiSidebarProfileText"(?<attributes>[\s\S]*?)/>'
+)
+if (-not $profileTextMatch.Success) {
+  throw 'WhatsApp Inbox AI Sales Brief profile text control is missing.'
+}
+$profileTextAttributes = $profileTextMatch.Groups['attributes'].Value
+if ($profileTextAttributes -notmatch 'TextWrapping="Wrap"' -or
+    $profileTextAttributes -match 'MaxHeight=' -or
+    $profileTextAttributes -match 'TextTrimming="CharacterEllipsis"') {
+  throw 'WhatsApp Inbox AI Sales Brief must show the full customer profile without fixed-height or ellipsis clipping.'
+}
+if ($whatsAppInboxXaml -match 'Margin="0,108,0,0"') {
+  throw 'WhatsApp Inbox AI Sales Brief next action must use adaptive rows instead of a fixed overlay margin.'
+}
+Write-Host 'PASS  WhatsApp Inbox AI Sales Brief adaptive full-text layout contract'
 
 & $dotnet build (Join-Path $root 'desktop\WAFlow.sln') -c Release
 if ($LASTEXITCODE -ne 0) { throw 'WAFlow desktop build failed.' }

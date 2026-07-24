@@ -230,22 +230,50 @@
                             </StackPanel>
                         </Border>
                         <Border Style="{StaticResource AiCard}" Padding="13" Margin="0,0,0,15">
-                            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="105"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                <controls:ScoreRing x:Name="AiSidebarScoreRing" Width="100" Height="100"/>
-                                <StackPanel Grid.Column="1" Margin="12,1,0,0">
-                                    <TextBlock Text="AI SALES BRIEF" Style="{StaticResource PageEyebrow}"/>
-                                    <TextBlock x:Name="AiSidebarBrainMetaText"
-                                               Text="CUSTOMER BRAIN · 等待客户上下文"
-                                               Foreground="{DynamicResource AiAccent}"
-                                               FontSize="8.5"
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="105"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <controls:ScoreRing x:Name="AiSidebarScoreRing" Width="100" Height="100" VerticalAlignment="Top"/>
+                                    <StackPanel Grid.Column="1" Margin="12,1,0,0">
+                                        <TextBlock Text="AI SALES BRIEF" Style="{StaticResource PageEyebrow}"/>
+                                        <TextBlock x:Name="AiSidebarBrainMetaText"
+                                                   Text="CUSTOMER BRAIN · 等待客户上下文"
+                                                   Foreground="{DynamicResource AiAccent}"
+                                                   FontSize="8.5"
+                                                   FontWeight="SemiBold"
+                                                   Margin="0,3,0,0"
+                                                   TextWrapping="Wrap"/>
+                                        <TextBlock x:Name="AiSidebarConfidenceText" Text="等待 AI 分析" FontWeight="SemiBold" Margin="0,5,0,4"/>
+                                        <ProgressBar x:Name="AiSidebarConfidenceBar" Height="5" Maximum="100" Foreground="{DynamicResource AiAccent}"/>
+                                        <TextBlock x:Name="AiSidebarProfileText"
+                                                   Text="选择已关联客户后显示画像"
+                                                   Foreground="{DynamicResource Muted}"
+                                                   FontSize="9.5"
+                                                   LineHeight="15"
+                                                   TextWrapping="Wrap"
+                                                   TextTrimming="None"
+                                                   Margin="0,7,0,0"/>
+                                    </StackPanel>
+                                </Grid>
+                                <Border Grid.Row="1"
+                                        Background="{DynamicResource PrimarySurface}"
+                                        CornerRadius="8"
+                                        Padding="9,6"
+                                        Margin="0,10,0,0">
+                                    <TextBlock x:Name="AiSidebarNextActionText"
+                                               Text="下一步：等待客户上下文"
+                                               Foreground="{DynamicResource PrimaryDark}"
+                                               FontSize="9.5"
                                                FontWeight="SemiBold"
-                                               Margin="0,3,0,0"
                                                TextWrapping="Wrap"/>
-                                    <TextBlock x:Name="AiSidebarConfidenceText" Text="等待 AI 分析" FontWeight="SemiBold" Margin="0,5,0,4"/>
-                                    <ProgressBar x:Name="AiSidebarConfidenceBar" Height="5" Maximum="100" Foreground="{DynamicResource AiAccent}"/>
-                                    <TextBlock x:Name="AiSidebarProfileText" Text="选择已关联客户后显示画像" Foreground="{DynamicResource Muted}" FontSize="9.5" TextWrapping="Wrap" Margin="0,7,0,0" MaxHeight="42" TextTrimming="CharacterEllipsis"/>
-                                </StackPanel>
-                                <Border Grid.ColumnSpan="2" VerticalAlignment="Bottom" Background="{DynamicResource PrimarySurface}" CornerRadius="8" Padding="9,6" Margin="0,108,0,0"><TextBlock x:Name="AiSidebarNextActionText" Text="下一步：等待客户上下文" Foreground="{DynamicResource PrimaryDark}" FontSize="9.5" FontWeight="SemiBold" TextWrapping="Wrap"/></Border>
+                                </Border>
                             </Grid>
                         </Border>
                         <TextBlock Text="客户资料" Style="{StaticResource SectionTitle}" Margin="0,0,0,11"/>

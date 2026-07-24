@@ -1,0 +1,41 @@
+# AI Sales OS 版本号规范
+
+AI Sales OS 从 `4.1.1` 起统一使用严格的 `MAJOR.MINOR.PATCH` 三段式版本号，例如 `3.2.0`。
+
+## 版本位含义
+
+- `MAJOR`（大版本）：产品定位、核心架构、核心数据契约或多个关键工作流发生大规模变化；包含不兼容升级时必须递增。
+- `MINOR`（中版本）：在保持向后兼容的前提下新增模块、重要业务能力、较大数据能力或中等规模 UI/交互升级。
+- `PATCH`（小版本）：不扩展产品范围的缺陷修复、文案或布局修复、性能与稳定性修复、安全加固和小范围体验优化。
+
+## 自动判定规则
+
+每次发布前先检查本次全部变更，并以其中影响最大的变更确定版本规模：
+
+1. 存在任一大版本变更，使用 `MAJOR`。
+2. 否则存在任一中版本变更，使用 `MINOR`。
+3. 否则使用 `PATCH`。
+
+递增时必须将右侧低位归零：
+
+- `3.2.4` 的大版本更新为 `4.0.0`。
+- `3.2.4` 的中版本更新为 `3.3.0`。
+- `3.2.4` 的小版本更新为 `3.2.5`。
+
+不允许使用两段式版本号、跳过影响规模判断，或只修改安装包文件名而不修改程序版本。
+
+## 发布同步要求
+
+一次发布必须同步更新并保持一致：
+
+- `desktop/WAFlow.Desktop/WAFlow.Desktop.csproj`
+- `desktop/WAFlow.Core/WAFlow.Core.csproj`
+- `desktop/WAFlow.Desktop/ReleaseCatalog.cs`
+- `docs/releases/vX.Y.Z.md`
+- GitHub Tag、GitHub Release、Windows 安装包和 Velopack 更新清单
+
+macOS 发布继续暂停，直到用户明确恢复并具备 Developer ID、签名和公证条件。
+
+## 本次判定
+
+本次仅修复 WhatsApp Inbox 的 Customer Intelligence 摘要文字裁切，不新增业务能力，属于 `PATCH`，版本由 `4.1.0` 递增为 `4.1.1`。
