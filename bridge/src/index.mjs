@@ -29,6 +29,7 @@ const state = {
   contacts: new Map(),
   chats: new Map(),
   messages: new Map(),
+  outboundTargets: new Map(),
   mediaDownloads: new Map(),
   historyTotals: { contacts: 0, chats: 0, messages: 0 },
   syncQueue: Promise.resolve()
@@ -218,22 +219,26 @@ function jidFromPhone(phone) {
 }
 
 async function resolveOutboundJid(phone, explicitJid = '') {
-  const explicit = String(explicitJid ?? '').trim()
-  if (shouldForward(explicit)) return explicit
   const digits = String(phone ?? '').replace(/\D/g, '')
   const fallback = jidFromPhone(digits)
+  const explicit = await verifiedPhoneJid(explicitJid, digits)
+  if (explicit) return explicit
 
   const cached = [...state.contacts.values(), ...state.chats.values()]
     .find(item => item?.phone === digits || phoneFromJid(item?.jid) === digits || phoneFromJid(item?.sourceJid) === digits)
   if (cached) {
     const resolved = await resolveUserJid(cached.jid, cached.sourceJid)
-    if (shouldForward(resolved)) return resolved
+    const verified = await verifiedPhoneJid(resolved, digits)
+    if (verified) return verified
   }
 
   try {
     const matches = await state.socket?.onWhatsApp(digits)
-    const match = (matches ?? []).find(item => item?.exists && shouldForward(String(item?.jid ?? '')))
-    if (match?.jid) return String(match.jid)
+    for (const match of matches ?? []) {
+      if (!match?.exists) continue
+      const verified = await verifiedPhoneJid(match?.jid, digits)
+      if (verified) return verified
+    }
   } catch {
     // Number discovery is advisory only. A temporary discovery failure must not block a real send attempt.
   }
@@ -249,6 +254,73 @@ function timestampToIso(value) {
 
 function phoneFromJid(jid) {
   return String(jid ?? '').endsWith('@s.whatsapp.net') ? String(jid).split('@')[0].split(':')[0].replace(/\D/g, '') : ''
+}
+
+async function phoneJidFromAnyJid(jid) {
+  const candidate = String(jid ?? '').trim()
+  if (candidate.endsWith('@s.whatsapp.net')) return candidate
+  if (!candidate.endsWith('@lid')) return ''
+  try {
+    const mapped = await state.socket?.signalRepository?.lidMapping?.getPNForLID(candidate)
+    return String(mapped ?? '').endsWith('@s.whatsapp.net') ? String(mapped) : ''
+  } catch {
+    return ''
+  }
+}
+
+async function verifiedPhoneJid(jid, expectedPhone) {
+  const phoneJid = await phoneJidFromAnyJid(jid)
+  return phoneFromJid(phoneJid) === String(expectedPhone ?? '').replace(/\D/g, '') ? phoneJid : ''
+}
+
+function rememberOutboundTarget(providerMessageId, target) {
+  const id = String(providerMessageId ?? '').trim()
+  if (!id) throw new Error('whatsapp_server_message_id_missing')
+  state.outboundTargets.set(id, target)
+  while (state.outboundTargets.size > 5000) {
+    const oldest = state.outboundTargets.keys().next().value
+    if (!oldest) break
+    state.outboundTargets.delete(oldest)
+  }
+}
+
+async function requireVerifiedOutboundResult(result, requestedPhone, requestedJid) {
+  const providerMessageId = String(result?.key?.id ?? '').trim()
+  if (!providerMessageId) throw new Error('whatsapp_server_message_id_missing')
+  const expectedPhone = String(requestedPhone ?? '').replace(/\D/g, '')
+  if (!expectedPhone) throw new Error('invalid_whatsapp_number')
+
+  const actualCandidates = [
+    String(result?.key?.remoteJidAlt ?? '').trim(),
+    String(result?.key?.remoteJid ?? '').trim()
+  ].filter(Boolean)
+  let actualPhoneJid = ''
+  for (const candidate of actualCandidates) {
+    actualPhoneJid = await verifiedPhoneJid(candidate, expectedPhone)
+    if (actualPhoneJid) break
+  }
+  if (!actualPhoneJid) throw new Error('whatsapp_target_not_verified')
+
+  const requestedPhoneJid = await verifiedPhoneJid(requestedJid, expectedPhone)
+  if (!requestedPhoneJid) throw new Error('whatsapp_target_not_verified')
+  const target = {
+    requestedPhone: expectedPhone,
+    requestedJid: requestedPhoneJid,
+    remoteJid: String(result?.key?.remoteJid ?? ''),
+    remoteJidAlt: String(result?.key?.remoteJidAlt ?? ''),
+    createdAt: new Date().toISOString()
+  }
+  rememberOutboundTarget(providerMessageId, target)
+  return { providerMessageId, ...target, targetVerified: true }
+}
+
+async function receiptBelongsToPhone(receipt, expectedPhone) {
+  const userJid = String(receipt?.userJid ?? '').trim()
+  if (!userJid) return false
+  const ownJids = [state.socket?.user?.id, state.socket?.user?.lid].map(value => String(value ?? '').trim()).filter(Boolean)
+  if (ownJids.includes(userJid)) return false
+  const resolved = await phoneJidFromAnyJid(userJid)
+  return phoneFromJid(resolved) === String(expectedPhone ?? '').replace(/\D/g, '')
 }
 
 function firstNonEmpty(...values) {
@@ -593,6 +665,13 @@ async function normalizeMessage(message, source) {
   const media = await downloadMessageMedia(message, kind, fileName, mimeType)
   const quote = quotedMessageDetails(message.message)
   const timestamp = timestampToIso(message.messageTimestamp)
+  const expectedPhone = phoneFromJid(jid)
+  const verifiedReceipts = []
+  if (message.key.fromMe && expectedPhone) {
+    for (const receipt of message.userReceipt ?? []) {
+      if (await receiptBelongsToPhone(receipt, expectedPhone)) verifiedReceipts.push(receipt)
+    }
+  }
   return {
     id: message.key.id ?? '',
     jid,
@@ -608,8 +687,8 @@ async function normalizeMessage(message, source) {
     mimeType,
     ...media,
     status: message.status ?? null,
-    deliveredAt: latestReceiptTime(message.userReceipt, 'receiptTimestamp'),
-    readAt: latestReceiptTime(message.userReceipt, 'readTimestamp', 'playedTimestamp'),
+    deliveredAt: latestReceiptTime(verifiedReceipts, 'receiptTimestamp'),
+    readAt: latestReceiptTime(verifiedReceipts, 'readTimestamp', 'playedTimestamp'),
     isStatusUpdate,
     statusExpiresAt: isStatusUpdate ? new Date(new Date(timestamp).getTime() + 24 * 60 * 60 * 1000).toISOString() : '',
     ...quote,
@@ -850,6 +929,29 @@ async function connect() {
     for (const update of updates ?? []) {
       const jid = await resolveDirectJid(update.key)
       if (!shouldForward(jid)) continue
+      const providerMessageId = String(update.key?.id ?? '').trim()
+      const trackedTarget = state.outboundTargets.get(providerMessageId)
+      if (trackedTarget) {
+        const actualPhone = phoneFromJid(await phoneJidFromAnyJid(jid))
+        if (!actualPhone || actualPhone !== trackedTarget.requestedPhone) {
+          emit({
+            type: 'event', event: 'message_status', accountId: state.accountId,
+            data: {
+              id: providerMessageId,
+              jid: trackedTarget.requestedJid,
+              status: 0,
+              statusAt: new Date().toISOString(),
+              deliveredAt: '',
+              readAt: '',
+              failureReason: 'whatsapp_target_mismatch',
+              statusContext: 'target_verification',
+              remoteJid: String(update.key?.remoteJid ?? ''),
+              remoteJidAlt: String(update.key?.remoteJidAlt ?? '')
+            }
+          })
+          continue
+        }
+      }
       const numericStatus = update.update?.status ?? null
       const failureDetails = [
         update.update?.error?.message,
@@ -878,6 +980,10 @@ async function connect() {
     for (const update of updates ?? []) {
       const jid = await resolveDirectJid(update.key)
       if (!shouldForward(jid)) continue
+      const providerMessageId = String(update.key?.id ?? '').trim()
+      const trackedTarget = state.outboundTargets.get(providerMessageId)
+      const expectedPhone = trackedTarget?.requestedPhone || phoneFromJid(await phoneJidFromAnyJid(jid))
+      if (!expectedPhone || !await receiptBelongsToPhone(update.receipt, expectedPhone)) continue
       const deliveredAt = update.receipt?.receiptTimestamp == null ? '' : timestampToIso(update.receipt.receiptTimestamp)
       const readValue = update.receipt?.readTimestamp ?? update.receipt?.playedTimestamp
       const readAt = readValue == null ? '' : timestampToIso(readValue)
@@ -885,7 +991,17 @@ async function connect() {
       if (status == null) continue
       emit({
         type: 'event', event: 'message_status', accountId: state.accountId,
-        data: { id: update.key.id ?? '', jid, status, statusAt: new Date().toISOString(), deliveredAt, readAt, failureReason: '' }
+        data: {
+          id: providerMessageId,
+          jid: trackedTarget?.requestedJid || jid,
+          status,
+          statusAt: new Date().toISOString(),
+          deliveredAt,
+          readAt,
+          failureReason: '',
+          receiptUserJid: String(update.receipt?.userJid ?? ''),
+          targetVerified: true
+        }
       })
     }
   })
@@ -933,6 +1049,7 @@ async function handle(command) {
         state.accountId = validateAccountId(command.accountId ?? 'default')
         state.authKey = parseEncryptionKey(command.encryptionKey)
         state.sessionDir = resolveSessionDir(state.accountId)
+        state.outboundTargets.clear()
         await fs.mkdir(state.sessionDir, { recursive: true })
         reply(requestId, true, { accountId: state.accountId, sessionDir: state.sessionDir })
         return
@@ -957,6 +1074,7 @@ async function handle(command) {
         state.manualDisconnect = true
         if (state.socket) await state.socket.logout()
         await closeSocket()
+        state.outboundTargets.clear()
         if (state.sessionDir) await fs.rm(state.sessionDir, { recursive: true, force: true })
         emit({ type: 'event', event: 'connection', accountId: state.accountId, data: { state: 'logged_out', manual: true } })
         reply(requestId, true, { state: 'logged_out' })
@@ -968,10 +1086,18 @@ async function handle(command) {
         const jid = await resolveOutboundJid(command.phone, command.jid)
         if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
         const result = await state.socket.sendMessage(jid, { text }, quotedSendOptions(command, jid))
+        const target = await requireVerifiedOutboundResult(result, command.phone, jid)
         rememberMessage(result)
         // sendMessage may return before WhatsApp has acknowledged the message.
         // Missing status means pending, never a confirmed send.
-        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString(), status: result?.status ?? 1, quotedMessageId: String(command.quotedMessageId ?? '') })
+        reply(requestId, true, {
+          id: target.providerMessageId,
+          jid: target.requestedJid,
+          timestamp: new Date().toISOString(),
+          status: result?.status ?? 1,
+          quotedMessageId: String(command.quotedMessageId ?? ''),
+          ...target
+        })
         return
       }
       case 'send_media': {
@@ -980,8 +1106,19 @@ async function handle(command) {
         if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
         const media = await buildMediaMessage(command.path, command.caption)
         const result = await state.socket.sendMessage(jid, media.payload, quotedSendOptions(command, jid))
+        const target = await requireVerifiedOutboundResult(result, command.phone, jid)
         rememberMessage(result)
-        reply(requestId, true, { id: result?.key?.id ?? '', jid, timestamp: new Date().toISOString(), status: result?.status ?? 1, kind: media.kind, mimeType: media.mimeType, fileName: media.fileName, quotedMessageId: String(command.quotedMessageId ?? '') })
+        reply(requestId, true, {
+          id: target.providerMessageId,
+          jid: target.requestedJid,
+          timestamp: new Date().toISOString(),
+          status: result?.status ?? 1,
+          kind: media.kind,
+          mimeType: media.mimeType,
+          fileName: media.fileName,
+          quotedMessageId: String(command.quotedMessageId ?? ''),
+          ...target
+        })
         return
       }
       case 'validate_number': {

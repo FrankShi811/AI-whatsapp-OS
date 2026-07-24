@@ -1,5 +1,6 @@
 using System.Text;
 using System.Net;
+using System.Reflection;
 using System.Text.Json;
 using ClosedXML.Excel;
 using Microsoft.Data.Sqlite;
@@ -495,6 +496,17 @@ await repository.UpdateWhatsAppMessageStatusAsync("primary", "wamid-out", WhatsA
 await repository.UpdateWhatsAppMessageStatusAsync("primary", "wamid-out", WhatsAppMessageStatus.Read, readAt, deliveredAt, readAt);
 var receiptedMessage = (await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single(x => x.Id == outgoingStatus.Id);
 Check(receiptedMessage.Status == WhatsAppMessageStatus.Read && receiptedMessage.DeliveredAt == deliveredAt && receiptedMessage.ReadAt == readAt, "WhatsApp delivered/read receipt times persist");
+using var missingStatusDocument = JsonDocument.Parse("{}");
+var parseOutgoingStatusMethod = typeof(WhatsAppSyncService).GetMethod(
+    "ParseOutgoingStatus",
+    BindingFlags.NonPublic | BindingFlags.Static);
+Check(parseOutgoingStatusMethod is not null, "WhatsApp outgoing status parser exists");
+var missingStatus = (WhatsAppMessageStatus)parseOutgoingStatusMethod!.Invoke(
+    null,
+    new object?[] { missingStatusDocument.RootElement, null, null })!;
+Check(
+    missingStatus == WhatsAppMessageStatus.Pending,
+    "missing WhatsApp status remains pending instead of being treated as sent");
 var lateFailure = new WhatsAppMessage { Id="primary:wamid-late-failure", ProviderMessageId="wamid-late-failure", AccountId="primary", ConversationId=conversation.Id, LeadId=whatsappLead.Id, Phone=conversation.Phone, Direction=WhatsAppMessageDirection.Outgoing, Status=WhatsAppMessageStatus.Sent, Body="Late failure", Timestamp=DateTimeOffset.Now };
 await repository.UpsertWhatsAppMessageAsync(lateFailure);
 await repository.UpdateWhatsAppMessageStatusAsync("primary", lateFailure.ProviderMessageId, WhatsAppMessageStatus.Failed, DateTimeOffset.Now, failureReason:"WhatsApp returned an error");

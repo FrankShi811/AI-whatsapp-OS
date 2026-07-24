@@ -22,6 +22,11 @@ $appStartupSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $roo
 $desktopShortcutSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\DesktopShortcutService.cs')
 $themeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ThemeManager.cs')
 $whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml')
+$bridgeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\index.mjs')
+$whatsAppInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml.cs')
+$whatsAppSyncSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppSyncService.cs')
+$campaignAutomationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CampaignAutomationService.cs')
+$customerSuccessSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerSuccessAgentCoordinator.cs')
 $releaseCatalogSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ReleaseCatalog.cs')
 $velopackBuildSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'scripts\build-velopack-release.ps1')
 $allDesktopXaml = (Get-ChildItem -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop') -Recurse -Filter '*.xaml' |
@@ -156,6 +161,31 @@ if ($whatsAppInboxXaml -match 'Margin="0,108,0,0"') {
   throw 'WhatsApp Inbox AI Sales Brief next action must use adaptive rows instead of a fixed overlay margin.'
 }
 Write-Host 'PASS  WhatsApp Inbox AI Sales Brief adaptive full-text layout contract'
+
+if ($bridgeSource -notmatch 'receiptBelongsToPhone' -or
+    $bridgeSource -notmatch 'targetVerified:\s*true' -or
+    $bridgeSource -notmatch 'whatsapp_target_mismatch' -or
+    $bridgeSource -notmatch 'whatsapp_server_message_id_missing') {
+  throw 'WhatsApp bridge must verify the recipient and require a server message id before confirming a send.'
+}
+
+if ($whatsAppInboxSource -notmatch 'string\.IsNullOrWhiteSpace\(id\)' -or
+    $whatsAppInboxSource -notmatch '!Bool\(result, "targetVerified"\)' -or
+    $whatsAppInboxSource -notmatch 'WhatsAppMessageStatus\.Pending') {
+  throw 'WhatsApp Inbox must keep unconfirmed sends pending instead of inventing a successful message.'
+}
+
+if ($whatsAppSyncSource -notmatch 'WhatsAppMessageStatus\.Pending' -or
+    $campaignAutomationSource -notmatch 'target_not_verified' -or
+    $customerSuccessSource -notmatch 'customer_success_auto_reply_pending') {
+  throw 'All WhatsApp sending paths must share the real acknowledgement and target-verification contract.'
+}
+
+if ($customerSuccessSource -match 'holding-\{Guid\.NewGuid') {
+  throw 'Customer Success Agent must not invent a provider message id for an unconfirmed send.'
+}
+
+Write-Host 'PASS  WhatsApp real-send acknowledgement contract'
 
 & $dotnet build (Join-Path $root 'desktop\WAFlow.sln') -c Release
 if ($LASTEXITCODE -ne 0) { throw 'WAFlow desktop build failed.' }

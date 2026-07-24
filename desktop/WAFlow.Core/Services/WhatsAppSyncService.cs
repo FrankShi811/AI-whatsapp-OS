@@ -234,7 +234,11 @@ public sealed class WhatsAppSyncService
             conversation.UnreadCount++;
         }
         await _repository.UpsertWhatsAppConversationAsync(conversation);
-        if (lead is not null && inserted && !message.IsStatusUpdate)
+        var confirmedOutgoing = !fromMe ||
+                                message.Status is WhatsAppMessageStatus.Sent
+                                    or WhatsAppMessageStatus.Delivered
+                                    or WhatsAppMessageStatus.Read;
+        if (lead is not null && inserted && !message.IsStatusUpdate && confirmedOutgoing)
         {
             LeadConnectionStatus.ApplyFromMessage(lead, message);
             await _repository.UpsertLeadAsync(lead);
@@ -298,7 +302,7 @@ public sealed class WhatsAppSyncService
     {
         if (readAt is not null) return WhatsAppMessageStatus.Read;
         if (deliveredAt is not null) return WhatsAppMessageStatus.Delivered;
-        if (!data.TryGetProperty("status", out var statusElement) || !statusElement.TryGetInt32(out var numeric)) return WhatsAppMessageStatus.Sent;
+        if (!data.TryGetProperty("status", out var statusElement) || !statusElement.TryGetInt32(out var numeric)) return WhatsAppMessageStatus.Pending;
         return numeric switch
         {
             <= 0 => WhatsAppMessageStatus.Failed,

@@ -813,7 +813,11 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 result = reply is null
                     ? await _services.WhatsApp.SendMediaAsync(conversation.AccountId, conversation.Phone, attachmentPath, text)
                     : await _services.WhatsApp.SendReplyMediaAsync(conversation.AccountId, conversation.Phone, attachmentPath, text, reply.Id, reply.DisplayText, reply.FromMe);
-            var id = result.TryGetProperty("id", out var idElement) ? idElement.GetString() ?? Guid.NewGuid().ToString("N") : Guid.NewGuid().ToString("N");
+            var id = result.TryGetProperty("id", out var idElement) ? idElement.GetString()?.Trim() ?? "" : "";
+            if (string.IsNullOrWhiteSpace(id))
+                throw new InvalidOperationException("WhatsApp 未返回服务端消息 ID，消息未确认发出。");
+            if (!Bool(result, "targetVerified"))
+                throw new InvalidOperationException("WhatsApp 未确认目标联系人，消息未发出。");
             var timestamp = result.TryGetProperty("timestamp", out var timestampElement) && DateTimeOffset.TryParse(timestampElement.GetString(), out var parsedTimestamp) ? parsedTimestamp : DateTimeOffset.Now;
             var kind = result.TryGetProperty("kind", out var kindElement) ? kindElement.GetString() ?? "text" : "text";
             var fileName = result.TryGetProperty("fileName", out var fileNameElement) ? fileNameElement.GetString() ?? "" : "";
@@ -860,7 +864,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             await _services.Repository.UpsertWhatsAppMessageAsync(storedMessage);
             ReorderConversations(conversation);
             ScrollMessages(conversation);
-            if (_currentLead is not null)
+            var confirmedByServer = status is WhatsAppMessageStatus.Sent or WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read;
+            if (_currentLead is not null && confirmedByServer)
             {
                 LeadConnectionStatus.ApplyFromMessage(_currentLead, storedMessage);
                 await _services.Repository.UpsertLeadAsync(_currentLead);
@@ -880,7 +885,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         catch (TimeoutException)
         {
             pendingMessage.UpdateStatus(WhatsAppMessageStatus.Pending, DateTimeOffset.Now, null, null, "等待 WhatsApp 回执，发送状态待确认");
-            MessageBox.Show("手机端可能已经发送成功，但本机未及时收到确认。请先等待会话同步，不要立即重复发送。", "发送状态待确认", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("尚未收到 WhatsApp 服务端确认，消息保持待确认状态，不会显示为已发送。请等待会话同步后再决定是否重试。", "发送状态待确认", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception error)
         {
@@ -1297,7 +1302,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         if (!fromMe) return WhatsAppMessageStatus.Received;
         if (ParseTime(data, "readAt") is not null) return WhatsAppMessageStatus.Read;
         if (ParseTime(data, "deliveredAt") is not null) return WhatsAppMessageStatus.Delivered;
-        return data.TryGetProperty("status", out var value) && value.TryGetInt32(out var numeric) ? StatusFromNumeric(numeric) : WhatsAppMessageStatus.Sent;
+        return data.TryGetProperty("status", out var value) && value.TryGetInt32(out var numeric) ? StatusFromNumeric(numeric) : WhatsAppMessageStatus.Pending;
     }
     private static WhatsAppMessageStatus StatusFromNumeric(int numeric) => numeric switch
     {

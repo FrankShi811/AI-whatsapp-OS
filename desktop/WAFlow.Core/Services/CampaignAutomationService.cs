@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Infrastructure;
@@ -388,6 +389,9 @@ public sealed class CampaignAutomationService : IAsyncDisposable
                     recipient.ProviderMessageId = result.TryGetProperty("id", out var id) ? id.GetString() ?? "" : "";
                     if (string.IsNullOrWhiteSpace(recipient.ProviderMessageId))
                         throw new WhatsAppBridgeException("message_id_missing", "WhatsApp 未返回消息编号，发送状态无法确认。为避免重复触达，系统不会自动重发。");
+                    if (!result.TryGetProperty("targetVerified", out var targetVerified) ||
+                        targetVerified.ValueKind != JsonValueKind.True)
+                        throw new WhatsAppBridgeException("target_not_verified", "WhatsApp 未确认目标联系人，消息未发送。");
                     var numericStatus = result.TryGetProperty("status", out var statusElement) && statusElement.TryGetInt32(out var parsedStatus) ? parsedStatus : 1;
                     if (numericStatus <= 0)
                         throw new WhatsAppBridgeException("message_send_failed", "WhatsApp 返回发送错误，消息未发送。");
@@ -409,7 +413,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
             catch (Exception error)
             {
                 recipient.LastError = Safe(error.Message);
-                if (campaign.Channel == CampaignChannel.Email || error is WhatsAppBridgeException { Code: "message_send_failed" or "message_id_missing" })
+                if (campaign.Channel == CampaignChannel.Email || error is WhatsAppBridgeException { Code: "message_send_failed" or "message_id_missing" or "target_not_verified" })
                 {
                     recipient.Status = CampaignRecipientStatus.Failed;
                     recipient.SentAt = null;

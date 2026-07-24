@@ -13,6 +13,14 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("4.2.1", "2026-07-24", "WhatsApp 真实发送确认修复",
+        [
+            "消息发送必须取得 WhatsApp 服务端消息 ID，并校验实际目标号码；无法确认目标时保留待确认或显示失败，不再创建本地伪成功记录。",
+            "送达和已读回执只接受属于实际收件人的 userJid，忽略本机设备、自身账号及号码不匹配回执，防止错误绿勾和送达时间。",
+            "手工会话、AI 回复、后台同步、Customer Success Agent 与自动化群发统一采用同一发送确认契约；未确认消息不会推进 CRM 阶段、学习样本或任务成功统计。",
+            "新增消息 ID 缺失、目标验证失败、回执号码错配与缺失状态回归测试；旧数据、WhatsApp 账号和配置均不覆盖。",
+            "本版本仅通过 GitHub Release 发布 Windows 中文安装包与 Velopack 自动更新资产；不覆盖本机正式程序，macOS 构建继续暂停。"
+        ], true),
         new("4.2.0", "2026-07-24", "暗色高对比与更新快捷方式自修复",
         [
             "重构 WPF 全局主题资源为动态语义绑定，切换浅色、深色或跟随系统时，页面、弹窗和新手引导不再残留上一主题的文字与背景颜色。",
@@ -21,7 +29,7 @@ public static class ReleaseCatalog
             "Velopack 正式安装继续创建桌面和开始菜单快捷方式；每次安装版启动时会自检并修复缺失快捷方式，自动更新后无需用户手工重新创建。",
             "新增主题资源动态绑定、硬编码颜色、暗色对比度和快捷方式生命周期回归契约，防止后续版本再次退化。",
             "本版本仅通过 GitHub Release 发布 Windows 中文安装包与 Velopack 自动更新资产；不覆盖本机正式程序，macOS 构建继续暂停。"
-        ], true),
+        ]),
         new("4.1.1", "2026-07-24", "Customer Intelligence 摘要展示与版本规范",
         [
             "WhatsApp Inbox 的 AI Sales Brief 改为自适应两行布局，客户画像不再受固定高度和省略号裁切，完整内容会自然换行展示。",

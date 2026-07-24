@@ -53,16 +53,23 @@ public sealed class CustomerSuccessAgentCoordinator : IDisposable
             if (!result.AutoReplyAllowed && !shouldSendHolding) return;
             var response = await _connections.SendTextAsync(message.AccountId, conversation.Phone, result.Decision.ReplyText, cancellationToken);
             var providerMessageId = ReadProviderId(response);
+            if (string.IsNullOrWhiteSpace(providerMessageId))
+                throw new InvalidOperationException("WhatsApp 未返回服务端消息 ID，AI 回复未确认发出。");
+            if (!ReadBool(response, "targetVerified"))
+                throw new InvalidOperationException("WhatsApp 未确认目标联系人，AI 回复未发出。");
+            var providerStatus = ReadNumericStatus(response);
+            var confirmedByServer = providerStatus is >= 2 and <= 4;
             if (shouldSendHolding && result.AgentState is not null)
             {
-                result.AgentState.LastHoldingReplyMessageId = string.IsNullOrWhiteSpace(providerMessageId)
-                    ? $"holding-{Guid.NewGuid():N}" : providerMessageId;
+                result.AgentState.LastHoldingReplyMessageId = providerMessageId;
                 await _repository.UpsertConversationAgentStateAsync(result.AgentState, cancellationToken);
             }
             await _repository.LogEventAsync(
-                shouldSendHolding ? "customer_success_holding_reply_sent" : "customer_success_auto_reply_sent",
+                confirmedByServer
+                    ? shouldSendHolding ? "customer_success_holding_reply_sent" : "customer_success_auto_reply_sent"
+                    : shouldSendHolding ? "customer_success_holding_reply_pending" : "customer_success_auto_reply_pending",
                 result.Context?.CustomerId, null,
-                Json.Serialize(new { message.AccountId, message.ConversationId, sourceMessageId = message.Id, providerMessageId }),
+                Json.Serialize(new { message.AccountId, message.ConversationId, sourceMessageId = message.Id, providerMessageId, providerStatus, targetVerified = true }),
                 cancellationToken);
         }
         catch (Exception ex)
@@ -85,6 +92,24 @@ public sealed class CustomerSuccessAgentCoordinator : IDisposable
             if (value.TryGetProperty(name, out var item) && item.ValueKind == JsonValueKind.String)
                 return item.GetString() ?? "";
         return "";
+    }
+
+    private static bool ReadBool(JsonElement value, string name)
+    {
+        return value.ValueKind == JsonValueKind.Object &&
+               value.TryGetProperty(name, out var item) &&
+               item.ValueKind is JsonValueKind.True or JsonValueKind.False &&
+               item.GetBoolean();
+    }
+
+    private static int ReadNumericStatus(JsonElement value)
+    {
+        return value.ValueKind == JsonValueKind.Object &&
+               value.TryGetProperty("status", out var item) &&
+               item.ValueKind == JsonValueKind.Number &&
+               item.TryGetInt32(out var numeric)
+            ? numeric
+            : 1;
     }
 
     public void Dispose()
