@@ -40,29 +40,29 @@
                     <StackPanel>
                         <TextBlock Text="COMMAND CENTER" Foreground="{DynamicResource SidebarMuted}" FontSize="9" FontWeight="SemiBold" Margin="13,3,0,7"/>
                         <Button x:Name="DashboardButton" Tag="dashboard" Click="Navigate_Click" Style="{StaticResource NavButton}">
-                            <StackPanel Orientation="Horizontal"><TextBlock Text="▦" Width="26" FontSize="14"/><TextBlock Text="Dashboard"/></StackPanel>
+                            <StackPanel Orientation="Horizontal"><TextBlock Text="▦" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="Dashboard" Style="{StaticResource NavText}"/></StackPanel>
                         </Button>
                         <Button x:Name="IntelligenceButton" Tag="intelligence" Click="Navigate_Click" Style="{StaticResource NavButton}">
-                            <StackPanel Orientation="Horizontal"><TextBlock Text="✦" Width="26" FontSize="14"/><TextBlock Text="商机智能"/></StackPanel>
+                            <StackPanel Orientation="Horizontal"><TextBlock Text="✦" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="商机智能" Style="{StaticResource NavText}"/></StackPanel>
                         </Button>
 
                         <TextBlock Text="CUSTOMER OPERATIONS" Foreground="{DynamicResource SidebarMuted}" FontSize="9" FontWeight="SemiBold" Margin="13,20,0,7"/>
                         <Button x:Name="CustomersButton" Tag="customers" Click="Navigate_Click" Style="{StaticResource NavButton}">
-                            <StackPanel Orientation="Horizontal"><TextBlock Text="◎" Width="26" FontSize="14"/><TextBlock Text="客户列表"/></StackPanel>
+                            <StackPanel Orientation="Horizontal"><TextBlock Text="◎" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="客户列表" Style="{StaticResource NavText}"/></StackPanel>
                         </Button>
                         <Button x:Name="InboxButton" Tag="inbox" Click="Navigate_Click" Style="{StaticResource NavButton}">
-                            <StackPanel Orientation="Horizontal"><TextBlock Text="◉" Width="26" FontSize="14"/><TextBlock Text="WhatsApp Inbox"/></StackPanel>
+                            <StackPanel Orientation="Horizontal"><TextBlock Text="◉" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="WhatsApp Inbox" Style="{StaticResource NavText}"/></StackPanel>
                         </Button>
                         <Button x:Name="EmailButton" Tag="email" Click="Navigate_Click" Style="{StaticResource NavButton}">
-                            <StackPanel Orientation="Horizontal"><TextBlock Text="✉" Width="26" FontSize="14"/><TextBlock Text="邮件 Inbox"/></StackPanel>
+                            <StackPanel Orientation="Horizontal"><TextBlock Text="✉" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="邮件 Inbox" Style="{StaticResource NavText}"/></StackPanel>
                         </Button>
                         <Button x:Name="BroadcastButton" Tag="broadcast" Click="Navigate_Click" Style="{StaticResource NavButton}">
-                            <StackPanel Orientation="Horizontal"><TextBlock Text="◌" Width="26" FontSize="14"/><TextBlock Text="自动化群发"/></StackPanel>
+                            <StackPanel Orientation="Horizontal"><TextBlock Text="◌" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="自动化群发" Style="{StaticResource NavText}"/></StackPanel>
                         </Button>
 
                         <TextBlock Text="INSIGHTS" Foreground="{DynamicResource SidebarMuted}" FontSize="9" FontWeight="SemiBold" Margin="13,20,0,7"/>
                         <Button x:Name="AnalyticsButton" Tag="analytics" Click="Navigate_Click" Style="{StaticResource NavButton}">
-                            <StackPanel Orientation="Horizontal"><TextBlock Text="◫" Width="26" FontSize="14"/><TextBlock Text="客户智能分析"/></StackPanel>
+                            <StackPanel Orientation="Horizontal"><TextBlock Text="◫" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="客户智能分析" Style="{StaticResource NavText}"/></StackPanel>
                         </Button>
                     </StackPanel>
                 </ScrollViewer>

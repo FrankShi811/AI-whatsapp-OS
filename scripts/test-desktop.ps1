@@ -21,6 +21,7 @@ $appXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'deskto
 $appStartupSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\App.xaml.cs')
 $desktopShortcutSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\DesktopShortcutService.cs')
 $themeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ThemeManager.cs')
+$mainWindowXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MainWindow.xaml')
 $whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml')
 $bridgeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\index.mjs')
 $whatsAppInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml.cs')
@@ -64,7 +65,8 @@ $requiredStyles = @(
   'HolographicCard', 'ConfidenceMeter', 'ReasoningStepCard', 'PriorityCard',
   'InboundMessageBubble', 'OutboundMessageBubble', 'WorkflowNodeCard',
   'PageTitle', 'SectionTitle', 'BodyText', 'LabelText', 'MicroText',
-  'GlassCard', 'AmbientHeroCard', 'IntelligenceGlassCard', 'ElevatedMetricCard'
+  'GlassCard', 'AmbientHeroCard', 'IntelligenceGlassCard', 'ElevatedMetricCard',
+  'NavText'
 )
 foreach ($key in $requiredStyles) {
   if ($appXaml -notmatch "x:Key=`"$key`"") { throw "AI Sales OS 2.0 component style is missing: $key" }
@@ -95,6 +97,11 @@ if ($appXaml -notmatch '<Style TargetType="\{x:Type TextBlock\}">[\s\S]*?<Setter
     $appXaml -notmatch '<Style TargetType="\{x:Type GroupBox\}">[\s\S]*?<Setter Property="Foreground" Value="\{DynamicResource Ink\}"') {
   throw 'Implicit WPF text controls must inherit high-contrast semantic foregrounds in dark mode.'
 }
+$navTextCount = ([regex]::Matches($mainWindowXaml, 'Style="\{StaticResource NavText\}"')).Count
+if ($navTextCount -ne 14 -or
+    $appXaml -notmatch 'x:Key="NavText"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}') {
+  throw "Every sidebar navigation icon and label must inherit the owning NavButton foreground. expected=14 actual=$navTextCount"
+}
 
 function Convert-HexToRgb([string]$hex) {
   $value = $hex.TrimStart('#')
@@ -118,22 +125,32 @@ function Get-ContrastRatio([string]$foreground, [string]$background) {
   $darker = [Math]::Min($first, $second)
   return ($lighter + 0.05) / ($darker + 0.05)
 }
+$lightPalette = @{}
 $darkPalette = @{}
-[regex]::Matches($themeSource, '\["(?<key>[^"]+)"\]\s*=\s*\("#[0-9A-Fa-f]{6}",\s*"(?<dark>#[0-9A-Fa-f]{6})"\)') |
-  ForEach-Object { $darkPalette[$_.Groups['key'].Value] = $_.Groups['dark'].Value }
+[regex]::Matches($themeSource, '\["(?<key>[^"]+)"\]\s*=\s*\("(?<light>#[0-9A-Fa-f]{6})",\s*"(?<dark>#[0-9A-Fa-f]{6})"\)') |
+  ForEach-Object {
+    $lightPalette[$_.Groups['key'].Value] = $_.Groups['light'].Value
+    $darkPalette[$_.Groups['key'].Value] = $_.Groups['dark'].Value
+  }
 $contrastPairs = @(
   @('Ink', 'Canvas'), @('Ink', 'Surface'), @('Ink', 'SurfaceElevated'),
   @('Ink', 'SurfaceMuted'), @('Ink', 'AiSurface'), @('InkSecondary', 'Surface'),
   @('InkSecondary', 'SurfaceElevated'), @('Muted', 'Canvas'), @('Muted', 'Surface'),
-  @('Muted', 'SurfaceElevated'), @('Warning', 'WarningSoft'), @('Danger', 'DangerSoft')
+  @('Muted', 'SurfaceElevated'), @('Warning', 'WarningSoft'), @('Danger', 'DangerSoft'),
+  @('SidebarText', 'Sidebar'), @('SidebarText', 'SidebarActive'),
+  @('SidebarMuted', 'Sidebar'), @('SidebarMuted', 'SidebarElevated')
 )
-foreach ($pair in $contrastPairs) {
-  $ratio = Get-ContrastRatio $darkPalette[$pair[0]] $darkPalette[$pair[1]]
-  if ($ratio -lt 4.5) {
-    throw "Dark theme contrast is below WCAG AA for $($pair[0]) on $($pair[1]): $([Math]::Round($ratio, 2)):1"
+foreach ($paletteEntry in @(@('Light', $lightPalette), @('Dark', $darkPalette))) {
+  $mode = $paletteEntry[0]
+  $palette = $paletteEntry[1]
+  foreach ($pair in $contrastPairs) {
+    $ratio = Get-ContrastRatio $palette[$pair[0]] $palette[$pair[1]]
+    if ($ratio -lt 4.5) {
+      throw "$mode theme contrast is below WCAG AA for $($pair[0]) on $($pair[1]): $([Math]::Round($ratio, 2)):1"
+    }
   }
 }
-Write-Host 'PASS  dark-theme dynamic resources and high-contrast text contract'
+Write-Host 'PASS  light/dark-theme dynamic resources and high-contrast text contract'
 
 if ($appStartupSource -notmatch [regex]::Escape('DesktopShortcutService.EnsureForInstalledApp();') -or
     $desktopShortcutSource -notmatch [regex]::Escape('ShortcutLocation.Desktop') -or
