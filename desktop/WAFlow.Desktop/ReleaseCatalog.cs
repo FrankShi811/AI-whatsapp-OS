@@ -13,6 +13,15 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("4.2.0", "2026-07-24", "暗色高对比与更新快捷方式自修复",
+        [
+            "重构 WPF 全局主题资源为动态语义绑定，切换浅色、深色或跟随系统时，页面、弹窗和新手引导不再残留上一主题的文字与背景颜色。",
+            "统一修复 Dashboard、商机智能、客户智能分析、WhatsApp Inbox、邮件 Inbox、自动化触达、导入与客户编辑窗口中的暗色低对比文字、浅色硬编码背景和默认黑色文本。",
+            "为 TextBlock、Label、RadioButton 与 GroupBox 建立高对比默认前景，并对主要深色文字组合加入 WCAG AA 4.5:1 自动回归校验。",
+            "Velopack 正式安装继续创建桌面和开始菜单快捷方式；每次安装版启动时会自检并修复缺失快捷方式，自动更新后无需用户手工重新创建。",
+            "新增主题资源动态绑定、硬编码颜色、暗色对比度和快捷方式生命周期回归契约，防止后续版本再次退化。",
+            "本版本仅通过 GitHub Release 发布 Windows 中文安装包与 Velopack 自动更新资产；不覆盖本机正式程序，macOS 构建继续暂停。"
+        ], true),
         new("4.1.1", "2026-07-24", "Customer Intelligence 摘要展示与版本规范",
         [
             "WhatsApp Inbox 的 AI Sales Brief 改为自适应两行布局，客户画像不再受固定高度和省略号裁切，完整内容会自然换行展示。",
@@ -20,7 +29,7 @@ public static class ReleaseCatalog
             "正式采用 MAJOR.MINOR.PATCH 三段式版本规则：大规模或不兼容升级递增主版本，中等规模兼容功能递增次版本，小型修复递增补丁版本。",
             "本次属于不扩展产品范围的显示缺陷修复，因此从 4.1.0 升级为 4.1.1。",
             "本版本仅通过 GitHub Release 发布 Windows 中文安装包与 Velopack 自动更新资产；不覆盖本机正式程序，macOS 构建继续暂停。"
-        ], true),
+        ]),
         new("4.1.0", "2026-07-24", "DHgate Customer Success Agent · 跨 WhatsApp 账号客户连续性",
         [
             "新增 DHgate Customer Success Conversation Agent：以客户成功经理身份理解采购需求、澄清缺失信息、协调人工跟进，不冒充商户、工厂或供应商，也不承诺库存、价格、物流、退款或平台政策。",

@@ -297,7 +297,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             {
                 IpStatusText.Text = $"公网 IP：{result.Error} · 60 秒后重试";
                 IpStatusDot.Foreground = (Brush)FindResource("Muted");
-                IpStatusBorder.Background = new SolidColorBrush(Color.FromRgb(237, 244, 240));
+                IpStatusText.Foreground = (Brush)FindResource("Muted");
+                IpStatusBorder.Background = (Brush)FindResource("SurfaceMuted");
                 return;
             }
             var state = result.State;
@@ -308,8 +309,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             IpStatusText.Text = recentlyChanged
                 ? $"公网 IP 已变化：{state.PreviousIp} → {state.CurrentIp} · {location} · 每 60 秒监测"
                 : $"公网 IP：{state.CurrentIp} · {location} · 每 60 秒监测";
-            IpStatusDot.Foreground = new SolidColorBrush(recentlyChanged ? Color.FromRgb(183, 57, 57) : Color.FromRgb(15, 143, 104));
-            IpStatusText.Foreground = new SolidColorBrush(recentlyChanged ? Color.FromRgb(168, 58, 47) : Color.FromRgb(69, 92, 81));
+            IpStatusDot.Foreground = (Brush)FindResource(recentlyChanged ? "Danger" : "Success");
+            IpStatusText.Foreground = (Brush)FindResource(recentlyChanged ? "Danger" : "Success");
             IpStatusBorder.Background = (Brush)FindResource(recentlyChanged ? "DangerSoft" : "SuccessSoft");
             if (result.Changed)
             {
@@ -1409,8 +1410,16 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         public string MediaMissingText => string.IsNullOrWhiteSpace(MediaDownloadError) ? "媒体尚未下载；重新同步后会再次尝试。" : $"媒体下载失败：{MediaDownloadError}";
         public string TimeLabel => Timestamp.LocalDateTime.ToString("MM-dd HH:mm");
         public HorizontalAlignment Alignment => FromMe ? HorizontalAlignment.Right : HorizontalAlignment.Left;
-        public Brush BubbleBrush => new SolidColorBrush(IsStatusUpdate ? Color.FromRgb(255, 249, 229) : FromMe ? Color.FromRgb(220,248,233) : Colors.White);
-        public Brush BubbleBorderBrush => new SolidColorBrush(IsStatusUpdate ? Color.FromRgb(232, 198, 108) : FromMe ? Color.FromRgb(190,232,211) : Color.FromRgb(223,230,226));
+        public Brush BubbleBrush => IsStatusUpdate
+            ? ThemeBrush("WarningSoft", Color.FromRgb(255, 249, 229))
+            : FromMe
+                ? ThemeBrush("ChatOutbound", Color.FromRgb(220, 248, 233))
+                : ThemeBrush("ChatInbound", Colors.White);
+        public Brush BubbleBorderBrush => IsStatusUpdate
+            ? ThemeBrush("Warning", Color.FromRgb(232, 198, 108))
+            : FromMe
+                ? ThemeBrush("PrimarySoft", Color.FromRgb(190, 232, 211))
+                : ThemeBrush("Line", Color.FromRgb(223, 230, 226));
         public Visibility StatusUpdateVisibility => IsStatusUpdate ? Visibility.Visible : Visibility.Collapsed;
         public Visibility QuoteVisibility => !IsRevoked && !string.IsNullOrWhiteSpace(QuotedMessageId) ? Visibility.Visible : Visibility.Collapsed;
         public string QuoteHeader => QuotedFromMe ? "你" : "对方";
@@ -1427,13 +1436,13 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             WhatsAppMessageStatus.Failed => "!",
             _ => ""
         };
-        public Brush ReceiptBrush => new SolidColorBrush(Status switch
+        public Brush ReceiptBrush => Status switch
         {
-            WhatsAppMessageStatus.Read => Color.FromRgb(31, 142, 213),
-            WhatsAppMessageStatus.Failed => Color.FromRgb(183, 57, 57),
-            WhatsAppMessageStatus.Delivered => Color.FromRgb(89, 105, 97),
-            _ => Color.FromRgb(104, 118, 111)
-        });
+            WhatsAppMessageStatus.Read => ThemeBrush("Info", Color.FromRgb(31, 142, 213)),
+            WhatsAppMessageStatus.Failed => ThemeBrush("Danger", Color.FromRgb(183, 57, 57)),
+            WhatsAppMessageStatus.Delivered => ThemeBrush("InkSecondary", Color.FromRgb(89, 105, 97)),
+            _ => ThemeBrush("Muted", Color.FromRgb(104, 118, 111))
+        };
         public string StatusDetailLabel => !FromMe ? "" : IsRevoked ? $"已从双方设备撤回 · {At(RevokedAt ?? Timestamp)}" : Status switch
         {
             WhatsAppMessageStatus.Pending when !string.IsNullOrWhiteSpace(FailureReason) => $"状态待确认 · 发送 {At(Timestamp)}",
@@ -1449,6 +1458,12 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         {
             Id = id; Timestamp = timestamp; Kind = kind; FileName = fileName;
             NotifyAll();
+        }
+
+        private static Brush ThemeBrush(string key, Color fallback)
+        {
+            return Application.Current?.TryFindResource(key) as Brush
+                   ?? new SolidColorBrush(fallback);
         }
 
         public void UpdateStatus(WhatsAppMessageStatus status, DateTimeOffset? statusAt, DateTimeOffset? deliveredAt, DateTimeOffset? readAt, string failureReason)

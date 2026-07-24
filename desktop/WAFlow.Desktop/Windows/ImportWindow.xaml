@@ -12,25 +12,25 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <Border Background="White" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="24,18">
+        <Border Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="24,18">
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <StackPanel>
                     <TextBlock Text="直接导入 Excel / CSV 客户表" FontSize="22" FontWeight="Bold"/>
-                    <TextBlock Text="选择文件 → 选择工作表 → 原表全部列直接写入客户列表" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
+                    <TextBlock Text="选择文件 → 选择工作表 → 原表全部列直接写入客户列表" Foreground="{DynamicResource Muted}" Margin="0,5,0,0"/>
                 </StackPanel>
-                <TextBlock Grid.Column="1" Text="单文件 200MB · 不设固定行数上限" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="1" Text="单文件 200MB · 不设固定行数上限" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/>
             </Grid>
         </Border>
 
         <Grid Grid.Row="1" Margin="24,16,24,0">
             <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0" Orientation="Horizontal">
-                <Border x:Name="Step1Circle" Width="28" Height="28" CornerRadius="14" Background="{StaticResource Primary}"><TextBlock Text="1" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" FontWeight="Bold"/></Border>
+                <Border x:Name="Step1Circle" Width="28" Height="28" CornerRadius="14" Background="{DynamicResource Primary}"><TextBlock Text="1" Foreground="{DynamicResource SidebarText}" HorizontalAlignment="Center" VerticalAlignment="Center" FontWeight="Bold"/></Border>
                 <TextBlock Text="选择文件" VerticalAlignment="Center" Margin="8,0" FontWeight="SemiBold"/>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                <Border x:Name="Step2Circle" Width="28" Height="28" CornerRadius="14" Background="#CBD7D1"><TextBlock Text="2" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" FontWeight="Bold"/></Border>
+                <Border x:Name="Step2Circle" Width="28" Height="28" CornerRadius="14" Background="{DynamicResource LineStrong}"><TextBlock Text="2" Foreground="{DynamicResource SidebarText}" HorizontalAlignment="Center" VerticalAlignment="Center" FontWeight="Bold"/></Border>
                 <TextBlock Text="选择工作表并直接导入" VerticalAlignment="Center" Margin="8,0" FontWeight="SemiBold"/>
             </StackPanel>
         </Grid>
@@ -41,15 +41,15 @@
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                     <StackPanel>
                         <TextBlock Text="选择本地文件" Style="{StaticResource SectionTitle}"/>
-                        <TextBlock Text="支持 .xlsx、UTF-8 / GB18030 CSV；数万行会在后台解析并分批写入。" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
+                        <TextBlock Text="支持 .xlsx、UTF-8 / GB18030 CSV；数万行会在后台解析并分批写入。" Foreground="{DynamicResource Muted}" Margin="0,5,0,0"/>
                     </StackPanel>
-                    <Border Grid.Row="1" BorderBrush="#BFD3CA" BorderThickness="1" CornerRadius="12" Background="#F8FBF9" Margin="0,20,0,0">
+                    <Border Grid.Row="1" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="12" Background="{DynamicResource SurfaceMuted}" Margin="0,20,0,0">
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                            <TextBlock Text="▣" FontSize="42" Foreground="{StaticResource Primary}" HorizontalAlignment="Center"/>
+                            <TextBlock Text="▣" FontSize="42" Foreground="{DynamicResource Primary}" HorizontalAlignment="Center"/>
                             <TextBlock Text="选择 Excel 或 CSV 客户表" FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,12,0,0"/>
-                            <TextBlock Text="原表的每一个表头和每一个单元格值都会保存在本机数据库。" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,6,0,14"/>
+                            <TextBlock Text="原表的每一个表头和每一个单元格值都会保存在本机数据库。" Foreground="{DynamicResource Muted}" HorizontalAlignment="Center" Margin="0,6,0,14"/>
                             <Button Content="浏览文件…" Style="{StaticResource PrimaryButton}" Click="Browse_Click" HorizontalAlignment="Center"/>
-                            <TextBlock x:Name="FilePathText" Foreground="{StaticResource Muted}" Margin="0,14,0,0" MaxWidth="680" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock x:Name="FilePathText" Foreground="{DynamicResource Muted}" Margin="0,14,0,0" MaxWidth="680" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
                     </Border>
                 </Grid>
@@ -60,31 +60,31 @@
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <StackPanel>
                         <TextBlock Text="选择要导入的工作表" Style="{StaticResource SectionTitle}"/>
-                        <TextBlock Text="文件含多个工作表时只需选表，不再逐列映射或勾选额外选项。" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
+                        <TextBlock Text="文件含多个工作表时只需选表，不再逐列映射或勾选额外选项。" Foreground="{DynamicResource Muted}" Margin="0,5,0,0"/>
                     </StackPanel>
                     <ComboBox x:Name="SheetCombo" Grid.Row="1" Margin="0,18,0,14" SelectionChanged="SheetCombo_SelectionChanged" DisplayMemberPath="Name"/>
-                    <Border Grid.Row="2" Background="#F8FBF9" BorderBrush="#CFE0D8" BorderThickness="1" CornerRadius="10" Padding="18">
+                    <Border Grid.Row="2" Background="{DynamicResource SurfaceMuted}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="10" Padding="18">
                         <StackPanel>
-                            <TextBlock x:Name="SheetStatsText" FontSize="17" FontWeight="SemiBold" Foreground="{StaticResource Primary}"/>
+                            <TextBlock x:Name="SheetStatsText" FontSize="17" FontWeight="SemiBold" Foreground="{DynamicResource Primary}"/>
                             <TextBlock Text="以下原始列将全部成为客户维度：" FontWeight="SemiBold" Margin="0,16,0,7"/>
                             <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="190">
-                                <TextBlock x:Name="ColumnSummaryText" Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="22"/>
+                                <TextBlock x:Name="ColumnSummaryText" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" LineHeight="22"/>
                             </ScrollViewer>
                         </StackPanel>
                     </Border>
-                    <Border Grid.Row="3" Background="#EEF8F4" CornerRadius="8" Padding="14" Margin="0,14,0,0">
-                        <TextBlock Text="系统会自动识别姓名、电话、国家、负责人等常用列供销售功能使用；即使未识别，原列和原值也不会丢失。重复号码使用非空值更新，历史会话不会被删除。" Foreground="#27624E"/>
+                    <Border Grid.Row="3" Background="{DynamicResource PrimarySoft}" CornerRadius="8" Padding="14" Margin="0,14,0,0">
+                        <TextBlock Text="系统会自动识别姓名、电话、国家、负责人等常用列供销售功能使用；即使未识别，原列和原值也不会丢失。重复号码使用非空值更新，历史会话不会被删除。" Foreground="{DynamicResource Primary}"/>
                     </Border>
                 </Grid>
             </Border>
         </Grid>
 
-        <Border Grid.Row="3" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="24,14">
+        <Border Grid.Row="3" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="24,14">
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <Button x:Name="BackButton" Content="上一步" Style="{StaticResource SecondaryButton}" Click="Back_Click" Visibility="Collapsed" HorizontalAlignment="Left"/>
                 <StackPanel x:Name="ProgressPanel" Grid.Column="1" Margin="24,0" Visibility="Collapsed">
-                    <TextBlock x:Name="ImportProgressText" Text="正在处理" Foreground="{StaticResource Muted}" FontSize="11"/>
+                    <TextBlock x:Name="ImportProgressText" Text="正在处理" Foreground="{DynamicResource Muted}" FontSize="11"/>
                     <ProgressBar x:Name="ImportProgressBar" Height="5" Minimum="0" Maximum="100" Margin="0,5,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">

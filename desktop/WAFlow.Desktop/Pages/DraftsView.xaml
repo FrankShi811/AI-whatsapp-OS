@@ -3,18 +3,18 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Grid Margin="28,26,28,28">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-        <StackPanel><TextBlock Text="WhatsApp 草稿" Style="{StaticResource PageTitle}"/><TextBlock Text="所选 AI 模型生成 → 人工编辑 → 明确确认 → 复制或打开 WhatsApp；系统不自动发送。" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/></StackPanel>
+        <StackPanel><TextBlock Text="WhatsApp 草稿" Style="{StaticResource PageTitle}"/><TextBlock Text="所选 AI 模型生成 → 人工编辑 → 明确确认 → 复制或打开 WhatsApp；系统不自动发送。" Foreground="{DynamicResource Muted}" Margin="0,5,0,0"/></StackPanel>
         <Grid Grid.Row="1" Margin="0,20,0,0">
             <Grid.ColumnDefinitions><ColumnDefinition Width="310"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
             <Border Style="{StaticResource Card}" Padding="0" Margin="0,0,14,0">
                 <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                    <Border Padding="18,16" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1"><Grid><TextBlock Text="草稿历史" Style="{StaticResource SectionTitle}"/><TextBlock x:Name="DraftCountText" Text="0 条" HorizontalAlignment="Right" Style="{StaticResource LabelText}"/></Grid></Border>
+                    <Border Padding="18,16" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1"><Grid><TextBlock Text="草稿历史" Style="{StaticResource SectionTitle}"/><TextBlock x:Name="DraftCountText" Text="0 条" HorizontalAlignment="Right" Style="{StaticResource LabelText}"/></Grid></Border>
                     <ListBox x:Name="DraftList" Grid.Row="1" BorderThickness="0" Background="Transparent" SelectionChanged="DraftList_SelectionChanged" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                         <ListBox.ItemTemplate><DataTemplate>
-                            <Border BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="16,13" Width="286">
-                                <StackPanel><Grid><TextBlock Text="{Binding LeadName}" FontWeight="SemiBold"/><TextBlock Text="{Binding StatusLabel}" HorizontalAlignment="Right" Foreground="{StaticResource Primary}" FontSize="11"/></Grid>
-                                    <TextBlock Text="{Binding Body}" MaxHeight="38" TextTrimming="CharacterEllipsis" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,5,0,0"/>
-                                    <TextBlock Text="{Binding CreatedLabel}" Foreground="#95A09B" FontSize="10" Margin="0,5,0,0"/>
+                            <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="16,13" Width="286">
+                                <StackPanel><Grid><TextBlock Text="{Binding LeadName}" FontWeight="SemiBold"/><TextBlock Text="{Binding StatusLabel}" HorizontalAlignment="Right" Foreground="{DynamicResource Primary}" FontSize="11"/></Grid>
+                                    <TextBlock Text="{Binding Body}" MaxHeight="38" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,5,0,0"/>
+                                    <TextBlock Text="{Binding CreatedLabel}" Foreground="{DynamicResource Muted}" FontSize="10" Margin="0,5,0,0"/>
                                 </StackPanel>
                             </Border>
                         </DataTemplate></ListBox.ItemTemplate>
@@ -23,13 +23,13 @@
             </Border>
             <Border Grid.Column="1" Style="{StaticResource Card}" Padding="0">
                 <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                    <Border Padding="20,16" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+                    <Border Padding="20,16" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1">
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                            <StackPanel><TextBlock x:Name="ContextTitle" Text="选择客户并生成话术" FontSize="18" FontWeight="Bold"/><TextBlock x:Name="ContextSubtitle" Text="人工确认前不能复制或跳转" Foreground="{StaticResource Muted}" Margin="0,4,0,0"/></StackPanel>
-                            <Border Grid.Column="1" x:Name="StatusBadge" Background="{StaticResource WarningSoft}" CornerRadius="12" Padding="10,5" VerticalAlignment="Center"><TextBlock x:Name="StatusText" Text="未生成" Foreground="#8A6110" FontSize="11" FontWeight="SemiBold"/></Border>
+                            <StackPanel><TextBlock x:Name="ContextTitle" Text="选择客户并生成话术" FontSize="18" FontWeight="Bold"/><TextBlock x:Name="ContextSubtitle" Text="人工确认前不能复制或跳转" Foreground="{DynamicResource Muted}" Margin="0,4,0,0"/></StackPanel>
+                            <Border Grid.Column="1" x:Name="StatusBadge" Background="{DynamicResource WarningSoft}" CornerRadius="12" Padding="10,5" VerticalAlignment="Center"><TextBlock x:Name="StatusText" Text="未生成" Foreground="{DynamicResource Warning}" FontSize="11" FontWeight="SemiBold"/></Border>
                         </Grid>
                     </Border>
-                    <Border Grid.Row="1" Background="#F8FAF9" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="20,14">
+                    <Border Grid.Row="1" Background="{DynamicResource SurfaceMuted}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="20,14">
                         <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="1.25*"/><ColumnDefinition Width="95"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                 <ComboBox x:Name="LeadCombo" DisplayMemberPath="DisplayName" SelectionChanged="LeadCombo_SelectionChanged" Margin="0,0,10,0"/>
@@ -43,9 +43,9 @@
                     <Grid Grid.Row="2" Margin="20,16"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                         <Grid><TextBlock Text="话术正文" Style="{StaticResource SectionTitle}"/><TextBlock x:Name="CharCountText" Text="0 / 4096" HorizontalAlignment="Right" Style="{StaticResource LabelText}"/></Grid>
                         <TextBox x:Name="Editor" Grid.Row="1" AcceptsReturn="True" TextWrapping="Wrap" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto" FontSize="14" Margin="0,10,0,10" TextChanged="Editor_TextChanged" SpellCheck.IsEnabled="True"/>
-                        <Border Grid.Row="2" Background="{StaticResource WarningSoft}" CornerRadius="8" Padding="11"><TextBlock x:Name="SafetyText" Text="注意：生成内容可能包含不准确假设，请人工核对产品、价格、交期和承诺。" Foreground="#7A5A19" FontSize="11"/></Border>
+                        <Border Grid.Row="2" Background="{DynamicResource WarningSoft}" CornerRadius="8" Padding="11"><TextBlock x:Name="SafetyText" Text="注意：生成内容可能包含不准确假设，请人工核对产品、价格、交期和承诺。" Foreground="{DynamicResource Warning}" FontSize="11"/></Border>
                     </Grid>
-                    <Border Grid.Row="3" Padding="16" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
+                    <Border Grid.Row="3" Padding="16" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0">
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <Button x:Name="SaveButton" Content="保存编辑版本" Style="{StaticResource SecondaryButton}" Click="Save_Click" Margin="0,0,8,0"/>
                             <Button x:Name="ApproveButton" Grid.Column="1" Content="✓ 人工确认" Style="{StaticResource PrimaryButton}" Click="Approve_Click" HorizontalAlignment="Left"/>

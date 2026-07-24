@@ -81,8 +81,18 @@
             <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
             <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
         </Style>
-        <Style TargetType="TextBlock">
+        <Style TargetType="{x:Type TextBlock}">
+            <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
             <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+        <Style TargetType="{x:Type Label}">
+            <Setter Property="Foreground" Value="{DynamicResource InkSecondary}"/>
+        </Style>
+        <Style TargetType="{x:Type RadioButton}">
+            <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
+        </Style>
+        <Style TargetType="{x:Type GroupBox}">
+            <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
         </Style>
 
         <Style x:Key="Card" TargetType="Border">
@@ -103,8 +113,8 @@
             <Setter Property="Effect" Value="{StaticResource CardShadow}"/>
         </Style>
         <Style x:Key="AmbientHeroCard" TargetType="Border" BasedOn="{StaticResource GlassCard}">
-            <Setter Property="Background" Value="{StaticResource AuroraAmbient}"/>
-            <Setter Property="BorderBrush" Value="{StaticResource AuroraBorder}"/>
+            <Setter Property="Background" Value="{DynamicResource AuroraAmbient}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource AuroraBorder}"/>
             <Setter Property="CornerRadius" Value="22"/>
             <Setter Property="Padding" Value="24,21"/>
         </Style>
@@ -122,8 +132,8 @@
             <Setter Property="Effect" Value="{StaticResource AiGlow}"/>
         </Style>
         <Style x:Key="IntelligenceGlassCard" TargetType="Border" BasedOn="{StaticResource AiCard}">
-            <Setter Property="Background" Value="{StaticResource AuroraAmbient}"/>
-            <Setter Property="BorderBrush" Value="{StaticResource AuroraBorder}"/>
+            <Setter Property="Background" Value="{DynamicResource AuroraAmbient}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource AuroraBorder}"/>
             <Setter Property="CornerRadius" Value="20"/>
             <Setter Property="Effect" Value="{StaticResource AiGlow}"/>
         </Style>

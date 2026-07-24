@@ -18,9 +18,14 @@ $desktopProject = Join-Path $root 'desktop\WAFlow.Desktop\WAFlow.Desktop.csproj'
 $coreProject = Join-Path $root 'desktop\WAFlow.Core\WAFlow.Core.csproj'
 $macProject = Join-Path $root 'desktop\WAFlow.Mac\WAFlow.Mac.csproj'
 $appXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\App.xaml')
+$appStartupSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\App.xaml.cs')
+$desktopShortcutSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\DesktopShortcutService.cs')
 $themeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ThemeManager.cs')
 $whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml')
 $releaseCatalogSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ReleaseCatalog.cs')
+$velopackBuildSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'scripts\build-velopack-release.ps1')
+$allDesktopXaml = (Get-ChildItem -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop') -Recurse -Filter '*.xaml' |
+  ForEach-Object { Get-Content -Raw -Encoding utf8 -LiteralPath $_.FullName }) -join "`n"
 $desktopVersion = ([xml](Get-Content -Raw -Encoding utf8 -LiteralPath $desktopProject)).Project.PropertyGroup.Version | Select-Object -First 1
 $coreVersion = ([xml](Get-Content -Raw -Encoding utf8 -LiteralPath $coreProject)).Project.PropertyGroup.Version | Select-Object -First 1
 $macVersion = ([xml](Get-Content -Raw -Encoding utf8 -LiteralPath $macProject)).Project.PropertyGroup.Version | Select-Object -First 1
@@ -60,6 +65,79 @@ foreach ($key in $requiredStyles) {
   if ($appXaml -notmatch "x:Key=`"$key`"") { throw "AI Sales OS 2.0 component style is missing: $key" }
 }
 Write-Host 'PASS  AI Sales OS 2.x Figma/Stitch/WPF design-system contract'
+
+$allSemanticBrushes = @(
+  'Ink', 'InkSecondary', 'Muted', 'MutedSubtle', 'Primary', 'PrimaryDark', 'PrimaryHover',
+  'PrimarySoft', 'PrimarySurface', 'AiAccent', 'AiAccentDeep', 'AiProcessing', 'AiSoft',
+  'AiSurface', 'Surface', 'SurfaceElevated', 'SurfaceMuted', 'SurfaceInput', 'Canvas',
+  'CanvasDeep', 'Line', 'LineStrong', 'Sidebar', 'SidebarElevated', 'SidebarHover',
+  'SidebarActive', 'SidebarText', 'SidebarMuted', 'Success', 'SuccessSoft', 'Warning',
+  'WarningSoft', 'Danger', 'DangerSoft', 'Info', 'InfoSoft', 'GradeA', 'GradeB', 'GradeC',
+  'GradeD', 'ChatOutbound', 'ChatInbound', 'Overlay', 'GlassSurface', 'GlassSurfaceStrong',
+  'GlassLine', 'AuroraAmbient', 'AuroraBorder'
+)
+$semanticStaticPattern = '\{StaticResource\s+(?:' + (($allSemanticBrushes | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')\}'
+if ([regex]::IsMatch($allDesktopXaml, $semanticStaticPattern)) {
+  throw 'Theme-sensitive semantic brushes must use DynamicResource so an in-app theme switch cannot retain light-theme colors.'
+}
+$hardcodedColorPattern = '(?:Foreground|Background|BorderBrush)="(?:#[0-9A-Fa-f]{3,8}|Black|White|Gray|DarkGray|LightGray)"'
+if ([regex]::IsMatch($allDesktopXaml, $hardcodedColorPattern)) {
+  throw 'Desktop XAML contains a hard-coded foreground/background/border color that bypasses the semantic light/dark theme.'
+}
+if ($appXaml -notmatch '<Style TargetType="\{x:Type TextBlock\}">[\s\S]*?<Setter Property="Foreground" Value="\{DynamicResource Ink\}"' -or
+    $appXaml -notmatch '<Style TargetType="\{x:Type Label\}">[\s\S]*?<Setter Property="Foreground" Value="\{DynamicResource InkSecondary\}"' -or
+    $appXaml -notmatch '<Style TargetType="\{x:Type RadioButton\}">[\s\S]*?<Setter Property="Foreground" Value="\{DynamicResource Ink\}"' -or
+    $appXaml -notmatch '<Style TargetType="\{x:Type GroupBox\}">[\s\S]*?<Setter Property="Foreground" Value="\{DynamicResource Ink\}"') {
+  throw 'Implicit WPF text controls must inherit high-contrast semantic foregrounds in dark mode.'
+}
+
+function Convert-HexToRgb([string]$hex) {
+  $value = $hex.TrimStart('#')
+  return @(
+    [Convert]::ToInt32($value.Substring(0, 2), 16),
+    [Convert]::ToInt32($value.Substring(2, 2), 16),
+    [Convert]::ToInt32($value.Substring(4, 2), 16)
+  )
+}
+function Get-RelativeLuminance([string]$hex) {
+  $linear = Convert-HexToRgb $hex | ForEach-Object {
+    $channel = $_ / 255.0
+    if ($channel -le 0.04045) { $channel / 12.92 } else { [Math]::Pow(($channel + 0.055) / 1.055, 2.4) }
+  }
+  return 0.2126 * $linear[0] + 0.7152 * $linear[1] + 0.0722 * $linear[2]
+}
+function Get-ContrastRatio([string]$foreground, [string]$background) {
+  $first = Get-RelativeLuminance $foreground
+  $second = Get-RelativeLuminance $background
+  $lighter = [Math]::Max($first, $second)
+  $darker = [Math]::Min($first, $second)
+  return ($lighter + 0.05) / ($darker + 0.05)
+}
+$darkPalette = @{}
+[regex]::Matches($themeSource, '\["(?<key>[^"]+)"\]\s*=\s*\("#[0-9A-Fa-f]{6}",\s*"(?<dark>#[0-9A-Fa-f]{6})"\)') |
+  ForEach-Object { $darkPalette[$_.Groups['key'].Value] = $_.Groups['dark'].Value }
+$contrastPairs = @(
+  @('Ink', 'Canvas'), @('Ink', 'Surface'), @('Ink', 'SurfaceElevated'),
+  @('Ink', 'SurfaceMuted'), @('Ink', 'AiSurface'), @('InkSecondary', 'Surface'),
+  @('InkSecondary', 'SurfaceElevated'), @('Muted', 'Canvas'), @('Muted', 'Surface'),
+  @('Muted', 'SurfaceElevated'), @('Warning', 'WarningSoft'), @('Danger', 'DangerSoft')
+)
+foreach ($pair in $contrastPairs) {
+  $ratio = Get-ContrastRatio $darkPalette[$pair[0]] $darkPalette[$pair[1]]
+  if ($ratio -lt 4.5) {
+    throw "Dark theme contrast is below WCAG AA for $($pair[0]) on $($pair[1]): $([Math]::Round($ratio, 2)):1"
+  }
+}
+Write-Host 'PASS  dark-theme dynamic resources and high-contrast text contract'
+
+if ($appStartupSource -notmatch [regex]::Escape('DesktopShortcutService.EnsureForInstalledApp();') -or
+    $desktopShortcutSource -notmatch [regex]::Escape('ShortcutLocation.Desktop') -or
+    $desktopShortcutSource -notmatch [regex]::Escape('ShortcutLocation.StartMenuRoot') -or
+    $desktopShortcutSource -notmatch [regex]::Escape('VelopackLocator.IsCurrentSet') -or
+    $velopackBuildSource -notmatch [regex]::Escape("--shortcuts 'Desktop,StartMenuRoot'")) {
+  throw 'Windows install/update must create or repair both desktop and Start menu shortcuts.'
+}
+Write-Host 'PASS  Velopack install and post-update desktop shortcut repair contract'
 
 $profileTextMatch = [regex]::Match(
   $whatsAppInboxXaml,

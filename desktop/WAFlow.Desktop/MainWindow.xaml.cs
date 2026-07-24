@@ -178,7 +178,7 @@ public partial class MainWindow : Window
         }
         _activeButton = button;
         button.Background = (Brush)FindResource("SidebarActive");
-        button.Foreground = Brushes.White;
+        button.Foreground = (Brush)FindResource("SidebarText");
         button.BorderBrush = (Brush)FindResource("Primary");
         button.FontWeight = FontWeights.SemiBold;
         (object Content, string Title, string Subtitle) target = page switch

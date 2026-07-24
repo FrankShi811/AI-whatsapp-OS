@@ -71,11 +71,11 @@
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <StackPanel>
                                 <TextBlock Text="AI 商机评分卡" Style="{StaticResource SectionTitle}"/>
-                                <TextBlock x:Name="AiScoreStateText" Text="等待 Lead Intelligence V2 分析" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
+                                <TextBlock x:Name="AiScoreStateText" Text="等待 Lead Intelligence V2 分析" Foreground="{DynamicResource Muted}" Margin="0,5,0,0"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                                <StackPanel Margin="0,0,12,0"><TextBlock Text="AI Score" Foreground="{StaticResource Muted}" FontSize="10" HorizontalAlignment="Right"/><TextBlock x:Name="AiScoreText" Text="0" FontSize="28" FontWeight="Bold" HorizontalAlignment="Right"/></StackPanel>
-                                <Border Background="{StaticResource SuccessSoft}" CornerRadius="20" Width="54" Height="54"><TextBlock x:Name="AiGradeText" Text="D级" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+                                <StackPanel Margin="0,0,12,0"><TextBlock Text="AI Score" Foreground="{DynamicResource Muted}" FontSize="10" HorizontalAlignment="Right"/><TextBlock x:Name="AiScoreText" Text="0" FontSize="28" FontWeight="Bold" HorizontalAlignment="Right"/></StackPanel>
+                                <Border Background="{DynamicResource SuccessSoft}" CornerRadius="20" Width="54" Height="54"><TextBlock x:Name="AiGradeText" Text="D级" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
                             </StackPanel>
                         </Grid>
                         <Grid Margin="0,16,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition Width="150"/><ColumnDefinition Width="150"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -87,7 +87,7 @@
                         <TextBlock Text="评分原因与证据" Style="{StaticResource LabelText}" Margin="0,16,0,5"/>
                         <ItemsControl x:Name="AiReasonItems"><ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding StringFormat=• {0}}" TextWrapping="Wrap" Margin="0,2,0,0"/></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
                         <TextBlock Text="风险" Style="{StaticResource LabelText}" Margin="0,14,0,4"/>
-                        <TextBlock x:Name="AiRiskText" Text="尚未分析" Foreground="#8A4E29" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="AiRiskText" Text="尚未分析" Foreground="{DynamicResource Warning}" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
 
@@ -97,7 +97,7 @@
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <StackPanel>
                                 <TextBlock Text="Customer 360 · 个人 AI 销售员工" Style="{StaticResource SectionTitle}"/>
-                                <TextBlock x:Name="BrainStatusText" Text="正在整合客户上下文…" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
+                                <TextBlock x:Name="BrainStatusText" Text="正在整合客户上下文…" Foreground="{DynamicResource Muted}" Margin="0,5,0,0"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" Orientation="Horizontal">
                                 <Button x:Name="RefreshBrainButton" Content="刷新数据" Style="{StaticResource SecondaryButton}" Click="RefreshBrain_Click" Margin="0,0,8,0"/>
@@ -106,34 +106,34 @@
                         </Grid>
 
                         <UniformGrid Columns="4" Margin="0,16,0,0">
-                            <Border Background="#F8FBF9" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,8,0">
+                            <Border Background="{DynamicResource SurfaceMuted}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,8,0">
                                 <StackPanel><TextBlock Text="购买概率" Style="{StaticResource LabelText}"/><TextBlock x:Name="BrainProbabilityText" Text="0%" FontSize="21" FontWeight="Bold" Margin="0,4,0,0"/></StackPanel>
                             </Border>
-                            <Border Background="#F8FBF9" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,8,0">
+                            <Border Background="{DynamicResource SurfaceMuted}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,8,0">
                                 <StackPanel><TextBlock Text="AI 置信度" Style="{StaticResource LabelText}"/><TextBlock x:Name="BrainConfidenceText" Text="0%" FontSize="21" FontWeight="Bold" Margin="0,4,0,0"/></StackPanel>
                             </Border>
-                            <Border Background="#F8FBF9" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,8,0">
+                            <Border Background="{DynamicResource SurfaceMuted}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,8,0">
                                 <StackPanel><TextBlock Text="数据覆盖" Style="{StaticResource LabelText}"/><TextBlock x:Name="BrainCoverageText" Text="0%" FontSize="21" FontWeight="Bold" Margin="0,4,0,0"/></StackPanel>
                             </Border>
-                            <Border Background="#F8FBF9" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="12">
+                            <Border Background="{DynamicResource SurfaceMuted}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="12">
                                 <StackPanel><TextBlock Text="建议阶段" Style="{StaticResource LabelText}"/><TextBlock x:Name="BrainStageText" Text="待分析" FontSize="18" FontWeight="Bold" Margin="0,5,0,0"/></StackPanel>
                             </Border>
                         </UniformGrid>
 
                         <TextBlock Text="客户理解" Style="{StaticResource LabelText}" Margin="0,16,0,5"/>
                         <TextBlock x:Name="BrainSummaryText" Text="等待 Customer Brain 整合 CRM、WhatsApp、邮件、触达和历史分析。" TextWrapping="Wrap"/>
-                        <Border Background="{StaticResource SuccessSoft}" CornerRadius="8" Padding="12" Margin="0,14,0,0">
+                        <Border Background="{DynamicResource SuccessSoft}" CornerRadius="8" Padding="12" Margin="0,14,0,0">
                             <StackPanel>
                                 <TextBlock Text="下一步最佳行动" Style="{StaticResource LabelText}"/>
                                 <TextBlock x:Name="BrainNextActionText" Text="等待分析" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,5,0,0"/>
                             </StackPanel>
                         </Border>
-                        <Border Background="{StaticResource AiSoft}" BorderBrush="{StaticResource AiLine}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,10,0,0">
+                        <Border Background="{DynamicResource AiSoft}" BorderBrush="{StaticResource AiLine}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,10,0,0">
                             <StackPanel>
                                 <TextBlock Text="真实结果与个人经验" Style="{StaticResource LabelText}"/>
                                 <TextBlock x:Name="BrainLearningMetricsText" Text="尚无已执行行动的真实结果" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,5,0,0"/>
-                                <TextBlock x:Name="BrainLearningStrategyText" Text="执行建议后，系统会根据真实回复、阶段推进和成交结果持续总结个人经验。" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
-                                <TextBlock x:Name="BrainTalkTrackText" Text="高表现话术：等待真实样本" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
+                                <TextBlock x:Name="BrainLearningStrategyText" Text="执行建议后，系统会根据真实回复、阶段推进和成交结果持续总结个人经验。" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,5,0,0"/>
+                                <TextBlock x:Name="BrainTalkTrackText" Text="高表现话术：等待真实样本" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,5,0,0"/>
                             </StackPanel>
                         </Border>
 
@@ -166,7 +166,7 @@
                 <Border Style="{StaticResource Card}" Margin="0,16,0,0">
                     <StackPanel>
                         <TextBlock Text="原表全部维度" Style="{StaticResource SectionTitle}"/>
-                        <TextBlock Text="这里按上传表格的原始列名逐项显示。修改后保存，客户列表中的对应单元格会同步更新。" Foreground="{StaticResource Muted}" Margin="0,5,0,14"/>
+                        <TextBlock Text="这里按上传表格的原始列名逐项显示。修改后保存，客户列表中的对应单元格会同步更新。" Foreground="{DynamicResource Muted}" Margin="0,5,0,14"/>
                         <ItemsControl x:Name="OriginalDimensions">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
@@ -179,7 +179,7 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
 
-                        <Border Background="#F8FBF9" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,8,0,0">
+                        <Border Background="{DynamicResource SurfaceMuted}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,8,0,0">
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="220"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                 <TextBox x:Name="NewDimensionNameBox" ToolTip="新维度名称" Margin="0,0,8,0"/>
@@ -192,9 +192,9 @@
             </StackPanel>
         </ScrollViewer>
 
-        <Border Grid.Row="2" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="24,14">
+        <Border Grid.Row="2" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="24,14">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button x:Name="DeleteButton" Content="&#x5220;&#x9664;&#x8BE5;&#x5BA2;&#x6237;" Click="Delete_Click" Margin="0,0,18,0" Padding="18,9" Background="#FEECEC" Foreground="#B42318" BorderBrush="#F4B8B3"/>
+                <Button x:Name="DeleteButton" Content="&#x5220;&#x9664;&#x8BE5;&#x5BA2;&#x6237;" Click="Delete_Click" Margin="0,0,18,0" Padding="18,9" Background="{DynamicResource DangerSoft}" Foreground="{DynamicResource Danger}" BorderBrush="{DynamicResource Danger}"/>
                 <Button Content="取消" IsCancel="True" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0"/>
                 <Button x:Name="SaveButton" Content="保存并同步" Style="{StaticResource PrimaryButton}" Click="Save_Click"/>
             </StackPanel>

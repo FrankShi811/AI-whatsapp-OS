@@ -12,8 +12,8 @@
                 <TextBlock Text="会话、客户上下文、AI 商机判断与销售动作在同一工作区完成。" Foreground="{DynamicResource Muted}" Margin="0,6,0,0"/>
                 <Border x:Name="IpStatusBorder" Background="{DynamicResource SurfaceMuted}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="12" Padding="10,6" Margin="0,9,0,0" HorizontalAlignment="Left" ToolTip="监测本机连接 WhatsApp 时使用的公网出口 IP；每 60 秒检测一次。">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="●" x:Name="IpStatusDot" Foreground="{StaticResource Muted}" FontSize="9" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                        <TextBlock x:Name="IpStatusText" Text="公网 IP：检测中…" Foreground="{StaticResource Muted}" FontSize="11"/>
+                        <TextBlock Text="●" x:Name="IpStatusDot" Foreground="{DynamicResource Muted}" FontSize="9" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <TextBlock x:Name="IpStatusText" Text="公网 IP：检测中…" Foreground="{DynamicResource Muted}" FontSize="11"/>
                     </StackPanel>
                 </Border>
             </StackPanel>
@@ -32,11 +32,11 @@
 
             <Border Style="{StaticResource Card}" Padding="0">
                 <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                    <Border Padding="14" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+                    <Border Padding="14" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1">
                         <StackPanel>
                             <DockPanel LastChildFill="True">
                                 <TextBlock Text="会话与联系人" Style="{StaticResource SectionTitle}"/>
-                                <TextBlock x:Name="ConversationCountText" DockPanel.Dock="Right" Foreground="{StaticResource Muted}" FontSize="10" HorizontalAlignment="Right"/>
+                                <TextBlock x:Name="ConversationCountText" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="10" HorizontalAlignment="Right"/>
                             </DockPanel>
                             <Grid Margin="0,10,0,0">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -49,7 +49,7 @@
                             <Grid Margin="0,9,0,0">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Button x:Name="SyncButton" Content="同步联系人与历史" Style="{StaticResource SecondaryButton}" Click="Sync_Click" Padding="10,6" IsEnabled="False"/>
-                                <TextBlock x:Name="SyncStatusText" Grid.Column="1" Text="连接后自动同步" Foreground="{StaticResource Muted}" FontSize="10" Margin="8,0,0,0" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="SyncStatusText" Grid.Column="1" Text="连接后自动同步" Foreground="{DynamicResource Muted}" FontSize="10" Margin="8,0,0,0" TextWrapping="Wrap" VerticalAlignment="Center"/>
                             </Grid>
                         </StackPanel>
                     </Border>
@@ -63,12 +63,12 @@
                             <DataTemplate>
                                 <Grid Margin="9,9" Width="246"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="●" Foreground="{StaticResource Primary}" FontSize="8" Margin="0,0,6,0" VerticalAlignment="Center" Visibility="{Binding PinnedVisibility}"/>
+                                        <TextBlock Text="●" Foreground="{DynamicResource Primary}" FontSize="8" Margin="0,0,6,0" VerticalAlignment="Center" Visibility="{Binding PinnedVisibility}"/>
                                         <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                                     </StackPanel>
-                                    <TextBlock Grid.Column="1" Text="{Binding LastTimeLabel}" Foreground="{StaticResource Muted}" FontSize="10"/>
-                                    <TextBlock Grid.Row="1" Text="{Binding LastMessage}" Foreground="{StaticResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,8,0"/>
-                                    <Border Grid.Row="1" Grid.Column="1" Background="{StaticResource Primary}" CornerRadius="9" MinWidth="18" Height="18" Visibility="{Binding UnreadVisibility}"><TextBlock Text="{Binding Unread}" Foreground="White" FontSize="10" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+                                    <TextBlock Grid.Column="1" Text="{Binding LastTimeLabel}" Foreground="{DynamicResource Muted}" FontSize="10"/>
+                                    <TextBlock Grid.Row="1" Text="{Binding LastMessage}" Foreground="{DynamicResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,8,0"/>
+                                    <Border Grid.Row="1" Grid.Column="1" Background="{DynamicResource Primary}" CornerRadius="9" MinWidth="18" Height="18" Visibility="{Binding UnreadVisibility}"><TextBlock Text="{Binding Unread}" Foreground="{DynamicResource SidebarText}" FontSize="10" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
                                 </Grid>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
@@ -81,12 +81,12 @@
                     <Border Padding="18,14" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1">
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock x:Name="ChatTitleText" Text="选择会话" FontWeight="SemiBold" FontSize="17"/><TextBlock x:Name="ChatNumberText" Text="连接后会同步个人会话" Foreground="{DynamicResource Muted}" FontSize="10.5" Margin="0,3,0,0"/></StackPanel><Border Grid.Column="1" Background="{DynamicResource PrimarySoft}" CornerRadius="10" Padding="9,5" VerticalAlignment="Center"><TextBlock Text="CRM LIVE SYNC" Foreground="{DynamicResource Primary}" FontSize="9" FontWeight="Bold"/></Border></Grid>
                     </Border>
-                    <Border x:Name="StatusUpdateBanner" Grid.Row="1" Visibility="Collapsed" Background="#FFF7DF" BorderBrush="#E8C66C" BorderThickness="0,0,0,1" Padding="16,10">
+                    <Border x:Name="StatusUpdateBanner" Grid.Row="1" Visibility="Collapsed" Background="{DynamicResource WarningSoft}" BorderBrush="{DynamicResource Warning}" BorderThickness="0,0,0,1" Padding="16,10">
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <StackPanel>
-                                <TextBlock Text="WhatsApp 最新动态 · 非普通聊天消息" Foreground="#8A5B08" FontSize="10" FontWeight="Bold"/>
-                                <TextBlock x:Name="StatusUpdateLinkText" TextTrimming="CharacterEllipsis" Foreground="#5F4A21" Margin="0,3,0,0"/>
-                                <TextBlock x:Name="StatusUpdateMetaText" Foreground="#98702A" FontSize="9" Margin="0,2,0,0"/>
+                                <TextBlock Text="WhatsApp 最新动态 · 非普通聊天消息" Foreground="{DynamicResource Warning}" FontSize="10" FontWeight="Bold"/>
+                                <TextBlock x:Name="StatusUpdateLinkText" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource Ink}" Margin="0,3,0,0"/>
+                                <TextBlock x:Name="StatusUpdateMetaText" Foreground="{DynamicResource Warning}" FontSize="9" Margin="0,2,0,0"/>
                             </StackPanel>
                             <Button Grid.Column="1" Content="打开动态链接" Style="{StaticResource SecondaryButton}" Click="OpenStatusUpdate_Click" Margin="12,0,0,0" VerticalAlignment="Center"/>
                         </Grid>
@@ -94,7 +94,7 @@
                     <Grid Grid.Row="2">
                         <StackPanel x:Name="QrPanel" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="380">
                             <Image x:Name="QrImage" Width="300" Height="300" Stretch="Uniform"/>
-                            <TextBlock x:Name="QrHintText" Text="点击“连接 / 显示二维码”，然后使用手机 WhatsApp 的“已关联设备”扫描。" TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource Muted}" Margin="0,12,0,0"/>
+                            <TextBlock x:Name="QrHintText" Text="点击“连接 / 显示二维码”，然后使用手机 WhatsApp 的“已关联设备”扫描。" TextWrapping="Wrap" TextAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,12,0,0"/>
                         </StackPanel>
                         <ListBox x:Name="MessageList" BorderThickness="0" Background="{DynamicResource Canvas}" Visibility="Collapsed" ScrollViewer.VerticalScrollBarVisibility="Auto">
                             <ListBox.ItemContainerStyle>
@@ -116,23 +116,23 @@
                                                 </ContextMenu>
                                             </Border.ContextMenu>
                                             <StackPanel>
-                                                <Border Visibility="{Binding StatusUpdateVisibility}" Background="#FFF0C2" BorderBrush="#E3B84C" BorderThickness="1" CornerRadius="6" Padding="7,4" Margin="0,0,0,6">
-                                                    <TextBlock Text="WhatsApp 最新动态 · 非普通聊天消息" Foreground="#855B08" FontSize="9.5" FontWeight="SemiBold"/>
+                                                <Border Visibility="{Binding StatusUpdateVisibility}" Background="{DynamicResource WarningSoft}" BorderBrush="{DynamicResource Warning}" BorderThickness="1" CornerRadius="6" Padding="7,4" Margin="0,0,0,6">
+                                                    <TextBlock Text="WhatsApp 最新动态 · 非普通聊天消息" Foreground="{DynamicResource Warning}" FontSize="9.5" FontWeight="SemiBold"/>
                                                 </Border>
                                                 <Border Visibility="{Binding QuoteVisibility}" Background="{DynamicResource CanvasDeep}" BorderBrush="{DynamicResource Primary}" BorderThickness="3,0,0,0" CornerRadius="5" Padding="8,5" Margin="0,0,0,6">
                                                     <StackPanel>
-                                                        <TextBlock Text="{Binding QuoteHeader}" Foreground="#456052" FontSize="10" FontWeight="SemiBold"/>
-                                                        <TextBlock Text="{Binding QuoteText}" Foreground="#65786E" FontSize="10" TextWrapping="Wrap" MaxWidth="450" MaxHeight="38" TextTrimming="CharacterEllipsis"/>
+                                                        <TextBlock Text="{Binding QuoteHeader}" Foreground="{DynamicResource InkSecondary}" FontSize="10" FontWeight="SemiBold"/>
+                                                        <TextBlock Text="{Binding QuoteText}" Foreground="{DynamicResource Muted}" FontSize="10" TextWrapping="Wrap" MaxWidth="450" MaxHeight="38" TextTrimming="CharacterEllipsis"/>
                                                     </StackPanel>
                                                 </Border>
                                                 <Button Visibility="{Binding ImageVisibility}" Click="OpenMedia_Click" Background="Transparent" BorderThickness="0" Padding="0" HorizontalContentAlignment="Center" Cursor="Hand" ToolTip="点击用系统程序打开原图">
                                                     <Image Source="{Binding MediaPreview}" MaxWidth="320" MaxHeight="260" Stretch="Uniform"/>
                                                 </Button>
                                                 <Button Visibility="{Binding FileVisibility}" Click="OpenMedia_Click" Content="{Binding MediaActionLabel}" Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left" Padding="12,7"/>
-                                                <TextBlock Text="{Binding TextContent}" Visibility="{Binding TextVisibility}" TextWrapping="Wrap" Margin="0,3,0,0"/>
-                                                <TextBlock Text="{Binding MediaMissingText}" Visibility="{Binding MediaMissingVisibility}" TextWrapping="Wrap" Foreground="#9A6A12" FontSize="10" Margin="0,4,0,0"/>
+                                                <TextBlock Text="{Binding TextContent}" Visibility="{Binding TextVisibility}" TextWrapping="Wrap" Foreground="{DynamicResource Ink}" Margin="0,3,0,0"/>
+                                                <TextBlock Text="{Binding MediaMissingText}" Visibility="{Binding MediaMissingVisibility}" TextWrapping="Wrap" Foreground="{DynamicResource Warning}" FontSize="10" Margin="0,4,0,0"/>
                                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,0,0">
-                                                    <TextBlock Text="{Binding TimeLabel}" Foreground="{StaticResource Muted}" FontSize="9"/>
+                                                    <TextBlock Text="{Binding TimeLabel}" Foreground="{DynamicResource Muted}" FontSize="9"/>
                                                     <TextBlock Text="{Binding ReceiptGlyph}" Foreground="{Binding ReceiptBrush}" FontSize="11" FontWeight="SemiBold" Margin="5,-2,0,0" ToolTip="{Binding StatusDetailLabel}"/>
                                                 </StackPanel>
                                                 <TextBlock Text="{Binding StatusDetailLabel}" Visibility="{Binding OutgoingStatusVisibility}" Foreground="{Binding ReceiptBrush}" FontSize="9" HorizontalAlignment="Right" Margin="0,2,0,0"/>
@@ -151,7 +151,7 @@
                                 <Border x:Name="ReplyPanel" Grid.Row="0" Background="{DynamicResource PrimarySurface}" BorderBrush="{DynamicResource Primary}" BorderThickness="3,0,0,0" CornerRadius="8" Padding="9,6" Margin="0,0,0,6" Visibility="Collapsed">
                                     <DockPanel>
                                         <Button Content="×" DockPanel.Dock="Right" Click="ClearReply_Click" Padding="7,1" Margin="8,0,0,0" ToolTip="取消回复"/>
-                                        <StackPanel><TextBlock Text="回复该消息" Foreground="#0F7050" FontSize="10" FontWeight="SemiBold"/><TextBlock x:Name="ReplyText" Foreground="#60736A" FontSize="10" TextTrimming="CharacterEllipsis" MaxWidth="600"/></StackPanel>
+                                        <StackPanel><TextBlock Text="回复该消息" Foreground="{DynamicResource Primary}" FontSize="10" FontWeight="SemiBold"/><TextBlock x:Name="ReplyText" Foreground="{DynamicResource InkSecondary}" FontSize="10" TextTrimming="CharacterEllipsis" MaxWidth="600"/></StackPanel>
                                     </DockPanel>
                                 </Border>
                                 <TextBox x:Name="ComposerBox" Grid.Row="1" MinHeight="54" MaxHeight="120" AcceptsReturn="True" TextWrapping="Wrap" IsEnabled="False" PreviewKeyDown="ComposerBox_PreviewKeyDown" ToolTip="Enter 发送，Ctrl+Enter 换行"/>
@@ -284,7 +284,7 @@
                         <TextBlock Text="标签（逗号分隔）" Style="{StaticResource LabelText}"/><TextBox x:Name="TagsBox" Margin="0,5,0,11"/>
                         <CheckBox x:Name="OptInCheck" Content="客户已同意接收 WhatsApp 营销消息" Margin="0,0,0,7"/>
                         <TextBox x:Name="OptInSourceBox" ToolTip="同意来源，例如：展会登记 / 网站表单 / 客户主动要求" Margin="0,0,0,7"/>
-                        <CheckBox x:Name="OptedOutCheck" Content="客户已退订（禁止任何 Campaign）" Margin="0,0,0,11" Foreground="#A83A2F"/>
+                        <CheckBox x:Name="OptedOutCheck" Content="客户已退订（禁止任何 Campaign）" Margin="0,0,0,11" Foreground="{DynamicResource Danger}"/>
                         <TextBlock Text="备注 / 最近情况" Style="{StaticResource LabelText}"/><TextBox x:Name="NotesBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="72" Margin="0,5,0,11"/>
                         <TextBlock Text="自定义维度（每行 key=value）" Style="{StaticResource LabelText}"/><TextBox x:Name="CustomFieldsBox" AcceptsReturn="True" TextWrapping="NoWrap" MinHeight="90" Margin="0,5,0,11" FontFamily="Consolas" FontSize="11"/>
                         <Border Background="{DynamicResource WarningSoft}" CornerRadius="9" Padding="10"><TextBlock Text="保存会同步到客户列表、商机智能和后续 Campaign。" Foreground="{DynamicResource Warning}" TextWrapping="Wrap" FontSize="10"/></Border>
