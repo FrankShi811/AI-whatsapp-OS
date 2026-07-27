@@ -34,6 +34,7 @@ public sealed class CustomerSuccessAgentCoordinator : IDisposable
 
     private void OnMessageSynchronized(object? sender, WhatsAppMessage message)
     {
+        if (message.IsGroup) return;
         if (message.Direction == WhatsAppMessageDirection.Outgoing && !message.IsRevoked)
         {
             _ = ReconcileOutgoingStatusAsync(message, _shutdown.Token);

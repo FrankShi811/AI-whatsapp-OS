@@ -33,6 +33,7 @@ $whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $ro
 $bridgeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\index.mjs')
 $bridgeMessageSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\message-content.mjs')
 $bridgeOutboundRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\outbound-routing.mjs')
+$bridgeConversationRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\conversation-routing.mjs')
 $whatsAppInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml.cs')
 $whatsAppSyncSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppSyncService.cs')
 $whatsAppManagerSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppConnectionManager.cs')
@@ -249,6 +250,25 @@ if ($bridgeOutboundRoutingSource -notmatch 'jidNormalizedUser' -or
 & $node (Join-Path $root 'bridge\scripts\outbound-routing-smoke.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'WhatsApp bridge outbound-routing smoke test failed.' }
 Write-Host 'PASS  WhatsApp sender multi-device synchronization contract'
+
+$groupContractFailures = @()
+if ($bridgeConversationRoutingSource -notmatch 'normalizeGroupJid') { $groupContractFailures += 'group JID normalizer' }
+if ($bridgeConversationRoutingSource -notmatch [regex]::Escape('@g.us')) { $groupContractFailures += 'group JID server' }
+if ($bridgeSource -notmatch [regex]::Escape('resolveConversationJid')) { $groupContractFailures += 'inbound conversation resolver' }
+if ($bridgeSource -notmatch 'isGroup:\s*true') { $groupContractFailures += 'group chat normalization' }
+if ($bridgeSource -notmatch 'participantName') { $groupContractFailures += 'participant attribution' }
+if ($whatsAppSyncSource -notmatch 'GetWhatsAppConversationByIdAsync') { $groupContractFailures += 'group persistence lookup' }
+if ($whatsAppSyncSource -notmatch [regex]::Escape('IsGroup = isGroup')) { $groupContractFailures += 'group persistence flag' }
+if ($customerSuccessSource -notmatch [regex]::Escape('if (message.IsGroup) return;')) { $groupContractFailures += 'agent isolation' }
+if ($whatsAppInboxXaml -notmatch [regex]::Escape('Text="{Binding SenderLabel}"')) { $groupContractFailures += 'member label UI' }
+if ($whatsAppInboxSource -notmatch [regex]::Escape('ChatModeBadgeText.Text = conversation.IsGroup ? "GROUP VIEW"') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('Customer Brain')) { $groupContractFailures += 'group safety explanation' }
+if ($groupContractFailures.Count -gt 0) {
+  throw "WhatsApp groups must synchronize as durable unread conversations with participant labels and strict CRM/AI isolation. missing=$($groupContractFailures -join ', ')"
+}
+& $node (Join-Path $root 'bridge\scripts\conversation-routing-smoke.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'WhatsApp bridge conversation-routing smoke test failed.' }
+Write-Host 'PASS  WhatsApp group receive, unread, participant attribution and CRM/AI isolation contract'
 
 if ($whatsAppInboxSource -notmatch 'string\.IsNullOrWhiteSpace\(id\)' -or
     $whatsAppInboxSource -notmatch '!Bool\(result, "targetVerified"\)' -or

@@ -1439,6 +1439,16 @@ public sealed class LocalRepository
         return Json.Deserialize<WhatsAppConversation>(await command.ExecuteScalarAsync(cancellationToken) as string);
     }
 
+    public async Task<WhatsAppConversation?> GetWhatsAppConversationByIdAsync(string conversationId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(conversationId)) return null;
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM whatsapp_conversations WHERE id=$id LIMIT 1";
+        command.Parameters.AddWithValue("$id", conversationId);
+        return Json.Deserialize<WhatsAppConversation>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
     public async Task<List<WhatsAppContact>> GetWhatsAppContactsAsync(string accountId = "primary", CancellationToken cancellationToken = default)
     {
         var items = new List<WhatsAppContact>();
@@ -1575,6 +1585,11 @@ public sealed class LocalRepository
             if (string.IsNullOrWhiteSpace(incoming.MimeType)) incoming.MimeType = existing.MimeType;
         }
         if (string.IsNullOrWhiteSpace(incoming.PushName)) incoming.PushName = existing.PushName;
+        if (string.IsNullOrWhiteSpace(incoming.Jid)) incoming.Jid = existing.Jid;
+        incoming.IsGroup |= existing.IsGroup;
+        if (string.IsNullOrWhiteSpace(incoming.ParticipantJid)) incoming.ParticipantJid = existing.ParticipantJid;
+        if (string.IsNullOrWhiteSpace(incoming.ParticipantPhone)) incoming.ParticipantPhone = existing.ParticipantPhone;
+        if (string.IsNullOrWhiteSpace(incoming.ParticipantName)) incoming.ParticipantName = existing.ParticipantName;
         if (string.IsNullOrWhiteSpace(incoming.FailureReason)) incoming.FailureReason = existing.FailureReason;
         incoming.DeliveredAt ??= existing.DeliveredAt;
         incoming.ReadAt ??= existing.ReadAt;

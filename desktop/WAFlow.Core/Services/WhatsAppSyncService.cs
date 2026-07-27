@@ -121,6 +121,35 @@ public sealed class WhatsAppSyncService
 
     private async Task IngestChatAsync(string accountId, JsonElement data)
     {
+        var jid = FirstText(data, "groupJid", "jid", "sourceJid").Trim();
+        var isGroup = Bool(data, "isGroup") || jid.EndsWith("@g.us", StringComparison.OrdinalIgnoreCase);
+        if (isGroup)
+        {
+            if (!jid.EndsWith("@g.us", StringComparison.OrdinalIgnoreCase)) return;
+            var conversationId = $"{accountId}:{jid}";
+            var groupConversation = await _repository.GetWhatsAppConversationByIdAsync(conversationId) ?? new WhatsAppConversation
+            {
+                Id = conversationId,
+                AccountId = accountId,
+                Jid = jid,
+                IsGroup = true
+            };
+            groupConversation.Jid = jid;
+            groupConversation.IsGroup = true;
+            groupConversation.Phone = "";
+            groupConversation.LeadId = "";
+            var groupName = WhatsAppTextEncodingRepair.Repair(FirstText(data, "displayName", "groupName"));
+            if (!string.IsNullOrWhiteSpace(groupName)) groupConversation.DisplayName = groupName;
+            ApplyChatSnapshot(groupConversation, data);
+            if (groupConversation.LastReadAt is not null)
+                groupConversation.UnreadCount = await _repository.CountUnreadWhatsAppMessagesAsync(groupConversation.Id, groupConversation.LastReadAt);
+            else if (data.TryGetProperty("unreadCount", out var groupUnread) && groupUnread.ValueKind == JsonValueKind.Number && groupUnread.TryGetInt32(out var groupUnreadCount))
+                groupConversation.UnreadCount = Math.Max(0, groupUnreadCount);
+            if (string.IsNullOrWhiteSpace(groupConversation.DisplayName)) groupConversation.DisplayName = "WhatsApp 群聊";
+            await _repository.UpsertWhatsAppConversationAsync(groupConversation);
+            return;
+        }
+
         var phone = Digits(Text(data, "phone"));
         if (string.IsNullOrWhiteSpace(phone)) return;
         var lead = await _repository.GetLeadByPhoneAsync(phone);
@@ -138,12 +167,7 @@ public sealed class WhatsAppSyncService
         {
             conversation.DisplayName = displayName;
         }
-        var lastMessage = WhatsAppTextEncodingRepair.Repair(Text(data, "lastMessage"));
-        if (DateTimeOffset.TryParse(Text(data, "lastMessageAt"), out var lastAt) && lastAt >= conversation.LastMessageAt)
-        {
-            conversation.LastMessageAt = lastAt;
-            if (!string.IsNullOrWhiteSpace(lastMessage)) conversation.LastMessage = lastMessage;
-        }
+        ApplyChatSnapshot(conversation, data);
         if (conversation.LastReadAt is not null)
         {
             // WhatsApp history sync can repeatedly return the phone's old unread
@@ -155,20 +179,19 @@ public sealed class WhatsAppSyncService
         {
             conversation.UnreadCount = Math.Max(0, unreadCount);
         }
-        if (data.TryGetProperty("pinned", out var pinned) && pinned.ValueKind is JsonValueKind.True or JsonValueKind.False)
-        {
-            conversation.IsPinned = pinned.GetBoolean();
-            conversation.PinnedAt = conversation.IsPinned && DateTimeOffset.TryParse(Text(data, "pinnedAt"), out var pinnedAt) ? pinnedAt : null;
-        }
         if (string.IsNullOrWhiteSpace(conversation.DisplayName)) conversation.DisplayName = $"+{phone}";
         await _repository.UpsertWhatsAppConversationAsync(conversation);
     }
 
     private async Task IngestMessageAsync(string accountId, JsonElement data)
     {
+        var jid = FirstText(data, "groupJid", "jid", "sourceJid").Trim();
+        var isGroup = Bool(data, "isGroup") || jid.EndsWith("@g.us", StringComparison.OrdinalIgnoreCase);
         var phone = Digits(Text(data, "phone"));
         var providerId = Text(data, "id");
-        if (string.IsNullOrWhiteSpace(phone) || string.IsNullOrWhiteSpace(providerId)) return;
+        if (string.IsNullOrWhiteSpace(providerId) ||
+            (isGroup ? !jid.EndsWith("@g.us", StringComparison.OrdinalIgnoreCase) : string.IsNullOrWhiteSpace(phone)))
+            return;
         var existingMessage = await _repository.GetWhatsAppMessageByProviderIdAsync(accountId, providerId);
         var fromMe = Bool(data, "fromMe");
         var timestamp = DateTimeOffset.TryParse(Text(data, "timestamp"), out var parsed) ? parsed : DateTimeOffset.Now;
@@ -176,15 +199,32 @@ public sealed class WhatsAppSyncService
         var readAt = ParseTimestamp(data, "readAt");
         var source = Text(data, "source");
         var historical = source.StartsWith("history:", StringComparison.OrdinalIgnoreCase);
-        var lead = await _repository.GetLeadByPhoneAsync(phone);
-        var conversationId = $"{accountId}:{phone}";
-        var conversation = await _repository.GetWhatsAppConversationAsync(accountId, phone) ?? new WhatsAppConversation
+        var lead = isGroup ? null : await _repository.GetLeadByPhoneAsync(phone);
+        var conversationId = isGroup ? $"{accountId}:{jid}" : $"{accountId}:{phone}";
+        var conversation = isGroup
+            ? await _repository.GetWhatsAppConversationByIdAsync(conversationId)
+            : await _repository.GetWhatsAppConversationAsync(accountId, phone);
+        conversation ??= new WhatsAppConversation
         {
             Id = conversationId,
             AccountId = accountId,
-            Phone = phone,
-            DisplayName = string.IsNullOrWhiteSpace(Text(data, "pushName")) ? $"+{phone}" : WhatsAppTextEncodingRepair.Repair(Text(data, "pushName"))
+            Jid = jid,
+            Phone = isGroup ? "" : phone,
+            IsGroup = isGroup,
+            DisplayName = isGroup
+                ? WhatsAppTextEncodingRepair.Repair(FirstText(data, "groupName", "displayName"))
+                : string.IsNullOrWhiteSpace(Text(data, "pushName")) ? $"+{phone}" : WhatsAppTextEncodingRepair.Repair(Text(data, "pushName"))
         };
+        if (string.IsNullOrWhiteSpace(conversation.Jid)) conversation.Jid = jid;
+        conversation.IsGroup = isGroup;
+        if (isGroup)
+        {
+            conversation.Phone = "";
+            conversation.LeadId = "";
+            var groupName = WhatsAppTextEncodingRepair.Repair(FirstText(data, "groupName", "displayName"));
+            if (!string.IsNullOrWhiteSpace(groupName)) conversation.DisplayName = groupName;
+            if (string.IsNullOrWhiteSpace(conversation.DisplayName)) conversation.DisplayName = "WhatsApp 群聊";
+        }
         if (lead is not null)
         {
             conversation.LeadId = lead.Id;
@@ -197,7 +237,12 @@ public sealed class WhatsAppSyncService
             AccountId = accountId,
             ConversationId = conversationId,
             LeadId = lead?.Id ?? "",
-            Phone = phone,
+            Jid = jid,
+            Phone = isGroup ? "" : phone,
+            IsGroup = isGroup,
+            ParticipantJid = Text(data, "participantJid"),
+            ParticipantPhone = Digits(Text(data, "participantPhone")),
+            ParticipantName = WhatsAppTextEncodingRepair.Repair(FirstText(data, "participantName", "pushName")),
             Direction = fromMe ? WhatsAppMessageDirection.Outgoing : WhatsAppMessageDirection.Incoming,
             Status = fromMe ? ParseOutgoingStatus(data, deliveredAt, readAt) : WhatsAppMessageStatus.Received,
             Kind = Text(data, "kind"),
@@ -229,6 +274,11 @@ public sealed class WhatsAppSyncService
         {
             conversation.LastMessageAt = timestamp;
             var preview = MessagePreview(message);
+            if (isGroup && !fromMe)
+            {
+                var sender = FirstText(data, "participantName", "pushName", "participantPhone");
+                if (!string.IsNullOrWhiteSpace(sender)) preview = $"{WhatsAppTextEncodingRepair.Repair(sender)}：{preview}";
+            }
             conversation.LastMessage = message.IsStatusUpdate ? $"[最新动态] {preview}" : preview;
         }
         if (inserted && !fromMe && !historical && !message.IsStatusUpdate &&
@@ -286,7 +336,7 @@ public sealed class WhatsAppSyncService
         var revokedAt = ParseTimestamp(data, "timestamp") ?? DateTimeOffset.Now;
         var message = await _repository.MarkWhatsAppMessageRevokedAsync(accountId, providerId, revokedAt);
         if (message is null) return;
-        var conversation = await _repository.GetWhatsAppConversationAsync(accountId, message.Phone);
+        var conversation = await _repository.GetWhatsAppConversationByIdAsync(message.ConversationId);
         if (conversation is not null && conversation.LastMessageAt <= message.Timestamp)
         {
             conversation.LastMessage = message.Direction == WhatsAppMessageDirection.Outgoing ? "你撤回了一条消息" : "对方撤回了一条消息";
@@ -347,6 +397,21 @@ public sealed class WhatsAppSyncService
 
     private static DateTimeOffset? ParseTimestamp(JsonElement data, string name) =>
         DateTimeOffset.TryParse(Text(data, name), out var timestamp) ? timestamp : null;
+
+    private static void ApplyChatSnapshot(WhatsAppConversation conversation, JsonElement data)
+    {
+        var lastMessage = WhatsAppTextEncodingRepair.Repair(Text(data, "lastMessage"));
+        if (DateTimeOffset.TryParse(Text(data, "lastMessageAt"), out var lastAt) && lastAt >= conversation.LastMessageAt)
+        {
+            conversation.LastMessageAt = lastAt;
+            if (!string.IsNullOrWhiteSpace(lastMessage)) conversation.LastMessage = lastMessage;
+        }
+        if (data.TryGetProperty("pinned", out var pinned) && pinned.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            conversation.IsPinned = pinned.GetBoolean();
+            conversation.PinnedAt = conversation.IsPinned && DateTimeOffset.TryParse(Text(data, "pinnedAt"), out var pinnedAt) ? pinnedAt : null;
+        }
+    }
 
     private static string Text(JsonElement data, string name) => data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";
     private static bool Bool(JsonElement data, string name) => data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;

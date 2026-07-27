@@ -101,8 +101,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         var refreshed = new Dictionary<string, ConversationItem>(StringComparer.OrdinalIgnoreCase);
         foreach (var saved in persisted)
         {
-            var conversation = new ConversationItem(saved.AccountId, saved.Phone, saved.DisplayName, "");
-            var linkedLead = FindLead(saved.Phone);
+            var conversation = new ConversationItem(saved.AccountId, saved.Phone, saved.DisplayName, saved.Jid) { IsGroup = saved.IsGroup };
+            var linkedLead = saved.IsGroup ? null : FindLead(saved.Phone);
             conversation.LeadId = linkedLead?.Id ?? saved.LeadId;
             conversation.DisplayName = linkedLead is not null && !string.IsNullOrWhiteSpace(linkedLead.DisplayName) ? linkedLead.DisplayName : saved.DisplayName;
             conversation.LastMessage = saved.LastMessage; conversation.LastAt = saved.LastMessageAt; conversation.Unread = saved.UnreadCount; conversation.LastReadAt = saved.LastReadAt;
@@ -424,29 +424,51 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             return;
         }
         if (e.Name != "message") return;
+        var jid = Text(e.Data, "jid");
+        var isGroup = Bool(e.Data, "isGroup") || jid.EndsWith("@g.us", StringComparison.OrdinalIgnoreCase);
         var phone = Text(e.Data, "phone");
-        if (string.IsNullOrWhiteSpace(phone)) return;
+        if (isGroup)
+        {
+            jid = Text(e.Data, "groupJid") is { Length: > 0 } groupJid ? groupJid : jid;
+            if (!jid.EndsWith("@g.us", StringComparison.OrdinalIgnoreCase)) return;
+            phone = "";
+        }
+        else if (string.IsNullOrWhiteSpace(phone)) return;
         var messageId = Text(e.Data, "id");
         var text = WhatsAppTextEncodingRepair.Repair(Text(e.Data, "text"));
         var fromMe = Bool(e.Data, "fromMe");
-        var displayName = WhatsAppTextEncodingRepair.Repair(Text(e.Data, "pushName"));
+        var displayName = WhatsAppTextEncodingRepair.Repair(isGroup ? Text(e.Data, "groupName") : Text(e.Data, "pushName"));
         var kind = Text(e.Data, "kind");
         var fileName = WhatsAppTextEncodingRepair.Repair(Text(e.Data, "fileName"));
         var mimeType = Text(e.Data, "mimeType");
         var mediaPath = Text(e.Data, "mediaPath");
         var mediaDownloadError = Text(e.Data, "mediaDownloadError");
         var timestamp = DateTimeOffset.TryParse(Text(e.Data, "timestamp"), out var parsed) ? parsed : DateTimeOffset.Now;
-        var conversation = _conversations.FirstOrDefault(x => x.Phone == phone);
+        var accountId = string.IsNullOrWhiteSpace(e.AccountId) ? "primary" : e.AccountId;
+        var conversationId = isGroup ? $"{accountId}:{jid}" : $"{accountId}:{phone}";
+        var conversation = _conversations.FirstOrDefault(x => x.Id.Equals(conversationId, StringComparison.OrdinalIgnoreCase));
         if (conversation is null)
         {
-            var linkedLead = FindLead(phone);
+            var linkedLead = isGroup ? null : FindLead(phone);
             var preferredName = linkedLead?.DisplayName;
-            if (string.IsNullOrWhiteSpace(preferredName)) preferredName = string.IsNullOrWhiteSpace(displayName) ? $"+{phone}" : displayName;
-            conversation = new ConversationItem(string.IsNullOrWhiteSpace(e.AccountId) ? "primary" : e.AccountId, phone, preferredName, Text(e.Data, "jid")) { LeadId = linkedLead?.Id ?? "" };
+            if (string.IsNullOrWhiteSpace(preferredName))
+                preferredName = string.IsNullOrWhiteSpace(displayName) ? isGroup ? "WhatsApp 群聊" : $"+{phone}" : displayName;
+            conversation = new ConversationItem(accountId, phone, preferredName, jid) { LeadId = linkedLead?.Id ?? "", IsGroup = isGroup };
             _conversations.Insert(0, conversation);
         }
+        else if (isGroup && !string.IsNullOrWhiteSpace(displayName))
+        {
+            conversation.DisplayName = displayName;
+        }
         var isStatusUpdate = Bool(e.Data, "isStatusUpdate");
-        var incomingMessage = new MessageItem(messageId, text, timestamp, fromMe, kind, fileName, mimeType, mediaPath, mediaDownloadError, ParseMessageStatus(e.Data, fromMe), ParseTime(e.Data, "statusAt"), ParseTime(e.Data, "deliveredAt"), ParseTime(e.Data, "readAt"), Text(e.Data, "failureReason"), Text(e.Data, "quotedMessageId"), WhatsAppTextEncodingRepair.Repair(Text(e.Data, "quotedText")), Bool(e.Data, "quotedFromMe"), Bool(e.Data, "isRevoked"), ParseTime(e.Data, "revokedAt"), isStatusUpdate, ParseTime(e.Data, "statusExpiresAt"));
+        var senderName = WhatsAppTextEncodingRepair.Repair(Text(e.Data, "participantName"));
+        if (string.IsNullOrWhiteSpace(senderName)) senderName = WhatsAppTextEncodingRepair.Repair(Text(e.Data, "pushName"));
+        if (string.IsNullOrWhiteSpace(senderName) && isGroup)
+        {
+            var participantPhone = Text(e.Data, "participantPhone");
+            senderName = string.IsNullOrWhiteSpace(participantPhone) ? "群成员" : $"+{participantPhone}";
+        }
+        var incomingMessage = new MessageItem(messageId, text, timestamp, fromMe, kind, fileName, mimeType, mediaPath, mediaDownloadError, ParseMessageStatus(e.Data, fromMe), ParseTime(e.Data, "statusAt"), ParseTime(e.Data, "deliveredAt"), ParseTime(e.Data, "readAt"), Text(e.Data, "failureReason"), Text(e.Data, "quotedMessageId"), WhatsAppTextEncodingRepair.Repair(Text(e.Data, "quotedText")), Bool(e.Data, "quotedFromMe"), Bool(e.Data, "isRevoked"), ParseTime(e.Data, "revokedAt"), isStatusUpdate, ParseTime(e.Data, "statusExpiresAt"), senderName, isGroup);
         var existingIndex = conversation.Messages
             .Select((item, index) => (item, index))
             .FirstOrDefault(entry => entry.item.Id == messageId);
@@ -467,6 +489,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         if (contentAccepted)
         {
             var preview = MessagePreview(text, kind, fileName);
+            if (isGroup && !fromMe) preview = $"{senderName}：{preview}";
             conversation.LastMessage = isStatusUpdate ? $"[最新动态] {preview}" : preview;
         }
         conversation.LastAt = timestamp;
@@ -519,7 +542,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             _composerConversationId = "";
             ClearAttachment();
             ClearReply();
-            ChatTitleText.Text = "选择会话"; ChatNumberText.Text = "连接后会同步个人会话"; MessageList.ItemsSource = null; HideStatusUpdateBanner(); ClearLead(); return;
+            ChatTitleText.Text = "选择会话"; ChatNumberText.Text = "连接后会同步个人与群聊会话"; ChatModeBadgeText.Text = "CRM LIVE SYNC"; MessageList.ItemsSource = null; HideStatusUpdateBanner(); ClearLead(); return;
         }
         if (!_composerConversationId.Equals(conversation.Id, StringComparison.OrdinalIgnoreCase))
         {
@@ -537,14 +560,19 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             if (hadUnread) DataChanged?.Invoke(this, EventArgs.Empty);
         }
         ChatTitleText.Text = conversation.DisplayName;
-        ChatNumberText.Text = string.IsNullOrWhiteSpace(conversation.Phone) ? "WhatsApp 尚未提供该联系人的电话号码" : $"+{conversation.Phone}";
-        var persistedMessages = string.IsNullOrWhiteSpace(conversation.Phone) ? [] : await _services.Repository.GetWhatsAppMessagesAsync(conversation.Id, 2000);
+        ChatNumberText.Text = conversation.IsGroup
+            ? "WhatsApp 群聊 · 实时同步与未读提醒 · CRM、Customer Brain 和自动回复已隔离"
+            : string.IsNullOrWhiteSpace(conversation.Phone) ? "WhatsApp 尚未提供该联系人的电话号码" : $"+{conversation.Phone}";
+        ChatModeBadgeText.Text = conversation.IsGroup ? "GROUP VIEW" : "CRM LIVE SYNC";
+        var persistedMessages = conversation.IsGroup || !string.IsNullOrWhiteSpace(conversation.Phone)
+            ? await _services.Repository.GetWhatsAppMessagesAsync(conversation.Id, 2000)
+            : [];
         foreach (var message in persistedMessages)
             if (!conversation.Messages.Any(x => x.Id == message.ProviderMessageId))
-                conversation.Messages.Add(new MessageItem(message.ProviderMessageId, message.Body, message.Timestamp, message.Direction == WhatsAppMessageDirection.Outgoing, message.Kind, message.FileName, message.MimeType, message.MediaPath, message.MediaDownloadError, message.Status, message.StatusUpdatedAt, message.DeliveredAt, message.ReadAt, message.FailureReason, message.QuotedMessageId, message.QuotedText, message.QuotedFromMe, message.IsRevoked, message.RevokedAt, message.IsStatusUpdate, message.StatusExpiresAt));
+                conversation.Messages.Add(new MessageItem(message.ProviderMessageId, message.Body, message.Timestamp, message.Direction == WhatsAppMessageDirection.Outgoing, message.Kind, message.FileName, message.MimeType, message.MediaPath, message.MediaDownloadError, message.Status, message.StatusUpdatedAt, message.DeliveredAt, message.ReadAt, message.FailureReason, message.QuotedMessageId, message.QuotedText, message.QuotedFromMe, message.IsRevoked, message.RevokedAt, message.IsStatusUpdate, message.StatusExpiresAt, message.ParticipantName, message.IsGroup));
         MessageList.ItemsSource = VisibleMessages(conversation);
         if (_connected) { QrPanel.Visibility = Visibility.Collapsed; MessageList.Visibility = Visibility.Visible; }
-        SaveLeadButton.IsEnabled = !string.IsNullOrWhiteSpace(conversation.Phone);
+        SaveLeadButton.IsEnabled = !conversation.IsGroup && !string.IsNullOrWhiteSpace(conversation.Phone);
         await LoadLeadAsync(conversation);
         UpdateComposerState();
         UpdateStatusUpdateBanner(conversation);
@@ -553,6 +581,25 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
     private async Task LoadLeadAsync(ConversationItem conversation)
     {
+        if (conversation.IsGroup)
+        {
+            _currentLead = null;
+            _currentIdentityResolution = new CustomerIdentityResolution
+            {
+                Result = CustomerIdentityMatchResult.NoMatch,
+                Reason = "群聊包含多个参与者，不自动绑定单一客户。"
+            };
+            _currentCustomerSuccessContext = null;
+            LeadLinkStateText.Text = "群聊安全隔离：不关联单一客户，不触发 CRM/AI 自动化";
+            NameBox.Clear(); CompanyBox.Clear(); OwnerBox.Clear(); TagsBox.Clear(); OptInCheck.IsChecked = false;
+            OptInSourceBox.Clear(); OptedOutCheck.IsChecked = false; NotesBox.Clear(); CustomFieldsBox.Clear();
+            SaveLeadButton.IsEnabled = false;
+            UpdateCustomerSuccessPanel(_currentIdentityResolution, null);
+            UpdateLeadIntelligenceSummary(null);
+            await UpdateCustomerBrainSummaryAsync(null);
+            UpdateComposerState();
+            return;
+        }
         _currentIdentityResolution = string.IsNullOrWhiteSpace(conversation.Phone)
             ? new CustomerIdentityResolution { Result = CustomerIdentityMatchResult.NoMatch, Reason = "WhatsApp 尚未提供号码。" }
             : await _services.CustomerIdentity.ResolveAsync(
@@ -979,7 +1026,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             item.IsSelected = true;
             if (item.DataContext is ConversationItem conversation)
             {
-                var action = new MenuItem { Header = conversation.PinActionLabel, CommandParameter = conversation };
+                var action = new MenuItem { Header = conversation.PinActionLabel, CommandParameter = conversation, IsEnabled = !conversation.IsGroup };
                 action.Click += PinConversation_Click;
                 item.ContextMenu = new ContextMenu();
                 item.ContextMenu.Items.Add(action);
@@ -1079,12 +1126,16 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private void UpdateComposerState()
     {
         var available = _connected && ConversationList.SelectedItem is ConversationItem { Phone.Length: > 0 } && !_sending;
+        var groupSelected = ConversationList.SelectedItem is ConversationItem { IsGroup: true };
         var agentMode = _currentCustomerSuccessContext?.AgentState?.Mode ?? ConversationAgentMode.SuggestOnly;
         var canGenerate = _currentCustomerSuccessContext is not null &&
                           agentMode is ConversationAgentMode.SuggestOnly or ConversationAgentMode.CopilotActive or ConversationAgentMode.AutoActive &&
                           ConversationList.SelectedItem is ConversationItem { Phone.Length: > 0 } &&
                           !_sending && !_aiAssisting;
         ComposerBox.IsEnabled = available;
+        ComposerBox.ToolTip = groupSelected
+            ? "群聊当前为只读同步；不会进入 CRM、Customer Brain 或自动回复。"
+            : "Enter 发送，Ctrl+Enter 换行";
         AttachButton.IsEnabled = available;
         SendButton.IsEnabled = available && (!string.IsNullOrWhiteSpace(ComposerBox.Text) || !string.IsNullOrWhiteSpace(_attachmentPath));
         AiAssistantButton.IsEnabled = canGenerate;
@@ -1592,8 +1643,10 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
     private sealed class ConversationItem(string accountId, string phone, string displayName, string jid) : INotifyPropertyChanged
     {
-        private string _displayName = displayName; private string _lastMessage = ""; private DateTimeOffset _lastAt; private int _unread; private bool _isPinned; private DateTimeOffset? _pinnedAt;
+        private string _displayName = displayName; private string _lastMessage = ""; private DateTimeOffset _lastAt; private int _unread; private bool _isPinned; private DateTimeOffset? _pinnedAt; private bool _isGroup;
         public string AccountId { get; } = accountId; public string Phone { get; } = phone; public string Jid { get; set; } = jid; public string LeadId { get; set; } = ""; public string Id => string.IsNullOrWhiteSpace(Phone) ? $"{AccountId}:{Jid}" : $"{AccountId}:{Phone}"; public ObservableCollection<MessageItem> Messages { get; } = [];
+        public bool IsGroup { get => _isGroup; set { if (Set(ref _isGroup, value)) { OnPropertyChanged(nameof(GroupVisibility)); OnPropertyChanged(nameof(PinActionLabel)); } } }
+        public Visibility GroupVisibility => IsGroup ? Visibility.Visible : Visibility.Collapsed;
         public string DisplayName { get => _displayName; set => Set(ref _displayName, value); }
         public string LastMessage { get => _lastMessage; set => Set(ref _lastMessage, value); }
         public DateTimeOffset LastAt { get => _lastAt; set { if (Set(ref _lastAt, value)) OnPropertyChanged(nameof(LastTimeLabel)); } }
@@ -1604,7 +1657,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         public bool IsPinned { get => _isPinned; set { if (Set(ref _isPinned, value)) { OnPropertyChanged(nameof(PinnedVisibility)); OnPropertyChanged(nameof(PinActionLabel)); } } }
         public DateTimeOffset? PinnedAt { get => _pinnedAt; set => Set(ref _pinnedAt, value); }
         public Visibility PinnedVisibility => IsPinned ? Visibility.Visible : Visibility.Collapsed;
-        public string PinActionLabel => IsPinned ? "取消置顶并同步到手机" : "置顶并同步到手机";
+        public string PinActionLabel => IsGroup ? "群聊置顶请在手机 WhatsApp 操作" : IsPinned ? "取消置顶并同步到手机" : "置顶并同步到手机";
         public event PropertyChangedEventHandler? PropertyChanged;
         private bool Set<T>(ref T field, T value, [CallerMemberName] string? property = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; OnPropertyChanged(property); return true; }
         private void OnPropertyChanged(string? name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
@@ -1633,12 +1686,15 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             bool isRevoked = false,
             DateTimeOffset? revokedAt = null,
             bool isStatusUpdate = false,
-            DateTimeOffset? statusExpiresAt = null)
+            DateTimeOffset? statusExpiresAt = null,
+            string senderName = "",
+            bool isGroup = false)
         {
             Id = id; Text = text; Timestamp = timestamp; FromMe = fromMe; Kind = kind; FileName = fileName; MimeType = mimeType; MediaPath = mediaPath; MediaDownloadError = mediaDownloadError;
             Status = status; StatusUpdatedAt = statusUpdatedAt; DeliveredAt = deliveredAt; ReadAt = readAt; FailureReason = failureReason;
             QuotedMessageId = quotedMessageId; QuotedText = quotedText; QuotedFromMe = quotedFromMe; IsRevoked = isRevoked; RevokedAt = revokedAt;
             IsStatusUpdate = isStatusUpdate; StatusExpiresAt = statusExpiresAt;
+            SenderName = senderName; IsGroup = isGroup;
             MediaPreview = LoadMediaPreview(kind, mediaPath);
         }
 
@@ -1664,6 +1720,10 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         public DateTimeOffset? RevokedAt { get; private set; }
         public bool IsStatusUpdate { get; }
         public DateTimeOffset? StatusExpiresAt { get; }
+        public string SenderName { get; }
+        public bool IsGroup { get; }
+        public string SenderLabel => string.IsNullOrWhiteSpace(SenderName) ? "群成员" : SenderName;
+        public Visibility SenderVisibility => IsGroup && !FromMe ? Visibility.Visible : Visibility.Collapsed;
         private bool IsRevoking { get; set; }
         public string DisplayText => IsRevoked ? (FromMe ? "你撤回了一条消息" : "对方撤回了一条消息") : MessagePreview(Text, Kind, FileName);
         public bool HasMedia => !IsRevoked && Kind is "image" or "video" or "audio" or "document" or "sticker";
@@ -1691,9 +1751,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         public Visibility QuoteVisibility => !IsRevoked && !string.IsNullOrWhiteSpace(QuotedMessageId) ? Visibility.Visible : Visibility.Collapsed;
         public string QuoteHeader => QuotedFromMe ? "你" : "对方";
         public string QuoteText => string.IsNullOrWhiteSpace(QuotedText) ? "[原消息]" : QuotedText;
-        public Visibility ReplyMenuVisibility => !FromMe && !IsRevoked ? Visibility.Visible : Visibility.Collapsed;
-        public Visibility RevokeMenuVisibility => FromMe ? Visibility.Visible : Visibility.Collapsed;
-        public bool CanRevoke => FromMe && !IsRevoked && !IsRevoking && !string.IsNullOrWhiteSpace(Id) && !Id.StartsWith("local-", StringComparison.OrdinalIgnoreCase) && Status is WhatsAppMessageStatus.Sent or WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read;
+        public Visibility ReplyMenuVisibility => !IsGroup && !FromMe && !IsRevoked ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility RevokeMenuVisibility => !IsGroup && FromMe ? Visibility.Visible : Visibility.Collapsed;
+        public bool CanRevoke => !IsGroup && FromMe && !IsRevoked && !IsRevoking && !string.IsNullOrWhiteSpace(Id) && !Id.StartsWith("local-", StringComparison.OrdinalIgnoreCase) && Status is WhatsAppMessageStatus.Sent or WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read;
         public Visibility OutgoingStatusVisibility => FromMe && !IsRevoked ? Visibility.Visible : Visibility.Collapsed;
         public string ReceiptGlyph => !FromMe || IsRevoked ? "" : Status switch
         {
@@ -1807,7 +1867,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         }
         private void NotifyAll()
         {
-            foreach (var name in new[] { nameof(Id), nameof(DisplayText), nameof(TextContent), nameof(TextVisibility), nameof(HasMedia), nameof(ImageVisibility), nameof(FileVisibility), nameof(MediaMissingVisibility), nameof(TimeLabel), nameof(ReceiptGlyph), nameof(ReceiptBrush), nameof(StatusDetailLabel), nameof(OutgoingStatusVisibility), nameof(QuoteVisibility), nameof(ReplyMenuVisibility), nameof(RevokeMenuVisibility), nameof(CanRevoke), nameof(IsRevoked), nameof(RevokedAt) })
+            foreach (var name in new[] { nameof(Id), nameof(DisplayText), nameof(TextContent), nameof(TextVisibility), nameof(HasMedia), nameof(ImageVisibility), nameof(FileVisibility), nameof(MediaMissingVisibility), nameof(TimeLabel), nameof(ReceiptGlyph), nameof(ReceiptBrush), nameof(StatusDetailLabel), nameof(OutgoingStatusVisibility), nameof(QuoteVisibility), nameof(ReplyMenuVisibility), nameof(RevokeMenuVisibility), nameof(CanRevoke), nameof(IsRevoked), nameof(RevokedAt), nameof(SenderLabel), nameof(SenderVisibility) })
                 PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
         }
         public event PropertyChangedEventHandler? PropertyChanged;

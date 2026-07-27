@@ -140,7 +140,9 @@ public sealed class WhatsAppConversation
 {
     public string Id { get; set; } = "";
     public string AccountId { get; set; } = "primary";
+    public string Jid { get; set; } = "";
     public string Phone { get; set; } = "";
+    public bool IsGroup { get; set; }
     public string LeadId { get; set; } = "";
     public string DisplayName { get; set; } = "";
     public string LastMessage { get; set; } = "";
@@ -179,7 +181,12 @@ public sealed class WhatsAppMessage
     public string AccountId { get; set; } = "primary";
     public string ConversationId { get; set; } = "";
     public string LeadId { get; set; } = "";
+    public string Jid { get; set; } = "";
     public string Phone { get; set; } = "";
+    public bool IsGroup { get; set; }
+    public string ParticipantJid { get; set; } = "";
+    public string ParticipantPhone { get; set; } = "";
+    public string ParticipantName { get; set; } = "";
     public WhatsAppMessageDirection Direction { get; set; }
     public WhatsAppMessageStatus Status { get; set; }
     public string Kind { get; set; } = "text";

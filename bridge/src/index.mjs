@@ -17,6 +17,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys'
 import { isDisplayableMessage, messageContent, messageKind, messageText } from './message-content.mjs'
 import { normalizeOutboundUserJid, summarizeOutboundDeviceFanout } from './outbound-routing.mjs'
+import { isGroupJid, isSupportedInboundJid, normalizeGroupJid } from './conversation-routing.mjs'
 
 const logger = pino({ level: 'silent' })
 const state = {
@@ -578,6 +579,17 @@ function shouldForward(jid) {
     && jid !== 'status@broadcast'
 }
 
+function shouldIngest(jid) {
+  return Boolean(jid)
+    && isSupportedInboundJid(jid)
+    && jid !== 'status@broadcast'
+}
+
+async function resolveConversationJid(key) {
+  const group = normalizeGroupJid(key?.remoteJidAlt) || normalizeGroupJid(key?.remoteJid)
+  return group || await resolveDirectJid(key)
+}
+
 async function resolveDirectJid(key) {
   const alternate = normalizeOutboundUserJid(key?.remoteJidAlt)
   const remote = normalizeOutboundUserJid(key?.remoteJid)
@@ -620,6 +632,28 @@ async function normalizeContact(contact, source = 'live') {
 
 async function normalizeChat(chat, source = 'live') {
   const sourceJid = String(chat?.id ?? chat?.lidJid ?? chat?.pnJid ?? '')
+  const groupJid = normalizeGroupJid(chat?.id) || normalizeGroupJid(chat?.jid)
+  if (groupJid) {
+    const embedded = chat?.messages?.[0]?.message
+    const timestamp = chat?.conversationTimestamp ?? chat?.lastMsgTimestamp ?? chat?.lastMessageRecvTimestamp
+    return {
+      jid: groupJid,
+      sourceJid: groupJid,
+      groupJid,
+      phone: '',
+      isGroup: true,
+      displayName: firstNonEmpty(chat?.subject, chat?.name, chat?.displayName, 'WhatsApp 群聊'),
+      lastMessage: embedded ? messageText(embedded.message) : '',
+      lastMessageAt: timestamp == null ? '' : timestampToIso(timestamp),
+      unreadCount: Number.isFinite(Number(chat?.unreadCount)) ? Number(chat.unreadCount) : null,
+      archived: Boolean(chat?.archived),
+      ...(chat?.pinned !== undefined && chat?.pinned !== null ? {
+        pinned: Number(chat.pinned) > 0,
+        pinnedAt: Number(chat.pinned) > 0 ? timestampToIso(chat.pinned) : ''
+      } : {}),
+      source
+    }
+  }
   const jid = await resolveUserJid(chat?.pnJid, chat?.id, chat?.lidJid)
   if (!shouldForward(jid || sourceJid)) return null
   const phone = phoneFromJid(jid)
@@ -644,11 +678,51 @@ async function normalizeChat(chat, source = 'live') {
   }
 }
 
+async function resolveGroupDisplayName(groupJid) {
+  const jid = normalizeGroupJid(groupJid)
+  if (!jid) return ''
+  const cached = state.chats.get(jid)
+  if (cached?.displayName && cached.displayName !== 'WhatsApp 群聊') return cached.displayName
+  try {
+    const metadata = await state.socket?.groupMetadata?.(jid)
+    const displayName = firstNonEmpty(metadata?.subject, cached?.displayName, 'WhatsApp 群聊')
+    rememberChat({
+      jid,
+      sourceJid: jid,
+      groupJid: jid,
+      phone: '',
+      isGroup: true,
+      displayName,
+      source: 'group_metadata'
+    })
+    return displayName
+  } catch {
+    return firstNonEmpty(cached?.displayName, 'WhatsApp 群聊')
+  }
+}
+
 async function normalizeMessage(message, source) {
   rememberMessage(message)
   const sourceJid = message?.key?.remoteJid ?? ''
-  const jid = await resolveDirectJid(message?.key)
-  if (!shouldForward(jid)) return null
+  const jid = await resolveConversationJid(message?.key)
+  if (!shouldIngest(jid)) return null
+  const isGroup = isGroupJid(jid)
+  const groupName = isGroup ? await resolveGroupDisplayName(jid) : ''
+  const rawParticipantJid = String(message?.key?.participantAlt ?? message?.key?.participant ?? message?.participant ?? '')
+  const participantJid = isGroup
+    ? await resolveUserJid(message?.key?.participantAlt, message?.key?.participant, message?.participant)
+      || normalizeOutboundUserJid(rawParticipantJid)
+    : ''
+  const participantPhone = isGroup ? phoneFromJid(await phoneJidFromAnyJid(participantJid)) : ''
+  const participantContact = isGroup
+    ? [...state.contacts.values()].find(item =>
+        (participantPhone && item.phone === participantPhone)
+        || item.jid === participantJid
+        || item.sourceJid === rawParticipantJid)
+    : null
+  const participantName = isGroup
+    ? firstNonEmpty(message?.pushName, participantContact?.savedName, participantContact?.displayName, participantPhone ? `+${participantPhone}` : '', '群成员')
+    : ''
   const isStatusUpdate = isStatusUpdateMessage(message)
   const revokedKey = revocationTarget(message?.message)
   if (revokedKey) {
@@ -657,8 +731,14 @@ async function normalizeMessage(message, source) {
       id: message.key.id ?? '',
       jid,
       sourceJid,
-      phone: phoneFromJid(jid),
+      groupJid: isGroup ? jid : '',
+      groupName,
+      phone: isGroup ? '' : phoneFromJid(jid),
+      isGroup,
       fromMe: Boolean(revokedKey.fromMe),
+      participantJid,
+      participantPhone,
+      participantName,
       revokedMessageId: String(revokedKey.id),
       isRevocation: true,
       timestamp: timestampToIso(message.messageTimestamp),
@@ -685,9 +765,15 @@ async function normalizeMessage(message, source) {
     id: message.key.id ?? '',
     jid,
     sourceJid,
-    phone: phoneFromJid(jid),
+    groupJid: isGroup ? jid : '',
+    groupName,
+    phone: isGroup ? '' : phoneFromJid(jid),
+    isGroup,
     fromMe: Boolean(message.key.fromMe),
-    participant: message.key.participant ?? '',
+    participant: rawParticipantJid,
+    participantJid,
+    participantPhone,
+    participantName,
     pushName: message.pushName ?? '',
     timestamp,
     text: messageText(message.message),
@@ -730,11 +816,12 @@ function rememberContact(contact) {
 function rememberChat(chat) {
   if (!chat) return
   const key = chat.phone || chat.jid
+  if (!key) return
   const existing = state.chats.get(key) ?? {}
   state.chats.set(key, {
     ...existing,
     ...chat,
-    displayName: chat.displayName || existing.displayName || `+${chat.phone}`,
+    displayName: chat.displayName || existing.displayName || (chat.isGroup ? 'WhatsApp 群聊' : `+${chat.phone}`),
     lastMessage: chat.lastMessage || existing.lastMessage || '',
     lastMessageAt: chat.lastMessageAt || existing.lastMessageAt || ''
   })
@@ -763,28 +850,56 @@ async function normalizeMessages(messages, source) {
     }
   })
   await Promise.all(workers)
-  const items = normalized.filter(item => item?.phone && item?.id)
+  const items = normalized.filter(item => item?.id && (item.phone || item.isGroup))
   for (const item of items) {
     if (item.isRevocation) continue
-    const contact = [...state.contacts.values()].find(value => value.phone === item.phone)
-    if (!item.fromMe && item.pushName) rememberContact({ jid: item.jid, sourceJid: item.sourceJid, phone: item.phone, displayName: item.pushName, notifyName: item.pushName, source })
+    const contact = item.isGroup ? null : [...state.contacts.values()].find(value => value.phone === item.phone)
+    if (!item.isGroup && !item.fromMe && item.pushName) rememberContact({ jid: item.jid, sourceJid: item.sourceJid, phone: item.phone, displayName: item.pushName, notifyName: item.pushName, source })
     const preview = messagePreview(item)
-    rememberChat({ jid: item.jid, sourceJid: item.sourceJid, phone: item.phone, displayName: contact?.displayName || item.pushName || `+${item.phone}`, lastMessage: item.isStatusUpdate ? `[最新动态] ${preview}` : preview, lastMessageAt: item.timestamp, unreadCount: null, source })
+    const lastMessage = item.isGroup && !item.fromMe
+      ? `${item.participantName || '群成员'}：${preview}`
+      : item.isStatusUpdate ? `[最新动态] ${preview}` : preview
+    rememberChat({
+      jid: item.jid,
+      sourceJid: item.sourceJid,
+      groupJid: item.groupJid,
+      phone: item.phone,
+      isGroup: item.isGroup,
+      displayName: item.isGroup ? item.groupName : contact?.displayName || item.pushName || `+${item.phone}`,
+      lastMessage,
+      lastMessageAt: item.timestamp,
+      unreadCount: null,
+      source
+    })
   }
   return items
 }
 
 async function forwardMessage(message, source) {
   const data = await normalizeMessage(message, source)
-  if (!data?.phone || !data.id) return
+  if (!data?.id || (!data.phone && !data.isGroup)) return
   if (data.isRevocation) {
     emit({ type: 'event', event: 'message_revoked', accountId: state.accountId, data })
     return
   }
-  if (!data.fromMe && data.pushName) rememberContact({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: data.pushName, notifyName: data.pushName, source })
-  const contact = [...state.contacts.values()].find(value => value.phone === data.phone)
+  if (!data.isGroup && !data.fromMe && data.pushName) rememberContact({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: data.pushName, notifyName: data.pushName, source })
+  const contact = data.isGroup ? null : [...state.contacts.values()].find(value => value.phone === data.phone)
   const preview = messagePreview(data)
-  rememberChat({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: contact?.displayName || data.pushName || `+${data.phone}`, lastMessage: data.isStatusUpdate ? `[最新动态] ${preview}` : preview, lastMessageAt: data.timestamp, unreadCount: null, source })
+  const lastMessage = data.isGroup && !data.fromMe
+    ? `${data.participantName || '群成员'}：${preview}`
+    : data.isStatusUpdate ? `[最新动态] ${preview}` : preview
+  rememberChat({
+    jid: data.jid,
+    sourceJid: data.sourceJid,
+    groupJid: data.groupJid,
+    phone: data.phone,
+    isGroup: data.isGroup,
+    displayName: data.isGroup ? data.groupName : contact?.displayName || data.pushName || `+${data.phone}`,
+    lastMessage,
+    lastMessageAt: data.timestamp,
+    unreadCount: null,
+    source
+  })
   emit({
     type: 'event',
     event: 'message',
@@ -946,8 +1061,8 @@ async function connect() {
   })
   socket.ev.on('messages.update', async updates => {
     for (const update of updates ?? []) {
-      const jid = await resolveDirectJid(update.key)
-      if (!shouldForward(jid)) continue
+      const jid = await resolveConversationJid(update.key)
+      if (!shouldIngest(jid)) continue
       const providerMessageId = String(update.key?.id ?? '').trim()
       if (update.update?.message && providerMessageId) {
         const cached = state.messages.get(providerMessageId)
@@ -1072,7 +1187,7 @@ async function handle(command) {
   try {
     switch (command.command) {
       case 'ping':
-        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.7.0', connection: state.connection })
+        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.8.0', connection: state.connection })
         return
       case 'initialize': {
         state.accountId = validateAccountId(command.accountId ?? 'default')
@@ -1240,4 +1355,4 @@ lines.on('close', async () => {
   process.exit(0)
 })
 
-emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.7.0' } })
+emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.8.0' } })

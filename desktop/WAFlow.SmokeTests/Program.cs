@@ -447,6 +447,62 @@ await using (var recoveryBridge = new WhatsAppConnectionManager())
     var liveRecovered = await repository.GetWhatsAppMessageByProviderIdAsync("primary", "wamid-live-recovery");
     Check(synchronizedContentCount == 1 && liveRecovered?.Body == "what's up bro?", "WhatsApp recovered content is processed exactly once");
 }
+const string groupJid = "120363012345678901@g.us";
+const string groupConversationId = "primary:120363012345678901@g.us";
+await using (var groupBridge = new WhatsAppConnectionManager())
+{
+    var groupSync = new WhatsAppSyncService(repository, groupBridge);
+    var groupSynchronized = false;
+    groupSync.MessageSynchronized += (_, message) =>
+        groupSynchronized |= message.ProviderMessageId == "wamid-group-live" && message.IsGroup;
+    var ingestGroupChat = typeof(WhatsAppSyncService).GetMethod("IngestChatAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    using var groupChatDocument = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        jid = groupJid,
+        groupJid,
+        isGroup = true,
+        displayName = "DHGATE-needle machine",
+        lastMessage = "SP-Azita: Series symbols up here",
+        lastMessageAt = DateTimeOffset.Now.AddMinutes(-1).ToString("O"),
+        unreadCount = 0,
+        source = "history:recent"
+    }));
+    await (Task)ingestGroupChat.Invoke(groupSync, ["primary", groupChatDocument.RootElement.Clone()])!;
+    var ingestGroupMessage = typeof(WhatsAppSyncService).GetMethod("IngestMessageAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    using var groupMessageDocument = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        jid = groupJid,
+        groupJid,
+        groupName = "DHGATE-needle machine",
+        isGroup = true,
+        id = "wamid-group-live",
+        fromMe = false,
+        participantJid = "14155550123@s.whatsapp.net",
+        participantPhone = "14155550123",
+        participantName = "SP-Azita",
+        pushName = "SP-Azita",
+        timestamp = DateTimeOffset.Now.ToString("O"),
+        source = "notify",
+        kind = "text",
+        text = "Series symbols up here"
+    }));
+    await (Task)ingestGroupMessage.Invoke(groupSync, ["primary", groupMessageDocument.RootElement.Clone()])!;
+    var storedGroupConversation = await repository.GetWhatsAppConversationByIdAsync(groupConversationId);
+    var storedGroupMessage = (await repository.GetWhatsAppMessagesAsync(groupConversationId)).Single();
+    Check(
+        groupSynchronized
+        && storedGroupConversation is { IsGroup: true, Phone: "", LeadId: "", UnreadCount: 1 }
+        && storedGroupConversation.Jid == groupJid
+        && storedGroupConversation.DisplayName == "DHGATE-needle machine"
+        && storedGroupMessage.IsGroup
+        && storedGroupMessage.ParticipantName == "SP-Azita"
+        && storedGroupMessage.LeadId == "",
+        "WhatsApp group chats persist with member identity, unread state and strict CRM isolation");
+    await repository.MarkWhatsAppConversationReadAsync(groupConversationId);
+    Check(
+        (await repository.GetWhatsAppConversationByIdAsync(groupConversationId))?.UnreadCount == 0,
+        "WhatsApp group unread badge clears with the same monotonic read cursor as individual chats");
+}
 await repository.UpdateWhatsAppMessageStatusAsync("primary", "wamid-smoke", WhatsAppMessageStatus.Read);
 Check((await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single(message => message.Id == whatsappMessage.Id).Status == WhatsAppMessageStatus.Read, "WhatsApp message status persistence");
 var quotedReply = new WhatsAppMessage
