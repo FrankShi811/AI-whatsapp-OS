@@ -1,6 +1,6 @@
 {
   "name": "waflow-whatsapp-bridge",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "Experimental local WhatsApp multi-device bridge for the native AI Sales OS desktop app.",
@@ -9,6 +9,7 @@
     "start": "node src/index.mjs",
     "smoke": "node scripts/smoke.mjs",
     "smoke:message-content": "node scripts/message-content-smoke.mjs",
+    "smoke:outbound-routing": "node scripts/outbound-routing-smoke.mjs",
     "build:exe": "node scripts/build-sea.mjs",
     "smoke:exe": "node scripts/smoke.mjs dist/WAFlow.WhatsApp.Bridge.exe"
   },

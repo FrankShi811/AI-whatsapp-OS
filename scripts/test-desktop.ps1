@@ -32,6 +32,7 @@ $todayBriefSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $roo
 $whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml')
 $bridgeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\index.mjs')
 $bridgeMessageSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\message-content.mjs')
+$bridgeOutboundRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\outbound-routing.mjs')
 $whatsAppInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml.cs')
 $whatsAppSyncSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppSyncService.cs')
 $whatsAppManagerSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppConnectionManager.cs')
@@ -238,6 +239,16 @@ if ($bridgeSource -notmatch 'receiptBelongsToPhone' -or
     $bridgeSource -notmatch 'whatsapp_server_message_id_missing') {
   throw 'WhatsApp bridge must verify the recipient and require a server message id before confirming a send.'
 }
+
+if ($bridgeOutboundRoutingSource -notmatch 'jidNormalizedUser' -or
+    $bridgeSource -notmatch [regex]::Escape('getUSyncDevices([senderIdentity, targetJid], false, false)') -or
+    $bridgeSource -notmatch 'senderDeviceSyncPrepared:\s*true' -or
+    $bridgeSource -notmatch 'whatsapp_sender_device_sync_unavailable') {
+  throw 'WhatsApp outbound sends must strip device-qualified JIDs and refresh sender/recipient devices before customer delivery.'
+}
+& $node (Join-Path $root 'bridge\scripts\outbound-routing-smoke.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'WhatsApp bridge outbound-routing smoke test failed.' }
+Write-Host 'PASS  WhatsApp sender multi-device synchronization contract'
 
 if ($whatsAppInboxSource -notmatch 'string\.IsNullOrWhiteSpace\(id\)' -or
     $whatsAppInboxSource -notmatch '!Bool\(result, "targetVerified"\)' -or

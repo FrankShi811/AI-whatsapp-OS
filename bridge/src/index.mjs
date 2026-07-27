@@ -16,6 +16,7 @@ import makeWASocket, {
   proto
 } from '@whiskeysockets/baileys'
 import { isDisplayableMessage, messageContent, messageKind, messageText } from './message-content.mjs'
+import { normalizeOutboundUserJid, summarizeOutboundDeviceFanout } from './outbound-routing.mjs'
 
 const logger = pino({ level: 'silent' })
 const state = {
@@ -254,16 +255,18 @@ function timestampToIso(value) {
 }
 
 function phoneFromJid(jid) {
-  return String(jid ?? '').endsWith('@s.whatsapp.net') ? String(jid).split('@')[0].split(':')[0].replace(/\D/g, '') : ''
+  const normalized = normalizeOutboundUserJid(jid)
+  return normalized.endsWith('@s.whatsapp.net') ? normalized.split('@')[0].replace(/\D/g, '') : ''
 }
 
 async function phoneJidFromAnyJid(jid) {
-  const candidate = String(jid ?? '').trim()
+  const candidate = normalizeOutboundUserJid(jid)
   if (candidate.endsWith('@s.whatsapp.net')) return candidate
   if (!candidate.endsWith('@lid')) return ''
   try {
     const mapped = await state.socket?.signalRepository?.lidMapping?.getPNForLID(candidate)
-    return String(mapped ?? '').endsWith('@s.whatsapp.net') ? String(mapped) : ''
+    const normalized = normalizeOutboundUserJid(mapped)
+    return normalized.endsWith('@s.whatsapp.net') ? normalized : ''
   } catch {
     return ''
   }
@@ -272,6 +275,35 @@ async function phoneJidFromAnyJid(jid) {
 async function verifiedPhoneJid(jid, expectedPhone) {
   const phoneJid = await phoneJidFromAnyJid(jid)
   return phoneFromJid(phoneJid) === String(expectedPhone ?? '').replace(/\D/g, '') ? phoneJid : ''
+}
+
+async function prepareOutboundDeviceFanout(jid) {
+  const targetJid = normalizeOutboundUserJid(jid)
+  if (!targetJid) throw new Error('whatsapp_target_jid_invalid')
+  const socket = state.socket
+  if (!socket || typeof socket.getUSyncDevices !== 'function') {
+    throw new Error('whatsapp_sender_device_sync_unavailable:当前 WhatsApp 连接不支持发送者设备同步，消息尚未发送。请重新连接后再试。')
+  }
+
+  const senderPhoneJid = normalizeOutboundUserJid(socket.user?.id)
+  const senderLid = normalizeOutboundUserJid(socket.user?.lid)
+  const senderIdentity = targetJid.endsWith('@lid') ? (senderLid || senderPhoneJid) : senderPhoneJid
+  if (!senderIdentity) {
+    throw new Error('whatsapp_sender_identity_missing:未取得当前 WhatsApp 账号身份，消息尚未发送。请重新连接后再试。')
+  }
+
+  // Force a fresh USync lookup before every outbound message. Baileys then uses the
+  // refreshed internal cache to encrypt the normal message for the customer and a
+  // deviceSentMessage copy for every other device belonging to the sender.
+  const devices = await socket.getUSyncDevices([senderIdentity, targetJid], false, false)
+  const fanout = summarizeOutboundDeviceFanout(devices, [senderPhoneJid, senderLid], targetJid)
+  if (fanout.senderDeviceCount < 1) {
+    throw new Error('whatsapp_sender_device_sync_unavailable:未发现可接收消息副本的发送者手机设备，消息尚未发送。请确认手机 WhatsApp 在线后重新连接账号。')
+  }
+  if (fanout.recipientDeviceCount < 1) {
+    throw new Error('whatsapp_recipient_devices_unavailable:未发现客户的可用 WhatsApp 设备，消息尚未发送。请稍后再试。')
+  }
+  return { jid: targetJid, senderDeviceSyncPrepared: true, ...fanout }
 }
 
 function rememberOutboundTarget(providerMessageId, target) {
@@ -547,23 +579,23 @@ function shouldForward(jid) {
 }
 
 async function resolveDirectJid(key) {
-  const alternate = key?.remoteJidAlt ?? ''
-  const remote = key?.remoteJid ?? ''
+  const alternate = normalizeOutboundUserJid(key?.remoteJidAlt)
+  const remote = normalizeOutboundUserJid(key?.remoteJid)
   if (alternate.endsWith('@s.whatsapp.net')) return alternate
   if (remote.endsWith('@s.whatsapp.net')) return remote
   const lid = alternate.endsWith('@lid') ? alternate : remote.endsWith('@lid') ? remote : ''
   if (!lid) return remote || alternate
-  try { return await state.socket?.signalRepository?.lidMapping?.getPNForLID(lid) ?? lid }
+  try { return normalizeOutboundUserJid(await state.socket?.signalRepository?.lidMapping?.getPNForLID(lid)) || lid }
   catch { return lid }
 }
 
 async function resolveUserJid(...values) {
-  const candidates = values.flat().filter(Boolean).map(value => String(value))
+  const candidates = values.flat().map(normalizeOutboundUserJid).filter(Boolean)
   const phoneJid = candidates.find(value => value.endsWith('@s.whatsapp.net'))
   if (phoneJid) return phoneJid
   const lid = candidates.find(value => value.endsWith('@lid'))
   if (!lid) return ''
-  try { return await state.socket?.signalRepository?.lidMapping?.getPNForLID(lid) ?? lid }
+  try { return normalizeOutboundUserJid(await state.socket?.signalRepository?.lidMapping?.getPNForLID(lid)) || lid }
   catch { return lid }
 }
 
@@ -1040,7 +1072,7 @@ async function handle(command) {
   try {
     switch (command.command) {
       case 'ping':
-        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.6.0', connection: state.connection })
+        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.7.0', connection: state.connection })
         return
       case 'initialize': {
         state.accountId = validateAccountId(command.accountId ?? 'default')
@@ -1080,10 +1112,11 @@ async function handle(command) {
         if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
         const text = String(command.text ?? '').trim()
         if (!text || text.length > 4096) throw new Error('invalid_message_text')
-        const jid = await resolveOutboundJid(command.phone, command.jid)
-        if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
-        const result = await state.socket.sendMessage(jid, { text }, quotedSendOptions(command, jid))
-        const target = await requireVerifiedOutboundResult(result, command.phone, jid)
+        const requestedJid = await resolveOutboundJid(command.phone, command.jid)
+        if (!shouldForward(requestedJid)) throw new Error('only_individual_contacts_supported')
+        const fanout = await prepareOutboundDeviceFanout(requestedJid)
+        const result = await state.socket.sendMessage(fanout.jid, { text }, quotedSendOptions(command, fanout.jid))
+        const target = await requireVerifiedOutboundResult(result, command.phone, fanout.jid)
         rememberMessage(result)
         // sendMessage may return before WhatsApp has acknowledged the message.
         // Missing status means pending, never a confirmed send.
@@ -1093,17 +1126,21 @@ async function handle(command) {
           timestamp: new Date().toISOString(),
           status: result?.status ?? 1,
           quotedMessageId: String(command.quotedMessageId ?? ''),
+          senderDeviceSyncPrepared: fanout.senderDeviceSyncPrepared,
+          senderDeviceCount: fanout.senderDeviceCount,
+          recipientDeviceCount: fanout.recipientDeviceCount,
           ...target
         })
         return
       }
       case 'send_media': {
         if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
-        const jid = await resolveOutboundJid(command.phone, command.jid)
-        if (!shouldForward(jid)) throw new Error('only_individual_contacts_supported')
+        const requestedJid = await resolveOutboundJid(command.phone, command.jid)
+        if (!shouldForward(requestedJid)) throw new Error('only_individual_contacts_supported')
+        const fanout = await prepareOutboundDeviceFanout(requestedJid)
         const media = await buildMediaMessage(command.path, command.caption)
-        const result = await state.socket.sendMessage(jid, media.payload, quotedSendOptions(command, jid))
-        const target = await requireVerifiedOutboundResult(result, command.phone, jid)
+        const result = await state.socket.sendMessage(fanout.jid, media.payload, quotedSendOptions(command, fanout.jid))
+        const target = await requireVerifiedOutboundResult(result, command.phone, fanout.jid)
         rememberMessage(result)
         reply(requestId, true, {
           id: target.providerMessageId,
@@ -1114,6 +1151,9 @@ async function handle(command) {
           mimeType: media.mimeType,
           fileName: media.fileName,
           quotedMessageId: String(command.quotedMessageId ?? ''),
+          senderDeviceSyncPrepared: fanout.senderDeviceSyncPrepared,
+          senderDeviceCount: fanout.senderDeviceCount,
+          recipientDeviceCount: fanout.recipientDeviceCount,
           ...target
         })
         return
@@ -1200,4 +1240,4 @@ lines.on('close', async () => {
   process.exit(0)
 })
 
-emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.6.0' } })
+emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.7.0' } })
