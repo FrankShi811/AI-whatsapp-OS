@@ -55,6 +55,14 @@ $icon = Join-Path $root 'desktop\WAFlow.Desktop\Assets\AI-Sales-OS.ico'
 $canonicalExe = Join-Path $root 'AI Sales OS.exe'
 New-Item -ItemType Directory -Force -Path $publish, $releases, $installerDirectory | Out-Null
 if (-not (Test-Path -LiteralPath $releaseNotes)) { throw "Release notes are missing: $releaseNotes" }
+$releaseNotesText = Get-Content -Raw -Encoding utf8 -LiteralPath $releaseNotes
+$velopackReleaseNotesDirectory = Join-Path $work 'velopack-release-notes'
+$velopackReleaseNotes = Join-Path $velopackReleaseNotesDirectory "v$Version.md"
+New-Item -ItemType Directory -Force -Path $velopackReleaseNotesDirectory | Out-Null
+# Velopack's Windows CLI can fall back to the active ANSI code page when a
+# release-notes file has no encoding marker. A UTF-8 BOM keeps Chinese notes
+# intact in releases.win.json and therefore in the in-app version center.
+[IO.File]::WriteAllText($velopackReleaseNotes, $releaseNotesText, [Text.UTF8Encoding]::new($true))
 
 # A local rebuild or a re-run of the same GitHub tag must overwrite its release
 # instead of failing because Velopack sees the same version in the output feed.
@@ -96,13 +104,21 @@ if ($LASTEXITCODE -ne 0) { throw 'Velopack tool restore failed.' }
   --mainExe AISalesOS.exe `
   --packTitle 'AI Sales OS' `
   --packAuthors 'AI Sales OS' `
-  --releaseNotes $releaseNotes `
+  --releaseNotes $velopackReleaseNotes `
   --icon $icon `
   --channel win `
   --runtime $Runtime `
   --shortcuts 'Desktop,StartMenuRoot' `
   --outputDir $releases
 if ($LASTEXITCODE -ne 0) { throw 'Velopack package creation failed.' }
+$packedFeed = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $releases 'releases.win.json') | ConvertFrom-Json
+$packedCurrent = @($packedFeed.Assets | Where-Object { $_.Version -eq $Version })
+$expectedHeading = @($releaseNotesText -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })[0]
+if ($packedCurrent.Count -eq 0 -or
+    @($packedCurrent | Where-Object { $_.NotesMarkdown -notlike "*$expectedHeading*" -or $_.NotesMarkdown.Contains([char]0xFFFD) }).Count -gt 0) {
+  throw "Velopack release notes are missing or contain invalid UTF-8 replacement characters. version=$Version"
+}
+Write-Host "PASS Velopack UTF-8 release notes: $expectedHeading"
 
 $setup = Get-ChildItem -LiteralPath $releases -Filter '*Setup.exe' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
 if (-not $setup) { throw 'Velopack Setup executable was not created.' }

@@ -165,6 +165,11 @@ if ($appStartupSource -notmatch [regex]::Escape('DesktopShortcutService.EnsureFo
   throw 'Windows install/update must create or repair both desktop and Start menu shortcuts.'
 }
 Write-Host 'PASS  Velopack install and post-update desktop shortcut repair contract'
+if ($velopackBuildSource -notmatch [regex]::Escape('[Text.UTF8Encoding]::new($true)') -or
+    $velopackBuildSource -notmatch [regex]::Escape('NotesMarkdown.Contains([char]0xFFFD)')) {
+  throw 'Velopack release notes must be BOM-marked UTF-8 and reject replacement characters before publishing.'
+}
+Write-Host 'PASS  Velopack Chinese release-notes encoding contract'
 
 $profileTextMatch = [regex]::Match(
   $whatsAppInboxXaml,
