@@ -1402,6 +1402,59 @@ Check(aliceGlobalIdentity is not null
     && aliceGlobalIdentity.LinkedAccountIds.Order().SequenceEqual(new[] { "account-a", "account-b" })
     && aliceGlobalIdentity.PrimaryAccountId == "account-a",
     "one global customer identity keeps all linked WhatsApp accounts and a stable primary account");
+await customerSuccessRepository.UpsertWhatsAppConversationAsync(new WhatsAppConversation
+{
+    Id = "conversation-a",
+    AccountId = "account-a",
+    Phone = alice.PhoneE164,
+    LeadId = alice.Id,
+    DisplayName = alice.Name,
+    LastMessage = "Message from Alice on account A",
+    LastMessageAt = DateTimeOffset.Now.AddMinutes(-2)
+});
+await customerSuccessRepository.UpsertWhatsAppConversationAsync(new WhatsAppConversation
+{
+    Id = "conversation-b",
+    AccountId = "account-b",
+    Phone = alice.PhoneE164,
+    LeadId = alice.Id,
+    DisplayName = alice.Name,
+    LastMessage = "Message from Alice on account B",
+    LastMessageAt = DateTimeOffset.Now.AddMinutes(-1)
+});
+await customerSuccessRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id = "account-a:alice-global-a",
+    ProviderMessageId = "alice-global-a",
+    AccountId = "account-a",
+    ConversationId = "conversation-a",
+    LeadId = alice.Id,
+    Phone = alice.PhoneE164,
+    Direction = WhatsAppMessageDirection.Incoming,
+    Status = WhatsAppMessageStatus.Received,
+    Body = "Message from Alice on account A",
+    Timestamp = DateTimeOffset.Now.AddMinutes(-2)
+});
+await customerSuccessRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id = "account-b:alice-global-b",
+    ProviderMessageId = "alice-global-b",
+    AccountId = "account-b",
+    ConversationId = "conversation-b",
+    LeadId = alice.Id,
+    Phone = alice.PhoneE164,
+    Direction = WhatsAppMessageDirection.Incoming,
+    Status = WhatsAppMessageStatus.Received,
+    Body = "Message from Alice on account B",
+    Timestamp = DateTimeOffset.Now.AddMinutes(-1)
+});
+var aliceCrossAccountContext = await customerSuccessAgent.GetContextAsync("account-a", "conversation-a");
+Check(aliceCrossAccountContext is not null
+    && aliceCrossAccountContext.IdentityLinks.Select(item => item.AccountId)
+        .Distinct(StringComparer.OrdinalIgnoreCase).Order().SequenceEqual(new[] { "account-a", "account-b" })
+    && aliceCrossAccountContext.Messages.Any(item => item.AccountId == "account-a" && item.Body.Contains("account A"))
+    && aliceCrossAccountContext.Messages.Any(item => item.AccountId == "account-b" && item.Body.Contains("account B")),
+    "same customer context aggregates and updates messages across linked WhatsApp accounts");
 var ambiguousState = await customerSuccessRepository.GetConversationAgentStateAsync("account-ambiguous", "conversation-ambiguous");
 Check(ambiguousState is { Mode: ConversationAgentMode.IdentityResolutionRequired, ExplicitResumeRequired: true },
     "ambiguous identity moves the conversation into explicit identity resolution");

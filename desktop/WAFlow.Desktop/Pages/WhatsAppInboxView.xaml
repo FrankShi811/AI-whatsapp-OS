@@ -191,8 +191,6 @@
                                         <TextBlock x:Name="AgentModeBadgeText" Text="仅建议" Foreground="{DynamicResource PrimaryDark}" FontSize="9.5" FontWeight="SemiBold"/>
                                     </Border>
                                 </Grid>
-                                <TextBlock x:Name="LinkedAccountsText" Text="关联账号：—" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,8,0,0" TextWrapping="Wrap"/>
-                                <TextBlock x:Name="AccountRelationshipText" Text="本账号关系：尚无摘要" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,3,0,0" TextWrapping="Wrap"/>
                                 <Grid Margin="0,9,0,0">
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                     <ComboBox x:Name="AgentModeCombo" DisplayMemberPath="Label" MinHeight="30" SelectionChanged="AgentModeCombo_SelectionChanged"/>

@@ -1206,13 +1206,6 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         CustomerIdentityText.Text = identity is null
             ? "等待会话身份"
             : $"{CustomerSuccessAgentLabels.Match(identity.Result)} · 置信度 {identity.Confidence:P0} · {identity.Reason}";
-        LinkedAccountsText.Text = context?.IdentityLinks.Count > 0
-            ? $"关联账号：{string.Join("、", context.IdentityLinks.Select(item => item.AccountId).Distinct(StringComparer.OrdinalIgnoreCase))}；主账号：{context.Identity?.PrimaryAccountId}"
-            : "关联账号：—";
-        AccountRelationshipText.Text = string.IsNullOrWhiteSpace(context?.AccountRelationship?.Summary)
-            ? "本账号关系：尚无摘要"
-            : $"本账号关系：{context.AccountRelationship.Summary}";
-
         var state = context?.AgentState;
         AgentModeBadgeText.Text = CustomerSuccessAgentLabels.Mode(state?.Mode ?? ConversationAgentMode.SuggestOnly);
         AgentStateReasonText.Text = state is null

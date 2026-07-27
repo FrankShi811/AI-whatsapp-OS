@@ -281,6 +281,10 @@ if ($whatsAppInboxSource -notmatch 'AgentModeCombo_SelectionChanged' -or
     $whatsAppInboxSource -notmatch 'UseAgentDraft_Click') {
   throw 'WhatsApp Inbox must explain each agent mode, refresh background output and let the user place review drafts into the composer.'
 }
+if ($whatsAppInboxXaml -match 'LinkedAccountsText|AccountRelationshipText|关联账号：|本账号关系：' -or
+    $whatsAppInboxSource -match 'LinkedAccountsText|AccountRelationshipText') {
+  throw 'WhatsApp Customer Success card must not expose linked-account, primary-account or per-account relationship internals.'
+}
 Write-Host 'PASS  Customer Success Agent mode behavior and visible-output contract'
 
 if ($bridgeSource -notmatch [regex]::Escape('proto.WebMessageInfo.StubType.CIPHERTEXT') -or
