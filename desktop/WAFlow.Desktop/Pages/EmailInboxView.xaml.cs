@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -13,7 +15,7 @@ public partial class EmailInboxView : UserControl, IRefreshableView
 {
     private readonly AppServices _services;
     private readonly ObservableCollection<EmailAccount> _accounts = [];
-    private readonly ObservableCollection<EmailConversation> _conversations = [];
+    private readonly ObservableCollection<EmailConversationItem> _conversations = [];
     private readonly ObservableCollection<EmailMessage> _messages = [];
     private EmailConversation? _conversation;
     private Lead? _lead;
@@ -58,7 +60,8 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         var selectedId = _conversation?.Id;
         _conversations.Clear();
         if (AccountBox.SelectedItem is not EmailAccount account) { ClearConversation(); return; }
-        foreach (var conversation in await _services.Repository.GetEmailConversationsAsync(account.Id)) _conversations.Add(conversation);
+        foreach (var conversation in await _services.Repository.GetEmailConversationsAsync(account.Id))
+            _conversations.Add(new EmailConversationItem(conversation));
         ConversationList.SelectedItem = _conversations.FirstOrDefault(item => item.Id == selectedId);
         ApplySearch();
     }
@@ -95,12 +98,12 @@ public partial class EmailInboxView : UserControl, IRefreshableView
 
     private async void ConversationList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (ConversationList.SelectedItem is not EmailConversation conversation) { ClearConversation(); return; }
+        if (ConversationList.SelectedItem is not EmailConversationItem item) { ClearConversation(); return; }
+        var conversation = item.Conversation;
         _conversation = conversation;
-        if (IsVisible && conversation.UnreadCount > 0)
+        if (IsVisible && item.Unread > 0)
         {
-            conversation.UnreadCount = 0;
-            conversation.LastReadAt = DateTimeOffset.Now;
+            item.MarkRead(DateTimeOffset.Now);
             await _services.Repository.MarkEmailConversationReadAsync(conversation.Id);
             DataChanged?.Invoke(this, EventArgs.Empty);
         }
@@ -184,9 +187,37 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     private void ApplySearch()
     {
         var query = SearchBox.Text.Trim();
-        CollectionViewSource.GetDefaultView(_conversations).Filter = item => item is EmailConversation conversation &&
+        CollectionViewSource.GetDefaultView(_conversations).Filter = item => item is EmailConversationItem conversation &&
             (query.Length == 0 || string.Join(' ', conversation.DisplayName, conversation.PeerEmail, conversation.Subject, conversation.LastMessage).Contains(query, StringComparison.CurrentCultureIgnoreCase));
     }
 
     private sealed record StageChoice(string Label, LeadStage Value);
+
+    private sealed class EmailConversationItem(EmailConversation conversation) : INotifyPropertyChanged
+    {
+        public EmailConversation Conversation { get; } = conversation;
+        public string Id => Conversation.Id;
+        public string DisplayName => Conversation.DisplayName;
+        public string PeerEmail => Conversation.PeerEmail;
+        public string Subject => Conversation.Subject;
+        public string LastMessage => Conversation.LastMessage;
+        public string LastTimeLabel => Conversation.LastTimeLabel;
+        public int Unread => Conversation.UnreadCount;
+        public string UnreadLabel => Unread > 99 ? "99+" : Unread.ToString();
+        public Visibility UnreadVisibility => Unread > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        public void MarkRead(DateTimeOffset readAt)
+        {
+            Conversation.UnreadCount = 0;
+            if (Conversation.LastReadAt is null || readAt > Conversation.LastReadAt)
+                Conversation.LastReadAt = readAt;
+            OnPropertyChanged(nameof(Unread));
+            OnPropertyChanged(nameof(UnreadLabel));
+            OnPropertyChanged(nameof(UnreadVisibility));
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+        private void OnPropertyChanged([CallerMemberName] string? name = null) =>
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
 }

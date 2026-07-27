@@ -30,11 +30,13 @@ $mainWindowSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $roo
 $dashboardXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\DashboardView.xaml')
 $todayBriefSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\TodayBriefService.cs')
 $whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml')
+$emailInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\EmailInboxView.xaml')
 $bridgeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\index.mjs')
 $bridgeMessageSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\message-content.mjs')
 $bridgeOutboundRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\outbound-routing.mjs')
 $bridgeConversationRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\conversation-routing.mjs')
 $whatsAppInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml.cs')
+$emailInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\EmailInboxView.xaml.cs')
 $whatsAppSyncSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppSyncService.cs')
 $whatsAppManagerSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppConnectionManager.cs')
 $campaignAutomationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CampaignAutomationService.cs')
@@ -417,6 +419,17 @@ if ($mainWindowXaml -notmatch 'x:Name="WhatsAppUnreadBadge"' -or
   throw 'WhatsApp and email sidebar navigation must expose durable live application-wide unread counters with periodic reconciliation.'
 }
 Write-Host 'PASS  application-wide account synchronization, durable unread cursor and sidebar badge contract'
+
+if ($emailInboxXaml -notmatch [regex]::Escape('Visibility="{Binding UnreadVisibility}"') -or
+    $emailInboxXaml -notmatch [regex]::Escape('Text="{Binding UnreadLabel}"') -or
+    $emailInboxXaml -notmatch [regex]::Escape('DynamicResource PrimarySoft') -or
+    $emailInboxSource -notmatch [regex]::Escape('class EmailConversationItem') -or
+    $emailInboxSource -notmatch [regex]::Escape('Unread > 99 ? "99+"') -or
+    $emailInboxSource -notmatch [regex]::Escape('item.MarkRead(DateTimeOffset.Now)') -or
+    $emailInboxSource -notmatch [regex]::Escape('MarkEmailConversationReadAsync(conversation.Id)')) {
+  throw 'Email Inbox must show a per-conversation unread badge, cap it at 99+, and clear it immediately with the durable read cursor.'
+}
+Write-Host 'PASS  Email Inbox per-conversation unread badge and immediate read-state contract'
 
 $aiRoutingUiTokens = @(
   'x:Name="ReasoningEffortBox"',
