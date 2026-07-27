@@ -195,10 +195,43 @@
                                 <TextBlock x:Name="AccountRelationshipText" Text="本账号关系：尚无摘要" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,3,0,0" TextWrapping="Wrap"/>
                                 <Grid Margin="0,9,0,0">
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                    <ComboBox x:Name="AgentModeCombo" DisplayMemberPath="Label" MinHeight="30"/>
+                                    <ComboBox x:Name="AgentModeCombo" DisplayMemberPath="Label" MinHeight="30" SelectionChanged="AgentModeCombo_SelectionChanged"/>
                                     <Button Grid.Column="1" Content="应用" Style="{StaticResource SecondaryButton}" Click="ApplyAgentMode_Click" Padding="10,4" Margin="7,0,0,0"/>
                                 </Grid>
+                                <Border Background="{DynamicResource AiSoft}" BorderBrush="{DynamicResource AiAccent}" BorderThickness="1" CornerRadius="8" Padding="9" Margin="0,8,0,0">
+                                    <StackPanel>
+                                        <TextBlock x:Name="AgentModeGuideTitleText" Text="仅建议：由你手动生成并确认" Foreground="{DynamicResource AiAccentDeep}" FontWeight="SemiBold" FontSize="10.5" TextWrapping="Wrap"/>
+                                        <TextBlock x:Name="AgentModeTriggerText" Text="触发：点击“立即生成建议”或会话输入区的“AI”" FontSize="9" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                                        <TextBlock x:Name="AgentModeOutputText" Text="产出：显示在下方，并填入输入框" FontSize="9" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                                        <TextBlock x:Name="AgentModeSendText" Text="发送：绝不自动发送，由你检查后点击发送" Foreground="{DynamicResource Muted}" FontSize="9" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                                        <TextBlock Text="选择模式后请点击“应用”；右上角模式徽标代表当前已生效模式。" Foreground="{DynamicResource Muted}" FontSize="8.5" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </Border>
                                 <TextBlock x:Name="AgentStateReasonText" Text="选择客户后可设置" Foreground="{DynamicResource Muted}" FontSize="9" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Background="{DynamicResource SurfaceAlt}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="10" Padding="12" Margin="0,0,0,13">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="最近一次 Agent 产出" FontWeight="SemiBold" FontSize="12"/>
+                                        <TextBlock x:Name="AgentRunStatusText" Text="尚无产出" Foreground="{DynamicResource Primary}" FontSize="9.5" FontWeight="SemiBold" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                    <TextBlock x:Name="AgentRunTimeText" Grid.Column="1" Text="—" Foreground="{DynamicResource Muted}" FontSize="8.5" VerticalAlignment="Top"/>
+                                </Grid>
+                                <TextBlock x:Name="AgentRunSourceText" Text="客户原话：等待生成" Foreground="{DynamicResource Muted}" FontSize="9" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                                <Border Background="{DynamicResource SurfaceInput}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="7" Padding="9" Margin="0,7,0,0">
+                                    <TextBlock x:Name="AgentRunReplyText" Text="生成的建议回复会显示在这里。" FontSize="10" TextWrapping="Wrap"/>
+                                </Border>
+                                <TextBlock x:Name="AgentRunSummaryText" Text="分析摘要：—" FontSize="9" Margin="0,7,0,0" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="AgentRunNextActionText" Text="下一步：—" Foreground="{DynamicResource Muted}" FontSize="9" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="AgentRunDetailText" Text="当前没有 Agent 运行结果。" Foreground="{DynamicResource Muted}" FontSize="9" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                                <WrapPanel Margin="0,9,0,0">
+                                    <Button x:Name="GenerateAgentSuggestionButton" Content="立即生成建议" Style="{StaticResource PrimaryButton}" Click="GenerateAgentSuggestion_Click" Padding="9,4" Margin="0,0,6,5" IsEnabled="False"/>
+                                    <Button x:Name="UseAgentDraftButton" Content="填入输入框" Style="{StaticResource SecondaryButton}" Click="UseAgentDraft_Click" Padding="9,4" Margin="0,0,6,5" IsEnabled="False"/>
+                                </WrapPanel>
+                                <TextBlock Text="仅“自动回复”可能直接发送；“仅建议”和“协作模式”的内容都必须由你确认。" Foreground="{DynamicResource Muted}" FontSize="8.5" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
                         <Border Background="{DynamicResource PrimarySurface}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="10" Padding="12" Margin="0,0,0,13">

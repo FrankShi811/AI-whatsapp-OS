@@ -257,6 +257,32 @@ if ($customerSuccessSource -match 'holding-\{Guid\.NewGuid') {
 
 Write-Host 'PASS  WhatsApp real-send acknowledgement contract'
 
+if ($customerSuccessSource -notmatch 'requestedMode == ConversationAgentMode\.CopilotActive' -or
+    $customerSuccessSource -notmatch 'CustomerSuccessRunStatus\.CopilotDraftReady' -or
+    $customerSuccessSource -notmatch 'RaiseRunCompleted') {
+  throw 'Customer Success Agent copilot mode must auto-generate a review draft and publish a visible completion event without entering the send path.'
+}
+foreach ($requiredControl in @(
+  'AgentModeGuideTitleText',
+  'AgentModeTriggerText',
+  'AgentModeOutputText',
+  'AgentModeSendText',
+  'AgentRunStatusText',
+  'AgentRunReplyText',
+  'GenerateAgentSuggestionButton',
+  'UseAgentDraftButton'
+)) {
+  if ($whatsAppInboxXaml -notmatch [regex]::Escape("x:Name=`"$requiredControl`"")) {
+    throw "WhatsApp Inbox agent-mode explanation or output control is missing: $requiredControl"
+  }
+}
+if ($whatsAppInboxSource -notmatch 'AgentModeCombo_SelectionChanged' -or
+    $whatsAppInboxSource -notmatch 'CustomerSuccessCoordinator_RunCompleted' -or
+    $whatsAppInboxSource -notmatch 'UseAgentDraft_Click') {
+  throw 'WhatsApp Inbox must explain each agent mode, refresh background output and let the user place review drafts into the composer.'
+}
+Write-Host 'PASS  Customer Success Agent mode behavior and visible-output contract'
+
 if ($bridgeSource -notmatch [regex]::Escape('proto.WebMessageInfo.StubType.CIPHERTEXT') -or
     $bridgeSource -notmatch [regex]::Escape('update.update?.message') -or
     $bridgeSource -notmatch [regex]::Escape('if (numericStatus == null) continue') -or

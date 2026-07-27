@@ -70,6 +70,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         }.Select(value => new AgentModeOption(CustomerSuccessAgentLabels.Mode(value), value)).ToList();
         _services.WhatsApp.EventReceived += WhatsApp_EventReceived;
         _services.WhatsAppSync.SynchronizationChanged += WhatsAppSync_SynchronizationChanged;
+        _services.CustomerSuccessCoordinator.RunCompleted += CustomerSuccessCoordinator_RunCompleted;
         _ipTimer.Tick += async (_, _) => await RefreshPublicIpAsync();
         Loaded += async (_, _) => { _ipTimer.Start(); await RefreshPublicIpAsync(); };
         Unloaded += (_, _) => _ipTimer.Stop();
@@ -266,6 +267,19 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         };
         if (progress.State is "complete" or "paused") ScheduleRefresh();
     });
+
+    private void CustomerSuccessCoordinator_RunCompleted(
+        object? sender,
+        CustomerSuccessAgentRunCompletedEvent e) =>
+        Dispatcher.InvokeAsync(async () =>
+        {
+            if (ConversationList.SelectedItem is not ConversationItem conversation ||
+                !conversation.AccountId.Equals(e.AccountId, StringComparison.OrdinalIgnoreCase) ||
+                !conversation.Id.Equals(e.ConversationId, StringComparison.OrdinalIgnoreCase))
+                return;
+            await LoadLeadAsync(conversation);
+            DataChanged?.Invoke(this, EventArgs.Empty);
+        });
 
     private async void ScheduleRefresh()
     {
@@ -632,7 +646,11 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
     private async void Send_Click(object sender, RoutedEventArgs e) => await SendCurrentAsync();
 
-    private async void AiAssistant_Click(object sender, RoutedEventArgs e)
+    private async void AiAssistant_Click(object sender, RoutedEventArgs e) => await GenerateAgentSuggestionAsync();
+
+    private async void GenerateAgentSuggestion_Click(object sender, RoutedEventArgs e) => await GenerateAgentSuggestionAsync();
+
+    private async Task GenerateAgentSuggestionAsync()
     {
         if (_aiAssisting || ConversationList.SelectedItem is not ConversationItem conversation) return;
         if (string.IsNullOrWhiteSpace(conversation.Phone))
@@ -648,6 +666,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
         _aiAssisting = true;
         AiAssistantButton.Content = "分析中";
+        GenerateAgentSuggestionButton.Content = "正在生成…";
         UpdateComposerState();
         try
         {
@@ -669,16 +688,6 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             await LoadLeadAsync(conversation);
             DataChanged?.Invoke(this, EventArgs.Empty);
             ComposerBox.Focus();
-            MessageBox.Show(
-                $"需求摘要：{result.Decision.ChineseSummary}\n\n" +
-                $"下一步：{result.Decision.RecommendedNextAction}\n\n" +
-                $"安全判断：{result.Decision.Safety}（{result.Decision.SafetyReason}）\n\n" +
-                (result.Decision.KnowledgeCitations.Count > 0
-                    ? $"知识引用：{string.Join("；", result.Decision.KnowledgeCitations.Select(item => item.CitationLabel))}\n\n"
-                    : $"知识状态：{result.KnowledgeRetrieval?.InsufficiencyReason ?? "本次未引用知识"}\n\n") +
-                "回复已填入输入框，采购五要素和待确认问题已写入客户全局上下文；发送前仍由你确认。",
-                "DHgate Customer Success Agent", MessageBoxButton.OK,
-                result.Decision.RequiresHuman ? MessageBoxImage.Warning : MessageBoxImage.Information);
         }
         catch (DeepSeekException error)
         {
@@ -692,6 +701,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         {
             _aiAssisting = false;
             AiAssistantButton.Content = "✦ AI";
+            GenerateAgentSuggestionButton.Content = _currentCustomerSuccessContext?.AgentState?.LastRunStatus == CustomerSuccessRunStatus.None
+                ? "立即生成建议"
+                : "重新生成建议";
             UpdateComposerState();
         }
     }
@@ -1067,10 +1079,16 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private void UpdateComposerState()
     {
         var available = _connected && ConversationList.SelectedItem is ConversationItem { Phone.Length: > 0 } && !_sending;
+        var agentMode = _currentCustomerSuccessContext?.AgentState?.Mode ?? ConversationAgentMode.SuggestOnly;
+        var canGenerate = _currentCustomerSuccessContext is not null &&
+                          agentMode is ConversationAgentMode.SuggestOnly or ConversationAgentMode.CopilotActive or ConversationAgentMode.AutoActive &&
+                          ConversationList.SelectedItem is ConversationItem { Phone.Length: > 0 } &&
+                          !_sending && !_aiAssisting;
         ComposerBox.IsEnabled = available;
         AttachButton.IsEnabled = available;
         SendButton.IsEnabled = available && (!string.IsNullOrWhiteSpace(ComposerBox.Text) || !string.IsNullOrWhiteSpace(_attachmentPath));
-        AiAssistantButton.IsEnabled = ConversationList.SelectedItem is ConversationItem { Phone.Length: > 0 } && !_sending && !_aiAssisting;
+        AiAssistantButton.IsEnabled = canGenerate;
+        GenerateAgentSuggestionButton.IsEnabled = canGenerate;
     }
 
     private static Dictionary<string, string> ParseCustomFields(string text)
@@ -1096,6 +1114,20 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         UpdateComposerState();
     }
 
+    private void AgentModeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (AgentModeCombo.SelectedItem is AgentModeOption option)
+            UpdateAgentModeGuide(option.Value);
+    }
+
+    private void UpdateAgentModeGuide(ConversationAgentMode mode)
+    {
+        AgentModeGuideTitleText.Text = CustomerSuccessAgentLabels.ModeHeadline(mode);
+        AgentModeTriggerText.Text = CustomerSuccessAgentLabels.ModeTrigger(mode);
+        AgentModeOutputText.Text = CustomerSuccessAgentLabels.ModeOutput(mode);
+        AgentModeSendText.Text = CustomerSuccessAgentLabels.ModeSend(mode);
+    }
+
     private async void ApplyAgentMode_Click(object sender, RoutedEventArgs e)
     {
         if (_currentLead is null || ConversationList.SelectedItem is not ConversationItem conversation ||
@@ -1110,6 +1142,26 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         {
             MessageBox.Show(error.Message, "Agent 模式切换失败", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    private async void UseAgentDraft_Click(object sender, RoutedEventArgs e)
+    {
+        if (ConversationList.SelectedItem is not ConversationItem conversation ||
+            _currentCustomerSuccessContext?.AgentState is not { } state ||
+            state.LastRunStatus is not CustomerSuccessRunStatus.SuggestionReady and
+                not CustomerSuccessRunStatus.CopilotDraftReady ||
+            string.IsNullOrWhiteSpace(state.LastGeneratedReply))
+            return;
+
+        ComposerBox.Text = state.LastGeneratedReply;
+        ComposerBox.CaretIndex = ComposerBox.Text.Length;
+        ComposerBox.Focus();
+        await _services.CustomerSuccessAgent.UpdateRunOutcomeAsync(
+            conversation.AccountId,
+            conversation.Id,
+            state.LastRunStatus,
+            "草稿已填入会话输入框；你可以修改后点击发送。");
+        await LoadLeadAsync(conversation);
     }
 
     private async void TakeOverHandoff_Click(object sender, RoutedEventArgs e)
@@ -1165,13 +1217,45 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         AgentModeBadgeText.Text = CustomerSuccessAgentLabels.Mode(state?.Mode ?? ConversationAgentMode.SuggestOnly);
         AgentStateReasonText.Text = state is null
             ? "身份确认后可设置处理模式"
-            : $"{state.StateReason}；暂停消息 {state.PausedMessageCount} 条";
+            : $"{(string.IsNullOrWhiteSpace(state.StateReason) ? CustomerSuccessAgentLabels.ModeStateReason(state.Mode) : state.StateReason)}；暂停消息 {state.PausedMessageCount} 条";
         var selectableMode = state?.Mode is ConversationAgentMode.AutoOff or ConversationAgentMode.SuggestOnly or
             ConversationAgentMode.CopilotActive or ConversationAgentMode.AutoActive
             ? state.Mode : ConversationAgentMode.SuggestOnly;
         AgentModeCombo.SelectedItem = (AgentModeCombo.ItemsSource as IEnumerable<AgentModeOption>)
             ?.FirstOrDefault(item => item.Value == selectableMode);
         AgentModeCombo.IsEnabled = context is not null;
+        UpdateAgentModeGuide(selectableMode);
+
+        var runStatus = state?.LastRunStatus ?? CustomerSuccessRunStatus.None;
+        AgentRunStatusText.Text = CustomerSuccessAgentLabels.RunStatus(runStatus);
+        AgentRunTimeText.Text = state?.LastRunAt is { } runAt
+            ? runAt.LocalDateTime.ToString("MM-dd HH:mm")
+            : "—";
+        AgentRunSourceText.Text = string.IsNullOrWhiteSpace(state?.LastSourcePreview)
+            ? "客户原话：等待生成"
+            : $"客户原话：{state.LastSourcePreview}";
+        AgentRunReplyText.Text = string.IsNullOrWhiteSpace(state?.LastGeneratedReply)
+            ? "生成的建议回复会显示在这里。"
+            : runStatus is CustomerSuccessRunStatus.AutoReplySent or CustomerSuccessRunStatus.AutoReplyPending
+                ? $"自动回复：{state.LastGeneratedReply}"
+                : $"建议回复：{state.LastGeneratedReply}";
+        AgentRunSummaryText.Text = string.IsNullOrWhiteSpace(state?.LastRunSummary)
+            ? "分析摘要：—"
+            : $"分析摘要：{state.LastRunSummary}";
+        AgentRunNextActionText.Text = string.IsNullOrWhiteSpace(state?.LastRecommendedAction)
+            ? "下一步：—"
+            : $"下一步：{state.LastRecommendedAction}";
+        var runDetails = new[] { state?.LastRunDetail, state?.LastRunError }
+            .Where(item => !string.IsNullOrWhiteSpace(item));
+        AgentRunDetailText.Text = runDetails.Any()
+            ? string.Join("；", runDetails)
+            : "当前没有 Agent 运行结果。";
+        GenerateAgentSuggestionButton.Content = runStatus == CustomerSuccessRunStatus.None
+            ? "立即生成建议"
+            : "重新生成建议";
+        UseAgentDraftButton.IsEnabled =
+            runStatus is CustomerSuccessRunStatus.SuggestionReady or CustomerSuccessRunStatus.CopilotDraftReady &&
+            !string.IsNullOrWhiteSpace(state?.LastGeneratedReply);
 
         var sourcing = context?.SourcingRequest;
         var completeness = sourcing?.Completeness ?? 0;
@@ -1195,6 +1279,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         HandoffTranslationText.Text = handoff is null || string.IsNullOrWhiteSpace(handoff.ChineseAssistTranslation)
             ? "" : $"中文辅助：{handoff.ChineseAssistTranslation}";
         HandoffPausedText.Text = handoff is null ? "" : $"状态：{handoff.Status} · 已暂停 {handoff.PausedMessageCount} 条消息";
+        UpdateComposerState();
     }
 
     private static string SourcingFieldLabel(SourcingFieldKey value) => value switch

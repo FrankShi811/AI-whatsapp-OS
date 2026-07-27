@@ -117,6 +117,7 @@ public sealed partial class CustomerSuccessAgentService
         string jid = "",
         string lid = "",
         string? sourceMessageId = null,
+        CustomerSuccessRunTrigger trigger = CustomerSuccessRunTrigger.Manual,
         CancellationToken cancellationToken = default)
     {
         var identity = await _identity.ResolveAsync(accountId, conversationId, rawPhone, jid, lid, displayName, cancellationToken);
@@ -175,7 +176,7 @@ public sealed partial class CustomerSuccessAgentService
             var handoff = await CreateHandoffAsync(
                 context, source, holdingDecision.SafetyReason, holdingDecision.ChineseSummary, cancellationToken);
             return await CompleteRunAsync(
-                identity, context, state, source, holdingDecision, null, handoff, null, cancellationToken);
+                identity, context, state, source, holdingDecision, null, handoff, null, trigger, cancellationToken);
         }
 
         if (!_provider.HasApiKey())
@@ -218,7 +219,7 @@ public sealed partial class CustomerSuccessAgentService
             var handoff = await CreateHandoffAsync(
                 context, source, holdingDecision.SafetyReason, holdingDecision.ChineseSummary, cancellationToken);
             return await CompleteRunAsync(
-                identity, context, state, source, holdingDecision, null, handoff, knowledge, cancellationToken);
+                identity, context, state, source, holdingDecision, null, handoff, knowledge, trigger, cancellationToken);
         }
         var allowedKnowledgeChunkIds = knowledge.Hits.Select(hit => hit.ChunkId)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -336,7 +337,7 @@ public sealed partial class CustomerSuccessAgentService
         {
             await UpdateMemoriesAsync(context, accountId, source, decision, cancellationToken);
         }
-        return await CompleteRunAsync(identity, context, state, source, decision, sourcing, immediate, knowledge, cancellationToken);
+        return await CompleteRunAsync(identity, context, state, source, decision, sourcing, immediate, knowledge, trigger, cancellationToken);
     }
 
     public async Task<ConversationAgentState> SetModeAsync(
@@ -368,8 +369,28 @@ public sealed partial class CustomerSuccessAgentService
                 await _repository.ReleaseGlobalCustomerAgentLockAsync(customerId, cancellationToken);
         }
         state.Mode = mode;
-        state.StateReason = explicitUserAction ? "用户明确切换。" : state.StateReason;
+        state.StateReason = explicitUserAction ? CustomerSuccessAgentLabels.ModeStateReason(mode) : state.StateReason;
         state.ExplicitResumeRequired = mode is ConversationAgentMode.HumanRequired or ConversationAgentMode.ResumeReview;
+        await _repository.UpsertConversationAgentStateAsync(state, cancellationToken);
+        return state;
+    }
+
+    public async Task<ConversationAgentState?> UpdateRunOutcomeAsync(
+        string accountId,
+        string conversationId,
+        CustomerSuccessRunStatus status,
+        string detail = "",
+        string providerMessageId = "",
+        string error = "",
+        CancellationToken cancellationToken = default)
+    {
+        var state = await _repository.GetConversationAgentStateAsync(accountId, conversationId, cancellationToken);
+        if (state is null) return null;
+        state.LastRunStatus = status;
+        state.LastRunDetail = detail.Trim();
+        state.LastProviderMessageId = providerMessageId.Trim();
+        state.LastRunError = error.Trim();
+        state.LastRunAt = DateTimeOffset.Now;
         await _repository.UpsertConversationAgentStateAsync(state, cancellationToken);
         return state;
     }
@@ -508,6 +529,7 @@ public sealed partial class CustomerSuccessAgentService
         SourcingRequest? sourcing,
         HumanHandoffEvent? handoff,
         KnowledgeRetrievalResult? knowledge,
+        CustomerSuccessRunTrigger trigger,
         CancellationToken cancellationToken)
     {
         state.LastProcessedMessageId = source.Id;
@@ -519,7 +541,32 @@ public sealed partial class CustomerSuccessAgentService
             state.Mode = ConversationAgentMode.HumanRequired;
             state.ExplicitResumeRequired = true;
         }
-        state.StateReason = handoff is null ? "已完成本轮客户成功分析。" : "高风险问题已全局转人工。";
+        state.StateReason = handoff is null
+            ? string.IsNullOrWhiteSpace(state.StateReason)
+                ? CustomerSuccessAgentLabels.ModeStateReason(state.Mode)
+                : state.StateReason
+            : "高风险问题已全局转人工。";
+        state.LastRunStatus = handoff is not null
+            ? CustomerSuccessRunStatus.HumanRequired
+            : trigger == CustomerSuccessRunTrigger.Manual
+                ? CustomerSuccessRunStatus.SuggestionReady
+                : state.Mode == ConversationAgentMode.CopilotActive
+                    ? CustomerSuccessRunStatus.CopilotDraftReady
+                    : CustomerSuccessRunStatus.AutoReplyPending;
+        state.LastRunDetail = handoff is not null
+            ? decision.SafetyReason
+            : trigger == CustomerSuccessRunTrigger.Manual
+                ? "建议已填入会话输入框，发送前由用户确认。"
+                : state.Mode == ConversationAgentMode.CopilotActive
+                    ? "草稿已保存在 Agent 产出区，等待用户填入输入框并发送。"
+                    : "回复已生成，正在执行 WhatsApp 目标与服务端状态校验。";
+        state.LastRunError = "";
+        state.LastSourcePreview = source.Body.Length <= 180 ? source.Body : $"{source.Body[..177]}...";
+        state.LastGeneratedReply = decision.ReplyText.Trim();
+        state.LastRunSummary = decision.ChineseSummary.Trim();
+        state.LastRecommendedAction = decision.RecommendedNextAction.Trim();
+        state.LastProviderMessageId = "";
+        state.LastRunAt = DateTimeOffset.Now;
         await _repository.UpsertConversationAgentStateAsync(state, cancellationToken);
         var lockMatches = context.AgentLock?.ActiveAccountId == source.AccountId &&
                           context.AgentLock.ActiveConversationId == source.ConversationId;

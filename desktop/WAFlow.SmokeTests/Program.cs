@@ -1540,8 +1540,13 @@ await customerSuccessRepository.UpsertWhatsAppMessageAsync(eveMessage);
 var suggestionRun = await customerSuccessAgent.AnalyzeAsync(
     "account-e", eveConversation.Id, eve.PhoneE164, eve.Name, sourceMessageId: eveMessage.Id);
 Check(suggestionRun.Decision is not null && !suggestionRun.AutoReplyAllowed
-    && suggestionRun.AgentState?.Mode == ConversationAgentMode.SuggestOnly,
-    "suggest-only mode generates an auditable reply without sending automatically");
+    && suggestionRun.AgentState is
+    {
+        Mode: ConversationAgentMode.SuggestOnly,
+        LastRunStatus: CustomerSuccessRunStatus.SuggestionReady
+    }
+    && suggestionRun.AgentState.LastGeneratedReply == suggestionRun.Decision.ReplyText,
+    "suggest-only mode persists a visible manual draft without sending automatically");
 Check(suggestionRun.SourcingRequest is { Completeness: 100, Status: SourcingRequestStatus.Complete },
     "customer-success analysis extracts all five sourcing elements with customer evidence");
 Check((await customerSuccessRepository.GetRelationshipMemoryAsync(eve.Id))?.Summary.Contains("五项") == true
@@ -1549,6 +1554,22 @@ Check((await customerSuccessRepository.GetRelationshipMemoryAsync(eve.Id))?.Summ
     "customer-success analysis persists global relationship memory and an agent turn audit");
 Check((await customerSuccessRepository.GetLeadAsync(eve.Id))?.Company == eve.Company,
     "AI analysis does not overwrite CRM fields without human confirmation");
+
+await customerSuccessAgent.SetModeAsync(eve.Id, "account-e", eveConversation.Id, ConversationAgentMode.CopilotActive);
+var copilotRun = await customerSuccessAgent.AnalyzeAsync(
+    "account-e", eveConversation.Id, eve.PhoneE164, eve.Name,
+    sourceMessageId: eveMessage.Id,
+    trigger: CustomerSuccessRunTrigger.IncomingAutomation);
+Check(copilotRun.Decision is not null && !copilotRun.AutoReplyAllowed
+    && copilotRun.AgentState is
+    {
+        Mode: ConversationAgentMode.CopilotActive,
+        LastRunStatus: CustomerSuccessRunStatus.CopilotDraftReady
+    },
+    "copilot mode automatically produces a persistent review draft but never enables sending");
+Check(CustomerSuccessAgentLabels.ModeTrigger(ConversationAgentMode.CopilotActive).Contains("新")
+    && CustomerSuccessAgentLabels.ModeSend(ConversationAgentMode.CopilotActive).Contains("绝不自动发送"),
+    "agent mode labels explain trigger, output location and send authority");
 
 await customerSuccessAgent.SetModeAsync(eve.Id, "account-e", eveConversation.Id, ConversationAgentMode.AutoActive);
 var autoMessage = new WhatsAppMessage
@@ -1566,9 +1587,13 @@ var autoMessage = new WhatsAppMessage
 };
 await customerSuccessRepository.UpsertWhatsAppMessageAsync(autoMessage);
 var autoRun = await customerSuccessAgent.AnalyzeAsync(
-    "account-e", eveConversation.Id, eve.PhoneE164, eve.Name, sourceMessageId: autoMessage.Id);
+    "account-e", eveConversation.Id, eve.PhoneE164, eve.Name,
+    sourceMessageId: autoMessage.Id,
+    trigger: CustomerSuccessRunTrigger.IncomingAutomation);
 Check(autoRun.AutoReplyAllowed && autoRun.AgentState?.Mode == ConversationAgentMode.AutoActive,
     "auto reply is allowed only when the selected conversation owns the global customer lock");
+Check(autoRun.AgentState?.LastRunStatus == CustomerSuccessRunStatus.AutoReplyPending,
+    "auto mode exposes the generated reply while waiting for WhatsApp send confirmation");
 
 var riskMessage = new WhatsAppMessage
 {
@@ -1674,11 +1699,13 @@ var persistedIdentity = await persistedCustomerSuccessRepository.GetGlobalCustom
 var persistedSourcing = await persistedCustomerSuccessRepository.GetLatestSourcingRequestAsync(eve.Id);
 var persistedHandoff = await persistedCustomerSuccessRepository.GetLatestHumanHandoffAsync(eve.Id);
 var persistedTurnLogs = await persistedCustomerSuccessRepository.GetAgentTurnLogsAsync(eve.Id);
+var persistedAgentOutput = await persistedCustomerSuccessRepository.GetConversationAgentStateAsync("account-e", eveConversation.Id);
 Check(persistedIdentity?.LinkedAccountIds.Count == 2
     && persistedSourcing?.Completeness == 100
     && persistedHandoff?.Status == HandoffStatus.Resumed
+    && persistedAgentOutput is { LastRunAt: not null, LastGeneratedReply.Length: > 0 }
     && persistedTurnLogs.Count >= 3,
-    $"customer-success identity, sourcing, handoff and agent audit state persist across restart " +
+    $"customer-success identity, sourcing, visible output, handoff and agent audit state persist across restart " +
     $"[accounts={persistedIdentity?.LinkedAccountIds.Count ?? -1}, sourcing={persistedSourcing?.Completeness ?? -1}, " +
     $"handoff={persistedHandoff?.Status.ToString() ?? "null"}, logs={persistedTurnLogs.Count}]");
 

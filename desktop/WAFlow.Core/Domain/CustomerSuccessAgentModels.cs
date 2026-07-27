@@ -47,6 +47,26 @@ public enum AgentQuestionSafety
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
+public enum CustomerSuccessRunTrigger
+{
+    Manual,
+    IncomingAutomation
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum CustomerSuccessRunStatus
+{
+    None,
+    SuggestionReady,
+    CopilotDraftReady,
+    AutoReplyPending,
+    AutoReplySent,
+    HumanRequired,
+    Blocked,
+    Failed
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum SourcingRequestStatus
 {
     Draft,
@@ -188,6 +208,15 @@ public sealed class ConversationAgentState
     public int PausedMessageCount { get; set; }
     public string LastProcessedMessageId { get; set; } = "";
     public string LastHoldingReplyMessageId { get; set; } = "";
+    public CustomerSuccessRunStatus LastRunStatus { get; set; }
+    public string LastRunDetail { get; set; } = "";
+    public string LastRunError { get; set; } = "";
+    public string LastSourcePreview { get; set; } = "";
+    public string LastGeneratedReply { get; set; } = "";
+    public string LastRunSummary { get; set; } = "";
+    public string LastRecommendedAction { get; set; } = "";
+    public string LastProviderMessageId { get; set; } = "";
+    public DateTimeOffset? LastRunAt { get; set; }
     public bool ExplicitResumeRequired { get; set; }
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
 }
@@ -416,6 +445,64 @@ public static class CustomerSuccessAgentLabels
         ConversationAgentMode.HumanRequired => "需要人工处理",
         ConversationAgentMode.HumanActive => "人工接管中",
         ConversationAgentMode.ResumeReview => "恢复前复核",
+        _ => value.ToString()
+    };
+
+    public static string ModeHeadline(ConversationAgentMode value) => value switch
+    {
+        ConversationAgentMode.AutoOff => "关闭：不分析、不生成、不发送",
+        ConversationAgentMode.SuggestOnly => "仅建议：由你手动生成并确认",
+        ConversationAgentMode.CopilotActive => "协作模式：新消息自动生成草稿",
+        ConversationAgentMode.AutoActive => "自动回复：通过安全校验后自动发送",
+        _ => Mode(value)
+    };
+
+    public static string ModeTrigger(ConversationAgentMode value) => value switch
+    {
+        ConversationAgentMode.AutoOff => "触发：无",
+        ConversationAgentMode.SuggestOnly => "触发：点击下方“立即生成建议”或会话输入区的“AI”",
+        ConversationAgentMode.CopilotActive => "触发：客户每次发来新的文字消息",
+        ConversationAgentMode.AutoActive => "触发：客户每次发来新的文字消息",
+        _ => "触发：按当前人工处理状态执行"
+    };
+
+    public static string ModeOutput(ConversationAgentMode value) => value switch
+    {
+        ConversationAgentMode.AutoOff => "产出：保留历史，不生成新内容",
+        ConversationAgentMode.SuggestOnly => "产出：显示在本卡片“最近一次 Agent 产出”，并填入输入框",
+        ConversationAgentMode.CopilotActive => "产出：显示在本卡片“最近一次 Agent 产出”，点击后填入输入框",
+        ConversationAgentMode.AutoActive => "产出：本卡片显示生成内容、发送结果或阻断原因",
+        _ => "产出：显示人工接管与恢复状态"
+    };
+
+    public static string ModeSend(ConversationAgentMode value) => value switch
+    {
+        ConversationAgentMode.AutoOff => "发送：绝不自动发送",
+        ConversationAgentMode.SuggestOnly => "发送：绝不自动发送，由你检查后点击发送",
+        ConversationAgentMode.CopilotActive => "发送：绝不自动发送，由你检查、修改后点击发送",
+        ConversationAgentMode.AutoActive => "发送：仅身份、账号锁和安全校验全部通过时自动发送；高风险转人工",
+        _ => "发送：AI 暂停，由人工处理"
+    };
+
+    public static string ModeStateReason(ConversationAgentMode value) => value switch
+    {
+        ConversationAgentMode.AutoOff => "Agent 已关闭；新消息只同步，不触发 AI。",
+        ConversationAgentMode.SuggestOnly => "仅手动生成建议；AI 不会自动发送。",
+        ConversationAgentMode.CopilotActive => "新消息自动生成待审核草稿；AI 不会自动发送。",
+        ConversationAgentMode.AutoActive => "新消息自动分析；安全校验通过后自动发送，高风险转人工。",
+        _ => "当前由人工处理流程接管。"
+    };
+
+    public static string RunStatus(CustomerSuccessRunStatus value) => value switch
+    {
+        CustomerSuccessRunStatus.None => "尚无产出",
+        CustomerSuccessRunStatus.SuggestionReady => "手动建议已生成 · 待你确认",
+        CustomerSuccessRunStatus.CopilotDraftReady => "协作草稿已生成 · 待你确认",
+        CustomerSuccessRunStatus.AutoReplyPending => "自动回复已提交 · 等待服务端确认",
+        CustomerSuccessRunStatus.AutoReplySent => "自动回复已由 WhatsApp 服务端确认",
+        CustomerSuccessRunStatus.HumanRequired => "已阻断自动回复 · 转人工处理",
+        CustomerSuccessRunStatus.Blocked => "本轮未生成或未发送",
+        CustomerSuccessRunStatus.Failed => "本轮处理失败",
         _ => value.ToString()
     };
 
