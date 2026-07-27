@@ -16,6 +16,7 @@ public sealed class CustomerIdentityService
         string jid = "",
         string lid = "",
         string displayName = "",
+        string buyerId = "",
         CancellationToken cancellationToken = default)
     {
         var existing = await _repository.GetWhatsAppIdentityLinkAsync(accountId, conversationId, cancellationToken);
@@ -32,6 +33,56 @@ public sealed class CustomerIdentityService
                 Confidence = 0,
                 Reason = $"该号码属于本机已登录 WhatsApp 账号“{ownedPeer.Name}”，不会作为 CRM 客户绑定。"
             }, cancellationToken);
+        }
+        var normalizedBuyerId = BuyerIdentity.Normalize(buyerId);
+        if (normalizedBuyerId.Length > 0)
+        {
+            var buyerMatches = await _repository.GetLeadsByBuyerIdAsync(buyerId, cancellationToken);
+            if (buyerMatches.Count > 1)
+            {
+                var conflict = new CustomerIdentityResolution
+                {
+                    Result = CustomerIdentityMatchResult.Conflict,
+                    Method = CustomerIdentityMatchMethod.ExactBuyerId,
+                    CandidateCustomerIds = buyerMatches.Select(lead => lead.Id).ToList(),
+                    Confidence = 0,
+                    Reason = $"Buyer ID“{BuyerIdentity.Canonicalize(buyerId)}”对应多个客户，已阻止电话回退和自动化。"
+                };
+                await _repository.UpsertConversationAgentStateAsync(new ConversationAgentState
+                {
+                    AccountId = accountId,
+                    ConversationId = conversationId,
+                    Mode = ConversationAgentMode.IdentityResolutionRequired,
+                    StateReason = conflict.Reason,
+                    ExplicitResumeRequired = true
+                }, cancellationToken);
+                return await LogAndReturnAsync(accountId, conversationId, buyerId, conflict, cancellationToken);
+            }
+            if (buyerMatches.Count == 1)
+            {
+                var buyerLead = buyerMatches[0];
+                await BindAsync(
+                    buyerLead,
+                    accountId,
+                    conversationId,
+                    rawPhone,
+                    jid,
+                    lid,
+                    actor: "buyer_id_authority",
+                    manuallyConfirmed: false,
+                    method: CustomerIdentityMatchMethod.ExactBuyerId,
+                    reason: "Buyer ID 精确匹配并建立统一客户身份。",
+                    cancellationToken);
+                return await LogAndReturnAsync(accountId, conversationId, buyerId, new CustomerIdentityResolution
+                {
+                    Result = CustomerIdentityMatchResult.ExactMatch,
+                    Method = CustomerIdentityMatchMethod.ExactBuyerId,
+                    CustomerId = buyerLead.Id,
+                    CandidateCustomerIds = [buyerLead.Id],
+                    Confidence = 1,
+                    Reason = "Buyer ID 精确匹配；已作为跨板块统一客户标的。"
+                }, cancellationToken);
+            }
         }
         if (existing is { IsActive: true } &&
             existing.MatchResult is CustomerIdentityMatchResult.ExactMatch or
@@ -119,6 +170,34 @@ public sealed class CustomerIdentityService
     {
         var lead = await _repository.GetLeadAsync(customerId, cancellationToken)
                    ?? throw new InvalidOperationException("待绑定客户不存在。");
+        return await BindAsync(
+            lead,
+            accountId,
+            conversationId,
+            rawPhone,
+            jid,
+            lid,
+            actor,
+            manuallyConfirmed: true,
+            method: CustomerIdentityMatchMethod.ManualBinding,
+            reason: "用户确认跨 WhatsApp 账号客户身份。",
+            cancellationToken);
+    }
+
+    private async Task<WhatsAppIdentityLink> BindAsync(
+        Lead lead,
+        string accountId,
+        string conversationId,
+        string rawPhone,
+        string jid,
+        string lid,
+        string actor,
+        bool manuallyConfirmed,
+        CustomerIdentityMatchMethod method,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        var customerId = lead.Id;
         var digits = PhoneIdentity.Digits(rawPhone);
         var normalized = PhoneNormalizer.Normalize(rawPhone, null);
         var phoneIdentity = new CustomerPhoneIdentity
@@ -131,9 +210,9 @@ public sealed class CustomerIdentityService
             Lid = lid.Trim(),
             SourceAccountId = accountId,
             SourceConversationId = conversationId,
-            ManuallyConfirmed = true,
+            ManuallyConfirmed = manuallyConfirmed,
             Confidence = 1,
-            Method = CustomerIdentityMatchMethod.ManualBinding
+            Method = method
         };
         await _repository.UpsertCustomerPhoneIdentityAsync(phoneIdentity, cancellationToken);
         var existing = await _repository.GetWhatsAppIdentityLinkAsync(accountId, conversationId, cancellationToken);
@@ -150,17 +229,21 @@ public sealed class CustomerIdentityService
         link.ContactJid = jid.Trim();
         link.ContactLid = lid.Trim();
         link.MatchResult = CustomerIdentityMatchResult.ExactMatch;
-        link.MatchMethod = CustomerIdentityMatchMethod.ManualBinding;
+        link.MatchMethod = method;
         link.Confidence = 1;
-        link.ManuallyConfirmed = true;
+        link.ManuallyConfirmed = manuallyConfirmed;
         link.IsActive = true;
         await _repository.UpsertWhatsAppIdentityLinkAsync(link, cancellationToken);
 
         var global = await _repository.GetGlobalCustomerIdentityAsync(customerId, cancellationToken) ?? new GlobalCustomerIdentity
         {
             CustomerId = customerId,
+            BuyerId = lead.BuyerId,
+            CanonicalKey = BuyerIdentity.CanonicalKey(lead),
             CanonicalName = lead.Name
         };
+        global.BuyerId = lead.BuyerId;
+        global.CanonicalKey = BuyerIdentity.CanonicalKey(lead);
         if (!global.LinkedAccountIds.Contains(accountId, StringComparer.OrdinalIgnoreCase))
             global.LinkedAccountIds.Add(accountId);
         if (string.IsNullOrWhiteSpace(global.PrimaryAccountId)) global.PrimaryAccountId = accountId;
@@ -187,7 +270,7 @@ public sealed class CustomerIdentityService
             AccountId = accountId,
             ConversationId = conversationId,
             Mode = ConversationAgentMode.SuggestOnly,
-            StateReason = "用户已确认客户身份。",
+            StateReason = reason,
             ExplicitResumeRequired = false
         }, cancellationToken);
         await _repository.SaveCustomerMergeAuditAsync(new CustomerMergeAudit
@@ -195,9 +278,9 @@ public sealed class CustomerIdentityService
             SourceCustomerId = existing?.CustomerId ?? "",
             TargetCustomerId = customerId,
             IdentityLinkId = link.Id,
-            Action = "confirm_binding",
+            Action = manuallyConfirmed ? "confirm_binding" : "buyer_id_binding",
             Actor = actor,
-            Reason = "用户确认跨 WhatsApp 账号客户身份。",
+            Reason = reason,
             BeforeJson = before,
             AfterJson = Json.Serialize(link)
         }, cancellationToken);

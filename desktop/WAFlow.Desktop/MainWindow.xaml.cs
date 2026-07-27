@@ -311,7 +311,11 @@ public partial class MainWindow : Window
     {
         var configured = _services.DeepSeek.HasApiKey();
         var settings = await _services.Repository.GetAppSettingsAsync();
-        ProviderText.Text = configured ? $"AI 已配置 · {settings.DeepSeekModel}" : "AI API 未配置";
+        ProviderText.Text = configured
+            ? settings.UseGlobalAiConfiguration
+                ? $"AI 已配置 · {settings.DeepSeekModel}"
+                : $"AI 已配置 · 分板块模型（默认 {settings.DeepSeekModel}）"
+            : "AI API 未配置";
         ProviderBadge.Background = (System.Windows.Media.Brush)FindResource(configured ? "SuccessSoft" : "WarningSoft");
         ProviderText.Foreground = (Brush)FindResource(configured ? "Success" : "Warning");
     }

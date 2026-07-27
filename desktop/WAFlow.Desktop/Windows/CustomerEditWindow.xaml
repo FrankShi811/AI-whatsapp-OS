@@ -27,6 +27,7 @@
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
                             <TextBlock Grid.Row="0" Text="客户名称" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="NameBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,10"/>
@@ -59,6 +60,13 @@
                                 <CheckBox x:Name="OptInCheck" Content="已同意 WhatsApp 营销联系" Margin="0,0,28,0" VerticalAlignment="Center"/>
                                 <CheckBox x:Name="OptedOutCheck" Content="已退订" VerticalAlignment="Center"/>
                             </StackPanel>
+
+                            <TextBlock Grid.Row="8" Text="Buyer ID" Style="{StaticResource LabelText}" VerticalAlignment="Center"/>
+                            <TextBox x:Name="BuyerIdBox" Grid.Row="8" Grid.Column="1" Margin="0,10,0,0"
+                                     ToolTip="有 Buyer ID 时作为跨板块客户统一标识；为空时回退到电话号码。"/>
+                            <TextBlock Grid.Row="8" Grid.Column="3" Grid.ColumnSpan="2"
+                                       Text="身份优先级：Buyer ID → 电话号码。Buyer ID 冲突时禁止自动合并。"
+                                       Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0" VerticalAlignment="Center"/>
                         </Grid>
                         <TextBlock Text="备注 / 最新沟通" Style="{StaticResource LabelText}" Margin="0,15,0,5"/>
                         <TextBox x:Name="NotesBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="82" VerticalContentAlignment="Top"/>

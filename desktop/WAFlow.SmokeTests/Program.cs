@@ -247,6 +247,137 @@ var rowIdentityReimportPreview = await rowIdentityImports.BuildPreviewAsync(rowI
 var rowIdentityReimport = await rowIdentityImports.CommitAsync("row-identity.xlsx", rowIdentityReimportPreview, allowStageChange:true, allowOwnerChange:true);
 Check(rowIdentityReimport.Created == 0 && rowIdentityReimport.Updated == 4 && rowIdentityReimportPreview.Select(row => row.DuplicateLeadId).Distinct().Count() == 4, "composite row identity keeps repeated-name and repeated-phone reimports idempotent");
 
+var buyerIdentityRoot = Path.Combine(root, "buyer-id-identity");
+var buyerIdentityRepository = new LocalRepository(Path.Combine(buyerIdentityRoot, "buyer-id.db"));
+await buyerIdentityRepository.InitializeAsync();
+var buyerIdentityImports = new ImportService(buyerIdentityRepository);
+var buyerIdentitySheet = new ImportSheet
+{
+    Name = "buyer-id",
+    Headers = ["Buyer ID", "客户姓名", "WhatsApp号码", "业务备注"],
+    Rows =
+    [
+        new Dictionary<string, string>
+        {
+            ["Buyer ID"] = "buyer-100", ["客户姓名"] = "Buyer Identity One",
+            ["WhatsApp号码"] = "+14155553001", ["业务备注"] = "first row"
+        },
+        new Dictionary<string, string>
+        {
+            ["Buyer ID"] = "BUYER-100", ["客户姓名"] = "Buyer Identity One Updated",
+            ["WhatsApp号码"] = "+14155553002", ["业务备注"] = "second row"
+        }
+    ]
+};
+var buyerIdentityMapping = buyerIdentityImports.SuggestMapping(buyerIdentitySheet);
+Check(buyerIdentityMapping.Single(item => item.Header == "Buyer ID").Target == ImportField.BuyerId,
+    "Buyer ID headers map to the authoritative customer identity field");
+var buyerIdentityPreview = await buyerIdentityImports.BuildPreviewAsync(buyerIdentitySheet, buyerIdentityMapping);
+Check(buyerIdentityPreview[1].DuplicateRowNumber == buyerIdentityPreview[0].RowNumber
+      && buyerIdentityPreview[1].IsDuplicate,
+    "rows with the same Buyer ID update one customer master record");
+var buyerIdentityCommit = await buyerIdentityImports.CommitAsync(
+    "buyer-id.xlsx",
+    buyerIdentityPreview,
+    allowStageChange: true,
+    allowOwnerChange: true);
+var buyerIdentityLead = await buyerIdentityRepository.GetLeadByBuyerIdAsync(" Buyer-100 ");
+Check(buyerIdentityCommit is { Created: 1, Updated: 1 }
+      && buyerIdentityLead is { BuyerId: "BUYER-100", PhoneE164: "+14155553002" }
+      && (await buyerIdentityRepository.GetLeadsByBuyerIdAsync("buyer-100")).Count == 1,
+    "Buyer ID is case-insensitive and remains the single customer target when the phone changes");
+var buyerGlobalIdentity = await buyerIdentityRepository.GetGlobalCustomerIdentityAsync(buyerIdentityLead!.Id);
+Check(buyerGlobalIdentity is { BuyerId: "BUYER-100" }
+      && buyerGlobalIdentity.CanonicalKey == "buyer:BUYER-100",
+    "cross-module customer memory persists the Buyer ID canonical key");
+
+var buyerPhoneFallbackSheet = new ImportSheet
+{
+    Name = "phone-fallback",
+    Headers = ["客户姓名", "WhatsApp号码", "业务备注"],
+    Rows =
+    [
+        new Dictionary<string, string>
+        {
+            ["客户姓名"] = "Buyer Identity One By Phone",
+            ["WhatsApp号码"] = "+14155553002",
+            ["业务备注"] = "phone fallback"
+        }
+    ]
+};
+var buyerPhoneFallbackPreview = await buyerIdentityImports.BuildPreviewAsync(
+    buyerPhoneFallbackSheet,
+    buyerIdentityImports.SuggestMapping(buyerPhoneFallbackSheet));
+Check(buyerPhoneFallbackPreview.Single() is { IsDuplicate: true }
+      && buyerPhoneFallbackPreview.Single().DuplicateLeadId == buyerIdentityLead.Id,
+    "phone is used as the customer identity fallback when Buyer ID is absent");
+
+var buyerConflictLead = new Lead
+{
+    Id = "buyer-conflict-owner",
+    BuyerId = "buyer-200",
+    Name = "Buyer Conflict Owner",
+    PhoneE164 = "+14155553003",
+    PhoneValid = true
+};
+await buyerIdentityRepository.UpsertLeadAsync(buyerConflictLead);
+var buyerConflictSheet = new ImportSheet
+{
+    Name = "buyer-conflict",
+    Headers = ["Buyer ID", "客户姓名", "WhatsApp号码"],
+    Rows =
+    [
+        new Dictionary<string, string>
+        {
+            ["Buyer ID"] = "buyer-300",
+            ["客户姓名"] = "Must Not Merge",
+            ["WhatsApp号码"] = buyerConflictLead.PhoneE164
+        }
+    ]
+};
+var buyerConflictPreview = await buyerIdentityImports.BuildPreviewAsync(
+    buyerConflictSheet,
+    buyerIdentityImports.SuggestMapping(buyerConflictSheet));
+Check(buyerConflictPreview.Single().Errors.Any(error => error.Contains("冲突", StringComparison.Ordinal))
+      && !buyerConflictPreview.Single().IsDuplicate,
+    "a Buyer ID and phone pointing to different customers fail closed instead of merging");
+Check((await buyerIdentityRepository.GetLeadByIdentityAsync("buyer-100", buyerConflictLead.PhoneE164))?.Id == buyerIdentityLead.Id
+      && (await buyerIdentityRepository.GetLeadByIdentityAsync("buyer-not-found", buyerIdentityLead.PhoneE164))?.Id == buyerIdentityLead.Id,
+    "identity lookup prioritizes Buyer ID and falls back to phone only when no Buyer ID record exists");
+var buyerIdentityResolver = new CustomerIdentityService(buyerIdentityRepository);
+var buyerAuthoritativeResolution = await buyerIdentityResolver.ResolveAsync(
+    "buyer-account",
+    "buyer-conversation",
+    buyerConflictLead.PhoneE164,
+    displayName: "Wrong phone owner",
+    buyerId: "buyer-100");
+var buyerAuthoritativeLink = await buyerIdentityRepository.GetWhatsAppIdentityLinkAsync(
+    "buyer-account",
+    "buyer-conversation");
+Check(buyerAuthoritativeResolution is
+      {
+          Result: CustomerIdentityMatchResult.ExactMatch,
+          Method: CustomerIdentityMatchMethod.ExactBuyerId
+      }
+      && buyerAuthoritativeResolution.CustomerId == buyerIdentityLead.Id
+      && buyerAuthoritativeLink?.CustomerId == buyerIdentityLead.Id,
+    "an exact Buyer ID overrides the supplied phone and binds every channel to the authoritative customer");
+var duplicateBuyerBlocked = false;
+try
+{
+    await buyerIdentityRepository.UpsertLeadAsync(new Lead
+    {
+        Id = "duplicate-buyer-blocked",
+        BuyerId = "BUYER-100",
+        Name = "Duplicate Buyer Must Be Blocked"
+    });
+}
+catch (InvalidOperationException error) when (error.Message.Contains("Buyer ID", StringComparison.Ordinal))
+{
+    duplicateBuyerBlocked = true;
+}
+Check(duplicateBuyerBlocked, "repository prevents a second customer master record from claiming the same Buyer ID");
+
 var scientificPhonePath = Path.Combine(root, "scientific-phone.xlsx");
 using (var scientificWorkbook = new XLWorkbook())
 {
@@ -978,6 +1109,17 @@ await repository.SaveAppSettingsAsync(new AppSettings
     DeepSeekBaseUrl="https://api.openai.com/v1",
     DeepSeekModel="gpt-4.1-mini",
     ActiveProviderId="openai",
+    UseGlobalAiConfiguration=false,
+    DefaultReasoningEffort="medium",
+    AiModulePreferences=new Dictionary<string, AiModuleModelPreference>(StringComparer.OrdinalIgnoreCase)
+    {
+        [AiModuleKeys.WhatsAppInbox]=new()
+        {
+            ProviderId="deepseek",
+            Model="deepseek-reasoner",
+            ReasoningEffort="high"
+        }
+    },
     ConfiguredAiProviders=
     [
         new AiProviderProfile
@@ -987,6 +1129,16 @@ await repository.SaveAppSettingsAsync(new AppSettings
             BaseUrl="https://api.deepseek.com",
             Model="deepseek-chat",
             AvailableModels=["deepseek-chat", "deepseek-reasoner"],
+            ModelCapabilities=
+            [
+                new AiModelCapability
+                {
+                    ModelId="deepseek-reasoner",
+                    ReasoningEfforts=["low", "medium", "high", "ultra"],
+                    ReasoningParameter="reasoning_effort",
+                    Source="api_metadata"
+                }
+            ],
             IsConfigured=true
         },
         new AiProviderProfile
@@ -1006,6 +1158,81 @@ Check(
     && persistedProviderSettings.ConfiguredAiProviders.Count == 2
     && persistedProviderSettings.ConfiguredAiProviders.Single(profile => profile.ProviderId == "openai").Model == "gpt-4.1-mini",
     "multiple configured AI providers and their selected models persist");
+Check(
+    !persistedProviderSettings.UseGlobalAiConfiguration
+    && persistedProviderSettings.DefaultReasoningEffort == "medium"
+    && persistedProviderSettings.AiModulePreferences[AiModuleKeys.WhatsAppInbox].Model == "deepseek-reasoner"
+    && persistedProviderSettings.ConfiguredAiProviders.Single(profile => profile.ProviderId == "deepseek")
+        .ModelCapabilities.Single().ReasoningEfforts.Contains("ultra"),
+    "global and per-module AI model and reasoning preferences persist additively");
+
+var routingHandler = new QueueHandler([Envelope("""{"value":"ok"}""")]);
+var routingProvider = new DeepSeekService(
+    repository,
+    new FakeSecretStore("sk-global"),
+    new HttpClient(routingHandler) { Timeout=TimeSpan.FromSeconds(5) },
+    providerSecretResolver: providerId => new FakeSecretStore($"sk-{providerId}"));
+await repository.SaveAppSettingsAsync(new AppSettings
+{
+    ActiveProviderId="deepseek",
+    DeepSeekBaseUrl="https://api.deepseek.com",
+    DeepSeekModel="deepseek-chat",
+    DefaultReasoningEffort="auto",
+    UseGlobalAiConfiguration=false,
+    ConfiguredAiProviders=
+    [
+        new AiProviderProfile
+        {
+            ProviderId="deepseek", DisplayName="DeepSeek", BaseUrl="https://api.deepseek.com",
+            Model="deepseek-chat", AvailableModels=["deepseek-chat"], IsConfigured=true
+        },
+        new AiProviderProfile
+        {
+            ProviderId="openai", DisplayName="OpenAI", BaseUrl="https://api.openai.com/v1",
+            Model="gpt-5-mini", AvailableModels=["gpt-5-mini", "gpt-4.1-mini"], IsConfigured=true,
+            ModelCapabilities=
+            [
+                new AiModelCapability
+                {
+                    ModelId="gpt-5-mini",
+                    ReasoningEfforts=["low", "medium", "high", "ultra"],
+                    ReasoningParameter="reasoning_effort",
+                    Source="api_metadata"
+                }
+            ]
+        }
+    ],
+    AiModulePreferences=new Dictionary<string, AiModuleModelPreference>(StringComparer.OrdinalIgnoreCase)
+    {
+        [AiModuleKeys.WhatsAppInbox]=new() { ProviderId="openai", Model="gpt-5-mini", ReasoningEffort="ultra" },
+        [AiModuleKeys.EmailInbox]=new() { ProviderId="openai", Model="gpt-4.1-mini", ReasoningEffort="ultra" },
+        [AiModuleKeys.KnowledgeBase]=new() { ProviderId="openai", Model="removed-model", ReasoningEffort="high" }
+    }
+});
+var routedResult = await routingProvider.CompleteStructuredAsync<RoutingProbe>(
+    AiModuleKeys.WhatsAppInbox,
+    "Return JSON.",
+    new { input="hello" },
+    _ => null);
+var unsupportedReasoningRoute = await routingProvider.ResolveExecutionProfileAsync(AiModuleKeys.EmailInbox);
+var invalidModelFallbackRoute = await routingProvider.ResolveExecutionProfileAsync(AiModuleKeys.KnowledgeBase);
+Check(
+    routedResult.Value == "ok"
+    && routingHandler.Requests.Single().Uri == "https://api.openai.com/v1/chat/completions"
+    && routingHandler.Requests.Single().Authorization == "Bearer sk-openai"
+    && routingHandler.RequestBodies.Single().Contains("\"model\":\"gpt-5-mini\"")
+    && routingHandler.RequestBodies.Single().Contains("\"reasoning_effort\":\"ultra\""),
+    "WhatsApp AI calls use their independent provider, model, credential and declared reasoning depth");
+Check(
+    unsupportedReasoningRoute.Model == "gpt-4.1-mini"
+    && unsupportedReasoningRoute.ReasoningEffort == AiReasoningEfforts.Auto
+    && string.IsNullOrWhiteSpace(unsupportedReasoningRoute.ReasoningParameter),
+    "undeclared reasoning levels fail safe to model defaults instead of sending guessed parameters");
+Check(
+    invalidModelFallbackRoute.ProviderId == "deepseek"
+    && invalidModelFallbackRoute.Model == "deepseek-chat"
+    && invalidModelFallbackRoute.ReasoningEffort == AiReasoningEfforts.Auto,
+    "removed per-module models fall back to the global provider and model without mutating saved data");
 
 await using (var embeddedBridge = new WhatsAppConnectionManager())
 {
@@ -1023,6 +1250,11 @@ var deepSeek = new DeepSeekService(repository, new FakeSecretStore("sk-test-reda
 await repository.SaveAppSettingsAsync(new AppSettings { DeepSeekBaseUrl="https://api.deepseek.com", DeepSeekModel="deepseek-chat" });
 var catalog = await deepSeek.DiscoverModelsAsync("https://api.deepseek.com");
 Check(catalog.Models.SequenceEqual(["deepseek-chat", "deepseek-reasoner"]), "AI provider model catalog is fetched and sorted");
+var reasonerCapability = catalog.ModelCapabilities.Single(item => item.ModelId == "deepseek-reasoner");
+Check(
+    reasonerCapability.ReasoningEfforts.SequenceEqual(["low", "medium", "high", "ultra"])
+    && reasonerCapability.ReasoningParameter == "reasoning_effort",
+    "AI model discovery reads declared reasoning depth metadata without guessing unsupported levels");
 var analyzed = await deepSeek.AnalyzeLeadAsync((await repository.GetLeadAsync("lead_elena"))!);
 Check(analyzed is { AnalysisStatus: AnalysisStatus.Succeeded, Score: 88, BaseProfileScore: 78, BehaviorSignalScore: 10, PurchaseProbability: 76, AnalysisContractVersion: 2, AiScoreApplied: true } && analyzed.ScoreFactors.Count == 6 && analyzed.Evidence.Count >= 7, "DeepSeek V2 structured analysis success");
 var analyzedDashboard = await repository.GetDashboardAsync();
@@ -2497,6 +2729,11 @@ sealed class FakeSecretStore(string value) : ISecretStore
     public string? Read() => value;
 }
 
+sealed class RoutingProbe
+{
+    public string Value { get; set; } = "";
+}
+
 sealed class FakeImageTextExtractor(string value) : ImageTextExtractor
 {
     public Task<string> ExtractImageTextAsync(
@@ -2515,7 +2752,7 @@ sealed class QueueHandler(IEnumerable<string> responses) : HttpMessageHandler
     {
         Requests.Add((request.Method.Method, request.RequestUri!.ToString(), request.Headers.Authorization?.ToString() ?? ""));
         if (request.Method == HttpMethod.Get)
-            return new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent("{\"data\":[{\"id\":\"deepseek-reasoner\"},{\"id\":\"deepseek-chat\"}]}", Encoding.UTF8, "application/json") };
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent("{\"data\":[{\"id\":\"deepseek-reasoner\",\"supported_reasoning_efforts\":[\"low\",\"medium\",\"high\",\"ultra\"],\"supported_parameters\":[\"reasoning_effort\"]},{\"id\":\"deepseek-chat\"}]}", Encoding.UTF8, "application/json") };
         RequestBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
         return new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent(_responses.Dequeue(), Encoding.UTF8, "application/json") };
     }

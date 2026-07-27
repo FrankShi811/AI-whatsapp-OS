@@ -429,7 +429,7 @@ public sealed class AiProviderImageTextExtractor : ImageTextExtractor
     {
         try
         {
-            return await _provider.ExtractImageTextAsync(filePath, mimeType, cancellationToken);
+            return await _provider.ExtractImageTextAsync(AiModuleKeys.KnowledgeBase, filePath, mimeType, cancellationToken);
         }
         catch (NotSupportedException)
         {

@@ -13,6 +13,20 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("5.4.0", "2026-07-27", "统一客户身份与分板块 AI 控制",
+        [
+            "新增标准 Buyer ID 字段并兼容常见中英文表头；客户识别统一采用“Buyer ID 优先、电话号码兜底”，导入更新、WhatsApp 绑定、Customer Brain、Lead Intelligence、Customer Success Agent、自动化和客户智能分析共享同一客户档案与跨板块记忆。",
+            "同一 Buyer ID 的重复导入会更新同一客户，即使姓名或电话号码发生变化也不会新建重复客户；只有找不到 Buyer ID 时才使用标准化电话号码进行无歧义匹配。",
+            "Buyer ID 与电话号码分别指向不同客户、旧数据存在重复 Buyer ID 或人工编辑产生冲突时会停止自动合并并提示核对；升级只增量回填旧自定义 Buyer ID 字段和全局身份投影，不删除或破坏性合并历史数据。",
+            "API 对接新增“全域统一 / 分板块”两层模型策略：默认继续让全部功能继承一个模型；需要控制 Token 成本时，可为客户列表、WhatsApp Inbox、邮件 Inbox、自动化群发、知识库和客户智能分析分别选择已配置 Provider 与模型。",
+            "现有 AI 调用已接入真实板块路由：客户列表的 Customer Brain、WhatsApp 会话助理与 Customer Success Agent、自动化话术生成、知识库图片 OCR、客户智能分析报告都会使用各自配置；邮件同步、普通群发和文本知识检索不调用模型，并在设置页明确标注。",
+            "模型拉取会解析 API 模型目录返回的推理能力元数据，包括常见的 reasoning / thinking、supported_efforts、reasoning_effort 等结构；只展示该模型明确声明支持的 none、minimal、low、medium、high、xhigh、ultra 或 max 档位。",
+            "推理档位采用失败关闭策略：API 没有声明可调档位时只允许“自动”，请求体不会猜测或发送未知参数；已保存但后来失效的档位也会在发送前回退为模型默认，避免兼容接口因 low / ultra 等字段报错。",
+            "不同板块可以安全使用不同 Provider：请求会同时切换 Base URL、模型和对应的 Windows 凭据，不会把当前 Provider 的 API Key 借给另一个 Provider；旧版全域模型设置升级后自动继续生效。",
+            "设置页新增每个板块的真实 AI 用途、Token 消耗边界、模型能力说明和新版使用手册；主窗口顶部会区分统一模型与分板块模型状态。",
+            "新增 Buyer ID 身份优先级、电话兜底、冲突阻断、增量迁移、全域继承、分板块覆盖、Provider 凭据隔离、模型能力解析、ultra 请求参数、未声明档位回退及全部既有桌面功能回归；升级不覆盖客户、WhatsApp/邮件账号、消息、API Key、自动化、报告、知识库或 SQLite 数据。",
+            "本版本仅发布 GitHub Windows 中文安装包和 Velopack 自动更新资产，不覆盖、关闭、重启或安装本机正式程序；macOS 继续暂停。"
+        ], true),
         new("5.3.2", "2026-07-27", "WhatsApp 全局未读气泡与跨账号身份纠错",
         [
             "修复会话已有本地读游标后，真正的新 WhatsApp 消息被防旧快照逻辑错误恢复为 0 未读的问题；实时新消息现在会可靠写入未读数，旧历史和过期快照仍不能复活已清除的气泡。",
@@ -23,7 +37,7 @@ public static class ReleaseCatalog
             "升级启动时会增量修复本机账号互发会话的错误 CRM 关联：解除错误身份链接并清除会话、消息上的客户引用，但不删除 CRM 客户、WhatsApp 消息、账号、API、邮件、自动化或知识库数据；纠错过程保留审计记录。",
             "新增已读游标后的实时来信、全局未读汇总、再次清零、旧快照防回退、WhatsApp 原生名称保留、双账号互发隔离和错误绑定修复回归。",
             "本版本仅发布 GitHub Windows 中文安装包和 Velopack 自动更新资产，不覆盖、关闭、重启或安装本机正式程序；macOS 继续暂停。"
-        ], true),
+        ]),
         new("5.3.1", "2026-07-27", "AI 建议结构化输出容错与安全降级",
         [
             "修复 WhatsApp Inbox 点击“立即生成建议”后，模型返回轻微非标准 JSON 即弹出 invalid_structured_output 错误的问题；按钮运行结束后始终恢复可操作状态。",

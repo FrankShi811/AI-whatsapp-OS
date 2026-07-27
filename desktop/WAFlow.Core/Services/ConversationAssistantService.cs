@@ -75,7 +75,7 @@ public sealed class ConversationAssistantService
         Lead? lead,
         CancellationToken cancellationToken = default)
     {
-        if (!_provider.HasApiKey())
+        if (!_provider.HasApiKey(AiModuleKeys.WhatsAppInbox))
             throw new DeepSeekException("provider_not_configured", "请先完成 AI API 对接并选择模型。", false);
         var messages = (await _repository.GetWhatsAppMessagesAsync(conversationId, 160, cancellationToken))
             .Where(message => !message.IsStatusUpdate && !message.IsRevoked && !string.IsNullOrWhiteSpace(message.Body))
@@ -117,7 +117,7 @@ public sealed class ConversationAssistantService
         {
             crm = lead is null ? null : new
             {
-                lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.Stage, lead.Tags,
+                lead.BuyerId, lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.Stage, lead.Tags,
                 lead.PreferredLanguage, lead.EstimatedOrderValue, lead.Currency, lead.CustomFields
             },
             customerBrain = customerBrain is null ? null : new
@@ -179,6 +179,7 @@ public sealed class ConversationAssistantService
         };
 
         var result = await _provider.CompleteStructuredAsync<ConversationAssistantResult>(
+            AiModuleKeys.WhatsAppInbox,
             Instructions,
             payload,
             candidate =>
@@ -191,7 +192,7 @@ public sealed class ConversationAssistantService
                     : null;
             },
             cancellationToken);
-        result.Model = await _provider.GetSelectedModelAsync(cancellationToken);
+        result.Model = await _provider.GetSelectedModelAsync(AiModuleKeys.WhatsAppInbox, cancellationToken);
         result.LatestIncomingMessage = incoming[^1].Body;
         result.KnowledgeRetrievalId = knowledge?.Id ?? "";
         result.KnowledgeChunkIds = CleanList(result.KnowledgeChunkIds)

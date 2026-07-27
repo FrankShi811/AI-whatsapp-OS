@@ -25,7 +25,8 @@ cd "D:\whatsapp 自动化"
 
 ## 安全与发送边界
 
-- AI 仅调用用户配置的 DeepSeek 或 Chat Completions 兼容 HTTPS API；设置页通过 `/models` 自动读取可用模型，失败时保留原始客户数据并标记可重试。
+- AI 仅调用用户配置的 DeepSeek 或 Chat Completions 兼容 HTTPS API；设置页通过 `/models` 自动读取可用模型和接口声明的推理档位，支持全域默认或 Customer Operations / Insights 分板块覆盖。API 未声明的档位只使用模型默认值，失败时保留原始客户数据并标记可重试。
+- CRM 使用统一客户身份键：Buyer ID 存在时优先作为跨导入、Inbox、分析、自动化和记忆的业务标识；Buyer ID 缺失时才以标准化电话号码匹配。Buyer ID 冲突会失败关闭，不会自动合并旧客户或覆盖其历史。
 - Knowledge Base 原件与版本保存在本地；只有人工批准、未过期、无冲突且作用域匹配的知识块才能进入检索，提示注入和 AI 未发送草稿不能成为正式知识。
 - 客户情报报告的每个 AI 阶段都保存结构化结果和来源快照；重新分析只创建新版本，不会覆盖 CRM、WhatsApp 或 Lead Intelligence 原始数据。
 - AI API Key 和 WhatsApp 会话加密密钥保存在 Windows 凭据管理器。

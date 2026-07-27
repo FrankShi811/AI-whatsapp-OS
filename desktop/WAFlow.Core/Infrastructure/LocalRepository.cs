@@ -41,6 +41,7 @@ public sealed class LocalRepository
             );
             CREATE TABLE IF NOT EXISTS leads (
               id TEXT PRIMARY KEY,
+              buyer_id TEXT NOT NULL DEFAULT '' COLLATE NOCASE,
               name TEXT NOT NULL,
               company TEXT NOT NULL,
               country TEXT NOT NULL,
@@ -340,6 +341,8 @@ public sealed class LocalRepository
             CREATE INDEX IF NOT EXISTS ix_customer_event_log_customer ON customer_event_log(customer_id, occurred_at DESC);
             CREATE TABLE IF NOT EXISTS global_customer_identities (
               customer_id TEXT PRIMARY KEY REFERENCES leads(id) ON DELETE CASCADE,
+              buyer_id TEXT NOT NULL DEFAULT '' COLLATE NOCASE,
+              canonical_key TEXT NOT NULL DEFAULT '',
               canonical_name TEXT NOT NULL DEFAULT '',
               primary_account_id TEXT NOT NULL,
               updated_at TEXT NOT NULL,
@@ -598,6 +601,9 @@ public sealed class LocalRepository
         // CREATE TABLE IF NOT EXISTS does not evolve tables created by an earlier
         // preview build. 4.1 is an in-place upgrade, so add every promoted column
         // idempotently before backfill touches it.
+        await EnsureColumnAsync(db, "leads", "buyer_id", "TEXT NOT NULL DEFAULT '' COLLATE NOCASE", cancellationToken);
+        await EnsureColumnAsync(db, "global_customer_identities", "buyer_id", "TEXT NOT NULL DEFAULT '' COLLATE NOCASE", cancellationToken);
+        await EnsureColumnAsync(db, "global_customer_identities", "canonical_key", "TEXT NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(db, "global_customer_identities", "canonical_name", "TEXT NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(db, "customer_phone_identities", "manually_confirmed", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "customer_phone_identities", "confidence", "REAL NOT NULL DEFAULT 0", cancellationToken);
@@ -605,6 +611,14 @@ public sealed class LocalRepository
         await EnsureColumnAsync(db, "global_customer_agent_locks", "active_account_id", "TEXT NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(db, "global_customer_agent_locks", "account_id", "TEXT NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(db, "global_customer_agent_locks", "conversation_id", "TEXT NOT NULL DEFAULT ''", cancellationToken);
+        await using (var identityIndexes = db.CreateCommand())
+        {
+            identityIndexes.CommandText = """
+                CREATE INDEX IF NOT EXISTS ix_leads_buyer_id ON leads(buyer_id COLLATE NOCASE) WHERE buyer_id <> '';
+                CREATE INDEX IF NOT EXISTS ix_global_customer_identity_buyer_id ON global_customer_identities(buyer_id COLLATE NOCASE) WHERE buyer_id <> '';
+                """;
+            await identityIndexes.ExecuteNonQueryAsync(cancellationToken);
+        }
         await using (var removeLegacySalesProfile = db.CreateCommand())
         {
             removeLegacySalesProfile.CommandText = "DELETE FROM settings WHERE key='sales_profile'";
@@ -615,6 +629,7 @@ public sealed class LocalRepository
         await RemoveDemoLeadsIfRealDataExistsInternalAsync(db, cleanup as SqliteTransaction, cancellationToken);
         await AlignLeadAiBaselineInternalAsync(db, cleanup as SqliteTransaction, cancellationToken);
         await RepairWhatsAppTextEncodingInternalAsync(db, cleanup as SqliteTransaction, cancellationToken);
+        await BackfillBuyerIdentitiesInternalAsync(db, cleanup as SqliteTransaction, cancellationToken);
         await BackfillCustomerSuccessIdentityInternalAsync(db, cleanup as SqliteTransaction, cancellationToken);
         await cleanup.CommitAsync(cancellationToken);
     }
@@ -714,6 +729,35 @@ public sealed class LocalRepository
 
     }
 
+    private static async Task BackfillBuyerIdentitiesInternalAsync(
+        SqliteConnection db,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        var leads = new List<Lead>();
+        await using (var select = db.CreateCommand())
+        {
+            select.Transaction = transaction;
+            select.CommandText = "SELECT data_json FROM leads";
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<Lead>(reader.GetString(0)) is { } lead)
+                    leads.Add(lead);
+        }
+
+        foreach (var lead in leads)
+        {
+            BuyerIdentity.Synchronize(lead);
+            await using var update = db.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE leads SET buyer_id=$buyer,data_json=$json WHERE id=$id";
+            update.Parameters.AddWithValue("$id", lead.Id);
+            update.Parameters.AddWithValue("$buyer", lead.BuyerId);
+            update.Parameters.AddWithValue("$json", Json.Serialize(lead));
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
     private static async Task BackfillCustomerSuccessIdentityInternalAsync(
         SqliteConnection db,
         SqliteTransaction? transaction,
@@ -735,6 +779,8 @@ public sealed class LocalRepository
             var identity = new GlobalCustomerIdentity
             {
                 CustomerId = lead.Id,
+                BuyerId = lead.BuyerId,
+                CanonicalKey = BuyerIdentity.CanonicalKey(lead),
                 CanonicalName = lead.DisplayName,
                 ConfirmedAliases = string.IsNullOrWhiteSpace(lead.Name) ? [] : [lead.Name],
                 CreatedAt = lead.CreatedAt == default ? DateTimeOffset.Now : lead.CreatedAt,
@@ -743,11 +789,13 @@ public sealed class LocalRepository
             await using var insert = db.CreateCommand();
             insert.Transaction = transaction;
             insert.CommandText = """
-                INSERT INTO global_customer_identities(customer_id,canonical_name,primary_account_id,updated_at,data_json)
-                VALUES($customer,$name,'',$updated,$json)
+                INSERT INTO global_customer_identities(customer_id,buyer_id,canonical_key,canonical_name,primary_account_id,updated_at,data_json)
+                VALUES($customer,$buyer,$key,$name,'',$updated,$json)
                 ON CONFLICT(customer_id) DO NOTHING
                 """;
             insert.Parameters.AddWithValue("$customer", identity.CustomerId);
+            insert.Parameters.AddWithValue("$buyer", identity.BuyerId);
+            insert.Parameters.AddWithValue("$key", identity.CanonicalKey);
             insert.Parameters.AddWithValue("$name", identity.CanonicalName);
             insert.Parameters.AddWithValue("$updated", identity.UpdatedAt.ToString("O"));
             insert.Parameters.AddWithValue("$json", Json.Serialize(identity));
@@ -896,6 +944,8 @@ public sealed class LocalRepository
             select.Parameters.AddWithValue("$customer", lead.Id);
             var identity = Json.Deserialize<GlobalCustomerIdentity>(await select.ExecuteScalarAsync(cancellationToken) as string);
             if (identity is null) continue;
+            identity.BuyerId = lead.BuyerId;
+            identity.CanonicalKey = BuyerIdentity.CanonicalKey(lead);
 
             // Rebuild the account projection from the durable identity links, not
             // only from conversations currently present in the local inbox. A
@@ -930,7 +980,9 @@ public sealed class LocalRepository
             identity.UpdatedAt = DateTimeOffset.Now;
             await using var update = db.CreateCommand();
             update.Transaction = transaction;
-            update.CommandText = "UPDATE global_customer_identities SET canonical_name=$name,primary_account_id=$primary,updated_at=$updated,data_json=$json WHERE customer_id=$customer";
+            update.CommandText = "UPDATE global_customer_identities SET buyer_id=$buyer,canonical_key=$key,canonical_name=$name,primary_account_id=$primary,updated_at=$updated,data_json=$json WHERE customer_id=$customer";
+            update.Parameters.AddWithValue("$buyer", identity.BuyerId);
+            update.Parameters.AddWithValue("$key", identity.CanonicalKey);
             update.Parameters.AddWithValue("$name", identity.CanonicalName);
             update.Parameters.AddWithValue("$primary", identity.PrimaryAccountId);
             update.Parameters.AddWithValue("$updated", identity.UpdatedAt.ToString("O"));
@@ -1098,12 +1150,17 @@ public sealed class LocalRepository
         await using var db = Open(); await db.OpenAsync(cancellationToken);
         await using var command = db.CreateCommand();
         var filters = new List<string>();
-        if (!string.IsNullOrWhiteSpace(search)) { filters.Add("(name LIKE $search OR company LIKE $search OR phone_e164 LIKE $search OR data_json LIKE $search)"); command.Parameters.AddWithValue("$search", $"%{search.Trim()}%"); }
+        if (!string.IsNullOrWhiteSpace(search)) { filters.Add("(buyer_id LIKE $search OR name LIKE $search OR company LIKE $search OR phone_e164 LIKE $search OR data_json LIKE $search)"); command.Parameters.AddWithValue("$search", $"%{search.Trim()}%"); }
         if (!string.IsNullOrWhiteSpace(grade) && grade != "全部") { filters.Add("grade=$grade"); command.Parameters.AddWithValue("$grade", grade); }
         if (stage is not null) { filters.Add("stage=$stage"); command.Parameters.AddWithValue("$stage", stage.Value.ToString()); }
         command.CommandText = $"SELECT data_json FROM leads {(filters.Count > 0 ? "WHERE " + string.Join(" AND ", filters) : "")} ORDER BY score DESC, updated_at DESC";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken)) if (Json.Deserialize<Lead>(reader.GetString(0)) is { } lead) items.Add(lead);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<Lead>(reader.GetString(0)) is { } lead)
+            {
+                BuyerIdentity.Synchronize(lead);
+                items.Add(lead);
+            }
         return items;
     }
 
@@ -1111,7 +1168,9 @@ public sealed class LocalRepository
     {
         await using var db = Open(); await db.OpenAsync(cancellationToken);
         await using var command = db.CreateCommand(); command.CommandText = "SELECT data_json FROM leads WHERE id=$id"; command.Parameters.AddWithValue("$id", id);
-        return Json.Deserialize<Lead>(await command.ExecuteScalarAsync(cancellationToken) as string);
+        var lead = Json.Deserialize<Lead>(await command.ExecuteScalarAsync(cancellationToken) as string);
+        if (lead is not null) BuyerIdentity.Synchronize(lead);
+        return lead;
     }
 
     public async Task UpsertLeadAsync(Lead lead, CancellationToken cancellationToken = default)
@@ -1298,23 +1357,82 @@ public sealed class LocalRepository
 
     private static async Task UpsertLeadInternalAsync(SqliteConnection db, Lead lead, CancellationToken cancellationToken, System.Data.Common.DbTransaction? transaction = null)
     {
+        BuyerIdentity.Synchronize(lead);
+        if (!string.IsNullOrWhiteSpace(lead.BuyerId))
+        {
+            await using var identityConflict = db.CreateCommand();
+            identityConflict.Transaction = transaction as SqliteTransaction;
+            identityConflict.CommandText = "SELECT id FROM leads WHERE buyer_id=$buyer COLLATE NOCASE AND id<>$id LIMIT 1";
+            identityConflict.Parameters.AddWithValue("$buyer", lead.BuyerId);
+            identityConflict.Parameters.AddWithValue("$id", lead.Id);
+            if (await identityConflict.ExecuteScalarAsync(cancellationToken) is string conflictingCustomerId)
+                throw new InvalidOperationException(
+                    $"Buyer ID“{lead.BuyerId}”已属于客户 {conflictingCustomerId}，禁止创建第二个客户主记录。");
+        }
         lead.UpdatedAt = DateTimeOffset.Now;
         await using var command = db.CreateCommand();
         command.Transaction = transaction as SqliteTransaction;
         command.CommandText = """
-            INSERT INTO leads(id,name,company,country,phone_e164,phone_valid,opted_out,grade,stage,score,owner,analysis_status,next_follow_up_at,updated_at,data_json)
-            VALUES($id,$name,$company,$country,$phone,$valid,$opted,$grade,$stage,$score,$owner,$analysis,$follow,$updated,$json)
-            ON CONFLICT(id) DO UPDATE SET name=excluded.name,company=excluded.company,country=excluded.country,phone_e164=excluded.phone_e164,
+            INSERT INTO leads(id,buyer_id,name,company,country,phone_e164,phone_valid,opted_out,grade,stage,score,owner,analysis_status,next_follow_up_at,updated_at,data_json)
+            VALUES($id,$buyer,$name,$company,$country,$phone,$valid,$opted,$grade,$stage,$score,$owner,$analysis,$follow,$updated,$json)
+            ON CONFLICT(id) DO UPDATE SET buyer_id=excluded.buyer_id,name=excluded.name,company=excluded.company,country=excluded.country,phone_e164=excluded.phone_e164,
             phone_valid=excluded.phone_valid,opted_out=excluded.opted_out,grade=excluded.grade,stage=excluded.stage,score=excluded.score,owner=excluded.owner,
             analysis_status=excluded.analysis_status,next_follow_up_at=excluded.next_follow_up_at,updated_at=excluded.updated_at,data_json=excluded.data_json
             """;
-        command.Parameters.AddWithValue("$id", lead.Id); command.Parameters.AddWithValue("$name", lead.Name); command.Parameters.AddWithValue("$company", lead.Company);
+        command.Parameters.AddWithValue("$id", lead.Id); command.Parameters.AddWithValue("$buyer", lead.BuyerId); command.Parameters.AddWithValue("$name", lead.Name); command.Parameters.AddWithValue("$company", lead.Company);
         command.Parameters.AddWithValue("$country", lead.Country); command.Parameters.AddWithValue("$phone", lead.PhoneE164); command.Parameters.AddWithValue("$valid", lead.PhoneValid ? 1 : 0);
         command.Parameters.AddWithValue("$opted", lead.OptedOut ? 1 : 0); command.Parameters.AddWithValue("$grade", lead.Grade); command.Parameters.AddWithValue("$stage", lead.Stage.ToString());
         command.Parameters.AddWithValue("$score", lead.Score); command.Parameters.AddWithValue("$owner", lead.Owner); command.Parameters.AddWithValue("$analysis", lead.AnalysisStatus.ToString());
         command.Parameters.AddWithValue("$follow", (object?)lead.NextFollowUpAt?.ToString("O") ?? DBNull.Value); command.Parameters.AddWithValue("$updated", lead.UpdatedAt.ToString("O"));
         command.Parameters.AddWithValue("$json", Json.Serialize(lead));
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await SynchronizeGlobalIdentityFromLeadInternalAsync(db, lead, cancellationToken, transaction as SqliteTransaction);
+    }
+
+    private static async Task SynchronizeGlobalIdentityFromLeadInternalAsync(
+        SqliteConnection db,
+        Lead lead,
+        CancellationToken cancellationToken,
+        SqliteTransaction? transaction)
+    {
+        GlobalCustomerIdentity? identity;
+        await using (var select = db.CreateCommand())
+        {
+            select.Transaction = transaction;
+            select.CommandText = "SELECT data_json FROM global_customer_identities WHERE customer_id=$customer";
+            select.Parameters.AddWithValue("$customer", lead.Id);
+            identity = Json.Deserialize<GlobalCustomerIdentity>(await select.ExecuteScalarAsync(cancellationToken) as string);
+        }
+        identity ??= new GlobalCustomerIdentity
+        {
+            CustomerId = lead.Id,
+            CreatedAt = lead.CreatedAt == default ? DateTimeOffset.Now : lead.CreatedAt
+        };
+        identity.BuyerId = lead.BuyerId;
+        identity.CanonicalKey = BuyerIdentity.CanonicalKey(lead);
+        if (string.IsNullOrWhiteSpace(identity.CanonicalName)) identity.CanonicalName = lead.DisplayName;
+        if (!string.IsNullOrWhiteSpace(lead.Name)
+            && !identity.ConfirmedAliases.Contains(lead.Name, StringComparer.CurrentCultureIgnoreCase))
+            identity.ConfirmedAliases.Add(lead.Name);
+        identity.UpdatedAt = DateTimeOffset.Now;
+
+        await using var upsert = db.CreateCommand();
+        upsert.Transaction = transaction;
+        upsert.CommandText = """
+            INSERT INTO global_customer_identities(customer_id,buyer_id,canonical_key,canonical_name,primary_account_id,updated_at,data_json)
+            VALUES($customer,$buyer,$key,$name,$primary,$updated,$json)
+            ON CONFLICT(customer_id) DO UPDATE SET buyer_id=excluded.buyer_id,canonical_key=excluded.canonical_key,
+              canonical_name=excluded.canonical_name,primary_account_id=excluded.primary_account_id,
+              updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        upsert.Parameters.AddWithValue("$customer", identity.CustomerId);
+        upsert.Parameters.AddWithValue("$buyer", identity.BuyerId);
+        upsert.Parameters.AddWithValue("$key", identity.CanonicalKey);
+        upsert.Parameters.AddWithValue("$name", identity.CanonicalName);
+        upsert.Parameters.AddWithValue("$primary", identity.PrimaryAccountId);
+        upsert.Parameters.AddWithValue("$updated", identity.UpdatedAt.ToString("O"));
+        upsert.Parameters.AddWithValue("$json", Json.Serialize(identity));
+        await upsert.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<Lead?> GetLeadByPhoneAsync(string phone, CancellationToken cancellationToken = default)
@@ -1328,10 +1446,65 @@ public sealed class LocalRepository
         var exact = new List<Lead>();
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
             while (await reader.ReadAsync(cancellationToken))
-                if (Json.Deserialize<Lead>(reader.GetString(0)) is { } lead) exact.Add(lead);
+                if (Json.Deserialize<Lead>(reader.GetString(0)) is { } lead)
+                {
+                    BuyerIdentity.Synchronize(lead);
+                    exact.Add(lead);
+                }
         if (exact.Count == 1) return exact[0];
         if (exact.Count > 1) return null;
         return Services.PhoneIdentity.FindUniqueLead(await GetLeadsAsync(cancellationToken: cancellationToken), digits);
+    }
+
+    public async Task<List<Lead>> GetLeadsByBuyerIdAsync(string buyerId, CancellationToken cancellationToken = default)
+    {
+        var normalized = BuyerIdentity.Normalize(buyerId);
+        if (normalized.Length == 0) return [];
+        var items = new List<Lead>();
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM leads WHERE buyer_id=$buyer COLLATE NOCASE ORDER BY updated_at DESC";
+        command.Parameters.AddWithValue("$buyer", BuyerIdentity.Canonicalize(buyerId));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<Lead>(reader.GetString(0)) is { } lead)
+            {
+                BuyerIdentity.Synchronize(lead);
+                items.Add(lead);
+            }
+        return items;
+    }
+
+    public async Task<Lead?> GetLeadByBuyerIdAsync(string buyerId, CancellationToken cancellationToken = default)
+    {
+        var matches = await GetLeadsByBuyerIdAsync(buyerId, cancellationToken);
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
+    public async Task<Lead?> GetLeadByIdentityAsync(
+        string buyerId,
+        string phone,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedBuyerId = BuyerIdentity.Normalize(buyerId);
+        if (normalizedBuyerId.Length > 0)
+        {
+            var matches = await GetLeadsByBuyerIdAsync(buyerId, cancellationToken);
+            if (matches.Count == 1) return matches[0];
+            if (matches.Count > 1) return null;
+        }
+        return await GetLeadByPhoneAsync(phone, cancellationToken);
+    }
+
+    public async Task<bool> IsBuyerIdAvailableAsync(
+        string buyerId,
+        string currentCustomerId = "",
+        CancellationToken cancellationToken = default)
+    {
+        var matches = await GetLeadsByBuyerIdAsync(buyerId, cancellationToken);
+        return matches.Count == 0
+               || matches.All(lead => lead.Id.Equals(currentCustomerId, StringComparison.OrdinalIgnoreCase));
     }
 
     public async Task<Lead?> GetLeadByEmailAsync(string email, CancellationToken cancellationToken = default)
@@ -2813,12 +2986,15 @@ public sealed class LocalRepository
         await using var db = Open(); await db.OpenAsync(cancellationToken);
         await using var command = db.CreateCommand();
         command.CommandText = """
-            INSERT INTO global_customer_identities(customer_id,canonical_name,primary_account_id,updated_at,data_json)
-            VALUES($customer,$name,$primary,$updated,$json)
-            ON CONFLICT(customer_id) DO UPDATE SET canonical_name=excluded.canonical_name,
-              primary_account_id=excluded.primary_account_id,updated_at=excluded.updated_at,data_json=excluded.data_json
+            INSERT INTO global_customer_identities(customer_id,buyer_id,canonical_key,canonical_name,primary_account_id,updated_at,data_json)
+            VALUES($customer,$buyer,$key,$name,$primary,$updated,$json)
+            ON CONFLICT(customer_id) DO UPDATE SET buyer_id=excluded.buyer_id,canonical_key=excluded.canonical_key,
+              canonical_name=excluded.canonical_name,primary_account_id=excluded.primary_account_id,
+              updated_at=excluded.updated_at,data_json=excluded.data_json
             """;
         command.Parameters.AddWithValue("$customer", identity.CustomerId);
+        command.Parameters.AddWithValue("$buyer", identity.BuyerId);
+        command.Parameters.AddWithValue("$key", identity.CanonicalKey);
         command.Parameters.AddWithValue("$name", identity.CanonicalName);
         command.Parameters.AddWithValue("$primary", identity.PrimaryAccountId);
         command.Parameters.AddWithValue("$updated", identity.UpdatedAt.ToString("O"));

@@ -57,6 +57,14 @@ public sealed class ImportService
         var customHeaders = sheet.Headers.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         progress?.Report(new("正在读取已有客户", 0, sheet.Rows.Count));
         var existing = await _repository.GetLeadsAsync(cancellationToken: cancellationToken);
+        var byBuyerId = existing
+            .Select(lead => (Key: BuyerIdentity.Normalize(BuyerIdentity.Resolve(lead)), Lead: lead))
+            .Where(item => item.Key.Length > 0)
+            .GroupBy(item => item.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(item => item.Lead).ToList(),
+                StringComparer.OrdinalIgnoreCase);
         var byPhone = BuildPhoneIndex(existing.Where(l => l.PhoneValid && !string.IsNullOrWhiteSpace(l.PhoneE164)), lead => lead.PhoneE164);
         var byCompositeIdentity = existing
             .Select(lead => (Key: BuildCompositeIdentity(lead.CustomFields, lead.Name, lead.PhoneE164), Lead: lead))
@@ -71,6 +79,7 @@ public sealed class ImportService
             .Where(group => group.Count() == 1)
             .ToDictionary(group => group.Key, group => group.Single().Lead, StringComparer.OrdinalIgnoreCase);
         var claimedExistingLeadIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var firstRowsByBuyerId = new Dictionary<string, ImportPreviewRow>(StringComparer.OrdinalIgnoreCase);
         var output = new List<ImportPreviewRow>(sheet.Rows.Count);
         for (var i = 0; i < sheet.Rows.Count; i++)
         {
@@ -94,40 +103,75 @@ public sealed class ImportService
             var normalized = PhoneNormalizer.Normalize(rawPhone, country);
             var item = new ImportPreviewRow
             {
-                RowNumber = i + 2, Values = values, CustomValues = customValues, Name = values.GetValueOrDefault(ImportField.Name, ""),
+                RowNumber = i + 2, Values = values, CustomValues = customValues,
+                BuyerId = BuyerIdentity.Canonicalize(values.GetValueOrDefault(ImportField.BuyerId, "")),
+                Name = values.GetValueOrDefault(ImportField.Name, ""),
                 Company = values.GetValueOrDefault(ImportField.Company, ""), Country = country,
                 PhoneE164 = normalized.E164.Length > 0 ? normalized.E164 : rawPhone, PhoneValid = normalized.Valid
             };
+            var buyerKey = BuyerIdentity.Normalize(item.BuyerId);
             var importIdentity = BuildImportIdentity(customValues);
             var compositeIdentity = BuildCompositeIdentity(customValues, item.Name, item.PhoneE164);
             if (!normalized.Valid) item.Warnings.Add(string.IsNullOrWhiteSpace(values.GetValueOrDefault(ImportField.WhatsApp))
                 ? "未提供 WhatsApp 号码"
                 : "WhatsApp 号码格式无效；已保留表格号码且仅补 + 号");
             Lead? duplicate = null;
-            if (compositeIdentity is not null
+            if (buyerKey.Length > 0 && firstRowsByBuyerId.TryGetValue(buyerKey, out var firstBuyerRow))
+            {
+                item.IsDuplicate = true;
+                item.DuplicateRowNumber = firstBuyerRow.RowNumber;
+                item.Changes = "同一 Buyer ID，更新同一客户主记录";
+                if (firstBuyerRow.Errors.Count > 0)
+                    item.Errors.AddRange(firstBuyerRow.Errors);
+            }
+            else if (buyerKey.Length > 0 && byBuyerId.TryGetValue(buyerKey, out var buyerMatches))
+            {
+                if (buyerMatches.Count == 1)
+                    duplicate = buyerMatches[0];
+                else
+                    item.Errors.Add($"Buyer ID“{item.BuyerId}”已对应 {buyerMatches.Count} 个客户，必须先人工处理身份冲突。");
+            }
+            if (item.DuplicateRowNumber is null
+                && item.Errors.Count == 0
+                && duplicate is null
+                && compositeIdentity is not null
                 && byCompositeIdentity.TryGetValue(compositeIdentity, out var compositeDuplicate)
                 && !claimedExistingLeadIds.Contains(compositeDuplicate.Id))
             {
                 duplicate = compositeDuplicate;
             }
-            duplicate ??= item.PhoneValid
+            if (item.DuplicateRowNumber is null && item.Errors.Count == 0 && duplicate is null)
+                duplicate = item.PhoneValid
                 ? FindUniquePhoneMatch(byPhone, item.PhoneE164, lead => lead.PhoneE164, lead => !claimedExistingLeadIds.Contains(lead.Id))
                 : null;
-            if (duplicate is null
+            if (item.DuplicateRowNumber is null
+                && item.Errors.Count == 0
+                && duplicate is null
                 && importIdentity is not null
                 && byIdentity.TryGetValue(importIdentity, out var identityDuplicate)
                 && !claimedExistingLeadIds.Contains(identityDuplicate.Id))
             {
                 duplicate = identityDuplicate;
             }
+            if (duplicate is not null && buyerKey.Length > 0)
+            {
+                var existingBuyerKey = BuyerIdentity.Normalize(BuyerIdentity.Resolve(duplicate));
+                if (existingBuyerKey.Length > 0 && !existingBuyerKey.Equals(buyerKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    item.Errors.Add(
+                        $"Buyer ID“{item.BuyerId}”与电话命中的客户 Buyer ID“{BuyerIdentity.Resolve(duplicate)}”冲突，已阻止自动合并。");
+                    duplicate = null;
+                }
+            }
             if (duplicate is not null)
             {
                 item.IsDuplicate = true; item.DuplicateLeadId = duplicate.Id; item.Changes = BuildChanges(duplicate, values, customValues, normalized);
                 claimedExistingLeadIds.Add(duplicate.Id);
             }
-            // A spreadsheet row is a customer record. Rows in the same upload are never
-            // collapsed merely because the customer name or phone number is repeated.
-            // Exact composite identity + one-time claims still make a later re-import idempotent.
+            if (buyerKey.Length > 0 && !firstRowsByBuyerId.ContainsKey(buyerKey))
+                firstRowsByBuyerId[buyerKey] = item;
+            // Buyer ID is the authoritative business identity. Without Buyer ID, rows are
+            // never collapsed merely because a customer name or phone is repeated.
             output.Add(item);
             if ((i + 1) % 250 == 0 || i + 1 == sheet.Rows.Count) progress?.Report(new("正在生成重复与风险预览", i + 1, sheet.Rows.Count));
         }
@@ -261,6 +305,7 @@ public sealed class ImportService
     private static string BuildChanges(Lead lead, IReadOnlyDictionary<ImportField, string> values, IReadOnlyDictionary<string, string> customValues, NormalizedPhone normalized)
     {
         var changes = new List<string>();
+        Add(ImportField.BuyerId, "Buyer ID", lead.BuyerId);
         Add(ImportField.Name, "姓名", lead.Name); Add(ImportField.Company, "公司", lead.Company); Add(ImportField.Country, "国家", lead.Country);
         Add(ImportField.Email, "邮箱", lead.Email); Add(ImportField.ProductInterest, "意向产品", lead.ProductInterest);
         if (normalized.E164.Length > 0 && normalized.E164 != lead.PhoneE164) changes.Add("号码");
@@ -272,6 +317,7 @@ public sealed class ImportService
 
     private static void ApplyImportedValues(Lead lead, IReadOnlyDictionary<ImportField, string> values, IReadOnlyDictionary<string, string> customValues, string phone, bool phoneValid, bool allowStageChange, bool allowOwnerChange, bool isNew)
     {
+        SetExact(ImportField.BuyerId, x => lead.BuyerId = BuyerIdentity.Canonicalize(x));
         if (isNew) SetExact(ImportField.Name, x => lead.Name = x);
         SetExact(ImportField.Company, x => lead.Company = x); SetExact(ImportField.Country, x => lead.Country = x);
         SetExact(ImportField.Email, x => lead.Email = x); SetExact(ImportField.ProductInterest, x => lead.ProductInterest = x); SetExact(ImportField.Source, x => lead.Source = x);
@@ -285,6 +331,7 @@ public sealed class ImportService
         if (isNew && allowStageChange && values.TryGetValue(ImportField.Stage, out var stage)) lead.Stage = StageParser.Parse(stage);
         if (allowOwnerChange) SetExact(ImportField.Owner, x => lead.Owner = x);
         ReplaceCustomDimensions(lead, customValues, isNew);
+        BuyerIdentity.Synchronize(lead);
         lead.RegisteredOrConsulted = lead.ExplicitDemand || !string.IsNullOrWhiteSpace(lead.ProductInterest);
         if (isNew) SetExact(ImportField.Notes, x => lead.LatestMessage = x);
         return;
@@ -315,7 +362,7 @@ public sealed class ImportService
 
     internal static bool IsProtectedDimension(string header)
     {
-        if (FieldAliases.Suggest(header) is ImportField.Name or ImportField.Stage) return true;
+        if (FieldAliases.Suggest(header) is ImportField.BuyerId or ImportField.Name or ImportField.Stage) return true;
         var normalized = new string(header.Where(char.IsLetterOrDigit).ToArray());
         return normalized.Contains("\u8be6\u60c5\u8bb0\u5f55", StringComparison.OrdinalIgnoreCase)
             || normalized.Contains("\u8be6\u7ec6\u8bb0\u5f55", StringComparison.OrdinalIgnoreCase)
@@ -474,6 +521,7 @@ internal static class FieldAliases
 {
     private static readonly Dictionary<ImportField, string[]> Aliases = new()
     {
+        [ImportField.BuyerId]=["buyerid","buyeridentifier","buyeraccountid","dhgatebuyerid","customerid","customeridentifier","买家id","客户id","采购商id","买家编号","客户编号","采购商编号"],
         [ImportField.Name]=["name","fullname","contactname","buyername","buyernickname","姓名","联系人","客户姓名","买家姓名","买家昵称"],
         [ImportField.Company]=["company","companyname","business","organization","公司","公司名称","企业名称"],
         [ImportField.Country]=["country","market","region","国家","国家地区","市场","地区"],

@@ -39,7 +39,11 @@ public sealed class AppServices
         Scoring = new LeadScoringService();
         Secrets = new WindowsCredentialStore();
         KnowledgeRetrieval = new KnowledgeRetrievalService(Repository);
-        DeepSeek = new DeepSeekService(Repository, Secrets, knowledgeRetrieval: KnowledgeRetrieval);
+        DeepSeek = new DeepSeekService(
+            Repository,
+            Secrets,
+            knowledgeRetrieval: KnowledgeRetrieval,
+            providerSecretResolver: providerId => new WindowsCredentialStore($"WAFlow/AiProvider/{providerId}"));
         KnowledgeBase = new KnowledgeBaseService(
             Repository,
             new CompositeKnowledgeDocumentParser(new AiProviderImageTextExtractor(DeepSeek)));

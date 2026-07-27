@@ -26,6 +26,7 @@ public partial class CustomerEditWindow : Window
         OriginalDimensions.ItemsSource = _dimensions;
 
         NameBox.Text = lead.Name;
+        BuyerIdBox.Text = BuyerIdentity.Resolve(lead);
         CompanyBox.Text = lead.Company;
         CountryBox.Text = lead.Country;
         PhoneBox.Text = lead.PhoneE164;
@@ -242,7 +243,19 @@ public partial class CustomerEditWindow : Window
                 MessageBox.Show("客户名称和公司不能同时为空。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
+            var buyerId = BuyerIdentity.Canonicalize(BuyerIdBox.Text);
+            if (buyerId.Length > 0
+                && !await _services.Repository.IsBuyerIdAvailableAsync(buyerId, _lead.Id))
+            {
+                MessageBox.Show(
+                    $"Buyer ID“{buyerId}”已经属于另一个客户。为避免客户资料、分析和跨板块记忆串联错误，本次保存已阻止。",
+                    "Buyer ID 冲突",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
 
+            _lead.BuyerId = buyerId;
             _lead.Name = name;
             _lead.Company = company;
             _lead.Country = CountryBox.Text.Trim();
@@ -267,6 +280,9 @@ public partial class CustomerEditWindow : Window
             _lead.StageSource = _lead.StageManuallyLocked ? "user" : "ai";
             _lead.StageManuallyUpdatedAt = stageChangedByUser ? DateTimeOffset.Now : _lead.StageManuallyUpdatedAt;
             _lead.CustomFields = _dimensions.ToDictionary(item => item.Header, item => item.Value ?? "", StringComparer.OrdinalIgnoreCase);
+            foreach (var key in _lead.CustomFields.Keys.Where(BuyerIdentity.IsField).ToList())
+                _lead.CustomFields[key] = buyerId;
+            BuyerIdentity.Synchronize(_lead);
 
             if (!_lead.AiScoreApplied)
             {

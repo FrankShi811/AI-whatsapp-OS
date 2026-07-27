@@ -77,7 +77,7 @@ public sealed class CustomerBrainService
         var profile = await RefreshAsync(customerId, cancellationToken);
         var lead = await _repository.GetLeadAsync(customerId, cancellationToken)
             ?? throw new InvalidOperationException("\u5ba2\u6237\u4e0d\u5b58\u5728\u6216\u5df2\u88ab\u5220\u9664\u3002");
-        if (_provider is null || !_provider.HasApiKey())
+        if (_provider is null || !_provider.HasApiKey(AiModuleKeys.Customers))
             throw new InvalidOperationException("\u8bf7\u5148\u5728 API \u5bf9\u63a5\u4e2d\u914d\u7f6e\u53ef\u7528\u7684 AI Provider \u548c\u6a21\u578b\u3002");
 
         var timeline = await _repository.GetCustomerBehaviorTimelineAsync(customerId, cancellationToken);
@@ -114,7 +114,7 @@ public sealed class CustomerBrainService
         {
             customer = new
             {
-                lead.Id, lead.Name, lead.Company, lead.Country, lead.PhoneE164, lead.Email,
+                lead.Id, lead.BuyerId, lead.Name, lead.Company, lead.Country, lead.PhoneE164, lead.Email,
                 lead.ProductInterest, lead.EstimatedOrderValue, lead.Currency, lead.Tags, lead.CustomFields,
                 stage = lead.Stage.ToString(), lead.Score, lead.Grade, lead.PurchaseProbability,
                 lead.ProfileSummary, lead.CustomerSegment, lead.NextAction, lead.Risks, lead.Evidence
@@ -144,7 +144,7 @@ public sealed class CustomerBrainService
         {
             CustomerId = customerId,
             Status = CustomerBrainRunStatus.Collecting,
-            AiModel = await _provider.GetSelectedModelAsync(cancellationToken),
+            AiModel = await _provider.GetSelectedModelAsync(AiModuleKeys.Customers, cancellationToken),
             SourceSnapshotHash = profile.SourceSnapshotHash,
             SourceSnapshotJson = Json.Serialize(sourceSnapshot)
         };
@@ -155,6 +155,7 @@ public sealed class CustomerBrainService
             run.Status = CustomerBrainRunStatus.Understanding;
             await _repository.SaveCustomerBrainRunAsync(run, cancellationToken);
             var understanding = await _provider.CompleteStructuredAsync<CustomerUnderstandingResult>(
+                AiModuleKeys.Customers,
                 """
                 You are the Customer Understanding stage of AI Sales OS, a personal AI sales employee.
                 Use only the supplied customer snapshot. Return one camelCase JSON object without markdown.
@@ -184,6 +185,7 @@ public sealed class CustomerBrainService
             run.Status = CustomerBrainRunStatus.EvaluatingOpportunity;
             await _repository.SaveCustomerBrainRunAsync(run, cancellationToken);
             var opportunity = await _provider.CompleteStructuredAsync<CustomerOpportunityEvaluation>(
+                AiModuleKeys.Customers,
                 """
                 You are the Opportunity Evaluation stage of AI Sales OS.
                 Return one camelCase JSON object without markdown:
@@ -212,6 +214,7 @@ public sealed class CustomerBrainService
             run.Status = CustomerBrainRunStatus.Recommending;
             await _repository.SaveCustomerBrainRunAsync(run, cancellationToken);
             var recommendation = await _provider.CompleteStructuredAsync<CustomerSalesRecommendation>(
+                AiModuleKeys.Customers,
                 """
                 You are the Sales Recommendation stage of AI Sales OS, serving one salesperson.
                 Return one camelCase JSON object without markdown:
@@ -805,7 +808,7 @@ public sealed class CustomerBrainService
         {
             lead = new
             {
-                lead.Name, lead.Company, lead.Country, lead.PhoneE164, lead.Email, lead.ProductInterest, lead.Tags, lead.CustomFields,
+                lead.BuyerId, lead.Name, lead.Company, lead.Country, lead.PhoneE164, lead.Email, lead.ProductInterest, lead.Tags, lead.CustomFields,
                 lead.Stage, lead.Score, lead.Grade, lead.AnalysisContractVersion, lead.AiScoreApplied, lead.AnalysisStatus,
                 lead.ProfileSummary, lead.CustomerSegment, lead.NextAction, lead.RiskWarning, lead.Risks, lead.ScoreFactors,
                 lead.BehaviorSignals, lead.Evidence, lead.AnalysisConfidence, lead.PurchaseProbability, lead.LastAnalyzedAt

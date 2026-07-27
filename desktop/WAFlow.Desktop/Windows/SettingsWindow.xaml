@@ -3,14 +3,14 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:WAFlow.Desktop.Controls"
         Title="AI Sales OS · API 与体验设置" Icon="/AISalesOS;component/Assets/AI-Sales-OS.ico"
-        Width="820" Height="680" MinWidth="700" MinHeight="520"
+        Width="980" Height="760" MinWidth="820" MinHeight="620"
         WindowStartupLocation="CenterOwner" WindowStyle="SingleBorderWindow" ResizeMode="CanResize">
     <Grid Background="{DynamicResource Canvas}">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <Border Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="28,22">
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <StackPanel><TextBlock Text="SYSTEM CONFIGURATION" Style="{StaticResource PageEyebrow}"/><TextBlock x:Name="SettingsTitleText" Text="API 与体验设置" FontSize="24" FontWeight="Bold" Margin="0,5,0,0"/><TextBlock x:Name="SettingsSubtitleText" Text="连接兼容 AI Provider、选择工作模型，并管理桌面体验。" Foreground="{DynamicResource Muted}" Margin="0,6,0,0"/></StackPanel>
+                <StackPanel><TextBlock Text="SYSTEM CONFIGURATION" Style="{StaticResource PageEyebrow}"/><TextBlock x:Name="SettingsTitleText" Text="API 与体验设置" FontSize="24" FontWeight="Bold" Margin="0,5,0,0"/><TextBlock x:Name="SettingsSubtitleText" Text="连接兼容 AI Provider，并按板块控制模型、Token 成本与推理深度。" Foreground="{DynamicResource Muted}" Margin="0,6,0,0"/></StackPanel>
                 <Button Grid.Column="1" Content="本页使用手册" ToolTip="查看 API 对接的功能介绍和操作步骤" Style="{StaticResource SecondaryButton}" Click="ShowGuide_Click" VerticalAlignment="Top"/>
             </Grid>
         </Border>
@@ -27,11 +27,13 @@
                                 <TextBlock x:Name="ProviderDescriptionText" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,5,0,10" TextWrapping="Wrap"/>
                                 <TextBlock Text="API Key" Style="{StaticResource LabelText}"/><PasswordBox x:Name="ApiKeyBox" Margin="0,5,0,0" PasswordChanged="ProviderInput_Changed"/>
                                 <TextBlock Text="留空会保留当前服务商已保存的 Key；每个 Provider 独立写入 Windows 凭据管理器。" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,5,0,0"/>
-                                <Grid Margin="0,13,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Grid Margin="0,13,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="1.15*"/><ColumnDefinition Width="*"/><ColumnDefinition Width=".8*"/></Grid.ColumnDefinitions>
                                     <StackPanel Margin="0,0,8,0"><TextBlock Text="Base URL" Style="{StaticResource LabelText}"/><TextBox x:Name="BaseUrlBox" Text="https://api.deepseek.com" Margin="0,5,0,0" TextChanged="ProviderInput_Changed"/></StackPanel>
-                                    <StackPanel Grid.Column="1" Margin="8,0,0,0"><TextBlock Text="工作模型" Style="{StaticResource LabelText}"/><Grid Margin="0,5,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><ComboBox x:Name="ModelBox" IsEditable="False" IsTextSearchEnabled="True" MinWidth="190" ToolTip="从 Provider 的 /models 接口自动拉取"/><Button x:Name="ReloadModelsButton" Grid.Column="1" Content="↻ 拉取" Style="{StaticResource SecondaryButton}" Padding="11,7" Margin="8,0,0,0" Click="ReloadModels_Click"/></Grid></StackPanel>
+                                    <StackPanel Grid.Column="1" Margin="8,0,0,0"><TextBlock Text="全域默认模型" Style="{StaticResource LabelText}"/><Grid Margin="0,5,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><ComboBox x:Name="ModelBox" IsEditable="False" IsTextSearchEnabled="True" MinWidth="180" ToolTip="从 Provider 的 /models 接口自动拉取" SelectionChanged="ModelBox_SelectionChanged"/><Button x:Name="ReloadModelsButton" Grid.Column="1" Content="↻ 拉取" Style="{StaticResource SecondaryButton}" Padding="11,7" Margin="8,0,0,0" Click="ReloadModels_Click"/></Grid></StackPanel>
+                                    <StackPanel Grid.Column="2" Margin="8,0,0,0"><TextBlock Text="全域推理深度" Style="{StaticResource LabelText}"/><ComboBox x:Name="ReasoningEffortBox" DisplayMemberPath="Label" SelectedValuePath="Value" Margin="0,5,0,0" ToolTip="只展示模型目录明确声明支持的档位"/></StackPanel>
                                 </Grid>
                                 <TextBlock x:Name="ModelStatusText" Text="填写 API Key 后将自动拉取可用模型。" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="ReasoningStatusText" Text="推理档位以 API 模型目录返回的能力元数据为准；未声明时使用模型默认值，不发送未知参数。" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,4,0,0" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
                         <Border Background="{DynamicResource WarningSoft}" CornerRadius="9" Padding="11" Margin="0,12,0,0"><TextBlock Text="AI 分析只在结构校验成功后更新商机分数与 Dashboard；失败客户继续保持 D / 0 并进入重试。" Foreground="{DynamicResource Warning}" FontSize="9.5" TextWrapping="Wrap"/></Border>
@@ -56,6 +58,50 @@
                                 <TextBlock x:Name="NoConfiguredProvidersText" Text="尚未配置 Provider。填写并验证 API Key 后会显示在这里。" Foreground="{DynamicResource Muted}" FontSize="9.5"/>
                             </StackPanel>
                         </Border>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Margin="0,15,0,0">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="板块模型与 Token 成本" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock Text="默认所有功能继承全域模型；关闭统一模式后，可为 Customer Operations 与 Insights 的每个板块单独选择。" Foreground="{DynamicResource Muted}" FontSize="10.5" Margin="0,5,20,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <CheckBox x:Name="UseGlobalAiConfigurationBox" Grid.Column="1" Content="所有板块使用同一模型" FontWeight="SemiBold" VerticalAlignment="Center" Checked="UseGlobalAiConfiguration_Changed" Unchecked="UseGlobalAiConfiguration_Changed"/>
+                        </Grid>
+                        <Border Background="{DynamicResource PrimarySoft}" CornerRadius="9" Padding="11" Margin="0,13,0,0">
+                            <TextBlock x:Name="AiRoutingSummaryText" Text="当前所有板块继承全域默认模型与推理深度。" Foreground="{DynamicResource PrimaryDark}" FontSize="9.5" TextWrapping="Wrap"/>
+                        </Border>
+                        <StackPanel x:Name="ModuleRoutingPanel" Margin="0,13,0,0">
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="1.55*"/><ColumnDefinition Width=".8*"/><ColumnDefinition Width="1.05*"/><ColumnDefinition Width=".8*"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="板块与实际 AI 用途" Style="{StaticResource LabelText}"/>
+                                <TextBlock Grid.Column="1" Text="Provider" Style="{StaticResource LabelText}" Margin="8,0,0,0"/>
+                                <TextBlock Grid.Column="2" Text="模型" Style="{StaticResource LabelText}" Margin="8,0,0,0"/>
+                                <TextBlock Grid.Column="3" Text="推理深度" Style="{StaticResource LabelText}" Margin="8,0,0,0"/>
+                            </Grid>
+                            <ItemsControl x:Name="ModuleRoutingItems">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="0,9">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="1.55*"/><ColumnDefinition Width=".8*"/><ColumnDefinition Width="1.05*"/><ColumnDefinition Width=".8*"/></Grid.ColumnDefinitions>
+                                                <StackPanel VerticalAlignment="Center">
+                                                    <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
+                                                    <TextBlock Text="{Binding Description}" Foreground="{DynamicResource Muted}" FontSize="9" TextWrapping="Wrap" Margin="0,2,12,0"/>
+                                                </StackPanel>
+                                                <ComboBox Grid.Column="1" ItemsSource="{Binding ProviderOptions}" DisplayMemberPath="DisplayName" SelectedValuePath="Id" SelectedValue="{Binding ProviderId, Mode=TwoWay}" Margin="8,0,0,0" VerticalAlignment="Center" SelectionChanged="ModuleProviderBox_SelectionChanged"/>
+                                                <ComboBox Grid.Column="2" ItemsSource="{Binding ModelOptions}" SelectedItem="{Binding Model, Mode=TwoWay}" Margin="8,0,0,0" VerticalAlignment="Center" IsTextSearchEnabled="True" SelectionChanged="ModuleModelBox_SelectionChanged"/>
+                                                <ComboBox Grid.Column="3" ItemsSource="{Binding ReasoningOptions}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding ReasoningEffort, Mode=TwoWay}" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                        <TextBlock Text="说明：邮件 Inbox 的收发同步、普通群发和知识检索本身不调用模型；只有界面标注的生成、分析或图片 OCR 操作才消耗 Token。API 未声明某模型支持的推理档位时，系统只允许“自动”，不会猜测并误发 low / ultra 参数。" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,10,0,0" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
 

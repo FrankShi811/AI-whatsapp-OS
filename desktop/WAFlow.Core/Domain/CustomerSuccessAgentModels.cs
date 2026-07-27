@@ -17,6 +17,7 @@ public enum CustomerIdentityMatchResult
 public enum CustomerIdentityMatchMethod
 {
     ManualBinding,
+    ExactBuyerId,
     ExactJid,
     ConfirmedE164,
     ConfirmedAlias,
@@ -101,6 +102,8 @@ public enum HandoffStatus
 public sealed class GlobalCustomerIdentity
 {
     public string CustomerId { get; set; } = "";
+    public string BuyerId { get; set; } = "";
+    public string CanonicalKey { get; set; } = "";
     public string CanonicalName { get; set; } = "";
     public List<string> ConfirmedAliases { get; set; } = [];
     public List<string> LinkedAccountIds { get; set; } = [];

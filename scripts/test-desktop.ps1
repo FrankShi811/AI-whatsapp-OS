@@ -50,6 +50,21 @@ $knowledgeModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path
 $localRepositorySource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Infrastructure\LocalRepository.cs')
 $guideCatalogSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\GuideCatalog.cs')
 $releaseCatalogSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ReleaseCatalog.cs')
+$settingsXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\SettingsWindow.xaml')
+$settingsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\SettingsWindow.xaml.cs')
+$domainModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Domain\Models.cs')
+$deepSeekSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\DeepSeekService.cs')
+$conversationAssistantSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\ConversationAssistantService.cs')
+$customerAnalysisSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerAnalysisService.cs')
+$customerBrainSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerBrainService.cs')
+$customerSuccessAgentSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerSuccessAgentService.cs')
+$buyerIdentitySource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\BuyerIdentity.cs')
+$customerIdentitySource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerIdentityService.cs')
+$importModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Imports\ImportModels.cs')
+$importServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Imports\ImportService.cs')
+$customerEditXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\CustomerEditWindow.xaml')
+$customerEditSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\CustomerEditWindow.xaml.cs')
+$knowledgeProcessingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\KnowledgeProcessingComponents.cs')
 $velopackBuildSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'scripts\build-velopack-release.ps1')
 $allDesktopXaml = (Get-ChildItem -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop') -Recurse -Filter '*.xaml' |
   ForEach-Object { Get-Content -Raw -Encoding utf8 -LiteralPath $_.FullName }) -join "`n"
@@ -136,6 +151,26 @@ if ($dashboardXaml -notmatch 'Text="\{Binding CustomerLabel\}"' -or
     $todayBriefSource -notmatch [regex]::Escape('digits[^4..]')) {
   throw 'Today Brief must show readable customer identity, explicit next action and supporting reason instead of internal buyer IDs.'
 }
+$buyerIdentityContracts = [ordered]@{
+  domain_field = $domainModelsSource.Contains('public string BuyerId { get; set; } = "";')
+  import_field = $importModelsSource.Contains('Ignore, Custom, BuyerId, Name')
+  import_priority = $importServiceSource.Contains('byBuyerId.TryGetValue(buyerKey')
+  conflict_guard = $importServiceSource.Contains('BuyerIdentity.Resolve(duplicate)') -and
+    $importServiceSource.Contains('duplicate = null;')
+  identity_api = $localRepositorySource.Contains('GetLeadByIdentityAsync')
+  buyer_lookup = $localRepositorySource.Contains('GetLeadsByBuyerIdAsync')
+  canonical_key = $buyerIdentitySource.Contains('return $"buyer:{buyerId}"')
+  whatsapp_resolution = $customerIdentitySource.Contains('CustomerIdentityMatchMethod.ExactBuyerId')
+  edit_field = $customerEditXaml.Contains('x:Name="BuyerIdBox"')
+  edit_guard = $customerEditSource.Contains('IsBuyerIdAvailableAsync')
+}
+$missingBuyerIdentityContracts = $buyerIdentityContracts.GetEnumerator() |
+  Where-Object { -not $_.Value } |
+  ForEach-Object { $_.Key }
+if ($missingBuyerIdentityContracts.Count -gt 0) {
+  throw "Buyer ID must be the authoritative cross-module customer identity, with phone fallback and conflict-safe writes. missing=$($missingBuyerIdentityContracts -join ',')"
+}
+Write-Host 'PASS  Buyer ID primary identity, phone fallback and cross-module memory contract'
 
 function Convert-HexToRgb([string]$hex) {
   $value = $hex.TrimStart('#')
@@ -382,6 +417,40 @@ if ($mainWindowXaml -notmatch 'x:Name="WhatsAppUnreadBadge"' -or
   throw 'WhatsApp and email sidebar navigation must expose durable live application-wide unread counters with periodic reconciliation.'
 }
 Write-Host 'PASS  application-wide account synchronization, durable unread cursor and sidebar badge contract'
+
+$aiRoutingUiTokens = @(
+  'x:Name="ReasoningEffortBox"',
+  'x:Name="UseGlobalAiConfigurationBox"',
+  'x:Name="ModuleRoutingItems"',
+  'x:Name="AiRoutingSummaryText"',
+  'x:Name="ModuleRoutingPanel"'
+)
+$missingAiRoutingUiTokens = @($aiRoutingUiTokens | Where-Object { -not $settingsXaml.Contains($_) })
+if ($missingAiRoutingUiTokens.Count -gt 0) {
+  throw "AI settings must expose global/per-module model routing and fail-safe reasoning guidance. missing=$($missingAiRoutingUiTokens -join ', ')"
+}
+$aiRoutingCoreTokens = @(
+  'UseGlobalAiConfiguration',
+  'DefaultReasoningEffort',
+  'AiModulePreferences',
+  'ModelCapabilities',
+  'supported_efforts',
+  'ApplyReasoningEffort',
+  'ReasoningEffort == AiReasoningEfforts.Auto'
+)
+$combinedAiRoutingSource = $domainModelsSource + $deepSeekSource + $settingsSource
+$missingAiRoutingCoreTokens = @($aiRoutingCoreTokens | Where-Object { -not $combinedAiRoutingSource.Contains($_) })
+if ($missingAiRoutingCoreTokens.Count -gt 0) {
+  throw "AI routing must persist module overrides, parse API capabilities and suppress undeclared reasoning parameters. missing=$($missingAiRoutingCoreTokens -join ', ')"
+}
+if (-not $conversationAssistantSource.Contains('AiModuleKeys.WhatsAppInbox') -or
+    -not $customerSuccessAgentSource.Contains('AiModuleKeys.WhatsAppInbox') -or
+    -not $customerBrainSource.Contains('AiModuleKeys.Customers') -or
+    -not $customerAnalysisSource.Contains('AiModuleKeys.CustomerAnalytics') -or
+    -not $knowledgeProcessingSource.Contains('AiModuleKeys.KnowledgeBase')) {
+  throw 'Every current AI workload under Customer Operations and Insights must route through its own module key.'
+}
+Write-Host 'PASS  global/per-module AI model, token-cost and declared reasoning-depth routing contract'
 
 & $dotnet build (Join-Path $root 'desktop\WAFlow.sln') -c Release
 if ($LASTEXITCODE -ne 0) { throw 'WAFlow desktop build failed.' }

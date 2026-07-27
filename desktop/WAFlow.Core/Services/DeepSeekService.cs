@@ -16,7 +16,19 @@ public sealed class DeepSeekException : Exception
     public DeepSeekException(string code, string message, bool retryable, Exception? inner = null) : base(message, inner) { Code = code; Retryable = retryable; }
 }
 
-public sealed record AiModelCatalog(IReadOnlyList<string> Models, DateTimeOffset FetchedAt);
+public sealed record AiModelCatalog(IReadOnlyList<AiModelCapability> ModelCapabilities, DateTimeOffset FetchedAt)
+{
+    public IReadOnlyList<string> Models => ModelCapabilities.Select(item => item.ModelId).ToList();
+}
+
+public sealed record AiExecutionProfile(
+    string ModuleKey,
+    string ProviderId,
+    string BaseUrl,
+    string Model,
+    string ReasoningEffort,
+    string ReasoningParameter,
+    bool AllowLegacyCredential);
 
 public sealed class DeepSeekService : IStructuredAiProvider
 {
@@ -26,6 +38,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
     };
     private readonly LocalRepository _repository;
     private readonly ISecretStore _secrets;
+    private readonly Func<string, ISecretStore> _providerSecretResolver;
     private readonly HttpClient _http;
     private readonly HybridRetriever? _knowledgeRetrieval;
     private readonly SemaphoreSlim _analysisGate = new(1, 1);
@@ -34,11 +47,14 @@ public sealed class DeepSeekService : IStructuredAiProvider
         LocalRepository repository,
         ISecretStore secrets,
         HttpClient? httpClient = null,
-        HybridRetriever? knowledgeRetrieval = null)
+        HybridRetriever? knowledgeRetrieval = null,
+        Func<string, ISecretStore>? providerSecretResolver = null)
     {
         _repository = repository; _secrets = secrets;
         _http = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
         _knowledgeRetrieval = knowledgeRetrieval;
+        _providerSecretResolver = providerSecretResolver
+            ?? (_ => secrets);
     }
 
     public bool HasApiKey()
@@ -47,15 +63,95 @@ public sealed class DeepSeekService : IStructuredAiProvider
         catch { return false; }
     }
 
+    public bool HasApiKey(string moduleKey) => HasApiKey();
+
     public async Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default)
+        => (await ResolveExecutionProfileAsync(AiModuleKeys.Global, cancellationToken)).Model;
+
+    public async Task<string> GetSelectedModelAsync(
+        string moduleKey,
+        CancellationToken cancellationToken = default)
+        => (await ResolveExecutionProfileAsync(moduleKey, cancellationToken)).Model;
+
+    public async Task<AiExecutionProfile> ResolveExecutionProfileAsync(
+        string moduleKey,
+        CancellationToken cancellationToken = default)
     {
         var settings = await _repository.GetAppSettingsAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(settings.DeepSeekModel))
+        var normalizedModule = AiModuleKeys.Configurable.Contains(moduleKey, StringComparer.OrdinalIgnoreCase)
+            ? moduleKey
+            : AiModuleKeys.Global;
+        var providerId = settings.ActiveProviderId;
+        var model = settings.DeepSeekModel;
+        var reasoningEffort = settings.DefaultReasoningEffort;
+        var profiles = settings.ConfiguredAiProviders ?? [];
+
+        if (!settings.UseGlobalAiConfiguration
+            && normalizedModule != AiModuleKeys.Global
+            && settings.AiModulePreferences?.TryGetValue(normalizedModule, out var preference) == true)
+        {
+            var candidateProviderId = preference.ProviderId?.Trim() ?? "";
+            var candidateModel = preference.Model?.Trim() ?? "";
+            var candidateProfile = profiles.FirstOrDefault(item =>
+                item.ProviderId.Equals(candidateProviderId, StringComparison.OrdinalIgnoreCase));
+            var candidateModels = candidateProfile?.AvailableModels ?? [];
+            var candidateModelAvailable = candidateProfile is not null
+                && !string.IsNullOrWhiteSpace(candidateModel)
+                && (candidateModels.Count == 0
+                    || candidateModels.Contains(candidateModel, StringComparer.OrdinalIgnoreCase));
+            if (candidateModelAvailable)
+            {
+                providerId = candidateProviderId;
+                model = candidateModel;
+                reasoningEffort = preference.ReasoningEffort;
+            }
+        }
+
+        var profile = profiles.FirstOrDefault(item =>
+            item.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase));
+        var baseUrl = profile?.BaseUrl;
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            baseUrl = providerId.Equals(settings.ActiveProviderId, StringComparison.OrdinalIgnoreCase)
+                ? settings.DeepSeekBaseUrl
+                : AiProviderCatalog.Resolve(providerId).DefaultBaseUrl;
+        if (string.IsNullOrWhiteSpace(model))
+            model = profile?.Model;
+        if (string.IsNullOrWhiteSpace(model))
             throw new DeepSeekException("model_not_selected", "请先从自动拉取的模型列表中选择一个模型。", false);
-        return settings.DeepSeekModel;
+
+        var capability = profile?.ModelCapabilities?.FirstOrDefault(item =>
+            item.ModelId.Equals(model, StringComparison.OrdinalIgnoreCase));
+        var normalizedEffort = AiReasoningEfforts.Normalize(reasoningEffort);
+        if (normalizedEffort != AiReasoningEfforts.Auto
+            && (capability is null
+                || !capability.ReasoningEfforts.Contains(normalizedEffort, StringComparer.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(capability.ReasoningParameter)))
+            normalizedEffort = AiReasoningEfforts.Auto;
+
+        return new AiExecutionProfile(
+            normalizedModule,
+            providerId,
+            baseUrl.TrimEnd('/'),
+            model.Trim(),
+            normalizedEffort,
+            normalizedEffort == AiReasoningEfforts.Auto ? "" : capability?.ReasoningParameter ?? "",
+            providerId.Equals(settings.ActiveProviderId, StringComparison.OrdinalIgnoreCase));
     }
 
     public async Task<T> CompleteStructuredAsync<T>(
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class =>
+        await CompleteStructuredAsync(
+            AiModuleKeys.Global,
+            instructions,
+            payload,
+            validate,
+            cancellationToken);
+
+    public async Task<T> CompleteStructuredAsync<T>(
+        string moduleKey,
         string instructions,
         object payload,
         Func<T, string?> validate,
@@ -64,9 +160,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
         await _analysisGate.WaitAsync(cancellationToken);
         try
         {
-            var settings = await _repository.GetAppSettingsAsync(cancellationToken);
-            if (string.IsNullOrWhiteSpace(settings.DeepSeekModel))
-                throw new DeepSeekException("model_not_selected", "请先从自动拉取的模型列表中选择一个模型。", false);
+            var execution = await ResolveExecutionProfileAsync(moduleKey, cancellationToken);
             DeepSeekException? lastError = null;
             var previousOutput = "";
             var serializedPayload = Infrastructure.Json.Serialize(payload);
@@ -84,7 +178,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
                        """;
                 try
                 {
-                    var content = await CompleteJsonAsync(settings, attemptInstructions, serializedPayload, cancellationToken);
+                    var content = await CompleteJsonAsync(execution, attemptInstructions, serializedPayload, cancellationToken);
                     previousOutput = content;
                     var result = DeserializeCompatibleJson<T>(content);
                     if (result is null) throw new DeepSeekException("invalid_structured_output", "AI 未返回结构化分析结果。", true);
@@ -143,22 +237,18 @@ public sealed class DeepSeekService : IStructuredAiProvider
                         : root.TryGetProperty("models", out var models) && models.ValueKind == JsonValueKind.Array
                             ? models
                             : throw new JsonException("Missing model array");
-                var ids = array.EnumerateArray()
-                    .Select(item => item.ValueKind == JsonValueKind.String
-                        ? item.GetString()
-                        : item.ValueKind == JsonValueKind.Object && item.TryGetProperty("id", out var id)
-                            ? id.GetString()
-                            : item.ValueKind == JsonValueKind.Object && item.TryGetProperty("name", out var name)
-                                ? name.GetString()
-                                : null)
-                    .Where(id => !string.IsNullOrWhiteSpace(id))
-                    .Select(id => id!.Trim())
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                var capabilities = array.EnumerateArray()
+                    .Select(item => ParseModelCapability(
+                        item,
+                        uri.Host.Contains("openrouter.ai", StringComparison.OrdinalIgnoreCase)))
+                    .Where(item => !string.IsNullOrWhiteSpace(item.ModelId))
+                    .GroupBy(item => item.ModelId, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.First())
+                    .OrderBy(item => item.ModelId, StringComparer.OrdinalIgnoreCase)
                     .Take(500)
                     .ToList();
-                if (ids.Count == 0) throw new JsonException("Empty model array");
-                return new AiModelCatalog(ids, DateTimeOffset.Now);
+                if (capabilities.Count == 0) throw new JsonException("Empty model array");
+                return new AiModelCatalog(capabilities, DateTimeOffset.Now);
             }
             catch (Exception error) when (error is not DeepSeekException)
             {
@@ -170,27 +260,32 @@ public sealed class DeepSeekService : IStructuredAiProvider
     public async Task<string> ExtractImageTextAsync(
         string filePath,
         string mimeType,
+        CancellationToken cancellationToken = default) =>
+        await ExtractImageTextAsync(AiModuleKeys.Global, filePath, mimeType, cancellationToken);
+
+    public async Task<string> ExtractImageTextAsync(
+        string moduleKey,
+        string filePath,
+        string mimeType,
         CancellationToken cancellationToken = default)
     {
         var file = new FileInfo(filePath);
         if (!file.Exists || file.Length <= 0) throw new FileNotFoundException("图片文件不存在。", filePath);
         if (file.Length > 15L * 1024 * 1024)
             throw new NotSupportedException("图片超过 15 MB，未发送到视觉模型；请压缩图片或提供原始文字资料。");
-        var settings = await _repository.GetAppSettingsAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(settings.DeepSeekModel))
-            throw new NotSupportedException("尚未选择支持视觉的 AI 模型，图片已保留等待人工处理。");
-        var key = _secrets.Read();
+        var execution = await ResolveExecutionProfileAsync(moduleKey, cancellationToken);
+        var key = ReadApiKey(execution);
         if (string.IsNullOrWhiteSpace(key))
             throw new NotSupportedException("尚未配置 AI API，图片已保留等待人工处理。");
         var bytes = await File.ReadAllBytesAsync(filePath, cancellationToken);
         var dataUrl = $"data:{mimeType};base64,{Convert.ToBase64String(bytes)}";
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
-            settings.DeepSeekBaseUrl.TrimEnd('/') + "/chat/completions");
+            execution.BaseUrl + "/chat/completions");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
-        request.Content = new StringContent(Infrastructure.Json.Serialize(new
+        var requestBody = JsonSerializer.SerializeToNode(new
         {
-            model = settings.DeepSeekModel,
+            model = execution.Model,
             messages = new object[]
             {
                 new
@@ -210,7 +305,9 @@ public sealed class DeepSeekService : IStructuredAiProvider
             },
             temperature = 0,
             stream = false
-        }), Encoding.UTF8, "application/json");
+        }, Infrastructure.Json.Options)?.AsObject() ?? new JsonObject();
+        ApplyReasoningEffort(requestBody, execution);
+        request.Content = new StringContent(requestBody.ToJsonString(Infrastructure.Json.Options), Encoding.UTF8, "application/json");
         HttpResponseMessage response;
         try
         {
@@ -247,14 +344,13 @@ public sealed class DeepSeekService : IStructuredAiProvider
 
     private async Task<Lead> AnalyzeLeadCoreAsync(Lead lead, CancellationToken cancellationToken)
     {
-        var settings = await _repository.GetAppSettingsAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(settings.DeepSeekModel)) throw new DeepSeekException("model_not_selected", "请先从自动拉取的模型列表中选择一个模型。", false);
+        var execution = await ResolveExecutionProfileAsync(AiModuleKeys.Global, cancellationToken);
         var runId = Guid.NewGuid().ToString("N");
         var requestedAt = lead.AnalysisRequestedAt;
         LeadScoringService.ResetToAiBaseline(lead, "AI 正在分析客户资料与 WhatsApp 行为", "等待本次 AI 分析完成。");
         lead.AnalysisStatus = AnalysisStatus.Running; lead.AnalysisError = "";
         await _repository.UpsertLeadAsync(lead, cancellationToken);
-        await _repository.SaveAnalysisRunAsync(runId, lead.Id, "running", settings.DeepSeekModel, null, null, cancellationToken);
+        await _repository.SaveAnalysisRunAsync(runId, lead.Id, "running", execution.Model, null, null, cancellationToken);
         try
         {
             var recentMessages = (await _repository.GetWhatsAppMessagesForLeadAsync(lead, 80, cancellationToken))
@@ -286,7 +382,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
             {
                 lead = new
                 {
-                    lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.EstimatedOrderValue, lead.Currency,
+                    lead.BuyerId, lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.EstimatedOrderValue, lead.Currency,
                     lead.CompanyScale, lead.PurchasePower, lead.ExplicitDemand, lead.RegisteredOrConsulted,
                     lead.Source, lead.Tags, lead.Owner, lead.CustomFields, stage = lead.Stage.ToString(), lead.LatestMessage
                 },
@@ -382,7 +478,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
                 var attemptInstructions = attempt == 0
                     ? instructions
                     : $"{instructions}\n\n上一轮输出未通过 Lead Intelligence V2 校验。请严格补齐六个维度、证据、画像、风险和下一步；未知信息应给 0 分并明确写无可验证证据。校验提示：{lastContractError?.Message}";
-                var content = await CompleteJsonAsync(settings, attemptInstructions, serializedPayload, cancellationToken);
+                var content = await CompleteJsonAsync(execution, attemptInstructions, serializedPayload, cancellationToken);
                 try
                 {
                     analysis = ParseAnalysis(content, lead);
@@ -415,7 +511,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
             target.LatestReplySignals = analysis.BehaviorSignals.Select(signal => $"{signal.Signal} ({signal.Score:+#;-#;0})").ToList();
             target.AnalysisStatus = AnalysisStatus.Succeeded; target.AnalysisError = ""; target.AiScoreApplied = true; target.LastAnalyzedAt = DateTimeOffset.Now;
             await _repository.UpsertLeadAsync(target, cancellationToken);
-            await _repository.SaveAnalysisRunAsync(runId, lead.Id, "succeeded", settings.DeepSeekModel, analysis, null, cancellationToken);
+            await _repository.SaveAnalysisRunAsync(runId, lead.Id, "succeeded", execution.Model, analysis, null, cancellationToken);
             if (knowledge is not null && knowledge.Hits.Count > 0)
                 await _repository.UpdateKnowledgeRetrievalUsageAsync(
                     knowledge.Id,
@@ -425,7 +521,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
                 "lead_analyzed",
                 lead.Id,
                 null,
-                $"provider=compatible; model={settings.DeepSeekModel}; trigger={target.AnalysisTrigger}; knowledge_retrieval={knowledge?.Id}; knowledge_chunks={knowledge?.Hits.Count ?? 0}",
+                $"provider={execution.ProviderId}; model={execution.Model}; reasoning={execution.ReasoningEffort}; trigger={target.AnalysisTrigger}; knowledge_retrieval={knowledge?.Id}; knowledge_chunks={knowledge?.Hits.Count ?? 0}",
                 cancellationToken);
             return target;
         }
@@ -437,7 +533,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
             target.AnalysisError = "用户取消了本次 AI 分析，可重试。";
             target.LastAnalyzedAt = null;
             await _repository.UpsertLeadAsync(target, CancellationToken.None);
-            await _repository.SaveAnalysisRunAsync(runId, lead.Id, "cancelled", settings.DeepSeekModel, null, target.AnalysisError, CancellationToken.None);
+            await _repository.SaveAnalysisRunAsync(runId, lead.Id, "cancelled", execution.Model, null, target.AnalysisError, CancellationToken.None);
             throw;
         }
         catch (Exception error)
@@ -450,7 +546,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
             target.AnalysisError = hasNewerRequest ? $"{safe} 新回复已重新排队。" : safe;
             target.LastAnalyzedAt = null;
             await _repository.UpsertLeadAsync(target, cancellationToken);
-            await _repository.SaveAnalysisRunAsync(runId, lead.Id, "retryable_failed", settings.DeepSeekModel, null, safe, cancellationToken);
+            await _repository.SaveAnalysisRunAsync(runId, lead.Id, "retryable_failed", execution.Model, null, safe, cancellationToken);
             throw error is DeepSeekException ? error : new DeepSeekException("invalid_structured_output", safe, true, error);
         }
     }
@@ -458,15 +554,15 @@ public sealed class DeepSeekService : IStructuredAiProvider
     public async Task<OutreachDraft> GenerateDraftAsync(Lead lead, string purpose, string language, string extraInstructions, CancellationToken cancellationToken = default)
     {
         if (lead.OptedOut) throw new InvalidOperationException("客户已退订，禁止生成触达话术。");
-        var settings = await _repository.GetAppSettingsAsync(cancellationToken);
-        var payload = new { lead=new { lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.EstimatedOrderValue, lead.Currency, lead.ProfileSummary, lead.NextAction, lead.Risks, lead.LatestMessage, lead.CustomFields }, purpose, language, extraInstructions };
+        var execution = await ResolveExecutionProfileAsync(AiModuleKeys.Campaigns, cancellationToken);
+        var payload = new { lead=new { lead.BuyerId, lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.EstimatedOrderValue, lead.Currency, lead.ProfileSummary, lead.NextAction, lead.Risks, lead.LatestMessage, lead.CustomFields }, purpose, language, extraInstructions };
         var instructions = """
             You are AI Sales OS's B2B WhatsApp copywriter. Return one JSON object only, without markdown.
             Required properties: purpose, language, body, rationale(array of strings), assumptions(array of strings), risks(array of strings).
             Write a concise professional message for human approval. Do not invent discounts, certifications, dates, inventory, pricing or delivery promises.
             The body must be in the requested language. Keep rationale, assumptions and risks in Simplified Chinese.
             """;
-        var content = await CompleteJsonAsync(settings, instructions, Infrastructure.Json.Serialize(payload), cancellationToken);
+        var content = await CompleteJsonAsync(execution, instructions, Infrastructure.Json.Serialize(payload), cancellationToken);
         GeneratedDraft? generated;
         try { generated = Infrastructure.Json.Deserialize<GeneratedDraft>(ExtractJson(content)); }
         catch (Exception error) { throw new DeepSeekException("invalid_structured_output", "AI 话术 JSON 解析失败。", true, error); }
@@ -475,26 +571,28 @@ public sealed class DeepSeekService : IStructuredAiProvider
         {
             LeadId=lead.Id, LeadName=lead.DisplayName, Purpose=purpose, Language=language, Body=generated.Body.Trim(),
             Rationale=generated.Rationale ?? [], Assumptions=generated.Assumptions ?? [], Risks=generated.Risks ?? [],
-            Provider="compatible", Model=settings.DeepSeekModel
+            Provider=execution.ProviderId, Model=execution.Model
         };
         await _repository.SaveDraftAsync(draft, "generated", cancellationToken: cancellationToken);
         await _repository.LogEventAsync("draft_generated", lead.Id, draft.Id, $"purpose={purpose}; language={language}", cancellationToken);
         return draft;
     }
 
-    private async Task<string> CompleteJsonAsync(AppSettings settings, string instructions, string payload, CancellationToken cancellationToken)
+    private async Task<string> CompleteJsonAsync(AiExecutionProfile execution, string instructions, string payload, CancellationToken cancellationToken)
     {
-        var key = _secrets.Read();
+        var key = ReadApiKey(execution);
         if (string.IsNullOrWhiteSpace(key)) throw new DeepSeekException("provider_not_configured", "请先在 AI 设置中填写 API Key。", false);
-        var endpoint = settings.DeepSeekBaseUrl.TrimEnd('/') + "/chat/completions";
+        var endpoint = execution.BaseUrl + "/chat/completions";
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
-        request.Content = new StringContent(Infrastructure.Json.Serialize(new
+        var requestBody = JsonSerializer.SerializeToNode(new
         {
-            model = settings.DeepSeekModel,
+            model = execution.Model,
             messages = new[] { new { role="system", content=instructions }, new { role="user", content="Input JSON: " + payload } },
             response_format = new { type="json_object" }, temperature = 0.1, max_tokens = 2200, stream = false
-        }), Encoding.UTF8, "application/json");
+        }, Infrastructure.Json.Options)?.AsObject() ?? new JsonObject();
+        ApplyReasoningEffort(requestBody, execution);
+        request.Content = new StringContent(requestBody.ToJsonString(Infrastructure.Json.Options), Encoding.UTF8, "application/json");
         HttpResponseMessage response;
         try { response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken); }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
@@ -808,6 +906,183 @@ public sealed class DeepSeekService : IStructuredAiProvider
             return false;
         value = text.Trim();
         return true;
+    }
+
+    private string? ReadApiKey(AiExecutionProfile execution)
+    {
+        try
+        {
+            var providerKey = _providerSecretResolver(execution.ProviderId).Read();
+            if (!string.IsNullOrWhiteSpace(providerKey)) return providerKey;
+        }
+        catch
+        {
+            // The active provider can still use the historical credential target
+            // after an in-place upgrade. Non-active providers must never borrow it.
+        }
+
+        if (!execution.AllowLegacyCredential) return null;
+        try { return _secrets.Read(); }
+        catch { return null; }
+    }
+
+    private static void ApplyReasoningEffort(JsonObject requestBody, AiExecutionProfile execution)
+    {
+        if (execution.ReasoningEffort == AiReasoningEfforts.Auto
+            || string.IsNullOrWhiteSpace(execution.ReasoningParameter))
+            return;
+
+        switch (execution.ReasoningParameter)
+        {
+            case "reasoning_effort":
+                requestBody["reasoning_effort"] = execution.ReasoningEffort;
+                break;
+            case "reasoning.effort":
+                requestBody["reasoning"] = new JsonObject { ["effort"] = execution.ReasoningEffort };
+                break;
+            case "thinking.effort":
+                requestBody["thinking"] = new JsonObject
+                {
+                    ["type"] = "enabled",
+                    ["effort"] = execution.ReasoningEffort
+                };
+                break;
+        }
+    }
+
+    private static AiModelCapability ParseModelCapability(JsonElement item, bool openRouter)
+    {
+        if (item.ValueKind == JsonValueKind.String)
+            return new AiModelCapability { ModelId = item.GetString()?.Trim() ?? "" };
+        if (item.ValueKind != JsonValueKind.Object)
+            return new AiModelCapability();
+
+        var modelId = item.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String
+            ? id.GetString()
+            : item.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String
+                ? name.GetString()
+                : null;
+        var efforts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var parameter = "";
+        CollectReasoningMetadata(item, "", efforts, ref parameter, 0);
+        if (openRouter
+            && item.TryGetProperty("reasoning", out var reasoning)
+            && reasoning.ValueKind == JsonValueKind.Object
+            && reasoning.TryGetProperty("supported_efforts", out var supportedEfforts)
+            && supportedEfforts.ValueKind == JsonValueKind.Null)
+        {
+            foreach (var effort in new[] { "none", "minimal", "low", "medium", "high", "xhigh", "max" })
+                efforts.Add(effort);
+            parameter = "reasoning.effort";
+        }
+        return new AiModelCapability
+        {
+            ModelId = modelId?.Trim() ?? "",
+            ReasoningEfforts = AiReasoningEfforts.Ordered.Where(efforts.Contains).ToList(),
+            ReasoningParameter = efforts.Count == 0 ? "" : string.IsNullOrWhiteSpace(parameter) ? "reasoning_effort" : parameter,
+            Source = efforts.Count == 0 ? "api_default" : "api_metadata"
+        };
+    }
+
+    private static void CollectReasoningMetadata(
+        JsonElement element,
+        string path,
+        ISet<string> efforts,
+        ref string parameter,
+        int depth)
+    {
+        if (depth > 5) return;
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                var normalizedName = new string(property.Name.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+                var childPath = string.IsNullOrWhiteSpace(path) ? normalizedName : $"{path}.{normalizedName}";
+                var reasoningField = normalizedName.Contains("reasoning", StringComparison.Ordinal)
+                    || normalizedName.Contains("thinking", StringComparison.Ordinal)
+                    || path.Contains("reasoning", StringComparison.Ordinal)
+                    || path.Contains("thinking", StringComparison.Ordinal);
+                var levelField = normalizedName.Contains("effort", StringComparison.Ordinal)
+                    || normalizedName.Contains("level", StringComparison.Ordinal)
+                    || normalizedName.Contains("mode", StringComparison.Ordinal);
+                var declaresOptions = property.Value.ValueKind is JsonValueKind.Array or JsonValueKind.Object
+                    || normalizedName.Contains("supported", StringComparison.Ordinal)
+                    || normalizedName.Contains("available", StringComparison.Ordinal)
+                    || normalizedName.Contains("option", StringComparison.Ordinal)
+                    || normalizedName.Contains("levels", StringComparison.Ordinal)
+                    || normalizedName.Contains("modes", StringComparison.Ordinal);
+
+                if (normalizedName is "supportedparameters" or "supportedparams")
+                    DetectReasoningParameter(property.Value, ref parameter);
+                if (reasoningField && levelField && declaresOptions)
+                {
+                    CollectEffortValues(property.Value, efforts);
+                    if (string.IsNullOrWhiteSpace(parameter))
+                        parameter = childPath.Contains("thinking", StringComparison.Ordinal)
+                            ? "thinking.effort"
+                            : childPath.Contains("reasoningeffort", StringComparison.Ordinal)
+                                ? "reasoning_effort"
+                                : "reasoning.effort";
+                }
+                CollectReasoningMetadata(property.Value, childPath, efforts, ref parameter, depth + 1);
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var child in element.EnumerateArray())
+                CollectReasoningMetadata(child, path, efforts, ref parameter, depth + 1);
+        }
+    }
+
+    private static void DetectReasoningParameter(JsonElement value, ref string parameter)
+    {
+        IEnumerable<string> values = value.ValueKind == JsonValueKind.Array
+            ? value.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.String).Select(item => item.GetString() ?? "")
+            : value.ValueKind == JsonValueKind.String
+                ? [value.GetString() ?? ""]
+                : [];
+        foreach (var candidate in values)
+        {
+            var normalized = candidate.Trim().ToLowerInvariant();
+            if (normalized.Contains("reasoning_effort", StringComparison.Ordinal))
+                parameter = "reasoning_effort";
+            else if (normalized.Contains("reasoning", StringComparison.Ordinal) && string.IsNullOrWhiteSpace(parameter))
+                parameter = "reasoning.effort";
+            else if (normalized.Contains("thinking", StringComparison.Ordinal) && string.IsNullOrWhiteSpace(parameter))
+                parameter = "thinking.effort";
+        }
+    }
+
+    private static void CollectEffortValues(JsonElement value, ISet<string> efforts)
+    {
+        if (value.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in value.EnumerateArray())
+                CollectEffortValues(item, efforts);
+            return;
+        }
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in value.EnumerateObject())
+            {
+                AddEffort(property.Name, efforts);
+                CollectEffortValues(property.Value, efforts);
+            }
+            return;
+        }
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            foreach (var token in (value.GetString() ?? "").Split([',', '|', '/', ' '], StringSplitOptions.RemoveEmptyEntries))
+                AddEffort(token, efforts);
+        }
+    }
+
+    private static void AddEffort(string value, ISet<string> efforts)
+    {
+        var normalized = value.Trim().ToLowerInvariant();
+        if (normalized == "off") normalized = "none";
+        if (AiReasoningEfforts.Ordered.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+            efforts.Add(normalized);
     }
 
     private static string StructuredRepairPreview(string content)

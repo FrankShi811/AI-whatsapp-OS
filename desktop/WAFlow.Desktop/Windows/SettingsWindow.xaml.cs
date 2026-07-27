@@ -1,3 +1,6 @@
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
@@ -14,6 +17,7 @@ public partial class SettingsWindow : Window
     private readonly DispatcherTimer _modelFetchTimer;
     private readonly Dictionary<string, AiProviderProfile> _profiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _pendingKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<AiModuleRoutingRow> _moduleRows = [];
     private CancellationTokenSource? _modelFetchCancellation;
     private AppSettings _settings = new();
     private List<string> _availableModels = [];
@@ -21,6 +25,7 @@ public partial class SettingsWindow : Window
     private DateTimeOffset? _modelsFetchedAt;
     private string _currentProviderId = "deepseek";
     private bool _loaded;
+    private bool _updatingRoutingUi;
     private OnboardingState _onboardingState = new();
 
     public SettingsWindow(AppServices services)
@@ -48,6 +53,7 @@ public partial class SettingsWindow : Window
     private async void SettingsWindow_Loaded(object sender, RoutedEventArgs e)
     {
         _settings = await _services.Repository.GetAppSettingsAsync();
+        _settings.AiModulePreferences ??= new Dictionary<string, AiModuleModelPreference>(StringComparer.OrdinalIgnoreCase);
         ThemeModeBox.ItemsSource = new[]
         {
             new ThemeOption("跟随 Windows 系统", "System"),
@@ -66,6 +72,9 @@ public partial class SettingsWindow : Window
         _currentProviderId = AiProviderCatalog.Resolve(_settings.ActiveProviderId).Id;
         AiProviderBox.SelectedItem = AiProviderCatalog.Resolve(_currentProviderId);
         LoadProvider(_currentProviderId);
+        UseGlobalAiConfigurationBox.IsChecked = _settings.UseGlobalAiConfiguration;
+        BuildModuleRoutingRows();
+        UpdateRoutingModeUi();
 
         DatabasePathText.Text = _services.Repository.DatabasePath;
         _onboardingState = await _services.Repository.GetOnboardingStateAsync();
@@ -140,6 +149,10 @@ public partial class SettingsWindow : Window
         _modelsBaseUrl = profile.BaseUrl;
         _modelsFetchedAt = profile.ModelsFetchedAt;
         SetModelItems(profile.Model);
+        RefreshGlobalReasoningOptions(
+            providerId.Equals(_settings.ActiveProviderId, StringComparison.OrdinalIgnoreCase)
+                ? _settings.DefaultReasoningEffort
+                : AiReasoningEfforts.Auto);
         ApiStatusText.Text = HasProviderKey(providerId) ? "已安全配置" : "未配置";
         ModelStatusText.Text = _availableModels.Count > 0
             ? $"已缓存 {_availableModels.Count} 个模型；点击“拉取”可验证 Key 并刷新。"
@@ -166,6 +179,212 @@ public partial class SettingsWindow : Window
             profile.IsConfigured = HasProviderKey(_currentProviderId);
         }
     }
+
+    private void ModelBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_updatingRoutingUi) return;
+        RefreshGlobalReasoningOptions();
+    }
+
+    private void UseGlobalAiConfiguration_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_loaded) return;
+        UpdateRoutingModeUi();
+    }
+
+    private void UpdateRoutingModeUi()
+    {
+        var global = UseGlobalAiConfigurationBox.IsChecked != false;
+        ModuleRoutingPanel.IsEnabled = !global;
+        ModuleRoutingPanel.Opacity = global ? 0.55 : 1;
+        AiRoutingSummaryText.Text = global
+            ? $"统一模式：所有板块继承 {ModelBox.Text} / {ReasoningLabel(ReasoningEffortBox.SelectedValue as string)}。"
+            : "分板块模式：每个板块按下方配置调用；未声明推理档位的模型始终使用 API 默认值。";
+    }
+
+    private void RefreshGlobalReasoningOptions(string? selected = null)
+    {
+        if (ReasoningEffortBox is null) return;
+        var requested = AiReasoningEfforts.Normalize(
+            selected
+            ?? ReasoningEffortBox.SelectedValue as string
+            ?? _settings.DefaultReasoningEffort);
+        var profile = _profiles.GetValueOrDefault(_currentProviderId);
+        var options = BuildReasoningOptions(profile, ModelBox?.Text);
+        _updatingRoutingUi = true;
+        try
+        {
+            ReasoningEffortBox.ItemsSource = options;
+            ReasoningEffortBox.SelectedValue = options.Any(item => item.Value == requested)
+                ? requested
+                : AiReasoningEfforts.Auto;
+        }
+        finally { _updatingRoutingUi = false; }
+
+        var adjustable = options.Count > 1;
+        ReasoningStatusText.Text = adjustable
+            ? $"该模型由 API 声明支持：{string.Join("、", options.Skip(1).Select(item => item.Label))}。请求时只发送所选档位。"
+            : "API 模型目录未声明可调推理档位，系统使用模型默认值且不发送未知参数。";
+        if (_loaded) UpdateRoutingModeUi();
+    }
+
+    private void BuildModuleRoutingRows()
+    {
+        var preserved = _moduleRows.ToDictionary(
+            row => row.ModuleKey,
+            row => new AiModuleModelPreference
+            {
+                ProviderId = row.ProviderId,
+                Model = row.Model,
+                ReasoningEffort = row.ReasoningEffort
+            },
+            StringComparer.OrdinalIgnoreCase);
+        var definitions = new[]
+        {
+            new ModuleDefinition(AiModuleKeys.Customers, "Customer Operations · 客户列表", "Customer Brain 人工分析；查看、编辑和同步客户资料不耗 Token。"),
+            new ModuleDefinition(AiModuleKeys.WhatsAppInbox, "Customer Operations · WhatsApp Inbox", "AI 会话助理与 Customer Success Agent；普通消息同步不耗 Token。"),
+            new ModuleDefinition(AiModuleKeys.EmailInbox, "Customer Operations · 邮件 Inbox", "当前邮件收发与同步不调用 AI；配置将供后续邮件摘要/回复能力继承。"),
+            new ModuleDefinition(AiModuleKeys.Campaigns, "Customer Operations · 自动化群发", "AI 触达话术生成；普通群发、排期和投递本身不耗 Token。"),
+            new ModuleDefinition(AiModuleKeys.KnowledgeBase, "Insights · 知识库", "图片资料 OCR 调用视觉模型；文本入库、审批和检索不耗 Token。"),
+            new ModuleDefinition(AiModuleKeys.CustomerAnalytics, "Insights · 客户智能分析", "分阶段事实提取、商业判断、销售策略和报告生成。")
+        };
+        var providers = GetConfiguredProviderOptions();
+
+        _updatingRoutingUi = true;
+        try
+        {
+            _moduleRows.Clear();
+            foreach (var definition in definitions)
+            {
+                var preference = preserved.GetValueOrDefault(definition.Key)
+                    ?? _settings.AiModulePreferences.GetValueOrDefault(definition.Key)
+                    ?? new AiModuleModelPreference
+                    {
+                        ProviderId = _settings.ActiveProviderId,
+                        Model = _settings.DeepSeekModel,
+                        ReasoningEffort = _settings.DefaultReasoningEffort
+                    };
+                var row = new AiModuleRoutingRow(definition.Key, definition.Name, definition.Description);
+                foreach (var provider in providers) row.ProviderOptions.Add(provider);
+                row.ProviderId = providers.Any(item => item.Id.Equals(preference.ProviderId, StringComparison.OrdinalIgnoreCase))
+                    ? preference.ProviderId
+                    : providers.FirstOrDefault()?.Id ?? _currentProviderId;
+                PopulateModuleModels(row, preference.Model, preference.ReasoningEffort);
+                _moduleRows.Add(row);
+            }
+            ModuleRoutingItems.ItemsSource = null;
+            ModuleRoutingItems.ItemsSource = _moduleRows;
+        }
+        finally { _updatingRoutingUi = false; }
+        UpdateRoutingModeUi();
+    }
+
+    private List<ConfiguredProviderOption> GetConfiguredProviderOptions()
+    {
+        var options = _profiles.Values
+            .Where(profile => profile.IsConfigured || HasProviderKey(profile.ProviderId)
+                || profile.ProviderId.Equals(_currentProviderId, StringComparison.OrdinalIgnoreCase))
+            .Select(profile => new ConfiguredProviderOption(profile.ProviderId, profile.DisplayName))
+            .DistinctBy(item => item.Id, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(item => item.DisplayName)
+            .ToList();
+        if (options.Count == 0)
+        {
+            var current = AiProviderCatalog.Resolve(_currentProviderId);
+            options.Add(new ConfiguredProviderOption(current.Id, current.DisplayName));
+        }
+        return options;
+    }
+
+    private void PopulateModuleModels(
+        AiModuleRoutingRow row,
+        string? selectedModel = null,
+        string? selectedReasoningEffort = null)
+    {
+        var profile = _profiles.GetValueOrDefault(row.ProviderId)
+            ?? _profiles.GetValueOrDefault(_currentProviderId);
+        var models = profile?.AvailableModels?.Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
+        if (!string.IsNullOrWhiteSpace(profile?.Model)
+            && !models.Contains(profile.Model, StringComparer.OrdinalIgnoreCase))
+            models.Insert(0, profile.Model);
+        var model = !string.IsNullOrWhiteSpace(selectedModel)
+            && models.Contains(selectedModel, StringComparer.OrdinalIgnoreCase)
+                ? models.First(item => item.Equals(selectedModel, StringComparison.OrdinalIgnoreCase))
+                : profile?.Model ?? models.FirstOrDefault() ?? "";
+        row.ModelOptions.Clear();
+        foreach (var item in models) row.ModelOptions.Add(item);
+        row.Model = model;
+
+        var requestedEffort = AiReasoningEfforts.Normalize(selectedReasoningEffort);
+        var reasoningOptions = BuildReasoningOptions(profile, model);
+        row.ReasoningOptions.Clear();
+        foreach (var option in reasoningOptions) row.ReasoningOptions.Add(option);
+        row.ReasoningEffort = reasoningOptions.Any(item => item.Value == requestedEffort)
+            ? requestedEffort
+            : AiReasoningEfforts.Auto;
+    }
+
+    private void ModuleProviderBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_updatingRoutingUi || sender is not ComboBox { DataContext: AiModuleRoutingRow row } box
+            || box.SelectedValue is not string providerId)
+            return;
+        row.ProviderId = providerId;
+        _updatingRoutingUi = true;
+        try { PopulateModuleModels(row); }
+        finally { _updatingRoutingUi = false; }
+    }
+
+    private void ModuleModelBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_updatingRoutingUi || sender is not ComboBox { DataContext: AiModuleRoutingRow row } box
+            || box.SelectedItem is not string model)
+            return;
+        row.Model = model;
+        _updatingRoutingUi = true;
+        try
+        {
+            var options = BuildReasoningOptions(_profiles.GetValueOrDefault(row.ProviderId), model);
+            row.ReasoningOptions.Clear();
+            foreach (var option in options) row.ReasoningOptions.Add(option);
+            if (!options.Any(item => item.Value == row.ReasoningEffort))
+                row.ReasoningEffort = AiReasoningEfforts.Auto;
+        }
+        finally { _updatingRoutingUi = false; }
+    }
+
+    private static List<ReasoningOption> BuildReasoningOptions(AiProviderProfile? profile, string? model)
+    {
+        var capability = profile?.ModelCapabilities?.FirstOrDefault(item =>
+            item.ModelId.Equals(model, StringComparison.OrdinalIgnoreCase));
+        var adjustable = capability is not null
+            && !string.IsNullOrWhiteSpace(capability.ReasoningParameter)
+            && capability.ReasoningEfforts.Count > 0;
+        var options = new List<ReasoningOption>
+        {
+            new(
+                adjustable ? "自动（模型默认）" : "自动（API 未声明档位）",
+                AiReasoningEfforts.Auto)
+        };
+        if (adjustable)
+            options.AddRange(capability!.ReasoningEfforts
+                .Select(value => new ReasoningOption(ReasoningLabel(value), value)));
+        return options;
+    }
+
+    private static string ReasoningLabel(string? value) => AiReasoningEfforts.Normalize(value) switch
+    {
+        "none" => "关闭推理",
+        "minimal" => "极低（minimal）",
+        "low" => "低（low）",
+        "medium" => "中（medium）",
+        "high" => "高（high）",
+        "xhigh" => "极高（xhigh）",
+        "ultra" => "最高（ultra）",
+        "max" => "最高（max）",
+        _ => "自动（模型默认）"
+    };
 
     private void ShowGuide_Click(object sender, RoutedEventArgs e) =>
         SettingsGuide.ShowGuide(GuideCatalog.ForModule("settings"));
@@ -210,6 +429,24 @@ public partial class SettingsWindow : Window
             CaptureCurrentProvider();
             active = _profiles[_currentProviderId];
         }
+        if (UseGlobalAiConfigurationBox.IsChecked == false)
+        {
+            foreach (var row in _moduleRows)
+            {
+                if (!_profiles.TryGetValue(row.ProviderId, out var provider)
+                    || !HasProviderKey(row.ProviderId))
+                {
+                    MessageBox.Show($"“{row.DisplayName}”选择的 Provider 尚未完成 API Key 验证。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                if (string.IsNullOrWhiteSpace(row.Model)
+                    || !provider.AvailableModels.Contains(row.Model, StringComparer.OrdinalIgnoreCase))
+                {
+                    MessageBox.Show($"“{row.DisplayName}”尚未选择该 Provider 实际返回的可用模型。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+            }
+        }
 
         SaveButton.IsEnabled = false;
         try
@@ -236,6 +473,18 @@ public partial class SettingsWindow : Window
                 .ToList();
             _settings.DeepSeekBaseUrl = active.BaseUrl.TrimEnd('/');
             _settings.DeepSeekModel = active.Model;
+            _settings.DefaultReasoningEffort = AiReasoningEfforts.Normalize(
+                ReasoningEffortBox.SelectedValue as string);
+            _settings.UseGlobalAiConfiguration = UseGlobalAiConfigurationBox.IsChecked != false;
+            _settings.AiModulePreferences = _moduleRows.ToDictionary(
+                row => row.ModuleKey,
+                row => new AiModuleModelPreference
+                {
+                    ProviderId = row.ProviderId,
+                    Model = row.Model,
+                    ReasoningEffort = AiReasoningEfforts.Normalize(row.ReasoningEffort)
+                },
+                StringComparer.OrdinalIgnoreCase);
             _settings.AvailableModels = active.AvailableModels.ToList();
             _settings.ModelsBaseUrl = active.BaseUrl.TrimEnd('/');
             _settings.ModelsFetchedAt = active.ModelsFetchedAt;
@@ -293,6 +542,7 @@ public partial class SettingsWindow : Window
             var catalog = await _services.DeepSeek.DiscoverModelsAsync(normalizedBaseUrl, key, _modelFetchCancellation.Token);
             _pendingKeys[_currentProviderId] = key;
             _availableModels = catalog.Models.ToList();
+            _profiles[_currentProviderId].ModelCapabilities = catalog.ModelCapabilities.Select(Clone).ToList();
             _modelsBaseUrl = normalizedBaseUrl;
             _modelsFetchedAt = catalog.FetchedAt;
             SetModelItems(_availableModels.Contains(selected, StringComparer.OrdinalIgnoreCase) ? selected : _availableModels.First());
@@ -301,6 +551,7 @@ public partial class SettingsWindow : Window
             ApiStatusText.Text = "验证通过";
             ModelStatusText.Text = $"API Key 验证通过 · 已拉取 {_availableModels.Count} 个模型 · {catalog.FetchedAt.LocalDateTime:yyyy-MM-dd HH:mm:ss}";
             RefreshConfiguredProviders();
+            BuildModuleRoutingRows();
             return true;
         }
         catch (OperationCanceledException)
@@ -329,6 +580,7 @@ public partial class SettingsWindow : Window
         ModelBox.ItemsSource = _availableModels;
         ModelBox.SelectedItem = _availableModels.FirstOrDefault(model => model.Equals(selected, StringComparison.OrdinalIgnoreCase))
             ?? _availableModels.FirstOrDefault();
+        RefreshGlobalReasoningOptions();
     }
 
     private void RefreshConfiguredProviders()
@@ -364,11 +616,68 @@ public partial class SettingsWindow : Window
         DisplayName = source.DisplayName,
         BaseUrl = source.BaseUrl,
         Model = source.Model,
-        AvailableModels = source.AvailableModels.ToList(),
+        AvailableModels = (source.AvailableModels ?? []).ToList(),
+        ModelCapabilities = (source.ModelCapabilities ?? []).Select(Clone).ToList(),
         ModelsFetchedAt = source.ModelsFetchedAt,
         IsConfigured = source.IsConfigured
     };
 
+    private static AiModelCapability Clone(AiModelCapability source) => new()
+    {
+        ModelId = source.ModelId,
+        ReasoningEfforts = (source.ReasoningEfforts ?? []).ToList(),
+        ReasoningParameter = source.ReasoningParameter,
+        Source = source.Source
+    };
+
     private sealed record ThemeOption(string Label, string Value);
     private sealed record ConfiguredProviderRow(string DisplayName, string ModelLabel, string StatusLabel);
+    private sealed record ConfiguredProviderOption(string Id, string DisplayName);
+    private sealed record ReasoningOption(string Label, string Value);
+    private sealed record ModuleDefinition(string Key, string Name, string Description);
+
+    private sealed class AiModuleRoutingRow : INotifyPropertyChanged
+    {
+        private string _providerId = "";
+        private string _model = "";
+        private string _reasoningEffort = AiReasoningEfforts.Auto;
+
+        public AiModuleRoutingRow(string moduleKey, string displayName, string description)
+        {
+            ModuleKey = moduleKey;
+            DisplayName = displayName;
+            Description = description;
+        }
+
+        public string ModuleKey { get; }
+        public string DisplayName { get; }
+        public string Description { get; }
+        public ObservableCollection<ConfiguredProviderOption> ProviderOptions { get; } = [];
+        public ObservableCollection<string> ModelOptions { get; } = [];
+        public ObservableCollection<ReasoningOption> ReasoningOptions { get; } = [];
+        public string ProviderId
+        {
+            get => _providerId;
+            set => SetField(ref _providerId, value);
+        }
+        public string Model
+        {
+            get => _model;
+            set => SetField(ref _model, value);
+        }
+        public string ReasoningEffort
+        {
+            get => _reasoningEffort;
+            set => SetField(ref _reasoningEffort, AiReasoningEfforts.Normalize(value));
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        private void SetField(ref string field, string value, [CallerMemberName] string? propertyName = null)
+        {
+            if (string.Equals(field, value, StringComparison.Ordinal)) return;
+            field = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+    }
 }

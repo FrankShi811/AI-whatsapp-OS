@@ -26,9 +26,9 @@ public sealed class CustomerAnalysisService
         IProgress<CustomerAnalysisProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        if (!_provider.HasApiKey()) throw new DeepSeekException("provider_not_configured", "请先完成 AI API 对接并选择模型。", false);
+        if (!_provider.HasApiKey(AiModuleKeys.CustomerAnalytics)) throw new DeepSeekException("provider_not_configured", "请先完成 AI API 对接并选择模型。", false);
         var lead = await _repository.GetLeadAsync(customerId, cancellationToken) ?? throw new InvalidOperationException("客户不存在或已经删除。");
-        var model = await _provider.GetSelectedModelAsync(cancellationToken);
+        var model = await _provider.GetSelectedModelAsync(AiModuleKeys.CustomerAnalytics, cancellationToken);
         var report = new CustomerAnalysisReport
         {
             CustomerId = lead.Id,
@@ -215,7 +215,7 @@ public sealed class CustomerAnalysisService
         {
             var payload = new
             {
-                customer = new { snapshot.Lead.Name, snapshot.Lead.Country, snapshot.Lead.ProductInterest, snapshot.Lead.CustomFields },
+                customer = new { snapshot.Lead.BuyerId, snapshot.Lead.Name, snapshot.Lead.Country, snapshot.Lead.ProductInterest, snapshot.Lead.CustomFields },
                 messages = batch.Select(message => new
                 {
                     message.Id,
@@ -229,7 +229,7 @@ public sealed class CustomerAnalysisService
             };
             try
             {
-                var extracted = await _provider.CompleteStructuredAsync<CustomerFactSet>(FactExtractionPrompt, payload, NormalizeFactSet, cancellationToken);
+                var extracted = await _provider.CompleteStructuredAsync<CustomerFactSet>(AiModuleKeys.CustomerAnalytics, FactExtractionPrompt, payload, NormalizeFactSet, cancellationToken);
                 result.Facts.AddRange(extracted.Facts);
                 result.Quotes.AddRange(extracted.Quotes);
                 result.InformationGaps.AddRange(extracted.InformationGaps);
@@ -275,7 +275,7 @@ public sealed class CustomerAnalysisService
         var lead = snapshot.Lead;
         var payload = new
         {
-            crm = new { lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.Stage, lead.Owner, lead.Tags, lead.CustomFields },
+            crm = new { lead.BuyerId, lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.Stage, lead.Owner, lead.Tags, lead.CustomFields },
             leadIntelligence = new
             {
                 score = lead.HasCurrentAiScore ? lead.Score : 0,
@@ -299,7 +299,7 @@ public sealed class CustomerAnalysisService
         CustomerBusinessAnalysisResult analysis;
         try
         {
-            analysis = await _provider.CompleteStructuredAsync<CustomerBusinessAnalysisResult>(BusinessAnalysisPrompt, payload,
+            analysis = await _provider.CompleteStructuredAsync<CustomerBusinessAnalysisResult>(AiModuleKeys.CustomerAnalytics, BusinessAnalysisPrompt, payload,
                 value => ValidateBusinessAnalysis(value, lead), cancellationToken);
         }
         catch (DeepSeekException error) when (error.Retryable)
@@ -325,7 +325,7 @@ public sealed class CustomerAnalysisService
         };
         try
         {
-            return await _provider.CompleteStructuredAsync<CustomerSalesStrategy>(SalesStrategyPrompt, payload, ValidateSalesStrategy, cancellationToken);
+            return await _provider.CompleteStructuredAsync<CustomerSalesStrategy>(AiModuleKeys.CustomerAnalytics, SalesStrategyPrompt, payload, ValidateSalesStrategy, cancellationToken);
         }
         catch (DeepSeekException error) when (error.Retryable)
         {
@@ -339,7 +339,7 @@ public sealed class CustomerAnalysisService
         var payload = new { customer = snapshot.Lead.DisplayName, facts, business, strategy };
         try
         {
-            return await _provider.CompleteStructuredAsync<CustomerReportSynthesisResult>(ReportSynthesisPrompt, payload, ValidateSynthesis, cancellationToken);
+            return await _provider.CompleteStructuredAsync<CustomerReportSynthesisResult>(AiModuleKeys.CustomerAnalytics, ReportSynthesisPrompt, payload, ValidateSynthesis, cancellationToken);
         }
         catch (DeepSeekException error) when (error.Retryable)
         {

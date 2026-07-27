@@ -4,7 +4,7 @@ namespace WAFlow.Core.Imports;
 
 public enum ImportField
 {
-    Ignore, Custom, Name, Company, Country, WhatsApp, Email, ProductInterest, EstimatedOrderValue,
+    Ignore, Custom, BuyerId, Name, Company, Country, WhatsApp, Email, ProductInterest, EstimatedOrderValue,
     CompanyScale, PurchasePower, ExplicitDemand, Source, Owner, Stage, Tags, Notes
 }
 
@@ -28,7 +28,12 @@ public sealed class MappingRow
     public string Header { get; set; } = "";
     public string Sample { get; set; } = "";
     public ImportField Target { get; set; }
-    public string DestinationLabel => Target == ImportField.Custom ? $"自定义维度：{Header}" : Target.ToString();
+    public string DestinationLabel => Target switch
+    {
+        ImportField.Custom => $"自定义维度：{Header}",
+        ImportField.BuyerId => "Buyer ID（统一客户标识）",
+        _ => Target.ToString()
+    };
 }
 
 public sealed class ImportPreviewRow
@@ -36,6 +41,7 @@ public sealed class ImportPreviewRow
     public int RowNumber { get; set; }
     public Dictionary<ImportField, string> Values { get; set; } = [];
     public Dictionary<string, string> CustomValues { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public string BuyerId { get; set; } = "";
     public string Name { get; set; } = "";
     public string Company { get; set; } = "";
     public string Country { get; set; } = "";

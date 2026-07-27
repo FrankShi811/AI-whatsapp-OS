@@ -120,7 +120,14 @@ public sealed partial class CustomerSuccessAgentService
         CustomerSuccessRunTrigger trigger = CustomerSuccessRunTrigger.Manual,
         CancellationToken cancellationToken = default)
     {
-        var identity = await _identity.ResolveAsync(accountId, conversationId, rawPhone, jid, lid, displayName, cancellationToken);
+        var identity = await _identity.ResolveAsync(
+            accountId,
+            conversationId,
+            rawPhone,
+            jid,
+            lid,
+            displayName,
+            cancellationToken: cancellationToken);
         if (!identity.AllowsAutomation)
             return new CustomerSuccessAgentRunResult
             {
@@ -179,7 +186,7 @@ public sealed partial class CustomerSuccessAgentService
                 identity, context, state, source, holdingDecision, null, handoff, null, trigger, cancellationToken);
         }
 
-        if (!_provider.HasApiKey())
+        if (!_provider.HasApiKey(AiModuleKeys.WhatsAppInbox))
             throw new DeepSeekException("provider_not_configured", "请先完成 AI API 对接并选择模型。", false);
         var allowedFields = BuildAllowedFields(context.Customer);
         var evidence = context.Messages.Where(item => item.Direction == WhatsAppMessageDirection.Incoming)
@@ -236,7 +243,7 @@ public sealed partial class CustomerSuccessAgentService
             },
             crm = context.Customer is null ? null : new
             {
-                context.Customer.Name, context.Customer.Company, context.Customer.Country, context.Customer.ProductInterest,
+                context.Customer.BuyerId, context.Customer.Name, context.Customer.Company, context.Customer.Country, context.Customer.ProductInterest,
                 context.Customer.Stage, context.Customer.StageManuallyLocked, context.Customer.Tags, context.Customer.CustomFields
             },
             globalRelationship = context.GlobalRelationship,
@@ -290,6 +297,7 @@ public sealed partial class CustomerSuccessAgentService
         try
         {
             decision = await _provider.CompleteStructuredAsync<CustomerSuccessAgentDecision>(
+                AiModuleKeys.WhatsAppInbox,
                 Instructions, payload,
                 candidate => ValidateDecision(
                     candidate,
@@ -305,7 +313,7 @@ public sealed partial class CustomerSuccessAgentService
         {
             decision = CreateSafeManualFallbackDecision(source, error);
         }
-        decision.Model = await _provider.GetSelectedModelAsync(cancellationToken);
+        decision.Model = await _provider.GetSelectedModelAsync(AiModuleKeys.WhatsAppInbox, cancellationToken);
         decision.LatestIncomingMessageId = source.Id;
         decision.KnowledgeRetrievalId = knowledge.Id;
         decision.KnowledgeSufficient = knowledge.SufficientToAnswer;

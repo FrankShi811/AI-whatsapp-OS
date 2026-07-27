@@ -53,6 +53,7 @@ public enum EmailMessageStatus { Draft, Sending, Sent, Received, Failed }
 public sealed class Lead
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string BuyerId { get; set; } = "";
     public string Name { get; set; } = "";
     public string Company { get; set; } = "";
     public string Country { get; set; } = "";
@@ -495,6 +496,10 @@ public sealed class AppSettings
     public string DeepSeekModel { get; set; } = "deepseek-chat";
     public string ActiveProviderId { get; set; } = "deepseek";
     public List<AiProviderProfile> ConfiguredAiProviders { get; set; } = [];
+    public bool UseGlobalAiConfiguration { get; set; } = true;
+    public string DefaultReasoningEffort { get; set; } = AiReasoningEfforts.Auto;
+    public Dictionary<string, AiModuleModelPreference> AiModulePreferences { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
     public string ThemeMode { get; set; } = "System";
     public List<string> AvailableModels { get; set; } = [];
     public string ModelsBaseUrl { get; set; } = "";
@@ -508,8 +513,60 @@ public sealed class AiProviderProfile
     public string BaseUrl { get; set; } = "https://api.deepseek.com";
     public string Model { get; set; } = "";
     public List<string> AvailableModels { get; set; } = [];
+    public List<AiModelCapability> ModelCapabilities { get; set; } = [];
     public DateTimeOffset? ModelsFetchedAt { get; set; }
     public bool IsConfigured { get; set; }
+}
+
+public sealed class AiModelCapability
+{
+    public string ModelId { get; set; } = "";
+    public List<string> ReasoningEfforts { get; set; } = [];
+    public string ReasoningParameter { get; set; } = "";
+    public string Source { get; set; } = "api";
+}
+
+public sealed class AiModuleModelPreference
+{
+    public string ProviderId { get; set; } = "";
+    public string Model { get; set; } = "";
+    public string ReasoningEffort { get; set; } = AiReasoningEfforts.Auto;
+}
+
+public static class AiReasoningEfforts
+{
+    public const string Auto = "auto";
+    public static readonly IReadOnlyList<string> Ordered =
+        ["none", "minimal", "low", "medium", "high", "xhigh", "ultra", "max"];
+
+    public static string Normalize(string? value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant() ?? Auto;
+        return normalized == Auto || Ordered.Contains(normalized, StringComparer.OrdinalIgnoreCase)
+            ? normalized
+            : Auto;
+    }
+}
+
+public static class AiModuleKeys
+{
+    public const string Global = "global";
+    public const string Customers = "customer_operations.customers";
+    public const string WhatsAppInbox = "customer_operations.whatsapp_inbox";
+    public const string EmailInbox = "customer_operations.email_inbox";
+    public const string Campaigns = "customer_operations.campaigns";
+    public const string KnowledgeBase = "insights.knowledge_base";
+    public const string CustomerAnalytics = "insights.customer_analytics";
+
+    public static readonly IReadOnlyList<string> Configurable =
+    [
+        Customers,
+        WhatsAppInbox,
+        EmailInbox,
+        Campaigns,
+        KnowledgeBase,
+        CustomerAnalytics
+    ];
 }
 
 public sealed class LeadBulkAnalysisRunState
