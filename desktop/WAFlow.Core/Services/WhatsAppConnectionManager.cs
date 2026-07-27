@@ -6,6 +6,8 @@ namespace WAFlow.Core.Services;
 public sealed class WhatsAppConnectionManager : IAsyncDisposable
 {
     private readonly ConcurrentDictionary<string, WhatsAppBridgeClient> _clients = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _connectionGates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, byte> _autoReconnectSuppressed = new(StringComparer.OrdinalIgnoreCase);
 
     public event EventHandler<WhatsAppBridgeEvent>? EventReceived;
     public string ActiveAccountId { get; private set; } = "primary";
@@ -15,6 +17,17 @@ public sealed class WhatsAppConnectionManager : IAsyncDisposable
     public void SetActiveAccount(string accountId) => ActiveAccountId = Normalize(accountId);
     public bool IsConnectedFor(string accountId) => _clients.TryGetValue(Normalize(accountId), out var client) && client.IsConnected;
     public string ConnectionStateFor(string accountId) => _clients.TryGetValue(Normalize(accountId), out var client) ? client.ConnectionState : "disconnected";
+    public bool IsAutoReconnectEnabled(string accountId) => !_autoReconnectSuppressed.ContainsKey(Normalize(accountId));
+    public bool HasStoredSession(string accountId)
+    {
+        accountId = Normalize(accountId);
+        var directory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "WAFlow",
+            "whatsapp-sessions",
+            accountId);
+        return File.Exists(Path.Combine(directory, "creds.json.enc"));
+    }
 
     public async Task StartAsync(string accountId = "primary", CancellationToken cancellationToken = default)
     {
@@ -27,13 +40,34 @@ public sealed class WhatsAppConnectionManager : IAsyncDisposable
     public async Task<JsonElement> ConnectAsync(string accountId, CancellationToken cancellationToken = default)
     {
         accountId = Normalize(accountId); ActiveAccountId = accountId;
-        var client = GetClient(accountId);
-        await client.StartAsync(accountId, cancellationToken);
-        return await client.ConnectAsync(cancellationToken);
+        _autoReconnectSuppressed.TryRemove(accountId, out _);
+        return await ConnectCoreAsync(accountId, cancellationToken);
     }
 
-    public Task<JsonElement> DisconnectAsync(CancellationToken cancellationToken = default) => GetClient(ActiveAccountId).DisconnectAsync(cancellationToken);
-    public Task<JsonElement> LogoutAsync(CancellationToken cancellationToken = default) => GetClient(ActiveAccountId).LogoutAsync(cancellationToken);
+    public async Task EnsureConnectedAsync(string accountId, CancellationToken cancellationToken = default)
+    {
+        accountId = Normalize(accountId);
+        if (!IsAutoReconnectEnabled(accountId)) return;
+        var state = ConnectionStateFor(accountId);
+        if (state is "connected" or "connecting" or "logged_out") return;
+        await ConnectCoreAsync(accountId, cancellationToken);
+    }
+
+    public Task<JsonElement> DisconnectAsync(CancellationToken cancellationToken = default) => DisconnectAsync(ActiveAccountId, cancellationToken);
+    public async Task<JsonElement> DisconnectAsync(string accountId, CancellationToken cancellationToken = default)
+    {
+        accountId = Normalize(accountId);
+        _autoReconnectSuppressed[accountId] = 0;
+        return await GetClient(accountId).DisconnectAsync(cancellationToken);
+    }
+
+    public Task<JsonElement> LogoutAsync(CancellationToken cancellationToken = default) => LogoutAsync(ActiveAccountId, cancellationToken);
+    public async Task<JsonElement> LogoutAsync(string accountId, CancellationToken cancellationToken = default)
+    {
+        accountId = Normalize(accountId);
+        _autoReconnectSuppressed[accountId] = 0;
+        return await GetClient(accountId).LogoutAsync(cancellationToken);
+    }
     public Task<JsonElement> SendTextAsync(string phone, string text, CancellationToken cancellationToken = default) => SendTextAsync(ActiveAccountId, phone, text, cancellationToken);
     public Task<JsonElement> SendTextAsync(string accountId, string phone, string text, CancellationToken cancellationToken = default) => GetClient(accountId).SendTextAsync(phone, text, cancellationToken);
     public Task<JsonElement> ValidateNumberAsync(string accountId, string phone, CancellationToken cancellationToken = default) => GetClient(accountId).ValidateNumberAsync(phone, cancellationToken);
@@ -56,7 +90,25 @@ public sealed class WhatsAppConnectionManager : IAsyncDisposable
         if (string.IsNullOrWhiteSpace(jid)) throw new WhatsAppBridgeException("group_create_missing_id", "WhatsApp 未返回新群组 ID。");
         return new WhatsAppGroupCreateResult(jid, subject, count, participants);
     }
-    public Task<JsonElement> SyncNowAsync(CancellationToken cancellationToken = default) => GetClient(ActiveAccountId).SyncNowAsync(cancellationToken);
+    public Task<JsonElement> SyncNowAsync(CancellationToken cancellationToken = default) => SyncNowAsync(ActiveAccountId, cancellationToken);
+    public Task<JsonElement> SyncNowAsync(string accountId, CancellationToken cancellationToken = default) => GetClient(accountId).SyncNowAsync(cancellationToken);
+
+    private async Task<JsonElement> ConnectCoreAsync(string accountId, CancellationToken cancellationToken)
+    {
+        var gate = _connectionGates.GetOrAdd(accountId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            var client = GetClient(accountId);
+            if (client.ConnectionState is "connected" or "connecting") return default;
+            await client.StartAsync(accountId, cancellationToken);
+            return await client.ConnectAsync(cancellationToken);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
 
     private WhatsAppBridgeClient GetClient(string accountId)
     {
@@ -80,5 +132,8 @@ public sealed class WhatsAppConnectionManager : IAsyncDisposable
     {
         foreach (var client in _clients.Values) await client.DisposeAsync();
         _clients.Clear();
+        foreach (var gate in _connectionGates.Values) gate.Dispose();
+        _connectionGates.Clear();
+        _autoReconnectSuppressed.Clear();
     }
 }

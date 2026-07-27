@@ -39,6 +39,8 @@ internal static class ThemeManager
             ["SidebarActive"] = ("#1B4A3B", "#1B493F"),
             ["SidebarText"] = ("#D2E1DC", "#D2E1DC"),
             ["SidebarMuted"] = ("#82A095", "#82A095"),
+            ["UnreadBadgeBackground"] = ("#C43131", "#C43131"),
+            ["UnreadBadgeText"] = ("#FFFFFF", "#FFFFFF"),
             ["Success"] = ("#16B889", "#43D6B2"),
             ["SuccessSoft"] = ("#E0F7EF", "#15352F"),
             ["Warning"] = ("#8A5A00", "#F0B94F"),

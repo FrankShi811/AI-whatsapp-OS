@@ -52,6 +52,7 @@ public partial class App : Application
             }
             await Services.LeadAutomation.StartAsync();
             await Services.Campaigns.StartAsync();
+            await Services.MessagingSync.StartAsync();
         }
         catch (Exception error)
         {
@@ -89,6 +90,8 @@ public partial class App : Application
         {
             Services.LeadAutomation.DisposeAsync().AsTask().GetAwaiter().GetResult();
             Services.Campaigns.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            Services.MessagingSync.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            Services.Email.DisposeAsync().AsTask().GetAwaiter().GetResult();
             Services.WhatsApp.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
         base.OnExit(e);

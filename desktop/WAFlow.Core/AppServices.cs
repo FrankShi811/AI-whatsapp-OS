@@ -14,6 +14,7 @@ public sealed class AppServices
     public WhatsAppConnectionManager WhatsApp { get; }
     public WhatsAppSyncService WhatsAppSync { get; }
     public EmailService Email { get; }
+    public MessagingSyncService MessagingSync { get; }
     public LeadIntelligenceAutomationService LeadAutomation { get; }
     public PublicIpMonitor PublicIp { get; }
     public CampaignAutomationService Campaigns { get; }
@@ -46,6 +47,7 @@ public sealed class AppServices
         WhatsApp = new WhatsAppConnectionManager();
         WhatsAppSync = new WhatsAppSyncService(Repository, WhatsApp);
         Email = new EmailService(Repository);
+        MessagingSync = new MessagingSyncService(Repository, WhatsApp, Email);
         LeadAutomation = new LeadIntelligenceAutomationService(Repository, DeepSeek, WhatsAppSync);
         PublicIp = new PublicIpMonitor(Repository);
         Campaigns = new CampaignAutomationService(Repository, WhatsApp, PublicIp, Email);

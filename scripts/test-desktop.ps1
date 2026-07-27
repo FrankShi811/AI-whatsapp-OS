@@ -26,6 +26,7 @@ $appStartupSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $roo
 $desktopShortcutSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\DesktopShortcutService.cs')
 $themeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ThemeManager.cs')
 $mainWindowXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MainWindow.xaml')
+$mainWindowSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MainWindow.xaml.cs')
 $dashboardXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\DashboardView.xaml')
 $todayBriefSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\TodayBriefService.cs')
 $whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml')
@@ -33,9 +34,11 @@ $bridgeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'b
 $bridgeMessageSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\message-content.mjs')
 $whatsAppInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml.cs')
 $whatsAppSyncSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppSyncService.cs')
+$whatsAppManagerSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppConnectionManager.cs')
 $campaignAutomationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CampaignAutomationService.cs')
 $customerSuccessSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerSuccessAgentCoordinator.cs')
 $emailServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\EmailService.cs')
+$messagingSyncSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\MessagingSyncService.cs')
 $emailAccountXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\EmailAccountWindow.xaml')
 $emailAccountSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\EmailAccountWindow.xaml.cs')
 $knowledgeBaseXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\KnowledgeBaseView.xaml')
@@ -70,6 +73,7 @@ else {
 $requiredBrushes = @(
   'Ink', 'InkSecondary', 'Muted', 'Primary', 'AiAccent', 'AiProcessing',
   'Surface', 'Canvas', 'Line', 'Success', 'Warning', 'Danger', 'Info',
+  'UnreadBadgeBackground', 'UnreadBadgeText',
   'GradeA', 'GradeB', 'GradeC', 'GradeD', 'ChatOutbound', 'ChatInbound'
 )
 foreach ($key in $requiredBrushes) {
@@ -94,7 +98,7 @@ $allSemanticBrushes = @(
   'PrimarySoft', 'PrimarySurface', 'AiAccent', 'AiAccentDeep', 'AiProcessing', 'AiSoft',
   'AiSurface', 'Surface', 'SurfaceElevated', 'SurfaceMuted', 'SurfaceInput', 'Canvas',
   'CanvasDeep', 'Line', 'LineStrong', 'Sidebar', 'SidebarElevated', 'SidebarHover',
-  'SidebarActive', 'SidebarText', 'SidebarMuted', 'Success', 'SuccessSoft', 'Warning',
+  'SidebarActive', 'SidebarText', 'SidebarMuted', 'UnreadBadgeBackground', 'UnreadBadgeText', 'Success', 'SuccessSoft', 'Warning',
   'WarningSoft', 'Danger', 'DangerSoft', 'Info', 'InfoSoft', 'GradeA', 'GradeB', 'GradeC',
   'GradeD', 'ChatOutbound', 'ChatInbound', 'Overlay', 'GlassSurface', 'GlassSurfaceStrong',
   'GlassLine', 'AuroraAmbient', 'AuroraBorder'
@@ -166,7 +170,8 @@ $contrastPairs = @(
   @('InkSecondary', 'SurfaceElevated'), @('Muted', 'Canvas'), @('Muted', 'Surface'),
   @('Muted', 'SurfaceElevated'), @('Warning', 'WarningSoft'), @('Danger', 'DangerSoft'),
   @('SidebarText', 'Sidebar'), @('SidebarText', 'SidebarActive'),
-  @('SidebarMuted', 'Sidebar'), @('SidebarMuted', 'SidebarElevated')
+  @('SidebarMuted', 'Sidebar'), @('SidebarMuted', 'SidebarElevated'),
+  @('UnreadBadgeText', 'UnreadBadgeBackground')
 )
 foreach ($paletteEntry in @(@('Light', $lightPalette), @('Dark', $darkPalette))) {
   $mode = $paletteEntry[0]
@@ -289,6 +294,28 @@ if ($emailAccountXaml -notmatch 'x:Name="GuideStepsText"' -or
   throw 'Email account window must provide provider steps, direct official links, field hints, username sync and preset recovery.'
 }
 Write-Host 'PASS  provider-specific email onboarding and compatibility guidance contract'
+
+if ($appStartupSource -notmatch [regex]::Escape('Services.MessagingSync.StartAsync()') -or
+    $appStartupSource -notmatch [regex]::Escape('Services.MessagingSync.DisposeAsync()') -or
+    $appStartupSource -notmatch [regex]::Escape('Services.Email.DisposeAsync()') -or
+    $messagingSyncSource -notmatch [regex]::Escape('GetWhatsAppAccountsAsync') -or
+    $messagingSyncSource -notmatch [regex]::Escape('EnsureConnectedAsync(account.Id') -or
+    $messagingSyncSource -notmatch [regex]::Escape('HasStoredSession(account.Id)') -or
+    $whatsAppManagerSource -notmatch [regex]::Escape('IsAutoReconnectEnabled') -or
+    $emailServiceSource -notmatch [regex]::Escape('IdleAsync') -or
+    $emailServiceSource -notmatch [regex]::Escape('ImapCapabilities.Idle') -or
+    $emailServiceSource -notmatch [regex]::Escape('TimeSpan.FromSeconds(30)')) {
+  throw 'All saved WhatsApp and email accounts must remain connected and synchronize globally for the application lifetime.'
+}
+if ($mainWindowXaml -notmatch 'x:Name="WhatsAppUnreadBadge"' -or
+    $mainWindowXaml -notmatch 'x:Name="EmailUnreadBadge"' -or
+    $mainWindowXaml -notmatch 'DynamicResource UnreadBadgeBackground' -or
+    $mainWindowSource -notmatch [regex]::Escape('GetInboxUnreadTotalsAsync') -or
+    $mainWindowSource -notmatch [regex]::Escape('_services.WhatsAppSync.MessageSynchronized += MessagingUnreadChanged') -or
+    $mainWindowSource -notmatch [regex]::Escape('_services.Email.SynchronizationChanged += EmailSynchronizationChanged')) {
+  throw 'WhatsApp and email sidebar navigation must expose live application-wide unread counters.'
+}
+Write-Host 'PASS  application-wide account synchronization and sidebar unread badge contract'
 
 & $dotnet build (Join-Path $root 'desktop\WAFlow.sln') -c Release
 if ($LASTEXITCODE -ne 0) { throw 'WAFlow desktop build failed.' }

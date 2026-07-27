@@ -57,6 +57,8 @@ public partial class MainWindow : Window
         _analytics.DataChanged += async (_, _) => await RefreshAllAsync();
         _services.Campaigns.SafetyStopped += Campaigns_SafetyStopped;
         _services.LeadAutomation.AnalysisChanged += LeadAutomation_AnalysisChanged;
+        _services.WhatsAppSync.MessageSynchronized += MessagingUnreadChanged;
+        _services.Email.SynchronizationChanged += EmailSynchronizationChanged;
         _updates.StateChanged += Updates_StateChanged;
         ApplyUpdateState(_updates.State);
         OnboardingGuide.CloseRequested += OnboardingGuide_CloseRequested;
@@ -80,6 +82,8 @@ public partial class MainWindow : Window
         WindowsTaskbarIdentity.ReleaseWindowIcon();
         _services.Campaigns.SafetyStopped -= Campaigns_SafetyStopped;
         _services.LeadAutomation.AnalysisChanged -= LeadAutomation_AnalysisChanged;
+        _services.WhatsAppSync.MessageSynchronized -= MessagingUnreadChanged;
+        _services.Email.SynchronizationChanged -= EmailSynchronizationChanged;
         _updates.StateChanged -= Updates_StateChanged;
         OnboardingGuide.CloseRequested -= OnboardingGuide_CloseRequested;
         OnboardingGuide.FinishedRequested -= OnboardingGuide_FinishedRequested;
@@ -92,6 +96,7 @@ public partial class MainWindow : Window
     {
         await UpdateProviderStateAsync();
         await UpdateThemeStateAsync();
+        await UpdateUnreadBadgesAsync();
         await NavigateAsync("dashboard", DashboardButton);
         _onboardingState = await _services.Repository.GetOnboardingStateAsync();
         if (GuideCatalog.MigrateLegacyState(_onboardingState))
@@ -394,9 +399,30 @@ public partial class MainWindow : Window
         });
     }
 
+    private void MessagingUnreadChanged(object? sender, WhatsAppMessage e) =>
+        _ = Dispatcher.InvokeAsync(UpdateUnreadBadgesAsync);
+
+    private void EmailSynchronizationChanged(object? sender, EmailSynchronizationState e) =>
+        _ = Dispatcher.InvokeAsync(UpdateUnreadBadgesAsync);
+
+    private async Task UpdateUnreadBadgesAsync()
+    {
+        var totals = await _services.Repository.GetInboxUnreadTotalsAsync();
+        SetUnreadBadge(WhatsAppUnreadBadge, WhatsAppUnreadText, InboxButton, totals.WhatsApp, "WhatsApp");
+        SetUnreadBadge(EmailUnreadBadge, EmailUnreadText, EmailButton, totals.Email, "邮件");
+    }
+
+    private static void SetUnreadBadge(Border badge, TextBlock text, Button button, int count, string channel)
+    {
+        badge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        text.Text = count > 99 ? "99+" : count.ToString();
+        button.ToolTip = count > 0 ? $"{channel} Inbox：{count} 条未读消息" : $"{channel} Inbox：暂无未读消息";
+    }
+
     private async Task RefreshAllAsync()
     {
         await _dashboard.RefreshAsync(); await _intelligence.RefreshAsync(); await _customers.RefreshAsync(); await _inbox.RefreshAsync(); await _email.RefreshAsync(); await _campaigns.RefreshAsync(); await _knowledge.RefreshAsync(); await _analytics.RefreshAsync();
+        await UpdateUnreadBadgesAsync();
     }
 
     private void Campaigns_SafetyStopped(object? sender, CampaignSafetyStoppedEventArgs e)

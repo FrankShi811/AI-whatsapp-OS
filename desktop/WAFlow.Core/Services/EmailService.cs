@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using MailKit;
 using MailKit.Net.Imap;
 using MailKit.Net.Smtp;
@@ -34,11 +35,24 @@ public sealed record EmailProviderGuide(
     string HelpUrl,
     string CompatibilityNote);
 
-public sealed class EmailService
+public sealed record EmailSynchronizationState(
+    string AccountId,
+    string State,
+    int Imported = 0,
+    string Error = "");
+
+public sealed class EmailService : IAsyncDisposable
 {
     private readonly LocalRepository _repository;
+    private readonly ConcurrentDictionary<string, BackgroundAccountMonitor> _backgroundMonitors = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _syncGates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _backgroundLock = new();
+    private CancellationTokenSource? _backgroundLifetime;
+    private Task? _backgroundSupervisor;
 
     public EmailService(LocalRepository repository) => _repository = repository;
+
+    public event EventHandler<EmailSynchronizationState>? SynchronizationChanged;
 
     public static IReadOnlyList<EmailProviderPreset> ProviderPresets { get; } =
     [
@@ -168,6 +182,7 @@ public sealed class EmailService
             account.LastError = "";
             await _repository.SaveEmailAccountAsync(account, cancellationToken);
             await _repository.LogEventAsync("email_account_connected", null, null, $"account_id={account.Id};provider={account.Provider};email={account.EmailAddress}", cancellationToken);
+            EnsureBackgroundMonitor(account.Id);
         }
         catch (Exception error)
         {
@@ -180,6 +195,7 @@ public sealed class EmailService
 
     public async Task DeleteAccountAsync(EmailAccount account, CancellationToken cancellationToken = default)
     {
+        StopBackgroundMonitor(account.Id);
         PasswordStore(account.Id).Delete();
         await _repository.DeleteEmailAccountAsync(account.Id, cancellationToken);
         await _repository.LogEventAsync("email_account_deleted", null, null, $"account_id={account.Id};email={account.EmailAddress}", cancellationToken);
@@ -189,7 +205,6 @@ public sealed class EmailService
     {
         var account = await RequireAccountAsync(accountId, cancellationToken);
         var password = RequirePassword(account);
-        var imported = 0;
         try
         {
             using var client = new ImapClient();
@@ -197,19 +212,14 @@ public sealed class EmailService
             await client.AuthenticateAsync(account.UserName, password, cancellationToken);
             var inbox = client.Inbox;
             await inbox.OpenAsync(FolderAccess.ReadOnly, cancellationToken);
-            var start = Math.Max(0, inbox.Count - Math.Clamp(maxMessages, 1, 2_000));
-            for (var index = start; index < inbox.Count; index++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var message = await inbox.GetMessageAsync(index, cancellationToken);
-                if (await StoreIncomingAsync(account, index.ToString(), message, cancellationToken)) imported++;
-            }
+            var imported = await ImportInboxAsync(account, inbox, maxMessages, cancellationToken);
             await client.DisconnectAsync(true, cancellationToken);
             account.Status = EmailConnectionStatus.Connected;
             account.LastSyncAt = DateTimeOffset.Now;
             account.LastError = "";
             await _repository.SaveEmailAccountAsync(account, cancellationToken);
             await _repository.LogEventAsync("email_inbox_synced", null, null, $"account_id={account.Id};messages={imported}", cancellationToken);
+            SynchronizationChanged?.Invoke(this, new EmailSynchronizationState(account.Id, "connected", imported));
             return imported;
         }
         catch (Exception error)
@@ -217,7 +227,229 @@ public sealed class EmailService
             account.Status = EmailConnectionStatus.Error;
             account.LastError = Safe(error.Message);
             await _repository.SaveEmailAccountAsync(account, cancellationToken);
+            SynchronizationChanged?.Invoke(this, new EmailSynchronizationState(account.Id, "error", Error: account.LastError));
             throw new InvalidOperationException($"邮件同步失败：{account.LastError}", error);
+        }
+    }
+
+    public Task StartBackgroundSyncAsync(CancellationToken cancellationToken = default)
+    {
+        lock (_backgroundLock)
+        {
+            if (_backgroundSupervisor is { IsCompleted: false }) return Task.CompletedTask;
+            _backgroundLifetime?.Dispose();
+            _backgroundLifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _backgroundSupervisor = RunBackgroundSupervisorAsync(_backgroundLifetime.Token);
+        }
+        return Task.CompletedTask;
+    }
+
+    private async Task RunBackgroundSupervisorAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                var accounts = await _repository.GetEmailAccountsAsync(cancellationToken);
+                var eligibleIds = accounts
+                    .Where(IsBackgroundEligible)
+                    .Select(account => account.Id)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var accountId in eligibleIds) EnsureBackgroundMonitor(accountId);
+                foreach (var accountId in _backgroundMonitors.Keys.Where(id => !eligibleIds.Contains(id)).ToArray())
+                    StopBackgroundMonitor(accountId);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception error)
+            {
+                SynchronizationChanged?.Invoke(this, new EmailSynchronizationState("", "supervisor_error", Error: Safe(error.Message)));
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(15), cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+    }
+
+    private bool IsBackgroundEligible(EmailAccount account) =>
+        account.Status != EmailConnectionStatus.NotConfigured
+        && !string.IsNullOrWhiteSpace(account.ImapHost)
+        && !string.IsNullOrWhiteSpace(account.UserName)
+        && !string.IsNullOrWhiteSpace(PasswordStore(account.Id).Read());
+
+    private void EnsureBackgroundMonitor(string accountId)
+    {
+        var parent = _backgroundLifetime;
+        if (parent is null || parent.IsCancellationRequested) return;
+        _backgroundMonitors.GetOrAdd(accountId, id =>
+        {
+            var lifetime = CancellationTokenSource.CreateLinkedTokenSource(parent.Token);
+            return new BackgroundAccountMonitor(lifetime, MonitorAccountAsync(id, lifetime.Token));
+        });
+    }
+
+    private void StopBackgroundMonitor(string accountId)
+    {
+        if (!_backgroundMonitors.TryRemove(accountId, out var monitor)) return;
+        monitor.Lifetime.Cancel();
+        _ = monitor.Worker.ContinueWith(
+            _ => monitor.Lifetime.Dispose(),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private async Task MonitorAccountAsync(string accountId, CancellationToken cancellationToken)
+    {
+        var retryDelay = TimeSpan.FromSeconds(5);
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                var account = await RequireAccountAsync(accountId, cancellationToken);
+                if (!IsBackgroundEligible(account)) return;
+                await RunConnectedAccountSessionAsync(account, cancellationToken);
+                retryDelay = TimeSpan.FromSeconds(5);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception error)
+            {
+                var message = Safe(error.Message);
+                try
+                {
+                    var account = await _repository.GetEmailAccountAsync(accountId, cancellationToken);
+                    if (account is not null)
+                    {
+                        account.Status = EmailConnectionStatus.Error;
+                        account.LastError = message;
+                        await _repository.SaveEmailAccountAsync(account, cancellationToken);
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch
+                {
+                    // The monitor will retry even if status persistence is temporarily unavailable.
+                }
+                SynchronizationChanged?.Invoke(this, new EmailSynchronizationState(accountId, "error", Error: message));
+            }
+
+            try
+            {
+                await Task.Delay(retryDelay, cancellationToken);
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 300));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+    }
+
+    private async Task RunConnectedAccountSessionAsync(EmailAccount account, CancellationToken cancellationToken)
+    {
+        var password = RequirePassword(account);
+        using var client = new ImapClient();
+        await client.ConnectAsync(account.ImapHost, account.ImapPort, SocketOptions(account.ImapPort, account.ImapUseSsl), cancellationToken);
+        await client.AuthenticateAsync(account.UserName, password, cancellationToken);
+        var inbox = client.Inbox;
+        await inbox.OpenAsync(FolderAccess.ReadOnly, cancellationToken);
+
+        var imported = await ImportInboxAsync(account, inbox, 500, cancellationToken);
+        account.Status = EmailConnectionStatus.Connected;
+        account.LastSyncAt = DateTimeOffset.Now;
+        account.LastError = "";
+        await _repository.SaveEmailAccountAsync(account, cancellationToken);
+        SynchronizationChanged?.Invoke(this, new EmailSynchronizationState(account.Id, "connected", imported));
+
+        while (!cancellationToken.IsCancellationRequested && client.IsConnected)
+        {
+            if ((client.Capabilities & ImapCapabilities.Idle) != 0)
+            {
+                using var idleDone = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+                void InboxChanged(object? _, EventArgs __) => idleDone.Cancel();
+                inbox.CountChanged += InboxChanged;
+                try
+                {
+                    await client.IdleAsync(idleDone.Token, cancellationToken);
+                }
+                catch (OperationCanceledException) when (idleDone.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    // New mail or the IDLE renewal interval ended.
+                }
+                finally
+                {
+                    inbox.CountChanged -= InboxChanged;
+                }
+            }
+            else
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+                await client.NoOpAsync(cancellationToken);
+            }
+
+            var newMessages = await ImportInboxAsync(account, inbox, 150, cancellationToken);
+            account.Status = EmailConnectionStatus.Connected;
+            account.LastSyncAt = DateTimeOffset.Now;
+            account.LastError = "";
+            await _repository.SaveEmailAccountAsync(account, cancellationToken);
+            if (newMessages > 0)
+                SynchronizationChanged?.Invoke(this, new EmailSynchronizationState(account.Id, "messages", newMessages));
+        }
+
+        if (client.IsConnected)
+            await client.DisconnectAsync(true, cancellationToken);
+    }
+
+    private async Task<int> ImportInboxAsync(
+        EmailAccount account,
+        IMailFolder inbox,
+        int maxMessages,
+        CancellationToken cancellationToken)
+    {
+        var syncGate = _syncGates.GetOrAdd(account.Id, _ => new SemaphoreSlim(1, 1));
+        await syncGate.WaitAsync(cancellationToken);
+        try
+        {
+            var imported = 0;
+            if (inbox.Count == 0) return imported;
+            var start = Math.Max(0, inbox.Count - Math.Clamp(maxMessages, 1, 2_000));
+            var summaries = await inbox.FetchAsync(
+                start,
+                -1,
+                new FetchRequest(MessageSummaryItems.UniqueId | MessageSummaryItems.Envelope | MessageSummaryItems.Flags),
+                cancellationToken);
+            foreach (var summary in summaries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var providerId = string.IsNullOrWhiteSpace(summary.Envelope?.MessageId)
+                    ? $"imap:{summary.UniqueId.Id}"
+                    : summary.Envelope.MessageId;
+                if (await _repository.GetEmailMessageAsync($"{account.Id}:{providerId}", cancellationToken) is not null)
+                    continue;
+                var message = await inbox.GetMessageAsync(summary.UniqueId, cancellationToken);
+                var incrementUnread = !summary.Flags.HasValue || !summary.Flags.Value.HasFlag(MessageFlags.Seen);
+                if (await StoreIncomingAsync(account, summary.UniqueId.Id.ToString(), message, incrementUnread, cancellationToken))
+                    imported++;
+            }
+            return imported;
+        }
+        finally
+        {
+            syncGate.Release();
         }
     }
 
@@ -290,7 +522,12 @@ public sealed class EmailService
         }, cancellationToken);
     }
 
-    private async Task<bool> StoreIncomingAsync(EmailAccount account, string uid, MimeMessage source, CancellationToken cancellationToken)
+    private async Task<bool> StoreIncomingAsync(
+        EmailAccount account,
+        string uid,
+        MimeMessage source,
+        bool incrementUnread,
+        CancellationToken cancellationToken)
     {
         var sender = source.From.Mailboxes.FirstOrDefault();
         if (sender is null || string.IsNullOrWhiteSpace(sender.Address)) return false;
@@ -299,7 +536,8 @@ public sealed class EmailService
         var messageId = $"{account.Id}:{providerId}";
         if (await _repository.GetEmailMessageAsync(messageId, cancellationToken) is not null) return false;
         var lead = await _repository.GetLeadByEmailAsync(peer, cancellationToken);
-        var conversation = await BuildConversationAsync(account, peer, sender.Name, source.Subject, source.TextBody, source.Date, lead, true, cancellationToken);
+        var timestamp = source.Date == default ? DateTimeOffset.Now : source.Date;
+        var conversation = await BuildConversationAsync(account, peer, sender.Name, source.Subject, source.TextBody, timestamp, lead, incrementUnread, cancellationToken);
         var item = new EmailMessage
         {
             Id = messageId, ProviderMessageId = providerId, AccountId = account.Id,
@@ -308,7 +546,7 @@ public sealed class EmailService
             ToAddresses = source.To.Mailboxes.Select(address => NormalizeEmail(address.Address)).Where(value => value.Length > 0).ToList(),
             CcAddresses = source.Cc.Mailboxes.Select(address => NormalizeEmail(address.Address)).Where(value => value.Length > 0).ToList(),
             Subject = source.Subject ?? "", TextBody = source.TextBody ?? "", HtmlBody = source.HtmlBody ?? "",
-            InReplyTo = source.InReplyTo ?? "", Timestamp = source.Date == default ? DateTimeOffset.Now : source.Date
+            InReplyTo = source.InReplyTo ?? "", Timestamp = timestamp
         };
         return await _repository.UpsertEmailMessageAsync(item, cancellationToken);
     }
@@ -360,8 +598,7 @@ public sealed class EmailService
         conversation.Subject = subject ?? conversation.Subject;
         conversation.LastMessage = Snippet(body);
         conversation.LastMessageAt = timestamp;
-        if (incrementUnread) conversation.UnreadCount++;
-        await _repository.UpsertEmailConversationAsync(conversation, cancellationToken);
+        await _repository.UpsertEmailConversationAsync(conversation, cancellationToken, incrementUnread);
         return conversation;
     }
 
@@ -436,4 +673,37 @@ public sealed class EmailService
         var text = (value ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
         return text.Length <= 500 ? text : text[..500];
     }
+
+    public async ValueTask DisposeAsync()
+    {
+        CancellationTokenSource? supervisorLifetime;
+        Task? supervisor;
+        lock (_backgroundLock)
+        {
+            supervisorLifetime = _backgroundLifetime;
+            supervisor = _backgroundSupervisor;
+            _backgroundLifetime = null;
+            _backgroundSupervisor = null;
+        }
+        supervisorLifetime?.Cancel();
+        var monitors = _backgroundMonitors.Values.ToArray();
+        foreach (var monitor in monitors) monitor.Lifetime.Cancel();
+        _backgroundMonitors.Clear();
+        if (supervisor is not null)
+        {
+            try { await supervisor; }
+            catch (OperationCanceledException) { }
+        }
+        if (monitors.Length > 0)
+        {
+            try { await Task.WhenAll(monitors.Select(item => item.Worker)); }
+            catch (OperationCanceledException) { }
+        }
+        foreach (var monitor in monitors) monitor.Lifetime.Dispose();
+        supervisorLifetime?.Dispose();
+        foreach (var gate in _syncGates.Values) gate.Dispose();
+        _syncGates.Clear();
+    }
+
+    private sealed record BackgroundAccountMonitor(CancellationTokenSource Lifetime, Task Worker);
 }

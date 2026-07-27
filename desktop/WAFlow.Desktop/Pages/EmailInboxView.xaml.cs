@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
+using WAFlow.Core.Services;
 using WAFlow.Desktop.Windows;
 
 namespace WAFlow.Desktop.Pages;
@@ -27,6 +28,7 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         _services = services;
         AccountBox.ItemsSource = _accounts; ConversationList.ItemsSource = _conversations; MessageList.ItemsSource = _messages;
         StageBox.ItemsSource = Enum.GetValues<LeadStage>().Select(stage => new StageChoice(Labels.Stage(stage), stage)).ToList();
+        _services.Email.SynchronizationChanged += Email_SynchronizationChanged;
     }
 
     private void ToggleCustomerDrawer_Click(object sender, RoutedEventArgs e)
@@ -95,10 +97,12 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     {
         if (ConversationList.SelectedItem is not EmailConversation conversation) { ClearConversation(); return; }
         _conversation = conversation;
-        if (conversation.UnreadCount > 0)
+        if (IsVisible && conversation.UnreadCount > 0)
         {
             conversation.UnreadCount = 0;
-            await _services.Repository.UpsertEmailConversationAsync(conversation);
+            conversation.LastReadAt = DateTimeOffset.Now;
+            await _services.Repository.MarkEmailConversationReadAsync(conversation.Id);
+            DataChanged?.Invoke(this, EventArgs.Empty);
         }
         ConversationTitle.Text = conversation.DisplayName; ConversationSubtitle.Text = $"{conversation.PeerEmail} · {conversation.Subject}";
         _messages.Clear(); foreach (var message in await _services.Repository.GetEmailMessagesAsync(conversation.Id)) _messages.Add(message);
@@ -167,6 +171,16 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     }
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e) => ApplySearch();
+
+    private void Email_SynchronizationChanged(object? sender, EmailSynchronizationState state)
+    {
+        if (state.Imported <= 0 || !IsVisible) return;
+        _ = Dispatcher.InvokeAsync(async () =>
+        {
+            if (IsVisible) await RefreshAsync();
+        });
+    }
+
     private void ApplySearch()
     {
         var query = SearchBox.Text.Trim();

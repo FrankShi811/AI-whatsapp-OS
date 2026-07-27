@@ -34,6 +34,8 @@
         <SolidColorBrush x:Key="SidebarActive" Color="#1B4A3B"/>
         <SolidColorBrush x:Key="SidebarText" Color="#D2E1DC"/>
         <SolidColorBrush x:Key="SidebarMuted" Color="#82A095"/>
+        <SolidColorBrush x:Key="UnreadBadgeBackground" Color="#C43131"/>
+        <SolidColorBrush x:Key="UnreadBadgeText" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="Success" Color="#16B889"/>
         <SolidColorBrush x:Key="SuccessSoft" Color="#E0F7EF"/>
         <SolidColorBrush x:Key="Warning" Color="#E0A12B"/>

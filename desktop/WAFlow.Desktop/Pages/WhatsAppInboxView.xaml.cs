@@ -69,7 +69,6 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             ConversationAgentMode.CopilotActive, ConversationAgentMode.AutoActive
         }.Select(value => new AgentModeOption(CustomerSuccessAgentLabels.Mode(value), value)).ToList();
         _services.WhatsApp.EventReceived += WhatsApp_EventReceived;
-        _services.WhatsAppSync.MessageSynchronized += (_, _) => Dispatcher.InvokeAsync(() => DataChanged?.Invoke(this, EventArgs.Empty));
         _services.WhatsAppSync.SynchronizationChanged += WhatsAppSync_SynchronizationChanged;
         _ipTimer.Tick += async (_, _) => await RefreshPublicIpAsync();
         Loaded += async (_, _) => { _ipTimer.Start(); await RefreshPublicIpAsync(); };
@@ -457,8 +456,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             conversation.LastMessage = isStatusUpdate ? $"[最新动态] {preview}" : preview;
         }
         conversation.LastAt = timestamp;
-        if (existingIndex.item is null && !fromMe && !isStatusUpdate && ConversationList.SelectedItem != conversation) conversation.Unread++;
-        else if (!fromMe && ConversationList.SelectedItem == conversation) _ = PersistConversationReadAfterSyncAsync(conversation);
+        var visibleConversation = IsVisible && ConversationList.SelectedItem == conversation;
+        if (existingIndex.item is null && !fromMe && !isStatusUpdate && !visibleConversation) conversation.Unread++;
+        else if (!fromMe && visibleConversation) _ = PersistConversationReadAfterSyncAsync(conversation);
         ReorderConversations(conversation);
         if (ConversationList.SelectedItem == conversation)
         {
@@ -493,6 +493,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             conversation.Unread = 0;
             conversation.LastReadAt = DateTimeOffset.Now;
             await _services.Repository.MarkWhatsAppConversationReadAsync(conversation.Id);
+            DataChanged?.Invoke(this, EventArgs.Empty);
         }
         catch { }
     }
@@ -513,9 +514,14 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             ClearReply();
             ClearKnowledgeReferences();
         }
-        conversation.Unread = 0;
-        conversation.LastReadAt = DateTimeOffset.Now;
-        await _services.Repository.MarkWhatsAppConversationReadAsync(conversation.Id);
+        if (IsVisible)
+        {
+            var hadUnread = conversation.Unread > 0;
+            conversation.Unread = 0;
+            conversation.LastReadAt = DateTimeOffset.Now;
+            await _services.Repository.MarkWhatsAppConversationReadAsync(conversation.Id);
+            if (hadUnread) DataChanged?.Invoke(this, EventArgs.Empty);
+        }
         ChatTitleText.Text = conversation.DisplayName;
         ChatNumberText.Text = string.IsNullOrWhiteSpace(conversation.Phone) ? "WhatsApp 尚未提供该联系人的电话号码" : $"+{conversation.Phone}";
         var persistedMessages = string.IsNullOrWhiteSpace(conversation.Phone) ? [] : await _services.Repository.GetWhatsAppMessagesAsync(conversation.Id, 2000);

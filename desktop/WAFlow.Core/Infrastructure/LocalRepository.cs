@@ -1822,24 +1822,101 @@ public sealed class LocalRepository
         return items;
     }
 
-    public async Task UpsertEmailConversationAsync(EmailConversation conversation, CancellationToken cancellationToken = default)
+    public async Task UpsertEmailConversationAsync(
+        EmailConversation conversation,
+        CancellationToken cancellationToken = default,
+        bool incrementUnread = false)
     {
-        conversation.PeerEmail = NormalizeEmail(conversation.PeerEmail);
-        conversation.UpdatedAt = DateTimeOffset.Now;
-        if (string.IsNullOrWhiteSpace(conversation.Id)) conversation.Id = $"{conversation.AccountId}:{conversation.PeerEmail}";
+        await _conversationWriteGate.WaitAsync(cancellationToken);
+        try
+        {
+            conversation.PeerEmail = NormalizeEmail(conversation.PeerEmail);
+            conversation.UpdatedAt = DateTimeOffset.Now;
+            if (string.IsNullOrWhiteSpace(conversation.Id)) conversation.Id = $"{conversation.AccountId}:{conversation.PeerEmail}";
+            await using var db = Open(); await db.OpenAsync(cancellationToken);
+            EmailConversation? existing;
+            await using (var existingCommand = db.CreateCommand())
+            {
+                existingCommand.CommandText = "SELECT data_json FROM email_conversations WHERE id=$id";
+                existingCommand.Parameters.AddWithValue("$id", conversation.Id);
+                existing = Json.Deserialize<EmailConversation>(await existingCommand.ExecuteScalarAsync(cancellationToken) as string);
+            }
+            if (incrementUnread)
+            {
+                conversation.LastReadAt = existing?.LastReadAt;
+                conversation.UnreadCount = existing?.UnreadCount ?? 0;
+                if (conversation.LastReadAt is null || conversation.LastMessageAt > conversation.LastReadAt)
+                    conversation.UnreadCount++;
+            }
+            else if (existing?.LastReadAt is { } persistedReadAt &&
+                     (conversation.LastReadAt is null || conversation.LastReadAt <= persistedReadAt))
+            {
+                conversation.LastReadAt = persistedReadAt;
+                conversation.UnreadCount = existing.UnreadCount;
+            }
+            await using var command = db.CreateCommand();
+            command.CommandText = """
+                INSERT INTO email_conversations(id,account_id,lead_id,peer_email,last_message_at,unread_count,updated_at,data_json)
+                VALUES($id,$account,$lead,$peer,$last,$unread,$updated,$json)
+                ON CONFLICT(id) DO UPDATE SET lead_id=excluded.lead_id,peer_email=excluded.peer_email,last_message_at=excluded.last_message_at,
+                  unread_count=excluded.unread_count,updated_at=excluded.updated_at,data_json=excluded.data_json
+                """;
+            command.Parameters.AddWithValue("$id", conversation.Id); command.Parameters.AddWithValue("$account", conversation.AccountId);
+            command.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(conversation.LeadId) ? DBNull.Value : conversation.LeadId);
+            command.Parameters.AddWithValue("$peer", conversation.PeerEmail); command.Parameters.AddWithValue("$last", conversation.LastMessageAt.ToString("O"));
+            command.Parameters.AddWithValue("$unread", conversation.UnreadCount); command.Parameters.AddWithValue("$updated", conversation.UpdatedAt.ToString("O"));
+            command.Parameters.AddWithValue("$json", Json.Serialize(conversation)); await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _conversationWriteGate.Release();
+        }
+    }
+
+    public async Task MarkEmailConversationReadAsync(string conversationId, CancellationToken cancellationToken = default)
+    {
+        await _conversationWriteGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var db = Open(); await db.OpenAsync(cancellationToken);
+            await using var select = db.CreateCommand();
+            select.CommandText = "SELECT data_json FROM email_conversations WHERE id=$id";
+            select.Parameters.AddWithValue("$id", conversationId);
+            var conversation = Json.Deserialize<EmailConversation>(await select.ExecuteScalarAsync(cancellationToken) as string);
+            if (conversation is null) return;
+
+            var readAt = DateTimeOffset.Now;
+            conversation.UnreadCount = 0;
+            if (conversation.LastReadAt is null || readAt > conversation.LastReadAt) conversation.LastReadAt = readAt;
+            conversation.UpdatedAt = readAt;
+
+            await using var update = db.CreateCommand();
+            update.CommandText = "UPDATE email_conversations SET unread_count=0,updated_at=$updated,data_json=$json WHERE id=$id";
+            update.Parameters.AddWithValue("$id", conversationId);
+            update.Parameters.AddWithValue("$updated", conversation.UpdatedAt.ToString("O"));
+            update.Parameters.AddWithValue("$json", Json.Serialize(conversation));
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _conversationWriteGate.Release();
+        }
+    }
+
+    public async Task<InboxUnreadTotals> GetInboxUnreadTotalsAsync(CancellationToken cancellationToken = default)
+    {
         await using var db = Open(); await db.OpenAsync(cancellationToken);
         await using var command = db.CreateCommand();
         command.CommandText = """
-            INSERT INTO email_conversations(id,account_id,lead_id,peer_email,last_message_at,unread_count,updated_at,data_json)
-            VALUES($id,$account,$lead,$peer,$last,$unread,$updated,$json)
-            ON CONFLICT(id) DO UPDATE SET lead_id=excluded.lead_id,peer_email=excluded.peer_email,last_message_at=excluded.last_message_at,
-              unread_count=excluded.unread_count,updated_at=excluded.updated_at,data_json=excluded.data_json
+            SELECT
+              COALESCE((SELECT SUM(unread_count) FROM whatsapp_conversations), 0),
+              COALESCE((SELECT SUM(unread_count) FROM email_conversations), 0)
             """;
-        command.Parameters.AddWithValue("$id", conversation.Id); command.Parameters.AddWithValue("$account", conversation.AccountId);
-        command.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(conversation.LeadId) ? DBNull.Value : conversation.LeadId);
-        command.Parameters.AddWithValue("$peer", conversation.PeerEmail); command.Parameters.AddWithValue("$last", conversation.LastMessageAt.ToString("O"));
-        command.Parameters.AddWithValue("$unread", conversation.UnreadCount); command.Parameters.AddWithValue("$updated", conversation.UpdatedAt.ToString("O"));
-        command.Parameters.AddWithValue("$json", Json.Serialize(conversation)); await command.ExecuteNonQueryAsync(cancellationToken);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return new InboxUnreadTotals(0, 0);
+        return new InboxUnreadTotals(
+            Math.Max(0, Convert.ToInt32(reader.GetInt64(0))),
+            Math.Max(0, Convert.ToInt32(reader.GetInt64(1))));
     }
 
     public async Task<bool> UpsertEmailMessageAsync(EmailMessage message, CancellationToken cancellationToken = default)

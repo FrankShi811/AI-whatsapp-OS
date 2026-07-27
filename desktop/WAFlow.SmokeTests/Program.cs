@@ -731,6 +731,50 @@ var emailAccount = new EmailAccount
     Status=EmailConnectionStatus.Connected
 };
 await repository.SaveEmailAccountAsync(emailAccount);
+var unreadTotalsBeforeEmail = await repository.GetInboxUnreadTotalsAsync();
+var emailUnreadConversation = new EmailConversation
+{
+    Id="sales-email:unread@example.com", AccountId=emailAccount.Id, PeerEmail="unread@example.com",
+    PeerName="Unread Buyer", Subject="Unread order", LastMessage="Please reply", LastMessageAt=DateTimeOffset.Now,
+    UnreadCount=3
+};
+await repository.UpsertEmailConversationAsync(emailUnreadConversation);
+var unreadTotalsWithEmail = await repository.GetInboxUnreadTotalsAsync();
+Check(
+    unreadTotalsWithEmail.Email == unreadTotalsBeforeEmail.Email + 3,
+    "sidebar unread totals aggregate email conversations across accounts");
+await repository.MarkEmailConversationReadAsync(emailUnreadConversation.Id);
+var readEmailConversation = (await repository.GetEmailConversationsAsync(emailAccount.Id))
+    .Single(item => item.Id == emailUnreadConversation.Id);
+Check(
+    readEmailConversation.UnreadCount == 0 && readEmailConversation.LastReadAt is not null,
+    "email conversation read cursor persists when leaving Inbox");
+var emailReadCursor = readEmailConversation.LastReadAt ?? throw new InvalidOperationException("Email read cursor was not persisted.");
+await repository.UpsertEmailConversationAsync(new EmailConversation
+{
+    Id=emailUnreadConversation.Id, AccountId=emailAccount.Id, PeerEmail=emailUnreadConversation.PeerEmail,
+    PeerName=emailUnreadConversation.PeerName, Subject=emailUnreadConversation.Subject,
+    LastMessage=emailUnreadConversation.LastMessage, LastMessageAt=emailUnreadConversation.LastMessageAt,
+    UnreadCount=8, LastReadAt=emailReadCursor.AddMinutes(-2)
+});
+readEmailConversation = (await repository.GetEmailConversationsAsync(emailAccount.Id))
+    .Single(item => item.Id == emailUnreadConversation.Id);
+Check(
+    readEmailConversation.UnreadCount == 0 && readEmailConversation.LastReadAt == emailReadCursor,
+    "stale email synchronization snapshots cannot restore cleared sidebar badges");
+await repository.UpsertEmailConversationAsync(new EmailConversation
+{
+    Id=emailUnreadConversation.Id, AccountId=emailAccount.Id, PeerEmail=emailUnreadConversation.PeerEmail,
+    PeerName=emailUnreadConversation.PeerName, Subject="New order",
+    LastMessage="A genuinely new reply", LastMessageAt=emailReadCursor.AddMinutes(1),
+    LastReadAt=emailReadCursor
+}, incrementUnread: true);
+readEmailConversation = (await repository.GetEmailConversationsAsync(emailAccount.Id))
+    .Single(item => item.Id == emailUnreadConversation.Id);
+Check(
+    readEmailConversation.UnreadCount == 1,
+    "email arriving after the read cursor increments the global unread badge");
+await repository.MarkEmailConversationReadAsync(emailUnreadConversation.Id);
 var emailLead = new Lead { Id="email-lead", Name="Email Buyer", Email="buyer@example.com", Stage=LeadStage.New, Grade="D", Score=0 };
 await repository.UpsertLeadAsync(emailLead);
 Check((await repository.GetLeadByEmailAsync(" BUYER@EXAMPLE.COM "))?.Id == emailLead.Id, "email address links inbox conversations to the authoritative CRM customer");

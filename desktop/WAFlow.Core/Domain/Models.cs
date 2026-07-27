@@ -270,11 +270,14 @@ public sealed class EmailConversation
     public string LastMessage { get; set; } = "";
     public DateTimeOffset LastMessageAt { get; set; }
     public int UnreadCount { get; set; }
+    public DateTimeOffset? LastReadAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
 
     [JsonIgnore] public string DisplayName => string.IsNullOrWhiteSpace(PeerName) ? PeerEmail : PeerName;
     [JsonIgnore] public string LastTimeLabel => LastMessageAt == default ? "" : LastMessageAt.LocalDateTime.ToString("MM-dd HH:mm");
 }
+
+public sealed record InboxUnreadTotals(int WhatsApp, int Email);
 
 public sealed class EmailMessage
 {

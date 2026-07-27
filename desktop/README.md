@@ -8,6 +8,7 @@
 - `WAFlow.Core`：保留的内部核心模块名，包含 SQLite、Excel/CSV、AI 模型发现、WhatsApp 回复分析、多账号、持久群发任务调度、严格作用域 Knowledge Base / RAG，以及分阶段客户情报报告和 Word/PDF 导出。
 - `WAFlow.WhatsApp.Bridge.exe`：内嵌 Node SEA Windows EXE，通过标准输入输出 JSON-RPC 与主程序通信，不开放本地 HTTP 端口。
 - `WAFlow.SmokeTests`：离线核心测试；DeepSeek 使用模拟响应，不访问真实账号或客户。
+- 应用级消息守护会同时维持全部已登录 WhatsApp 会话和已配置 IMAP 邮箱；侧栏未读气泡从 SQLite 汇总所有账号，隐藏页面不会把后台新消息误标为已读。
 
 内部命名与 `%LOCALAPPDATA%\WAFlow` 数据目录有意保留，以兼容既有数据库、Windows 凭据和 WhatsApp 加密会话。产品界面、文件名、版本属性和应用图标均已统一为 AI Sales OS。
 
