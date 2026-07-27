@@ -13,6 +13,16 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("5.5.0", "2026-07-27", "邮件销售工作台与 AI 写信",
+        [
+            "邮件 Inbox 的会话搜索框右侧新增“＋”入口；选择发件账号后可填写任意有效收件邮箱、主题和正文创建新邮件，既有会话继续以回复模式发送并携带最近客户来信的邮件线程引用。",
+            "右侧 Customer Intelligence 升级为与 WhatsApp Inbox 一致的销售上下文工作区：展示 AI SALES BRIEF、Lead Intelligence 分数、Customer Brain 数据覆盖、跨渠道客户画像和下一步建议，并继续支持人工维护统一 CRM 客户资料。",
+            "新增 Email Sales Copilot，严格使用 API 设置中的邮件 Inbox 独立 Provider、模型和推理深度；模型会读取销售人员的写信意图、当前草稿、CRM、Customer Brain、真实邮件历史与按账号/客户/会话隔离的已批准知识。",
+            "AI 产出包含可编辑主题、正文、上下文摘要、客户意向、风险、下一步和知识来源；点击“填入邮件”后仍必须由用户核对并手动发送，生成过程不会自动发送邮件、创建消息记录、修改 CRM 或虚构价格、库存、交期与政策承诺。",
+            "系统性审计并更新全局、WhatsApp Inbox、邮件 Inbox、客户智能分析和 API 设置引导：补充全账号后台同步、未读气泡、Agent 模式、新建邮件、AI 写信、Customer Brain 与真实 Token 消耗边界；内容版本只让发生变化的引导重新展示。",
+            "新增邮件 AI 独立模型路由、销售意图与上下文传递、结构化草稿校验、不发送安全边界、新邮件 UI、客户智能侧栏和引导完整性回归；升级不覆盖客户、邮箱/WhatsApp 账号、消息、API Key、自动化、报告、知识库或 SQLite 数据。",
+            "本版本仅发布 GitHub Windows 中文安装包和 Velopack 自动更新资产，不覆盖、关闭、重启或安装本机正式程序；macOS 继续暂停。"
+        ], true),
         new("5.4.1", "2026-07-27", "邮件会话新消息气泡",
         [
             "邮件 Inbox 左侧每个会话新增独立新邮件数量气泡，与 WhatsApp 会话列表保持一致；未读会话同时使用浅色底纹和加粗客户名称，用户可以直接辨别哪位客户发来了新邮件。",
@@ -20,7 +30,7 @@ public static class ReleaseCatalog
             "进入具体邮件会话后，列表气泡即时消失并把单调已读游标持久化到 SQLite；切换板块、切换邮箱账号、页面重载或重新同步不会恢复已经读过的数量。",
             "新增邮件会话气泡 UI 契约和既有邮件读游标、旧同步快照防回退、真实新邮件计数回归；升级不覆盖客户、邮箱账号、邮件历史、API、WhatsApp、自动化、报告、知识库或本地数据库。",
             "本版本仅发布 GitHub Windows 中文安装包和 Velopack 自动更新资产，不覆盖、关闭、重启或安装本机正式程序；macOS 继续暂停。"
-        ], true),
+        ]),
         new("5.4.0", "2026-07-27", "统一客户身份与分板块 AI 控制",
         [
             "新增标准 Buyer ID 字段并兼容常见中英文表头；客户识别统一采用“Buyer ID 优先、电话号码兜底”，导入更新、WhatsApp 绑定、Customer Brain、Lead Intelligence、Customer Success Agent、自动化和客户智能分析共享同一客户档案与跨板块记忆。",

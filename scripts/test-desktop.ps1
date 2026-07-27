@@ -42,6 +42,7 @@ $whatsAppManagerSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path
 $campaignAutomationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CampaignAutomationService.cs')
 $customerSuccessSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerSuccessAgentCoordinator.cs')
 $emailServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\EmailService.cs')
+$emailAssistantSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\EmailAssistantService.cs')
 $messagingSyncSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\MessagingSyncService.cs')
 $emailAccountXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\EmailAccountWindow.xaml')
 $emailAccountSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\EmailAccountWindow.xaml.cs')
@@ -388,7 +389,7 @@ if ($emailAccountXaml -notmatch 'x:Name="GuideStepsText"' -or
     -not ($emailAccountSource.Contains('UserNameBox.Text = EmailBox.Text.Trim()')) -or
     -not ($emailAccountSource.Contains('ImapHostBox.Clear()')) -or
     -not ($emailAccountSource.Contains('UseShellExecute = true')) -or
-    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 2'))) {
+    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 3'))) {
   throw 'Email account window must provide provider steps, direct official links, field hints, username sync and preset recovery.'
 }
 Write-Host 'PASS  provider-specific email onboarding and compatibility guidance contract'
@@ -430,6 +431,29 @@ if ($emailInboxXaml -notmatch [regex]::Escape('Visibility="{Binding UnreadVisibi
   throw 'Email Inbox must show a per-conversation unread badge, cap it at 99+, and clear it immediately with the durable read cursor.'
 }
 Write-Host 'PASS  Email Inbox per-conversation unread badge and immediate read-state contract'
+
+if ($emailInboxXaml -notmatch 'x:Name="NewEmailButton"' -or
+    $emailInboxXaml -notmatch 'x:Name="RecipientBox"' -or
+    $emailInboxXaml -notmatch 'x:Name="EmailAiInstructionBox"' -or
+    $emailInboxXaml -notmatch 'x:Name="AiSidebarScoreRing"' -or
+    $emailInboxSource -notmatch [regex]::Escape('NewEmail_Click') -or
+    $emailInboxSource -notmatch [regex]::Escape('_services.EmailAssistant.AnalyzeAsync') -or
+    $emailInboxSource -notmatch [regex]::Escape('UseEmailDraft_Click') -or
+    $emailAssistantSource -notmatch [regex]::Escape('AiModuleKeys.EmailInbox') -or
+    $emailAssistantSource -notmatch [regex]::Escape('userInstruction') -or
+    $emailAssistantSource -notmatch [regex]::Escape('CompleteStructuredAsync<EmailAssistantResult>') -or
+    $settingsSource -notmatch [regex]::Escape('Email Sales Copilot') -or
+    $guideCatalogSource -notmatch [regex]::Escape('Email Sales Copilot') -or
+    $guideCatalogSource -notmatch [regex]::Escape('GlobalGuideVersion = 8') -or
+    $guideCatalogSource -notmatch 'Ctrl\+1 . Ctrl\+8' -or
+    $guideCatalogSource -match 'Ctrl\+1 . Ctrl\+7' -or
+    $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 2') -or
+    $guideCatalogSource -notmatch [regex]::Escape('["broadcast"] = ModuleGuideVersion + 1') -or
+    $guideCatalogSource -notmatch [regex]::Escape('["analytics"] = ModuleGuideVersion + 1') -or
+    $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 4')) {
+  throw 'Email Inbox must support new-message composition, CRM/Customer Brain-aware AI drafting, manual-send safety and current module guidance.'
+}
+Write-Host 'PASS  Email Inbox new-message, Customer Intelligence, AI draft and all-module guide audit contract'
 
 $aiRoutingUiTokens = @(
   'x:Name="ReasoningEffortBox"',

@@ -1,6 +1,6 @@
 # AI Sales OS Windows 原生版
 
-直接双击 `AI Sales OS.exe` 运行。当前版本为 5.4.1，主要数据继续保存在 `%LOCALAPPDATA%\WAFlow\waflow.db`，因此升级后仍会读取原有客户、账号、邮件历史、自动化任务、分析报告、知识库和设置。
+直接双击 `AI Sales OS.exe` 运行。当前版本为 5.5.0，主要数据继续保存在 `%LOCALAPPDATA%\WAFlow\waflow.db`，因此升级后仍会读取原有客户、账号、邮件历史、自动化任务、分析报告、知识库和设置。
 
 这是 WPF/.NET 8 自包含单文件 EXE，不是 Electron、Tauri 或 WebView 套壳，不启动 localhost HTTP 服务。最终用户无需安装 Node.js、npm、浏览器或 .NET Runtime；WhatsApp 桥接程序已作为 Windows EXE 嵌入主程序。
 
@@ -10,6 +10,8 @@
 - 程序启动后会在后台恢复全部已登录 WhatsApp 账号并持续接收消息；所有已配置邮箱分别保持 IMAP IDLE，服务商不支持 IDLE 时自动轮询，网络中断后自动退避重连。
 - 左侧 WhatsApp Inbox 与邮件 Inbox 会汇总所有账号的未读消息数量；用户在其他板块也能实时看到新消息，进入具体会话后才清除对应未读数。
 - 邮件 Inbox 的每个会话会独立显示新邮件数量气泡和浅色强调，超过 99 封显示 `99+`；进入对应会话后立即清零，切换板块、账号或重新同步不会恢复已读气泡。
+- 邮件 Inbox 搜索框右侧的“＋”可直接新建邮件；选择既有会话则以回复模式保留邮件线程，收件人、主题、正文和发送结果都保存在本地会话历史。
+- 邮件右侧 Customer Intelligence 会显示 Customer Brain 跨渠道画像，并提供 Email Sales Copilot：使用邮件板块独立模型，根据写信意图、CRM、Customer Brain、真实邮件上下文和已批准知识生成可编辑主题与正文；AI 不自动发送或修改 CRM。
 - Knowledge Base 支持 PDF、DOCX、TXT、Markdown、XLSX、CSV、PPTX、HTML 与常见图片；资料必须人工审核启用，并按全局、账号、客户、会话或临时任务严格隔离后，才会通过带来源和版本的混合检索进入 AI 建议与报告。
 - 邮件 Inbox 支持 Gmail、Outlook / Microsoft 365、Yahoo、iCloud 和自定义 IMAP / SMTP；邮件地址自动匹配 CRM 客户，收发历史保存在本地，未匹配联系人可从客户侧栏创建客户。
 - 客户智能分析会按“数据整理 → 事实提取 → 商业分析 → 销售策略 → 报告生成”分阶段调用所选 AI 模型，整合 CRM、完整 WhatsApp 历史、Lead Intelligence、自动化触达和客户轨迹，生成中文为主且事实、AI 判断、销售建议明确分离的专业报告。

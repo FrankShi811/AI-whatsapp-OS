@@ -243,7 +243,7 @@ public partial class SettingsWindow : Window
         {
             new ModuleDefinition(AiModuleKeys.Customers, "Customer Operations · 客户列表", "Customer Brain 人工分析；查看、编辑和同步客户资料不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.WhatsAppInbox, "Customer Operations · WhatsApp Inbox", "AI 会话助理与 Customer Success Agent；普通消息同步不耗 Token。"),
-            new ModuleDefinition(AiModuleKeys.EmailInbox, "Customer Operations · 邮件 Inbox", "当前邮件收发与同步不调用 AI；配置将供后续邮件摘要/回复能力继承。"),
+            new ModuleDefinition(AiModuleKeys.EmailInbox, "Customer Operations · 邮件 Inbox", "Email Sales Copilot 根据 CRM、Customer Brain、邮件上下文和你的写信意图生成新邮件或回复草稿；同步和手写收发不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.Campaigns, "Customer Operations · 自动化群发", "AI 触达话术生成；普通群发、排期和投递本身不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.KnowledgeBase, "Insights · 知识库", "图片资料 OCR 调用视觉模型；文本入库、审批和检索不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.CustomerAnalytics, "Insights · 客户智能分析", "分阶段事实提取、商业判断、销售策略和报告生成。")

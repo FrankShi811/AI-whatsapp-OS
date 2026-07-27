@@ -1014,6 +1014,32 @@ await repository.UpsertEmailMessageAsync(new EmailMessage
     TextBody=emailConversation.LastMessage, Timestamp=DateTimeOffset.Now
 });
 Check((await repository.GetEmailMessagesForLeadAsync(emailLead.Id)).Single().TextBody.Contains("500 pcs"), "email history persists and remains linked to the customer record");
+var emailAssistantProvider = new CapturingEmailAssistantProvider();
+var emailAssistant = new EmailAssistantService(repository, emailAssistantProvider);
+var emailMessagesBeforeAiDraft = (await repository.GetEmailMessagesAsync(emailConversation.Id)).Count;
+var emailDraft = await emailAssistant.AnalyzeAsync(
+    emailAccount.Id,
+    emailConversation.Id,
+    emailLead.Email,
+    emailLead,
+    "Reply naturally, confirm that we will prepare the next step, and ask for the target delivery date.",
+    "",
+    "");
+var emailMessagesAfterAiDraft = (await repository.GetEmailMessagesAsync(emailConversation.Id)).Count;
+Check(emailDraft.Subject == "Re: Monthly order" && emailDraft.Body.Contains("delivery date", StringComparison.OrdinalIgnoreCase)
+    && emailAssistantProvider.ModuleKey == AiModuleKeys.EmailInbox,
+    "Email Sales Copilot uses the independent Email Inbox model and generates a subject/body draft");
+Check(emailAssistantProvider.PayloadJson.Contains("\"mode\":\"reply\"", StringComparison.Ordinal)
+    && emailAssistantProvider.PayloadJson.Contains("\"userInstruction\"", StringComparison.Ordinal)
+    && emailAssistantProvider.PayloadJson.Contains("Please quote 500 pcs monthly", StringComparison.Ordinal)
+    && emailAssistantProvider.PayloadJson.Contains(emailLead.Company, StringComparison.Ordinal),
+    "Email Sales Copilot receives seller intent, CRM facts and real email context");
+Check(emailMessagesBeforeAiDraft == emailMessagesAfterAiDraft,
+    "Email Sales Copilot never sends or persists an email while generating a draft");
+Check(EmailAssistantService.Validate(new EmailAssistantResult
+{
+    Subject="", Body="body", ContextSummary="摘要", CustomerIntent="意向", RecommendedNextAction="下一步", Confidence=.5
+})?.Contains("subject") == true, "Email Sales Copilot rejects incomplete structured drafts");
 var emailCampaign = new WhatsAppCampaign
 {
     Id="email-campaign", Channel=CampaignChannel.Email, AccountId=emailAccount.Id, Name="Email nurture",
@@ -2886,6 +2912,65 @@ sealed class CapturingConversationAssistantProvider : IStructuredAiProvider
             RecommendedNextAction = "确认SKU、目标价格和交期后发送报价。",
             Confidence = .9,
             FieldUpdates = []
+        };
+        var typed = (T)(object)result;
+        var error = validate(typed);
+        if (!string.IsNullOrWhiteSpace(error)) throw new InvalidOperationException(error);
+        return Task.FromResult(typed);
+    }
+}
+
+sealed class CapturingEmailAssistantProvider : IStructuredAiProvider
+{
+    public string PayloadJson { get; private set; } = "";
+    public string ModuleKey { get; private set; } = "";
+    public bool HasApiKey() => true;
+    public bool HasApiKey(string moduleKey)
+    {
+        ModuleKey = moduleKey;
+        return true;
+    }
+    public Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult("email-copilot-test");
+    public Task<string> GetSelectedModelAsync(string moduleKey, CancellationToken cancellationToken = default)
+    {
+        ModuleKey = moduleKey;
+        return Task.FromResult("email-copilot-test");
+    }
+
+    public Task<T> CompleteStructuredAsync<T>(
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class =>
+        CompleteStructuredAsync<T>(AiModuleKeys.Global, instructions, payload, validate, cancellationToken);
+
+    public Task<T> CompleteStructuredAsync<T>(
+        string moduleKey,
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        ModuleKey = moduleKey;
+        PayloadJson = System.Text.Json.JsonSerializer.Serialize(
+            payload,
+            new System.Text.Json.JsonSerializerOptions
+            {
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            });
+        if (typeof(T) != typeof(EmailAssistantResult))
+            throw new InvalidOperationException($"Unsupported email assistant type: {typeof(T).Name}");
+        var result = new EmailAssistantResult
+        {
+            Subject = "Re: Monthly order",
+            Body = "Thanks for the update. We will prepare the next step. What is your target delivery date?",
+            Language = "en",
+            ContextSummary = "客户要求每月500件报价。",
+            CustomerIntent = "客户存在持续采购意向。",
+            Risks = ["目标交期尚未确认"],
+            RecommendedNextAction = "确认目标交期后准备报价。",
+            Confidence = .9
         };
         var typed = (T)(object)result;
         var error = validate(typed);
