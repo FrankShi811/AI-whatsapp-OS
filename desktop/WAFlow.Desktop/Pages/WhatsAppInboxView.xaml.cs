@@ -513,7 +513,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         }
         conversation.Unread = 0;
         conversation.LastReadAt = DateTimeOffset.Now;
-        if (!string.IsNullOrWhiteSpace(conversation.Phone)) await _services.Repository.MarkWhatsAppConversationReadAsync(conversation.Id);
+        await _services.Repository.MarkWhatsAppConversationReadAsync(conversation.Id);
         ChatTitleText.Text = conversation.DisplayName;
         ChatNumberText.Text = string.IsNullOrWhiteSpace(conversation.Phone) ? "WhatsApp 尚未提供该联系人的电话号码" : $"+{conversation.Phone}";
         var persistedMessages = string.IsNullOrWhiteSpace(conversation.Phone) ? [] : await _services.Repository.GetWhatsAppMessagesAsync(conversation.Id, 2000);

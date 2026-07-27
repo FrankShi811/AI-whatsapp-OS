@@ -13,6 +13,14 @@ public static class ReleaseCatalog
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("4.2.5", "2026-07-27", "WhatsApp 多账号已读气泡持久化修复",
+        [
+            "修复个人 WhatsApp 账号点开会话后未读气泡只在当前页面消失、切换板块再返回时重新出现的问题。",
+            "已读写入不再错误查询默认 primary 账号，而是按全局唯一会话 ID 在同一写入锁内直接清零未读数并推进已读游标。",
+            "个人账号、附加账号与主账号现在使用同一套持久化语义；后台历史同步仍不能用旧快照恢复已经清除的未读气泡。",
+            "新增非 primary 账号已读持久化回归，验证离开并重新进入 WhatsApp Inbox 后未读数保持为零。",
+            "本版本只通过 GitHub Release 发布 Windows 中文安装包与 Velopack 自动更新资产；不覆盖、关闭、重启或安装本机正式程序，macOS 继续暂停。"
+        ], true),
         new("4.2.4", "2026-07-27", "WhatsApp 入站文本恢复与更新日志编码修复",
         [
             "延续 v4.2.3 的 WhatsApp 入站文本恢复修复：密文占位不再显示为媒体，手机补回正文后按原消息 ID 原位替换。",
@@ -20,7 +28,7 @@ public static class ReleaseCatalog
             "打包阶段统一生成带 BOM 的 UTF-8 更新说明，并在发布前检查当前版本清单是否缺少标题或包含无效替换字符；异常将直接阻断发布。",
             "数据库正文回填、迟到占位防回退、当前会话气泡替换、Bridge EXE、中文安装器及完整核心回归继续保持通过。",
             "本版本只通过 GitHub Release 发布 Windows 中文安装包与 Velopack 自动更新资产；不覆盖、关闭、重启或安装本机正式程序，macOS 继续暂停。"
-        ], true),
+        ]),
         new("4.2.3", "2026-07-27", "WhatsApp 入站文本恢复修复",
         [
             "修复手机可见的普通 WhatsApp 文本在桌面端被错误显示为“媒体消息”的问题；密文占位通知现在会标记为消息内容恢复中，而不是伪装成媒体。",

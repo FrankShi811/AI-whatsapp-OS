@@ -1575,12 +1575,32 @@ public sealed class LocalRepository
 
     public async Task MarkWhatsAppConversationReadAsync(string conversationId, CancellationToken cancellationToken = default)
     {
-        var all = await GetWhatsAppConversationsAsync(cancellationToken: cancellationToken);
-        var conversation = all.FirstOrDefault(x => x.Id == conversationId);
-        if (conversation is null) return;
-        conversation.UnreadCount = 0;
-        conversation.LastReadAt = DateTimeOffset.Now;
-        await UpsertWhatsAppConversationAsync(conversation, cancellationToken);
+        await _conversationWriteGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var db = Open(); await db.OpenAsync(cancellationToken);
+            await using var select = db.CreateCommand();
+            select.CommandText = "SELECT data_json FROM whatsapp_conversations WHERE id=$id";
+            select.Parameters.AddWithValue("$id", conversationId);
+            var conversation = Json.Deserialize<WhatsAppConversation>(await select.ExecuteScalarAsync(cancellationToken) as string);
+            if (conversation is null) return;
+
+            var readAt = DateTimeOffset.Now;
+            conversation.UnreadCount = 0;
+            if (conversation.LastReadAt is null || readAt > conversation.LastReadAt) conversation.LastReadAt = readAt;
+            conversation.UpdatedAt = readAt;
+
+            await using var update = db.CreateCommand();
+            update.CommandText = "UPDATE whatsapp_conversations SET unread_count=0,updated_at=$updated,data_json=$json WHERE id=$id";
+            update.Parameters.AddWithValue("$id", conversationId);
+            update.Parameters.AddWithValue("$updated", conversation.UpdatedAt.ToString("O"));
+            update.Parameters.AddWithValue("$json", Json.Serialize(conversation));
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _conversationWriteGate.Release();
+        }
     }
 
     public async Task<int> CountUnreadWhatsAppMessagesAsync(

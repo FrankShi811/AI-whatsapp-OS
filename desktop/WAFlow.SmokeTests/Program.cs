@@ -462,6 +462,19 @@ Check(storedReply.IsRevoked && storedReply.RevokedAt is not null && storedReply.
 await repository.MarkWhatsAppConversationReadAsync(conversation.Id);
 var readConversation = (await repository.GetWhatsAppConversationsAsync()).Single(x => x.Id == conversation.Id);
 Check(readConversation.UnreadCount == 0 && readConversation.LastReadAt is not null, "WhatsApp conversation unread cursor persistence");
+var personalAccountConversation = new WhatsAppConversation
+{
+    Id="personal_unread:447700900124", AccountId="personal_unread", Phone="447700900124",
+    DisplayName="Personal account unread", LastMessage="Unread reply", LastMessageAt=DateTimeOffset.Now,
+    UnreadCount=4
+};
+await repository.UpsertWhatsAppConversationAsync(personalAccountConversation);
+await repository.MarkWhatsAppConversationReadAsync(personalAccountConversation.Id);
+var readPersonalAccountConversation = (await repository.GetWhatsAppConversationsAsync(personalAccountConversation.AccountId))
+    .Single(x => x.Id == personalAccountConversation.Id);
+Check(
+    readPersonalAccountConversation.UnreadCount == 0 && readPersonalAccountConversation.LastReadAt is not null,
+    "WhatsApp non-primary account unread badge remains cleared after Inbox reload");
 var persistedReadCursor = readConversation.LastReadAt ?? throw new InvalidOperationException("WhatsApp read cursor was not persisted.");
 var olderReadCursor = persistedReadCursor.AddMinutes(-5);
 await repository.UpsertWhatsAppConversationAsync(new WhatsAppConversation
