@@ -140,6 +140,8 @@ public sealed class CustomerIntelligenceProfile
     public string AiModel { get; set; } = "";
     public CustomerIntelligenceCoverage Coverage { get; set; } = new();
     public List<CustomerIntelligenceStatement> Statements { get; set; } = [];
+    public string KnowledgeRetrievalId { get; set; } = "";
+    public List<KnowledgeRetrievalHit> KnowledgeReferences { get; set; } = [];
     public string SourceSnapshotHash { get; set; } = "";
     public DateTimeOffset SourceCapturedAt { get; set; } = DateTimeOffset.Now;
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
@@ -370,6 +372,9 @@ public sealed class TodayBriefItem
         "handoff" => "人工接管",
         "sourcing_complete" => "采购需求完整",
         "cross_account" => "跨账号跟进",
+        "knowledge_review" => "知识待审核",
+        "knowledge_conflict" => "知识冲突",
+        "knowledge_candidate" => "候选待审批",
         _ => PriorityLabel
     };
 
@@ -430,6 +435,9 @@ public sealed class TodayBriefSnapshot
     public int HumanHandoffCount { get; set; }
     public int SourcingCompleteCount { get; set; }
     public int CrossAccountFollowUpCount { get; set; }
+    public int KnowledgeReviewCount { get; set; }
+    public int KnowledgeConflictCount { get; set; }
+    public int KnowledgeCandidateCount { get; set; }
     public List<TodayBriefItem> Items { get; set; } = [];
     public PersonalLearningSummary Learning { get; set; } = new();
 }

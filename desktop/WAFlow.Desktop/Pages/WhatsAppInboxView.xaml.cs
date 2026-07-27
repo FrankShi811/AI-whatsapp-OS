@@ -27,6 +27,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private Lead? _currentLead;
     private CustomerIdentityResolution? _currentIdentityResolution;
     private CustomerSuccessContext? _currentCustomerSuccessContext;
+    private CustomerSuccessAgentDecision? _pendingKnowledgeDecision;
     private bool _connected;
     private bool _switchingAccount;
     private bool _existingSession;
@@ -510,6 +511,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             _composerConversationId = conversation.Id;
             ClearAttachment();
             ClearReply();
+            ClearKnowledgeReferences();
         }
         conversation.Unread = 0;
         conversation.LastReadAt = DateTimeOffset.Now;
@@ -657,6 +659,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
             ComposerBox.Text = result.Decision.ReplyText;
             ComposerBox.CaretIndex = ComposerBox.Text.Length;
+            ShowKnowledgeReferences(result.Decision, result.KnowledgeRetrieval);
             await LoadLeadAsync(conversation);
             DataChanged?.Invoke(this, EventArgs.Empty);
             ComposerBox.Focus();
@@ -664,6 +667,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 $"需求摘要：{result.Decision.ChineseSummary}\n\n" +
                 $"下一步：{result.Decision.RecommendedNextAction}\n\n" +
                 $"安全判断：{result.Decision.Safety}（{result.Decision.SafetyReason}）\n\n" +
+                (result.Decision.KnowledgeCitations.Count > 0
+                    ? $"知识引用：{string.Join("；", result.Decision.KnowledgeCitations.Select(item => item.CitationLabel))}\n\n"
+                    : $"知识状态：{result.KnowledgeRetrieval?.InsufficiencyReason ?? "本次未引用知识"}\n\n") +
                 "回复已填入输入框，采购五要素和待确认问题已写入客户全局上下文；发送前仍由你确认。",
                 "DHgate Customer Success Agent", MessageBoxButton.OK,
                 result.Decision.RequiresHuman ? MessageBoxImage.Warning : MessageBoxImage.Information);
@@ -802,6 +808,11 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     {
         if (_sending || ConversationList.SelectedItem is not ConversationItem conversation) return false;
         var text = ComposerBox.Text.Trim();
+        var knowledgeDecision = _pendingKnowledgeDecision is not null &&
+                                string.Equals(_pendingKnowledgeDecision.ReplyText.Trim(), text, StringComparison.Ordinal)
+            ? _pendingKnowledgeDecision
+            : null;
+        var effectiveOrigin = knowledgeDecision is not null ? "ai_knowledge_assisted" : origin;
         var attachmentPath = _attachmentPath;
         var reply = _replyingTo;
         if (string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(attachmentPath)) return false;
@@ -878,7 +889,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 StatusUpdatedAt = DateTimeOffset.Now,
                 DeliveredAt = status is WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read ? DateTimeOffset.Now : null,
                 ReadAt = status == WhatsAppMessageStatus.Read ? DateTimeOffset.Now : null,
-                Source = origin == "ai_conversation_assistant" ? "desktop_ai" : "desktop"
+                Source = effectiveOrigin is "ai_conversation_assistant" or "ai_knowledge_assisted" ? "desktop_ai" : "desktop"
             };
             await _services.Repository.UpsertWhatsAppMessageAsync(storedMessage);
             ReorderConversations(conversation);
@@ -888,8 +899,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             {
                 LeadConnectionStatus.ApplyFromMessage(_currentLead, storedMessage);
                 await _services.Repository.UpsertLeadAsync(_currentLead);
-                await _services.Repository.LogEventAsync("whatsapp_message_sent", _currentLead.Id, null, $"message_id={id}; kind={kind}; origin={origin}");
-                if (origin == "ai_conversation_assistant")
+                await _services.Repository.LogEventAsync("whatsapp_message_sent", _currentLead.Id, null, $"message_id={id}; kind={kind}; origin={effectiveOrigin}");
+                if (effectiveOrigin is "ai_conversation_assistant" or "ai_knowledge_assisted")
                 {
                     await _services.CustomerActions.RecordMessageExecutionAsync(
                         _currentLead.Id,
@@ -897,6 +908,23 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                         text,
                         $"whatsapp-{conversation.AccountId}-{id}",
                         timestamp);
+                }
+                if (knowledgeDecision is not null)
+                {
+                    foreach (var citation in knowledgeDecision.KnowledgeCitations)
+                    {
+                        await _services.Repository.SaveKnowledgeUsageOutcomeAsync(new KnowledgeUsageOutcome
+                        {
+                            Id = $"{conversation.AccountId}:{id}:{citation.ChunkId}",
+                            RetrievalLogId = knowledgeDecision.KnowledgeRetrievalId,
+                            ChunkId = citation.ChunkId,
+                            CustomerId = _currentLead.Id,
+                            SourceMessageId = id,
+                            ActuallySent = true,
+                            ObservationNote = "用户人工确认并发送知识辅助回复；回复、阶段推进、成交和复购仍需后续真实观察。"
+                        });
+                    }
+                    _pendingKnowledgeDecision = null;
                 }
             }
             accepted = true;
@@ -1217,7 +1245,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             var facts = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.Fact);
             var inferences = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.Inference);
             var gaps = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.InformationGap);
-            AiSidebarBrainMetaText.Text = $"BRAIN V{brain.Version} · 覆盖 {brain.Coverage.Percentage}% · 事实 {facts} / 判断 {inferences} / 缺口 {gaps}";
+            AiSidebarBrainMetaText.Text = $"BRAIN V{brain.Version} · 覆盖 {brain.Coverage.Percentage}% · 事实 {facts} / 判断 {inferences} / 缺口 {gaps} · 知识 {brain.KnowledgeReferences.Count}";
             if (!string.IsNullOrWhiteSpace(brain.Summary)) AiSidebarProfileText.Text = brain.Summary;
             if (!string.IsNullOrWhiteSpace(brain.NextBestAction)) AiSidebarNextActionText.Text = $"下一步：{brain.NextBestAction}";
         }
@@ -1225,6 +1253,121 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         {
             if (generation != _customerBrainRefreshGeneration || _currentLead?.Id != lead.Id) return;
             AiSidebarBrainMetaText.Text = $"CUSTOMER BRAIN · 暂不可用：{error.Message}";
+        }
+    }
+
+    private void ShowKnowledgeReferences(
+        CustomerSuccessAgentDecision decision,
+        KnowledgeRetrievalResult? retrieval)
+    {
+        _pendingKnowledgeDecision = decision;
+        if (retrieval is null)
+        {
+            KnowledgeReferencePanel.Visibility = Visibility.Collapsed;
+            KnowledgeReferenceList.ItemsSource = null;
+            return;
+        }
+        KnowledgeReferencePanel.Visibility = Visibility.Visible;
+        var rows = decision.KnowledgeCitations.Select(hit => new KnowledgeReferenceRow(
+            hit.CitationLabel,
+            hit.Content.Length <= 150 ? hit.Content : hit.Content[..150] + "…",
+            hit)).ToList();
+        KnowledgeReferenceList.ItemsSource = rows;
+        if (rows.Count > 0) KnowledgeReferenceList.SelectedIndex = 0;
+        KnowledgeReferenceSummaryText.Text = rows.Count > 0
+            ? $"实际引用 {rows.Count} 项 · 检索 ID {retrieval.Id}。引用仅作业务参考，发送前仍需人工核对。"
+            : retrieval.SufficientToAnswer
+                ? $"检索到相关知识，但本次建议未使用任何知识块 · 检索 ID {retrieval.Id}。"
+                : $"知识不足：{retrieval.InsufficiencyReason} · 检索 ID {retrieval.Id}";
+    }
+
+    private void ClearKnowledgeReferences()
+    {
+        _pendingKnowledgeDecision = null;
+        KnowledgeReferenceList.ItemsSource = null;
+        KnowledgeReferenceSummaryText.Text = "尚未执行知识检索";
+        KnowledgeReferencePanel.Visibility = Visibility.Collapsed;
+    }
+
+    private void ViewKnowledgeSource_Click(object sender, RoutedEventArgs e)
+    {
+        if (KnowledgeReferenceList.SelectedItem is not KnowledgeReferenceRow row)
+        {
+            MessageBox.Show("请选择一项知识来源。", "本次建议参考", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        MessageBox.Show(
+            $"{row.Hit.CitationLabel}\n\n作用域：{row.Hit.Scope.Label}\n分类：{KnowledgeLabels.Category(row.Hit.Category)}\n" +
+            $"来源层：{row.Hit.SourceKind} / {row.Hit.EvidenceLevel}\n相关度：{row.Hit.RelevanceScore:P0}\n\n{row.Hit.Content}",
+            "知识来源",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+    }
+
+    private async void ExcludeKnowledge_Click(object sender, RoutedEventArgs e)
+    {
+        if (KnowledgeReferenceList.SelectedItem is not KnowledgeReferenceRow row ||
+            ConversationList.SelectedItem is not ConversationItem conversation) return;
+        await _services.Repository.SaveKnowledgeFeedbackAsync(new KnowledgeFeedback
+        {
+            RetrievalLogId = _pendingKnowledgeDecision?.KnowledgeRetrievalId ?? "",
+            DocumentId = row.Hit.DocumentId,
+            ChunkId = row.Hit.ChunkId,
+            CustomerId = _currentLead?.Id ?? "",
+            AccountId = conversation.AccountId,
+            ConversationId = conversation.Id,
+            Helpful = false,
+            ExcludedForCurrentConversation = true,
+            Note = "用户在 Inbox 将该知识排除出当前会话。"
+        });
+        if (_pendingKnowledgeDecision is not null &&
+            string.Equals(ComposerBox.Text.Trim(), _pendingKnowledgeDecision.ReplyText.Trim(), StringComparison.Ordinal))
+            ComposerBox.Clear();
+        _pendingKnowledgeDecision = null;
+        var remaining = (KnowledgeReferenceList.ItemsSource as IEnumerable<KnowledgeReferenceRow> ?? [])
+            .Where(item => item.Hit.ChunkId != row.Hit.ChunkId).ToList();
+        KnowledgeReferenceList.ItemsSource = remaining;
+        KnowledgeReferenceSummaryText.Text = "已排除当前来源；原建议已清空，请重新运行 AI 以应用新的检索范围。";
+    }
+
+    private async void HelpfulKnowledge_Click(object sender, RoutedEventArgs e)
+    {
+        if (KnowledgeReferenceList.SelectedItem is not KnowledgeReferenceRow row ||
+            ConversationList.SelectedItem is not ConversationItem conversation) return;
+        await _services.Repository.SaveKnowledgeFeedbackAsync(new KnowledgeFeedback
+        {
+            RetrievalLogId = _pendingKnowledgeDecision?.KnowledgeRetrievalId ?? "",
+            DocumentId = row.Hit.DocumentId,
+            ChunkId = row.Hit.ChunkId,
+            CustomerId = _currentLead?.Id ?? "",
+            AccountId = conversation.AccountId,
+            ConversationId = conversation.Id,
+            Helpful = true,
+            Note = "用户在 Inbox 标记该知识引用有帮助。"
+        });
+        KnowledgeReferenceSummaryText.Text = "已记录“有帮助”。这只是人工反馈，不会被系统表述为成交因果。";
+    }
+
+    private async void DisableKnowledgeSource_Click(object sender, RoutedEventArgs e)
+    {
+        if (KnowledgeReferenceList.SelectedItem is not KnowledgeReferenceRow row) return;
+        if (MessageBox.Show(
+                $"停用“{row.Hit.DocumentTitle}”后，它会立即退出全部后续检索。原件、版本和审计仍保留。是否继续？",
+                "停用知识来源",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        try
+        {
+            await _services.KnowledgeBase.DisableAsync(row.Hit.DocumentId);
+            if (_pendingKnowledgeDecision is not null &&
+                string.Equals(ComposerBox.Text.Trim(), _pendingKnowledgeDecision.ReplyText.Trim(), StringComparison.Ordinal))
+                ComposerBox.Clear();
+            ClearKnowledgeReferences();
+            MessageBox.Show("知识来源已停用。请重新运行 AI 生成建议。", "知识库", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(error.Message, "停用失败", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
@@ -1361,6 +1504,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     };
     private sealed record StageOption(string Label, LeadStage Value);
     private sealed record AgentModeOption(string Label, ConversationAgentMode Value);
+    private sealed record KnowledgeReferenceRow(string Citation, string Preview, KnowledgeRetrievalHit Hit);
 
     private sealed class ConversationItem(string accountId, string phone, string displayName, string jid) : INotifyPropertyChanged
     {

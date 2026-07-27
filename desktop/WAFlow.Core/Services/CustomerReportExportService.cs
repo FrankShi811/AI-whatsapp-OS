@@ -170,6 +170,12 @@ internal static class WordCustomerReportRenderer
         body.Append(Heading("证据账本（精选）", 2));
         foreach (var statement in report.EvidenceLedger.Where(item => !string.IsNullOrWhiteSpace(item.Statement)).Take(18))
             body.Append(Callout($"[{(string.IsNullOrWhiteSpace(statement.Nature) ? "事实" : statement.Nature)}] {statement.Statement}\n来源：{statement.Source} · 证据：{statement.Evidence}", "F4F6F9", DarkBlue));
+        body.Append(Heading("业务知识引用", 2));
+        if (report.KnowledgeReferences.Count == 0)
+            body.Append(BodyParagraph("本版本未引用已批准业务知识。", Muted));
+        else
+            foreach (var reference in report.KnowledgeReferences.Take(20))
+                body.Append(Callout($"{reference.CitationLabel}\n作用域：{reference.Scope.Label} · 相关度：{reference.RelevanceScore:P0}\n{reference.Content}", "F4F6F9", DarkBlue));
     }
 
     private static void AddBullets(Body body, string title, IEnumerable<string> items, string? fill = null)
@@ -508,6 +514,12 @@ internal static class PdfCustomerReportRenderer
             Heading("证据账本（精选）", 2);
             foreach (var statement in report.EvidenceLedger.Where(item => !string.IsNullOrWhiteSpace(item.Statement)).Take(18))
                 LabelText(string.IsNullOrWhiteSpace(statement.Nature) ? "事实" : statement.Nature, $"{statement.Statement}\n来源：{statement.Source} · 证据：{statement.Evidence}");
+            Heading("业务知识引用", 2);
+            if (report.KnowledgeReferences.Count == 0)
+                LabelText("", "本版本未引用已批准业务知识。");
+            else
+                foreach (var reference in report.KnowledgeReferences.Take(20))
+                    LabelText(reference.CitationLabel, $"作用域：{reference.Scope.Label} · 相关度：{reference.RelevanceScore:P0}\n{reference.Content}");
         }
 
         public void Finish() => FinalizePage();

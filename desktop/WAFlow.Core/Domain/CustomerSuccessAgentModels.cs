@@ -312,6 +312,8 @@ public sealed class AgentTurnLog
     public string AiModel { get; set; } = "";
     public string Decision { get; set; } = "";
     public string OutputText { get; set; } = "";
+    public string KnowledgeRetrievalId { get; set; } = "";
+    public List<string> KnowledgeChunkIds { get; set; } = [];
     public string Error { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
 }
@@ -379,6 +381,10 @@ public sealed class CustomerSuccessAgentDecision
     public string PendingQuestion { get; set; } = "";
     public string RecommendedNextAction { get; set; } = "";
     public List<CustomerSuccessFieldProposal> CrmProposals { get; set; } = [];
+    public List<string> KnowledgeChunkIds { get; set; } = [];
+    public List<KnowledgeRetrievalHit> KnowledgeCitations { get; set; } = [];
+    public string KnowledgeRetrievalId { get; set; } = "";
+    public bool KnowledgeSufficient { get; set; }
     public double Confidence { get; set; }
     public string Model { get; set; } = "";
     public string LatestIncomingMessageId { get; set; } = "";
@@ -393,6 +399,7 @@ public sealed class CustomerSuccessAgentRunResult
     public SourcingRequest? SourcingRequest { get; set; }
     public HumanHandoffEvent? Handoff { get; set; }
     public ConversationAgentState? AgentState { get; set; }
+    public KnowledgeRetrievalResult? KnowledgeRetrieval { get; set; }
     public bool AutoReplyAllowed { get; set; }
     public string BlockReason { get; set; } = "";
 }

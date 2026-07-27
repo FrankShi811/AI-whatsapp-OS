@@ -73,6 +73,10 @@ public sealed class CustomerIntelligenceSourceSnapshot
     public List<CustomerCampaignTouch> CampaignTouches { get; set; } = [];
     public List<CustomerHistoryEvent> Timeline { get; set; } = [];
     public List<LeadAnalysisRunSnapshot> LeadAnalysisHistory { get; set; } = [];
+    public string KnowledgeRetrievalId { get; set; } = "";
+    public bool KnowledgeSufficient { get; set; }
+    public List<string> KnowledgeWarnings { get; set; } = [];
+    public List<KnowledgeRetrievalHit> KnowledgeReferences { get; set; } = [];
 }
 
 public sealed class CustomerCampaignTouch
@@ -143,6 +147,7 @@ public sealed class CustomerIntelligenceReportContent
     public CustomerRiskAnalysis RiskAnalysis { get; set; } = new();
     public string ManagementSummary { get; set; } = "";
     public List<ReportStatement> EvidenceLedger { get; set; } = [];
+    public List<KnowledgeRetrievalHit> KnowledgeReferences { get; set; } = [];
 }
 
 public sealed class CustomerExecutiveSummary

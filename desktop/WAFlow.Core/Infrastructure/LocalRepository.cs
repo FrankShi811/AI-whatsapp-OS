@@ -470,6 +470,127 @@ public sealed class LocalRepository
               data_json TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS ix_agent_turn_logs_customer ON agent_turn_logs(customer_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS knowledge_documents (
+              id TEXT PRIMARY KEY,
+              title TEXT NOT NULL,
+              original_file_name TEXT NOT NULL,
+              status TEXT NOT NULL,
+              category TEXT NOT NULL,
+              source_kind TEXT NOT NULL,
+              scope_kind TEXT NOT NULL,
+              scope_account_id TEXT NOT NULL,
+              scope_customer_id TEXT NOT NULL,
+              scope_conversation_id TEXT NOT NULL,
+              temporary_task_id TEXT NOT NULL,
+              current_version INTEGER NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_knowledge_documents_status ON knowledge_documents(status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_knowledge_documents_scope ON knowledge_documents(scope_kind, scope_account_id, scope_customer_id, scope_conversation_id);
+            CREATE TABLE IF NOT EXISTS knowledge_document_versions (
+              id TEXT PRIMARY KEY,
+              document_id TEXT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+              version INTEGER NOT NULL,
+              sha256 TEXT NOT NULL,
+              stored_file_path TEXT NOT NULL,
+              status TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              data_json TEXT NOT NULL,
+              UNIQUE(document_id, version)
+            );
+            CREATE INDEX IF NOT EXISTS ix_knowledge_versions_document ON knowledge_document_versions(document_id, version DESC);
+            CREATE TABLE IF NOT EXISTS knowledge_chunks (
+              id TEXT PRIMARY KEY,
+              document_id TEXT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+              version_id TEXT NOT NULL REFERENCES knowledge_document_versions(id) ON DELETE CASCADE,
+              document_version INTEGER NOT NULL,
+              ordinal INTEGER NOT NULL,
+              normalized_text TEXT NOT NULL,
+              keywords TEXT NOT NULL,
+              language TEXT NOT NULL,
+              category TEXT NOT NULL,
+              source_kind TEXT NOT NULL,
+              scope_kind TEXT NOT NULL,
+              scope_account_id TEXT NOT NULL,
+              scope_customer_id TEXT NOT NULL,
+              scope_conversation_id TEXT NOT NULL,
+              temporary_task_id TEXT NOT NULL,
+              risk_level TEXT NOT NULL,
+              has_open_conflict INTEGER NOT NULL,
+              is_active INTEGER NOT NULL,
+              effective_from TEXT,
+              effective_until TEXT,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL,
+              UNIQUE(version_id, ordinal)
+            );
+            CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_document ON knowledge_chunks(document_id, document_version DESC, ordinal);
+            CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_scope ON knowledge_chunks(is_active, scope_kind, scope_account_id, scope_customer_id, scope_conversation_id);
+            CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_category ON knowledge_chunks(is_active, category, language);
+            CREATE TABLE IF NOT EXISTS knowledge_tags (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_document_tags (
+              document_id TEXT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+              tag_id TEXT NOT NULL REFERENCES knowledge_tags(id) ON DELETE CASCADE,
+              PRIMARY KEY(document_id, tag_id)
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_conflicts (
+              id TEXT PRIMARY KEY,
+              document_id TEXT NOT NULL,
+              version_id TEXT NOT NULL,
+              chunk_id TEXT NOT NULL,
+              conflicting_document_id TEXT NOT NULL,
+              conflicting_chunk_id TEXT NOT NULL,
+              status TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_knowledge_conflicts_document ON knowledge_conflicts(document_id, status, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS knowledge_retrieval_logs (
+              id TEXT PRIMARY KEY,
+              customer_id TEXT NOT NULL,
+              account_id TEXT NOT NULL,
+              conversation_id TEXT NOT NULL,
+              usage_context TEXT NOT NULL,
+              sufficient_to_answer INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_knowledge_retrieval_context ON knowledge_retrieval_logs(customer_id, account_id, conversation_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS knowledge_usage_outcomes (
+              id TEXT PRIMARY KEY,
+              retrieval_log_id TEXT NOT NULL,
+              chunk_id TEXT NOT NULL,
+              customer_id TEXT NOT NULL,
+              action_id TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_knowledge_outcomes_chunk ON knowledge_usage_outcomes(chunk_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS knowledge_feedback (
+              id TEXT PRIMARY KEY,
+              retrieval_log_id TEXT NOT NULL,
+              document_id TEXT NOT NULL,
+              chunk_id TEXT NOT NULL,
+              customer_id TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_knowledge_feedback_chunk ON knowledge_feedback(chunk_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS knowledge_candidates (
+              id TEXT PRIMARY KEY,
+              status TEXT NOT NULL,
+              source_kind TEXT NOT NULL,
+              evidence_level TEXT NOT NULL,
+              sample_size INTEGER NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_knowledge_candidates_status ON knowledge_candidates(status, evidence_level, updated_at DESC);
             """;
         await using var command = db.CreateCommand();
         command.CommandText = sql;
@@ -3033,6 +3154,590 @@ public sealed class LocalRepository
         while (await reader.ReadAsync(cancellationToken))
             if (Json.Deserialize<WhatsAppMessage>(reader.GetString(0)) is { } item && seen.Add(item.Id)) items.Add(item);
         items.Reverse();
+        return items;
+    }
+
+    public async Task<List<KnowledgeDocument>> GetKnowledgeDocumentsAsync(
+        bool includeDeleted = false,
+        CancellationToken cancellationToken = default)
+    {
+        var items = new List<KnowledgeDocument>();
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = includeDeleted
+            ? "SELECT data_json FROM knowledge_documents ORDER BY updated_at DESC"
+            : "SELECT data_json FROM knowledge_documents WHERE status<>$deleted ORDER BY updated_at DESC";
+        if (!includeDeleted) command.Parameters.AddWithValue("$deleted", KnowledgeDocumentStatus.Deleted.ToString());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<KnowledgeDocument>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task<KnowledgeDocument?> GetKnowledgeDocumentAsync(
+        string documentId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM knowledge_documents WHERE id=$id";
+        command.Parameters.AddWithValue("$id", documentId);
+        var value = await command.ExecuteScalarAsync(cancellationToken) as string;
+        return string.IsNullOrWhiteSpace(value) ? null : Json.Deserialize<KnowledgeDocument>(value);
+    }
+
+    public async Task UpsertKnowledgeDocumentAsync(
+        KnowledgeDocument document,
+        CancellationToken cancellationToken = default)
+    {
+        document.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var transaction = await db.BeginTransactionAsync(cancellationToken);
+        await using (var command = db.CreateCommand())
+        {
+            command.Transaction = transaction as SqliteTransaction;
+            command.CommandText = """
+                INSERT INTO knowledge_documents(
+                  id,title,original_file_name,status,category,source_kind,scope_kind,scope_account_id,
+                  scope_customer_id,scope_conversation_id,temporary_task_id,current_version,updated_at,data_json)
+                VALUES(
+                  $id,$title,$file,$status,$category,$source,$scope,$account,$customer,$conversation,$temporary,$version,$updated,$json)
+                ON CONFLICT(id) DO UPDATE SET
+                  title=excluded.title,original_file_name=excluded.original_file_name,status=excluded.status,
+                  category=excluded.category,source_kind=excluded.source_kind,scope_kind=excluded.scope_kind,
+                  scope_account_id=excluded.scope_account_id,scope_customer_id=excluded.scope_customer_id,
+                  scope_conversation_id=excluded.scope_conversation_id,temporary_task_id=excluded.temporary_task_id,
+                  current_version=excluded.current_version,updated_at=excluded.updated_at,data_json=excluded.data_json
+                """;
+            command.Parameters.AddWithValue("$id", document.Id);
+            command.Parameters.AddWithValue("$title", document.Title);
+            command.Parameters.AddWithValue("$file", document.OriginalFileName);
+            command.Parameters.AddWithValue("$status", document.Status.ToString());
+            command.Parameters.AddWithValue("$category", document.Category.ToString());
+            command.Parameters.AddWithValue("$source", document.SourceKind.ToString());
+            command.Parameters.AddWithValue("$scope", document.Scope.Kind.ToString());
+            command.Parameters.AddWithValue("$account", document.Scope.AccountId);
+            command.Parameters.AddWithValue("$customer", document.Scope.CustomerId);
+            command.Parameters.AddWithValue("$conversation", document.Scope.ConversationId);
+            command.Parameters.AddWithValue("$temporary", document.Scope.TemporaryTaskId);
+            command.Parameters.AddWithValue("$version", document.CurrentVersion);
+            command.Parameters.AddWithValue("$updated", document.UpdatedAt.ToString("O"));
+            command.Parameters.AddWithValue("$json", Json.Serialize(document));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var deactivate = db.CreateCommand())
+        {
+            deactivate.Transaction = transaction as SqliteTransaction;
+            deactivate.CommandText = """
+                UPDATE knowledge_chunks
+                SET is_active=CASE WHEN $active=1 AND version_id=$version AND has_open_conflict=0 THEN 1 ELSE 0 END,
+                    updated_at=$updated
+                WHERE document_id=$document
+                """;
+            deactivate.Parameters.AddWithValue("$active", document.Status == KnowledgeDocumentStatus.Active ? 1 : 0);
+            deactivate.Parameters.AddWithValue("$version", document.CurrentVersionId);
+            deactivate.Parameters.AddWithValue("$updated", document.UpdatedAt.ToString("O"));
+            deactivate.Parameters.AddWithValue("$document", document.Id);
+            await deactivate.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await ReplaceKnowledgeDocumentTagsInternalAsync(db, transaction as SqliteTransaction, document, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static async Task ReplaceKnowledgeDocumentTagsInternalAsync(
+        SqliteConnection db,
+        SqliteTransaction? transaction,
+        KnowledgeDocument document,
+        CancellationToken cancellationToken)
+    {
+        await using (var clear = db.CreateCommand())
+        {
+            clear.Transaction = transaction;
+            clear.CommandText = "DELETE FROM knowledge_document_tags WHERE document_id=$document";
+            clear.Parameters.AddWithValue("$document", document.Id);
+            await clear.ExecuteNonQueryAsync(cancellationToken);
+        }
+        foreach (var name in document.Tags
+                     .Where(value => !string.IsNullOrWhiteSpace(value))
+                     .Select(value => value.Trim())
+                     .Distinct(StringComparer.OrdinalIgnoreCase)
+                     .Take(50))
+        {
+            var tagId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(name.ToLowerInvariant())))
+                .ToLowerInvariant()[..32];
+            await using (var tag = db.CreateCommand())
+            {
+                tag.Transaction = transaction;
+                tag.CommandText = "INSERT OR IGNORE INTO knowledge_tags(id,name,created_at) VALUES($id,$name,$created)";
+                tag.Parameters.AddWithValue("$id", tagId);
+                tag.Parameters.AddWithValue("$name", name);
+                tag.Parameters.AddWithValue("$created", DateTimeOffset.Now.ToString("O"));
+                await tag.ExecuteNonQueryAsync(cancellationToken);
+            }
+            await using var link = db.CreateCommand();
+            link.Transaction = transaction;
+            link.CommandText = "INSERT OR IGNORE INTO knowledge_document_tags(document_id,tag_id) VALUES($document,$tag)";
+            link.Parameters.AddWithValue("$document", document.Id);
+            link.Parameters.AddWithValue("$tag", tagId);
+            await link.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    public async Task<int> GetNextKnowledgeDocumentVersionAsync(
+        string documentId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT COALESCE(MAX(version),0)+1 FROM knowledge_document_versions WHERE document_id=$document";
+        command.Parameters.AddWithValue("$document", documentId);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+    }
+
+    public async Task SaveKnowledgeDocumentVersionAsync(
+        KnowledgeDocumentVersion version,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO knowledge_document_versions(
+              id,document_id,version,sha256,stored_file_path,status,created_at,data_json)
+            VALUES($id,$document,$version,$hash,$path,$status,$created,$json)
+            ON CONFLICT(id) DO UPDATE SET
+              status=excluded.status,stored_file_path=excluded.stored_file_path,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", version.Id);
+        command.Parameters.AddWithValue("$document", version.DocumentId);
+        command.Parameters.AddWithValue("$version", version.Version);
+        command.Parameters.AddWithValue("$hash", version.Sha256);
+        command.Parameters.AddWithValue("$path", version.StoredFilePath);
+        command.Parameters.AddWithValue("$status", version.Status.ToString());
+        command.Parameters.AddWithValue("$created", version.CreatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(version));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<KnowledgeDocumentVersion>> GetKnowledgeDocumentVersionsAsync(
+        string documentId,
+        CancellationToken cancellationToken = default)
+    {
+        var items = new List<KnowledgeDocumentVersion>();
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM knowledge_document_versions WHERE document_id=$document ORDER BY version DESC";
+        command.Parameters.AddWithValue("$document", documentId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<KnowledgeDocumentVersion>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task<KnowledgeDocumentVersion?> GetKnowledgeDocumentVersionAsync(
+        string versionId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM knowledge_document_versions WHERE id=$id";
+        command.Parameters.AddWithValue("$id", versionId);
+        var value = await command.ExecuteScalarAsync(cancellationToken) as string;
+        return string.IsNullOrWhiteSpace(value) ? null : Json.Deserialize<KnowledgeDocumentVersion>(value);
+    }
+
+    public async Task SaveKnowledgeChunksAsync(
+        IReadOnlyCollection<KnowledgeChunk> chunks,
+        CancellationToken cancellationToken = default)
+    {
+        if (chunks.Count == 0) return;
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var transaction = await db.BeginTransactionAsync(cancellationToken);
+        foreach (var chunk in chunks)
+        {
+            chunk.UpdatedAt = DateTimeOffset.Now;
+            await using var command = db.CreateCommand();
+            command.Transaction = transaction as SqliteTransaction;
+            command.CommandText = """
+                INSERT INTO knowledge_chunks(
+                  id,document_id,version_id,document_version,ordinal,normalized_text,keywords,language,category,
+                  source_kind,scope_kind,scope_account_id,scope_customer_id,scope_conversation_id,temporary_task_id,
+                  risk_level,has_open_conflict,is_active,effective_from,effective_until,updated_at,data_json)
+                VALUES(
+                  $id,$document,$versionId,$documentVersion,$ordinal,$text,$keywords,$language,$category,$source,
+                  $scope,$account,$customer,$conversation,$temporary,$risk,$conflict,$active,$from,$until,$updated,$json)
+                ON CONFLICT(id) DO UPDATE SET
+                  normalized_text=excluded.normalized_text,keywords=excluded.keywords,risk_level=excluded.risk_level,
+                  has_open_conflict=excluded.has_open_conflict,is_active=excluded.is_active,
+                  effective_from=excluded.effective_from,effective_until=excluded.effective_until,
+                  updated_at=excluded.updated_at,data_json=excluded.data_json
+                """;
+            command.Parameters.AddWithValue("$id", chunk.Id);
+            command.Parameters.AddWithValue("$document", chunk.DocumentId);
+            command.Parameters.AddWithValue("$versionId", chunk.VersionId);
+            command.Parameters.AddWithValue("$documentVersion", chunk.DocumentVersion);
+            command.Parameters.AddWithValue("$ordinal", chunk.Ordinal);
+            command.Parameters.AddWithValue("$text", chunk.NormalizedText);
+            command.Parameters.AddWithValue("$keywords", string.Join(' ', chunk.Keywords));
+            command.Parameters.AddWithValue("$language", chunk.Language);
+            command.Parameters.AddWithValue("$category", chunk.Category.ToString());
+            command.Parameters.AddWithValue("$source", chunk.SourceKind.ToString());
+            command.Parameters.AddWithValue("$scope", chunk.Scope.Kind.ToString());
+            command.Parameters.AddWithValue("$account", chunk.Scope.AccountId);
+            command.Parameters.AddWithValue("$customer", chunk.Scope.CustomerId);
+            command.Parameters.AddWithValue("$conversation", chunk.Scope.ConversationId);
+            command.Parameters.AddWithValue("$temporary", chunk.Scope.TemporaryTaskId);
+            command.Parameters.AddWithValue("$risk", chunk.RiskLevel.ToString());
+            command.Parameters.AddWithValue("$conflict", chunk.HasOpenConflict ? 1 : 0);
+            command.Parameters.AddWithValue("$active", chunk.IsActive ? 1 : 0);
+            command.Parameters.AddWithValue("$from", chunk.EffectiveFrom?.ToString("O") ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("$until", chunk.EffectiveUntil?.ToString("O") ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("$updated", chunk.UpdatedAt.ToString("O"));
+            command.Parameters.AddWithValue("$json", Json.Serialize(chunk));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<List<KnowledgeChunk>> GetKnowledgeChunksAsync(
+        string documentId,
+        string? versionId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var items = new List<KnowledgeChunk>();
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = versionId is null
+            ? "SELECT data_json FROM knowledge_chunks WHERE document_id=$document ORDER BY document_version DESC,ordinal"
+            : "SELECT data_json FROM knowledge_chunks WHERE document_id=$document AND version_id=$version ORDER BY ordinal";
+        command.Parameters.AddWithValue("$document", documentId);
+        if (versionId is not null) command.Parameters.AddWithValue("$version", versionId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<KnowledgeChunk>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task<List<KnowledgeChunk>> GetEligibleKnowledgeChunksAsync(
+        KnowledgeRetrievalRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var items = new List<KnowledgeChunk>();
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            SELECT c.data_json
+            FROM knowledge_chunks c
+            INNER JOIN knowledge_documents d ON d.id=c.document_id
+            WHERE c.is_active=1
+              AND d.status=$active
+              AND c.risk_level<>$blocked
+              AND (
+                c.scope_kind=$global
+                OR (c.scope_kind=$accountScope AND c.scope_account_id=$account AND $account<>'')
+                OR (c.scope_kind=$customerScope AND c.scope_customer_id=$customer AND $customer<>'')
+                OR (c.scope_kind=$conversationScope AND c.scope_account_id=$account
+                    AND c.scope_conversation_id=$conversation AND $account<>'' AND $conversation<>'')
+                OR (c.scope_kind=$temporaryScope AND c.temporary_task_id=$temporary AND $temporary<>'')
+              )
+            ORDER BY c.updated_at DESC
+            LIMIT 10000
+            """;
+        command.Parameters.AddWithValue("$active", KnowledgeDocumentStatus.Active.ToString());
+        command.Parameters.AddWithValue("$blocked", KnowledgeRiskLevel.Blocked.ToString());
+        command.Parameters.AddWithValue("$global", KnowledgeScopeKind.Global.ToString());
+        command.Parameters.AddWithValue("$accountScope", KnowledgeScopeKind.Account.ToString());
+        command.Parameters.AddWithValue("$customerScope", KnowledgeScopeKind.Customer.ToString());
+        command.Parameters.AddWithValue("$conversationScope", KnowledgeScopeKind.Conversation.ToString());
+        command.Parameters.AddWithValue("$temporaryScope", KnowledgeScopeKind.Temporary.ToString());
+        command.Parameters.AddWithValue("$account", request.AccountId);
+        command.Parameters.AddWithValue("$customer", request.CustomerId);
+        command.Parameters.AddWithValue("$conversation", request.ConversationId);
+        command.Parameters.AddWithValue("$temporary", request.TemporaryTaskId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<KnowledgeChunk>(reader.GetString(0)) is { } item &&
+                !request.ExcludedDocumentIds.Contains(item.DocumentId, StringComparer.OrdinalIgnoreCase) &&
+                !request.ExcludedChunkIds.Contains(item.Id, StringComparer.OrdinalIgnoreCase))
+                items.Add(item);
+        return items;
+    }
+
+    public async Task SaveKnowledgeConflictAsync(
+        KnowledgeConflict conflict,
+        CancellationToken cancellationToken = default)
+    {
+        conflict.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var transaction = await db.BeginTransactionAsync(cancellationToken);
+        await using (var command = db.CreateCommand())
+        {
+            command.Transaction = transaction as SqliteTransaction;
+            command.CommandText = """
+                INSERT INTO knowledge_conflicts(
+                  id,document_id,version_id,chunk_id,conflicting_document_id,conflicting_chunk_id,status,updated_at,data_json)
+                VALUES($id,$document,$version,$chunk,$otherDocument,$otherChunk,$status,$updated,$json)
+                ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,data_json=excluded.data_json
+                """;
+            command.Parameters.AddWithValue("$id", conflict.Id);
+            command.Parameters.AddWithValue("$document", conflict.DocumentId);
+            command.Parameters.AddWithValue("$version", conflict.VersionId);
+            command.Parameters.AddWithValue("$chunk", conflict.ChunkId);
+            command.Parameters.AddWithValue("$otherDocument", conflict.ConflictingDocumentId);
+            command.Parameters.AddWithValue("$otherChunk", conflict.ConflictingChunkId);
+            command.Parameters.AddWithValue("$status", conflict.Status.ToString());
+            command.Parameters.AddWithValue("$updated", conflict.UpdatedAt.ToString("O"));
+            command.Parameters.AddWithValue("$json", Json.Serialize(conflict));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        if (conflict.Status == KnowledgeConflictStatus.Open)
+        {
+            foreach (var chunkId in new[] { conflict.ChunkId, conflict.ConflictingChunkId }.Where(value => !string.IsNullOrWhiteSpace(value)))
+            {
+                await using var update = db.CreateCommand();
+                update.Transaction = transaction as SqliteTransaction;
+                update.CommandText = "UPDATE knowledge_chunks SET has_open_conflict=1,is_active=0 WHERE id=$id";
+                update.Parameters.AddWithValue("$id", chunkId);
+                await update.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+        else
+        {
+            foreach (var chunkId in new[] { conflict.ChunkId, conflict.ConflictingChunkId }.Where(value => !string.IsNullOrWhiteSpace(value)))
+            {
+                await using var inspect = db.CreateCommand();
+                inspect.Transaction = transaction as SqliteTransaction;
+                inspect.CommandText = """
+                    SELECT COUNT(*) FROM knowledge_conflicts
+                    WHERE status=$open AND (chunk_id=$chunk OR conflicting_chunk_id=$chunk)
+                    """;
+                inspect.Parameters.AddWithValue("$open", KnowledgeConflictStatus.Open.ToString());
+                inspect.Parameters.AddWithValue("$chunk", chunkId);
+                var stillOpen = Convert.ToInt32(await inspect.ExecuteScalarAsync(cancellationToken)) > 0;
+                await using var update = db.CreateCommand();
+                update.Transaction = transaction as SqliteTransaction;
+                update.CommandText = "UPDATE knowledge_chunks SET has_open_conflict=$open,is_active=0 WHERE id=$id";
+                update.Parameters.AddWithValue("$open", stillOpen ? 1 : 0);
+                update.Parameters.AddWithValue("$id", chunkId);
+                await update.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<List<KnowledgeConflict>> GetKnowledgeConflictsAsync(
+        string? documentId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var items = new List<KnowledgeConflict>();
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = string.IsNullOrWhiteSpace(documentId)
+            ? "SELECT data_json FROM knowledge_conflicts ORDER BY updated_at DESC"
+            : "SELECT data_json FROM knowledge_conflicts WHERE document_id=$document OR conflicting_document_id=$document ORDER BY updated_at DESC";
+        if (!string.IsNullOrWhiteSpace(documentId)) command.Parameters.AddWithValue("$document", documentId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<KnowledgeConflict>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task SaveKnowledgeRetrievalLogAsync(
+        KnowledgeRetrievalLog log,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO knowledge_retrieval_logs(
+              id,customer_id,account_id,conversation_id,usage_context,sufficient_to_answer,created_at,data_json)
+            VALUES($id,$customer,$account,$conversation,$context,$sufficient,$created,$json)
+            """;
+        command.Parameters.AddWithValue("$id", log.Id);
+        command.Parameters.AddWithValue("$customer", log.CustomerId);
+        command.Parameters.AddWithValue("$account", log.AccountId);
+        command.Parameters.AddWithValue("$conversation", log.ConversationId);
+        command.Parameters.AddWithValue("$context", log.UsageContext);
+        command.Parameters.AddWithValue("$sufficient", log.SufficientToAnswer ? 1 : 0);
+        command.Parameters.AddWithValue("$created", log.CreatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(log));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<KnowledgeRetrievalLog>> GetKnowledgeRetrievalLogsAsync(
+        string? customerId = null,
+        int limit = 200,
+        CancellationToken cancellationToken = default)
+    {
+        var items = new List<KnowledgeRetrievalLog>();
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = string.IsNullOrWhiteSpace(customerId)
+            ? "SELECT data_json FROM knowledge_retrieval_logs ORDER BY created_at DESC LIMIT $limit"
+            : "SELECT data_json FROM knowledge_retrieval_logs WHERE customer_id=$customer ORDER BY created_at DESC LIMIT $limit";
+        if (!string.IsNullOrWhiteSpace(customerId)) command.Parameters.AddWithValue("$customer", customerId);
+        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 2000));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<KnowledgeRetrievalLog>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task UpdateKnowledgeRetrievalUsageAsync(
+        string retrievalLogId,
+        IReadOnlyCollection<string> usedChunkIds,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var select = db.CreateCommand();
+        select.CommandText = "SELECT data_json FROM knowledge_retrieval_logs WHERE id=$id";
+        select.Parameters.AddWithValue("$id", retrievalLogId);
+        var value = await select.ExecuteScalarAsync(cancellationToken) as string;
+        var log = string.IsNullOrWhiteSpace(value) ? null : Json.Deserialize<KnowledgeRetrievalLog>(value);
+        if (log is null) return;
+        log.UsedChunkIds = usedChunkIds
+            .Where(id => log.RetrievedChunkIds.Contains(id, StringComparer.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        await using var update = db.CreateCommand();
+        update.CommandText = "UPDATE knowledge_retrieval_logs SET data_json=$json WHERE id=$id";
+        update.Parameters.AddWithValue("$id", retrievalLogId);
+        update.Parameters.AddWithValue("$json", Json.Serialize(log));
+        await update.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task SaveKnowledgeFeedbackAsync(
+        KnowledgeFeedback feedback,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO knowledge_feedback(id,retrieval_log_id,document_id,chunk_id,customer_id,created_at,data_json)
+            VALUES($id,$retrieval,$document,$chunk,$customer,$created,$json)
+            """;
+        command.Parameters.AddWithValue("$id", feedback.Id);
+        command.Parameters.AddWithValue("$retrieval", feedback.RetrievalLogId);
+        command.Parameters.AddWithValue("$document", feedback.DocumentId);
+        command.Parameters.AddWithValue("$chunk", feedback.ChunkId);
+        command.Parameters.AddWithValue("$customer", feedback.CustomerId);
+        command.Parameters.AddWithValue("$created", feedback.CreatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(feedback));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<KnowledgeFeedback>> GetKnowledgeFeedbackAsync(
+        string? customerId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var items = new List<KnowledgeFeedback>();
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = string.IsNullOrWhiteSpace(customerId)
+            ? "SELECT data_json FROM knowledge_feedback ORDER BY created_at DESC LIMIT 2000"
+            : "SELECT data_json FROM knowledge_feedback WHERE customer_id=$customer ORDER BY created_at DESC LIMIT 1000";
+        if (!string.IsNullOrWhiteSpace(customerId)) command.Parameters.AddWithValue("$customer", customerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<KnowledgeFeedback>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task SaveKnowledgeUsageOutcomeAsync(
+        KnowledgeUsageOutcome outcome,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO knowledge_usage_outcomes(id,retrieval_log_id,chunk_id,customer_id,action_id,created_at,data_json)
+            VALUES($id,$retrieval,$chunk,$customer,$action,$created,$json)
+            ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", outcome.Id);
+        command.Parameters.AddWithValue("$retrieval", outcome.RetrievalLogId);
+        command.Parameters.AddWithValue("$chunk", outcome.ChunkId);
+        command.Parameters.AddWithValue("$customer", outcome.CustomerId);
+        command.Parameters.AddWithValue("$action", outcome.ActionId);
+        command.Parameters.AddWithValue("$created", outcome.CreatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(outcome));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<KnowledgeUsageOutcome>> GetKnowledgeUsageOutcomesAsync(
+        string? chunkId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var items = new List<KnowledgeUsageOutcome>();
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = string.IsNullOrWhiteSpace(chunkId)
+            ? "SELECT data_json FROM knowledge_usage_outcomes ORDER BY created_at DESC"
+            : "SELECT data_json FROM knowledge_usage_outcomes WHERE chunk_id=$chunk ORDER BY created_at DESC";
+        if (!string.IsNullOrWhiteSpace(chunkId)) command.Parameters.AddWithValue("$chunk", chunkId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<KnowledgeUsageOutcome>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task UpsertKnowledgeCandidateAsync(
+        KnowledgeCandidate candidate,
+        CancellationToken cancellationToken = default)
+    {
+        candidate.UpdatedAt = DateTimeOffset.Now;
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO knowledge_candidates(id,status,source_kind,evidence_level,sample_size,updated_at,data_json)
+            VALUES($id,$status,$source,$evidence,$sample,$updated,$json)
+            ON CONFLICT(id) DO UPDATE SET status=excluded.status,evidence_level=excluded.evidence_level,
+              sample_size=excluded.sample_size,updated_at=excluded.updated_at,data_json=excluded.data_json
+            """;
+        command.Parameters.AddWithValue("$id", candidate.Id);
+        command.Parameters.AddWithValue("$status", candidate.Status.ToString());
+        command.Parameters.AddWithValue("$source", candidate.SourceKind.ToString());
+        command.Parameters.AddWithValue("$evidence", candidate.EvidenceLevel.ToString());
+        command.Parameters.AddWithValue("$sample", candidate.SampleSize);
+        command.Parameters.AddWithValue("$updated", candidate.UpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$json", Json.Serialize(candidate));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<KnowledgeCandidate>> GetKnowledgeCandidatesAsync(
+        KnowledgeCandidateStatus? status = null,
+        CancellationToken cancellationToken = default)
+    {
+        var items = new List<KnowledgeCandidate>();
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = status is null
+            ? "SELECT data_json FROM knowledge_candidates ORDER BY updated_at DESC"
+            : "SELECT data_json FROM knowledge_candidates WHERE status=$status ORDER BY updated_at DESC";
+        if (status is not null) command.Parameters.AddWithValue("$status", status.Value.ToString());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<KnowledgeCandidate>(reader.GetString(0)) is { } item) items.Add(item);
         return items;
     }
 

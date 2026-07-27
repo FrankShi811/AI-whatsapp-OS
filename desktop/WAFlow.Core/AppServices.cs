@@ -28,29 +28,42 @@ public sealed class AppServices
     public CustomerActionLifecycleService CustomerActions { get; }
     public PersonalSalesLearningService SalesLearning { get; }
     public TodayBriefService TodayBrief { get; }
+    public KnowledgeBaseService KnowledgeBase { get; }
+    public KnowledgeRetrievalService KnowledgeRetrieval { get; }
+    public KnowledgeLearningService KnowledgeLearning { get; }
 
     public AppServices(LocalRepository? repository = null)
     {
         Repository = repository ?? CreateDefaultRepository();
         Scoring = new LeadScoringService();
         Secrets = new WindowsCredentialStore();
+        KnowledgeRetrieval = new KnowledgeRetrievalService(Repository);
+        DeepSeek = new DeepSeekService(Repository, Secrets, knowledgeRetrieval: KnowledgeRetrieval);
+        KnowledgeBase = new KnowledgeBaseService(
+            Repository,
+            new CompositeKnowledgeDocumentParser(new AiProviderImageTextExtractor(DeepSeek)));
         Imports = new ImportService(Repository);
-        DeepSeek = new DeepSeekService(Repository, Secrets);
         WhatsApp = new WhatsAppConnectionManager();
         WhatsAppSync = new WhatsAppSyncService(Repository, WhatsApp);
         Email = new EmailService(Repository);
         LeadAutomation = new LeadIntelligenceAutomationService(Repository, DeepSeek, WhatsAppSync);
         PublicIp = new PublicIpMonitor(Repository);
         Campaigns = new CampaignAutomationService(Repository, WhatsApp, PublicIp, Email);
-        CustomerAnalysis = new CustomerAnalysisService(Repository, DeepSeek);
+        CustomerAnalysis = new CustomerAnalysisService(Repository, DeepSeek, KnowledgeRetrieval);
         CustomerReportExports = new CustomerReportExportService(Repository);
-        CustomerBrain = new CustomerBrainService(Repository, DeepSeek);
+        CustomerBrain = new CustomerBrainService(Repository, DeepSeek, KnowledgeRetrieval);
         CustomerActions = new CustomerActionLifecycleService(Repository);
         SalesLearning = new PersonalSalesLearningService(Repository);
-        ConversationAssistant = new ConversationAssistantService(Repository, DeepSeek, SalesLearning);
+        ConversationAssistant = new ConversationAssistantService(Repository, DeepSeek, SalesLearning, KnowledgeRetrieval);
         CustomerIdentity = new CustomerIdentityService(Repository);
         SourcingRequests = new SourcingRequestService(Repository);
-        CustomerSuccessAgent = new CustomerSuccessAgentService(Repository, DeepSeek, CustomerIdentity, SourcingRequests);
+        KnowledgeLearning = new KnowledgeLearningService(Repository, SalesLearning);
+        CustomerSuccessAgent = new CustomerSuccessAgentService(
+            Repository,
+            DeepSeek,
+            CustomerIdentity,
+            SourcingRequests,
+            KnowledgeRetrieval);
         CustomerSuccessCoordinator = new CustomerSuccessAgentCoordinator(Repository, WhatsAppSync, WhatsApp, CustomerSuccessAgent);
         TodayBrief = new TodayBriefService(Repository, SalesLearning);
     }

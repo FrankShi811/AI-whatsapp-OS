@@ -28,6 +28,8 @@ public sealed class TodayBriefService
         var states = await _repository.GetAgentStatesAsync(cancellationToken: cancellationToken);
         var handoffs = await _repository.GetOpenHumanHandoffsAsync(cancellationToken);
         var sourcingRequests = await _repository.GetLatestSourcingRequestsAsync(cancellationToken);
+        var knowledgeDocuments = await _repository.GetKnowledgeDocumentsAsync(false, cancellationToken);
+        var knowledgeCandidates = await _repository.GetKnowledgeCandidatesAsync(KnowledgeCandidateStatus.Proposed, cancellationToken);
         var sourceAccountIds = states.Select(item => item.AccountId)
             .Concat(handoffs.Select(item => item.AccountId))
             .Concat(sourcingRequests.SelectMany(item => item.Fields.Values.Select(field => field.SourceAccountId)))
@@ -141,6 +143,44 @@ public sealed class TodayBriefService
                 "cross_account", "指定本轮主跟进账号，并检查其他账号是否存在重复触达",
                 "该客户出现在多个 WhatsApp 账号中，需要统一本轮跟进责任。", FollowUpPriority.High,
                 state.AccountId, state.ConversationId, now));
+        foreach (var document in knowledgeDocuments
+                     .Where(item => item.Status is KnowledgeDocumentStatus.ReadyForReview
+                         or KnowledgeDocumentStatus.Outdated
+                         or KnowledgeDocumentStatus.Conflicted)
+                     .OrderByDescending(item => item.RiskLevel)
+                     .ThenByDescending(item => item.UpdatedAt)
+                     .Take(6))
+        {
+            var conflict = document.Status == KnowledgeDocumentStatus.Conflicted;
+            items.Add(new TodayBriefItem
+            {
+                CustomerId = document.Scope.CustomerId,
+                CustomerName = $"知识库 · {document.Title}",
+                Category = conflict ? "knowledge_conflict" : "knowledge_review",
+                Action = conflict
+                    ? "打开知识库核对冲突来源，解决前不要恢复自动检索"
+                    : "打开知识库复核原文、作用域、风险与时效，再决定是否启用",
+                Reason = string.IsNullOrWhiteSpace(document.ProcessingError)
+                    ? $"{document.CategoryLabel} · {document.ScopeLabel} · {document.VersionLabel}"
+                    : document.ProcessingError,
+                Priority = conflict ? FollowUpPriority.Urgent : FollowUpPriority.Normal,
+                Status = FollowUpTaskStatus.Open,
+                DueAt = now
+            });
+        }
+        foreach (var candidate in knowledgeCandidates.Take(4))
+            items.Add(new TodayBriefItem
+            {
+                CustomerName = $"候选知识 · {candidate.Title}",
+                Category = "knowledge_candidate",
+                Action = "查看真实发送样本、回复与阶段结果，人工批准或拒绝候选",
+                Reason = $"{candidate.EvidenceLabel} · 样本 {candidate.SampleSize} · 回复 {candidate.Replies} · 阶段推进 {candidate.StageProgressions} · 成交 {candidate.Conversions}",
+                Priority = candidate.EvidenceLevel == KnowledgeEvidenceLevel.OutcomeValidated
+                    ? FollowUpPriority.High
+                    : FollowUpPriority.Low,
+                Status = FollowUpTaskStatus.Open,
+                DueAt = now
+            });
 
         var learning = await _learning.RefreshAsync(cancellationToken);
 
@@ -154,6 +194,9 @@ public sealed class TodayBriefService
             HumanHandoffCount = handoffs.Count,
             SourcingCompleteCount = sourcingComplete.Count,
             CrossAccountFollowUpCount = crossAccount.Count,
+            KnowledgeReviewCount = knowledgeDocuments.Count(item => item.Status is KnowledgeDocumentStatus.ReadyForReview or KnowledgeDocumentStatus.Outdated),
+            KnowledgeConflictCount = knowledgeDocuments.Count(item => item.Status == KnowledgeDocumentStatus.Conflicted),
+            KnowledgeCandidateCount = knowledgeCandidates.Count,
             Items = items
                 .OrderByDescending(item => PriorityRank(item.Priority))
                 .ThenBy(item => item.DueAt)

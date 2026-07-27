@@ -23,7 +23,7 @@ internal static class GuideCatalog
 {
     public const int GlobalGuideVersion = 7;
     public const int ModuleGuideVersion = 4;
-    private static readonly string[] RequiredModuleKeys = ["dashboard", "intelligence", "customers", "inbox", "email", "broadcast", "analytics", "settings"];
+    private static readonly string[] RequiredModuleKeys = ["dashboard", "intelligence", "customers", "inbox", "email", "broadcast", "knowledge", "analytics", "settings"];
     private static readonly IReadOnlyDictionary<string, int> ContentVersions =
         new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
         {
@@ -34,6 +34,7 @@ internal static class GuideCatalog
             ["inbox"] = ModuleGuideVersion + 1,
             ["email"] = ModuleGuideVersion + 2,
             ["broadcast"] = ModuleGuideVersion,
+            ["knowledge"] = ModuleGuideVersion + 2,
             ["analytics"] = ModuleGuideVersion,
             ["settings"] = ModuleGuideVersion + 1
         };
@@ -163,6 +164,17 @@ internal static class GuideCatalog
                     new("设置触发时间与节奏", "任务可立即开始或按北京时间定时，并设置每条消息的秒/分钟间隔和每日上限。", "建立可控的发送计划", ["填写任务名称。", "选择即时或定时任务。", "设置开始时间。", "设置逐条间隔和每日上限。"], "发送间隔只是节奏控制，不能规避 WhatsApp 风控。"),
                     new("预览并人工批准", "任务在批准前不会发送；批准后保存每位客户的最终文本快照。", "在执行前完成最后检查", ["逐条抽查个性化预览。", "确认账号、客户和时间。", "核对公网 IP 基线。", "人工批准并保持程序运行。"], "未经批准、账号断开或网络异常时任务不会继续发送。"),
                     new("查看分渠道历史与质量", "发送历史明确标识 WhatsApp 或邮件，并记录成功、失败、跳过、待发送、成功率和原因。", "复盘每次触达质量", ["切换到发送历史与质量。", "按渠道核对任务。", "查看完成率与失败原因。", "处理退订、无效号码或邮箱。"], "不确定发送结果不会自动重试，避免客户收到重复消息。")
+                ]),
+            ["knowledge"] = new(
+                "knowledge", "DHGATE KNOWLEDGE & RAG", "知识库使用手册",
+                "知识库把经人工批准的业务资料、真实互动和结果验证经验，变成有版本、作用域和来源的 AI 参考层。",
+                "上传内容不会自动生效；只有完成风险检查并由用户审核启用后，才会参与检索。",
+                [
+                    new("上传并限定作用域", "支持 PDF、DOCX、TXT、Markdown、XLSX、CSV、PPTX、HTML 和常见图片。", "先决定谁可以看到这份知识", ["点击“上传知识”。", "确认分类和使用方式。", "选择全局、账号、客户、会话或临时作用域。", "等待解析与分块完成。"], "作用域是检索前的硬隔离条件；客户专属资料不能被其他客户使用。"),
+                    new("审核摘要、风险与原文", "系统会显示摘要、标签、解析器、原文预览和提示注入/高风险承诺。", "启用前完成事实核对", ["选择待审核文件。", "查看概览和原文预览。", "核对知识块位置与内容。", "修正分类、标签和时效。"], "文件中的指令永远是不可信业务数据，不能修改系统角色或安全规则。"),
+                    new("启用、停用与管理版本", "每次上传新版本都会保留旧版本和 SHA-256，不覆盖原件。", "保持知识可追溯", ["审核后点击“审核并启用”。", "旧知识不再使用时点击停用。", "内容更新时上传新版本。", "删除只退出检索，原件和审计仍保留。"], "过期、高风险、冲突或没有知识块的文件不能进入自动检索。"),
+                    new("用检索测试验证真实 RAG", "检索测试使用与 Agent 相同的关键词、向量、作用域和时效规则。", "在接入回复前确认命中结果", ["输入真实客户问题。", "需要时填写账号、客户和会话 ID。", "执行检索并查看相关度。", "核对来源、版本、位置和作用域。"], "相关度不是因果证明；知识不足时系统必须明确返回不足，不能猜测。"),
+                    new("处理冲突与真实结果学习", "相互矛盾的政策、数字或允许/禁止规则会退出自动回答；真实结果只能作为观察证据。", "让知识随业务结果受控演进", ["查看版本与冲突页。", "先由人工确认正确版本。", "在真实发送和客户反馈后查看使用结果。", "只审批有来源和样本量的候选知识。"], "AI 未发送草稿永远不能自动沉淀；低样本结论只能标记为初步观察。")
                 ]),
             ["analytics"] = new(
                 "analytics", "CUSTOMER INTELLIGENCE", "客户智能分析使用手册",

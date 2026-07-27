@@ -215,6 +215,31 @@
                                 <TextBlock x:Name="PendingQuestionText" Text="待确认：—" Foreground="{DynamicResource Muted}" FontSize="9.5" TextWrapping="Wrap" Margin="0,4,0,0"/>
                             </StackPanel>
                         </Border>
+                        <Border x:Name="KnowledgeReferencePanel" Background="{DynamicResource AiSoft}" BorderBrush="{DynamicResource AiAccent}" BorderThickness="1"
+                                CornerRadius="10" Padding="12" Margin="0,0,0,13" Visibility="Collapsed">
+                            <StackPanel>
+                                <TextBlock Text="本次建议参考" Foreground="{DynamicResource AiAccentDeep}" FontWeight="SemiBold" FontSize="12"/>
+                                <TextBlock x:Name="KnowledgeReferenceSummaryText" Text="尚未执行知识检索" Foreground="{DynamicResource Muted}"
+                                           FontSize="9.5" TextWrapping="Wrap" Margin="0,4,0,7"/>
+                                <ListBox x:Name="KnowledgeReferenceList" MaxHeight="180" BorderThickness="0" Background="Transparent">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Margin="2,4">
+                                                <TextBlock Text="{Binding Citation}" FontWeight="SemiBold" FontSize="9.5" TextWrapping="Wrap"/>
+                                                <TextBlock Text="{Binding Preview}" Foreground="{DynamicResource Muted}" FontSize="9"
+                                                           TextWrapping="Wrap" MaxHeight="42"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <WrapPanel Margin="0,8,0,0">
+                                    <Button Content="查看来源" Style="{StaticResource SecondaryButton}" Click="ViewKnowledgeSource_Click" Padding="8,4" Margin="0,0,5,5"/>
+                                    <Button Content="本会话排除" Style="{StaticResource SecondaryButton}" Click="ExcludeKnowledge_Click" Padding="8,4" Margin="0,0,5,5"/>
+                                    <Button Content="有帮助" Style="{StaticResource SecondaryButton}" Click="HelpfulKnowledge_Click" Padding="8,4" Margin="0,0,5,5"/>
+                                    <Button Content="停用来源" Style="{StaticResource DangerButton}" Click="DisableKnowledgeSource_Click" Padding="8,4" Margin="0,0,5,5"/>
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
                         <Border x:Name="HandoffPanel" Background="{DynamicResource WarningSoft}" BorderBrush="{DynamicResource Warning}" BorderThickness="1" CornerRadius="10" Padding="12" Margin="0,0,0,13" Visibility="Collapsed">
                             <StackPanel>
                                 <TextBlock Text="需要人工处理" Foreground="{DynamicResource Warning}" FontWeight="SemiBold" FontSize="12"/>

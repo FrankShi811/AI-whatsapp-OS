@@ -36,7 +36,7 @@ public partial class DashboardView : UserControl, IRefreshableView
         var brief = await _services.TodayBrief.GetAsync();
         TodayBriefSummaryText.Text = brief.Items.Count == 0
             ? "今天暂无待处理行动；新客户回复、人工接管或 AI 建议会自动进入这里。"
-            : $"待处理 {brief.Items.Count} 项｜逾期 {brief.OverdueCount}｜今天到期 {brief.DueTodayCount}｜进行中 {brief.InProgressCount}｜人工接管 {brief.HumanHandoffCount}｜身份确认 {brief.IdentityPendingCount}｜跨账号复核 {brief.CrossAccountFollowUpCount}";
+            : $"待处理 {brief.Items.Count} 项｜逾期 {brief.OverdueCount}｜今天到期 {brief.DueTodayCount}｜人工接管 {brief.HumanHandoffCount}｜身份确认 {brief.IdentityPendingCount}｜知识审核 {brief.KnowledgeReviewCount}｜知识冲突 {brief.KnowledgeConflictCount}｜候选审批 {brief.KnowledgeCandidateCount}";
         TodayBriefItems.ItemsSource = brief.Items.Take(6).ToList();
         LearningCompletionText.Text = brief.Learning.Accepted == 0
             ? "完成率 —"
@@ -46,7 +46,7 @@ public partial class DashboardView : UserControl, IRefreshableView
             : $"有效反馈 {brief.Learning.HelpfulRate:0.#}%";
         LearningOutcomeText.Text = brief.Learning.Executed == 0
             ? "真实结果尚未形成"
-            : $"真实回复 {brief.Learning.ResponseRate:0.#}% · 阶段推进 {brief.Learning.ProgressionRate:0.#}% · 成交归因 {brief.Learning.DealRate:0.#}%";
+            : $"真实回复 {brief.Learning.ResponseRate:0.#}% · 阶段推进 {brief.Learning.ProgressionRate:0.#}% · 成交观察 {brief.Learning.DealRate:0.#}%";
         LearningDetailText.Text =
             $"已接受 {brief.Learning.Accepted} · 已执行 {brief.Learning.Executed} · 观察中 {brief.Learning.AwaitingOutcome} · 复购 {brief.Learning.RepeatPurchases}";
         LearningStrategyText.Text = brief.Learning.StrategyReview;

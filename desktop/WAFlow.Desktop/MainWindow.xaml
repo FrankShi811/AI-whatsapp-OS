@@ -61,6 +61,9 @@
                         </Button>
 
                         <TextBlock Text="INSIGHTS" Foreground="{DynamicResource SidebarMuted}" FontSize="9" FontWeight="SemiBold" Margin="13,20,0,7"/>
+                        <Button x:Name="KnowledgeButton" Tag="knowledge" Click="Navigate_Click" Style="{StaticResource NavButton}">
+                            <StackPanel Orientation="Horizontal"><TextBlock Text="▤" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="知识库" Style="{StaticResource NavText}"/></StackPanel>
+                        </Button>
                         <Button x:Name="AnalyticsButton" Tag="analytics" Click="Navigate_Click" Style="{StaticResource NavButton}">
                             <StackPanel Orientation="Horizontal"><TextBlock Text="◫" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="客户智能分析" Style="{StaticResource NavText}"/></StackPanel>
                         </Button>
@@ -137,9 +140,10 @@
                         <Button Tag="intelligence" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="✦" FontSize="15" Foreground="{DynamicResource AiAccent}"/><StackPanel Grid.Column="1"><TextBlock Text="打开商机智能" FontWeight="SemiBold"/><TextBlock Text="查看 AI 评分证据与下一步" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid></Button>
                         <Button Tag="inbox" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="◉" FontSize="15" Foreground="{DynamicResource Primary}"/><StackPanel Grid.Column="1"><TextBlock Text="打开 WhatsApp Inbox" FontWeight="SemiBold"/><TextBlock Text="处理最新客户回复" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid></Button>
                         <Button Tag="broadcast" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="◌" FontSize="15" Foreground="{DynamicResource Warning}"/><StackPanel Grid.Column="1"><TextBlock Text="建立自动化群发任务" FontWeight="SemiBold"/><TextBlock Text="模板、受众、节奏与人工批准" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid></Button>
+                        <Button Tag="knowledge" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="▤" FontSize="15" Foreground="{DynamicResource Primary}"/><StackPanel Grid.Column="1"><TextBlock Text="管理业务知识与 RAG" FontWeight="SemiBold"/><TextBlock Text="上传、审核、检索测试与来源审计" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid></Button>
                         <Button Tag="analytics" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="◫" FontSize="15" Foreground="{DynamicResource AiAccent}"/><StackPanel Grid.Column="1"><TextBlock Text="生成客户情报报告" FontWeight="SemiBold"/><TextBlock Text="整合全部客户数据并导出 Word / PDF" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid></Button>
                     </StackPanel>
-                    <Border Grid.Row="2" Background="{DynamicResource SurfaceMuted}" CornerRadius="0,0,16,16" Padding="20,11"><TextBlock Text="Ctrl+1…6 切换模块 · Ctrl+K 打开 · Esc 关闭" Foreground="{DynamicResource Muted}" FontSize="9.5"/></Border>
+                    <Border Grid.Row="2" Background="{DynamicResource SurfaceMuted}" CornerRadius="0,0,16,16" Padding="20,11"><TextBlock Text="Ctrl+1…8 切换模块 · Ctrl+K 打开 · Esc 关闭" Foreground="{DynamicResource Muted}" FontSize="9.5"/></Border>
                 </Grid>
             </Border>
         </Grid>

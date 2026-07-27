@@ -38,6 +38,11 @@ $customerSuccessSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path
 $emailServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\EmailService.cs')
 $emailAccountXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\EmailAccountWindow.xaml')
 $emailAccountSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\EmailAccountWindow.xaml.cs')
+$knowledgeBaseXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\KnowledgeBaseView.xaml')
+$knowledgeBaseSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\KnowledgeBaseView.xaml.cs')
+$knowledgeServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\KnowledgeBaseService.cs')
+$knowledgeModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Domain\KnowledgeModels.cs')
+$localRepositorySource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Infrastructure\LocalRepository.cs')
 $guideCatalogSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\GuideCatalog.cs')
 $releaseCatalogSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ReleaseCatalog.cs')
 $velopackBuildSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'scripts\build-velopack-release.ps1')
@@ -109,9 +114,9 @@ if ($appXaml -notmatch '<Style TargetType="\{x:Type TextBlock\}">[\s\S]*?<Setter
   throw 'Implicit WPF text controls must inherit high-contrast semantic foregrounds in dark mode.'
 }
 $navTextCount = ([regex]::Matches($mainWindowXaml, 'Style="\{StaticResource NavText\}"')).Count
-if ($navTextCount -ne 15 -or
+if ($navTextCount -ne 17 -or
     $appXaml -notmatch 'x:Key="NavText"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}') {
-  throw "Every sidebar navigation icon, label and shortcut footer must inherit the owning NavButton foreground. expected=15 actual=$navTextCount"
+  throw "Every sidebar navigation icon, label and shortcut footer must inherit the owning NavButton foreground. expected=17 actual=$navTextCount"
 }
 if ($mainWindowXaml -notmatch '<Button Style="\{StaticResource NavButton\}" Click="CommandButton_Click">\s*<TextBlock Text="[^"]*Ctrl \+ K" Style="\{StaticResource NavText\}"/>\s*</Button>' -or
     $mainWindowXaml -match 'Content="[^"]*Ctrl \+ K"') {
@@ -206,6 +211,21 @@ if ($whatsAppInboxXaml -match 'Margin="0,108,0,0"') {
   throw 'WhatsApp Inbox AI Sales Brief next action must use adaptive rows instead of a fixed overlay margin.'
 }
 Write-Host 'PASS  WhatsApp Inbox AI Sales Brief adaptive full-text layout contract'
+
+if ($mainWindowXaml -notmatch 'Tag="knowledge"' -or
+    $knowledgeBaseXaml -notmatch 'x:Name="UploadButton"' -or
+    $knowledgeBaseXaml -notmatch 'x:Name="RetrievalQueryBox"' -or
+    $knowledgeBaseXaml -notmatch 'x:Name="ConflictGrid"' -or
+    $knowledgeBaseSource -notmatch [regex]::Escape('ResolveConflictAsync') -or
+    $knowledgeServiceSource -notmatch [regex]::Escape('MaximumFileSize = 50L * 1024 * 1024') -or
+    $knowledgeServiceSource -notmatch [regex]::Escape('ValidateOfficeArchive') -or
+    $knowledgeServiceSource -notmatch [regex]::Escape('SourceKind == KnowledgeSourceKind.AiDraft') -or
+    $knowledgeModelsSource -notmatch 'KnowledgeScopeKind[\s\S]*?Global[\s\S]*?Account[\s\S]*?Customer[\s\S]*?Conversation[\s\S]*?Temporary' -or
+    $localRepositorySource -notmatch 'CREATE TABLE IF NOT EXISTS knowledge_documents' -or
+    $localRepositorySource -notmatch 'CREATE TABLE IF NOT EXISTS knowledge_retrieval_logs') {
+  throw 'Knowledge Base must expose governed upload/review/search/conflict UI, immutable local storage, five strict scopes and durable retrieval audit.'
+}
+Write-Host 'PASS  Knowledge Base governed RAG, scope and audit contract'
 
 if ($bridgeSource -notmatch 'receiptBelongsToPhone' -or
     $bridgeSource -notmatch 'targetVerified:\s*true' -or

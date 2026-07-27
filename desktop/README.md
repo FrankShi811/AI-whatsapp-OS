@@ -5,7 +5,7 @@
 ## 运行时结构
 
 - `WAFlow.Desktop`：保留的内部项目名；构建脚本将内部产物覆盖为根目录唯一的 `AI Sales OS.exe`，提供全部 WPF 原生界面。
-- `WAFlow.Core`：保留的内部核心模块名，包含 SQLite、Excel/CSV、AI 模型发现、WhatsApp 回复分析、多账号、持久群发任务调度，以及分阶段客户情报报告和 Word/PDF 导出。
+- `WAFlow.Core`：保留的内部核心模块名，包含 SQLite、Excel/CSV、AI 模型发现、WhatsApp 回复分析、多账号、持久群发任务调度、严格作用域 Knowledge Base / RAG，以及分阶段客户情报报告和 Word/PDF 导出。
 - `WAFlow.WhatsApp.Bridge.exe`：内嵌 Node SEA Windows EXE，通过标准输入输出 JSON-RPC 与主程序通信，不开放本地 HTTP 端口。
 - `WAFlow.SmokeTests`：离线核心测试；DeepSeek 使用模拟响应，不访问真实账号或客户。
 
@@ -25,6 +25,7 @@ cd "D:\whatsapp 自动化"
 ## 安全与发送边界
 
 - AI 仅调用用户配置的 DeepSeek 或 Chat Completions 兼容 HTTPS API；设置页通过 `/models` 自动读取可用模型，失败时保留原始客户数据并标记可重试。
+- Knowledge Base 原件与版本保存在本地；只有人工批准、未过期、无冲突且作用域匹配的知识块才能进入检索，提示注入和 AI 未发送草稿不能成为正式知识。
 - 客户情报报告的每个 AI 阶段都保存结构化结果和来源快照；重新分析只创建新版本，不会覆盖 CRM、WhatsApp 或 Lead Intelligence 原始数据。
 - AI API Key 和 WhatsApp 会话加密密钥保存在 Windows 凭据管理器。
 - 群发任务必须人工批准，发送前再次检查账号连接、E.164 号码、退订状态、消息内容和每日上限；营销同意状态保留为提示但不再把新导入客户全部排除。发送间隔不作为规避平台风控的承诺。

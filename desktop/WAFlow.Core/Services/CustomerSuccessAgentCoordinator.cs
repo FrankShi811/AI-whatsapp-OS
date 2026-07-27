@@ -64,6 +64,24 @@ public sealed class CustomerSuccessAgentCoordinator : IDisposable
                 result.AgentState.LastHoldingReplyMessageId = providerMessageId;
                 await _repository.UpsertConversationAgentStateAsync(result.AgentState, cancellationToken);
             }
+            if (result.Decision.KnowledgeCitations.Count > 0)
+            {
+                foreach (var citation in result.Decision.KnowledgeCitations)
+                {
+                    await _repository.SaveKnowledgeUsageOutcomeAsync(new KnowledgeUsageOutcome
+                    {
+                        Id = $"{providerMessageId}:{citation.ChunkId}",
+                        RetrievalLogId = result.Decision.KnowledgeRetrievalId,
+                        ChunkId = citation.ChunkId,
+                        CustomerId = result.Context?.CustomerId ?? "",
+                        SourceMessageId = providerMessageId,
+                        ActuallySent = confirmedByServer,
+                        ObservationNote = confirmedByServer
+                            ? "知识辅助回复已由 WhatsApp 服务端确认；后续回复和阶段结果需另行观察。"
+                            : "已取得消息 ID，但服务端状态尚未确认；不计入真实发送样本。"
+                    }, cancellationToken);
+                }
+            }
             await _repository.LogEventAsync(
                 confirmedByServer
                     ? shouldSendHolding ? "customer_success_holding_reply_sent" : "customer_success_auto_reply_sent"

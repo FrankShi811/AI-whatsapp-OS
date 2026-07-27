@@ -13,9 +13,12 @@ public sealed class ConversationAssistantResult
     public string RecommendedNextAction { get; set; } = "";
     public double Confidence { get; set; }
     public List<ConversationFieldUpdate> FieldUpdates { get; set; } = [];
+    public List<string> KnowledgeChunkIds { get; set; } = [];
 
     [JsonIgnore] public string Model { get; set; } = "";
     [JsonIgnore] public string LatestIncomingMessage { get; set; } = "";
+    [JsonIgnore] public string KnowledgeRetrievalId { get; set; } = "";
+    [JsonIgnore] public List<KnowledgeRetrievalHit> KnowledgeCitations { get; set; } = [];
 }
 
 public sealed class ConversationFieldUpdate

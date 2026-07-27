@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private readonly WhatsAppInboxView _inbox;
     private readonly EmailInboxView _email;
     private readonly CampaignsView _campaigns;
+    private readonly KnowledgeBaseView _knowledge;
     private readonly AnalyticsView _analytics;
     private Button? _activeButton;
     private OnboardingState _onboardingState = new();
@@ -42,6 +43,7 @@ public partial class MainWindow : Window
         _inbox = new WhatsAppInboxView(services);
         _email = new EmailInboxView(services);
         _campaigns = new CampaignsView(services);
+        _knowledge = new KnowledgeBaseView(services);
         _analytics = new AnalyticsView(services);
         _dashboard.NavigateRequested += Dashboard_NavigateRequested;
         _intelligence.ImportRequested += OpenImport;
@@ -51,6 +53,7 @@ public partial class MainWindow : Window
         _inbox.DataChanged += async (_, _) => await RefreshAllAsync();
         _email.DataChanged += async (_, _) => await RefreshAllAsync();
         _campaigns.DataChanged += async (_, _) => await RefreshAllAsync();
+        _knowledge.DataChanged += async (_, _) => await RefreshAllAsync();
         _analytics.DataChanged += async (_, _) => await RefreshAllAsync();
         _services.Campaigns.SafetyStopped += Campaigns_SafetyStopped;
         _services.LeadAutomation.AnalysisChanged += LeadAutomation_AnalysisChanged;
@@ -159,6 +162,7 @@ public partial class MainWindow : Window
             "inbox" => InboxButton,
             "email" => EmailButton,
             "broadcast" => BroadcastButton,
+            "knowledge" => KnowledgeButton,
             "customers" => CustomersButton,
             "analytics" => AnalyticsButton,
             _ => DashboardButton
@@ -188,6 +192,7 @@ public partial class MainWindow : Window
             "inbox" => ((object)_inbox, "WhatsApp Inbox", "会话、客户资料与 AI 销售信号实时联动"),
             "email" => ((object)_email, "邮件 Inbox", "邮件收发、历史归档与 CRM 客户资料实时联动"),
             "broadcast" => ((object)_campaigns, "多渠道自动化触达", "WhatsApp 与邮件任务、动态字段、发送节奏与分渠道审计"),
+            "knowledge" => ((object)_knowledge, "知识库", "批准知识、作用域、版本、混合检索与来源审计"),
             "analytics" => ((object)_analytics, "客户智能分析", "全量客户数据、AI 商业判断、报告版本与管理层导出"),
             _ => ((object)_dashboard, "Dashboard", "今天最值得推进的商机与动作")
         };
@@ -337,6 +342,7 @@ public partial class MainWindow : Window
             case "inbox": await NavigateAsync(action, InboxButton); break;
             case "email": await NavigateAsync(action, EmailButton); break;
             case "broadcast": await NavigateAsync(action, BroadcastButton); break;
+            case "knowledge": await NavigateAsync(action, KnowledgeButton); break;
             case "analytics": await NavigateAsync(action, AnalyticsButton); break;
         }
     }
@@ -370,7 +376,8 @@ public partial class MainWindow : Window
             Key.D4 => ("inbox", InboxButton),
             Key.D5 => ("email", EmailButton),
             Key.D6 => ("broadcast", BroadcastButton),
-            Key.D7 => ("analytics", AnalyticsButton),
+            Key.D7 => ("knowledge", KnowledgeButton),
+            Key.D8 => ("analytics", AnalyticsButton),
             _ => ((string Page, Button Button)?)null
         };
         if (target is null) return;
@@ -389,7 +396,7 @@ public partial class MainWindow : Window
 
     private async Task RefreshAllAsync()
     {
-        await _dashboard.RefreshAsync(); await _intelligence.RefreshAsync(); await _customers.RefreshAsync(); await _inbox.RefreshAsync(); await _email.RefreshAsync(); await _campaigns.RefreshAsync(); await _analytics.RefreshAsync();
+        await _dashboard.RefreshAsync(); await _intelligence.RefreshAsync(); await _customers.RefreshAsync(); await _inbox.RefreshAsync(); await _email.RefreshAsync(); await _campaigns.RefreshAsync(); await _knowledge.RefreshAsync(); await _analytics.RefreshAsync();
     }
 
     private void Campaigns_SafetyStopped(object? sender, CampaignSafetyStoppedEventArgs e)
