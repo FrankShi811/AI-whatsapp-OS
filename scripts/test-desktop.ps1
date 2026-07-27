@@ -35,6 +35,10 @@ $whatsAppInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $
 $whatsAppSyncSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppSyncService.cs')
 $campaignAutomationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CampaignAutomationService.cs')
 $customerSuccessSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerSuccessAgentCoordinator.cs')
+$emailServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\EmailService.cs')
+$emailAccountXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\EmailAccountWindow.xaml')
+$emailAccountSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\EmailAccountWindow.xaml.cs')
+$guideCatalogSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\GuideCatalog.cs')
 $releaseCatalogSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ReleaseCatalog.cs')
 $velopackBuildSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'scripts\build-velopack-release.ps1')
 $allDesktopXaml = (Get-ChildItem -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop') -Recurse -Filter '*.xaml' |
@@ -239,6 +243,32 @@ if ($bridgeSource -notmatch [regex]::Escape('proto.WebMessageInfo.StubType.CIPHE
 & $node (Join-Path $root 'bridge\scripts\message-content-smoke.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'WhatsApp bridge message-content smoke test failed.' }
 Write-Host 'PASS  WhatsApp placeholder recovery and accurate message classification contract'
+
+$emailProviderContractTokens = @(
+  'EmailProviderGuide',
+  'https://myaccount.google.com/apppasswords',
+  'Outlook.com',
+  'OAuth2 / Modern Auth',
+  'https://login.yahoo.com/account/security',
+  'https://account.apple.com/account/manage/section/security',
+  'SecureSocketOptions.StartTls;'
+)
+$missingEmailProviderTokens = @($emailProviderContractTokens | Where-Object { -not $emailServiceSource.Contains($_) })
+if ($missingEmailProviderTokens.Count -gt 0) {
+  throw "Email providers must expose accurate platform-specific setup, credential and encrypted transport guidance. missing=$($missingEmailProviderTokens -join ', ')"
+}
+if ($emailAccountXaml -notmatch 'x:Name="GuideStepsText"' -or
+    $emailAccountXaml -notmatch 'x:Name="ProviderSetupButton"' -or
+    $emailAccountXaml -notmatch 'x:Name="PasswordHintText"' -or
+    $emailAccountXaml -notmatch 'x:Name="ResetPresetButton"' -or
+    -not ($emailAccountSource.Contains('account?.Provider ?? EmailProviderKind.Gmail')) -or
+    -not ($emailAccountSource.Contains('UserNameBox.Text = EmailBox.Text.Trim()')) -or
+    -not ($emailAccountSource.Contains('ImapHostBox.Clear()')) -or
+    -not ($emailAccountSource.Contains('UseShellExecute = true')) -or
+    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 2'))) {
+  throw 'Email account window must provide provider steps, direct official links, field hints, username sync and preset recovery.'
+}
+Write-Host 'PASS  provider-specific email onboarding and compatibility guidance contract'
 
 & $dotnet build (Join-Path $root 'desktop\WAFlow.sln') -c Release
 if ($LASTEXITCODE -ne 0) { throw 'WAFlow desktop build failed.' }

@@ -692,6 +692,34 @@ var safetyStoppedCampaign = await repository.GetCampaignAsync(campaign.Id);
 var executionHistory = await campaigns.GetExecutionHistoryAsync();
 Check(!safetyPassed && safetyStoppedCampaign is { Status: CampaignStatus.SafetyStopped, SafetyStopFromIp: "198.51.100.30", SafetyStopToIp: "203.0.113.31" } && (await repository.GetCampaignAsync(secondAccountCampaign.Id))?.Status == CampaignStatus.SafetyStopped && safetyNotice?.Campaigns.Count == 2 && safetyNotice.Campaigns.Sum(item => item.Failed) == 1 && executionHistory.Single(item => item.Campaign.Id == campaign.Id).StopOrNext.Contains("已处理"), "IP change safety valve stops all active outreach across accounts and preserves execution position");
 
+var providerKinds = Enum.GetValues<EmailProviderKind>();
+var providerGuides = EmailService.ProviderGuides;
+var gmailPreset = EmailService.Preset(EmailProviderKind.Gmail);
+var gmailGuide = EmailService.Guide(EmailProviderKind.Gmail);
+var microsoftGuide = EmailService.Guide(EmailProviderKind.Microsoft365);
+var yahooGuide = EmailService.Guide(EmailProviderKind.Yahoo);
+var iCloudGuide = EmailService.Guide(EmailProviderKind.ICloud);
+Check(
+    EmailService.ProviderPresets.Count == providerKinds.Length
+    && providerGuides.Count == providerKinds.Length
+    && providerKinds.All(provider => providerGuides.Count(guide => guide.Provider == provider) == 1)
+    && providerGuides.All(guide => guide.Steps.Count >= 3 && guide.HelpUrl.StartsWith("https://", StringComparison.Ordinal)),
+    "every supported email provider has one complete and secure onboarding guide");
+Check(
+    gmailPreset is { ImapHost: "imap.gmail.com", ImapPort: 993, SmtpHost: "smtp.gmail.com", SmtpPort: 465 }
+    && gmailGuide.SetupUrl == "https://myaccount.google.com/apppasswords"
+    && gmailGuide.PasswordHint.Contains("日常登录密码")
+    && gmailGuide.CompatibilityNote.Contains("2025"),
+    "Gmail onboarding gives direct app-password entry, exact fields and current IMAP behavior");
+Check(
+    microsoftGuide.CompatibilityNote.Contains("OAuth2 / Modern Auth")
+    && microsoftGuide.CompatibilityNote.Contains("暂时无法连接")
+    && yahooGuide.SetupUrl.Contains("account/security")
+    && yahooGuide.PasswordLabel.Contains("应用密码")
+    && iCloudGuide.SetupUrl.Contains("account.apple.com")
+    && iCloudGuide.PasswordLabel.Contains("专用密码"),
+    "Microsoft limitations, Yahoo app password and iCloud app-specific password are explicit");
+
 var emailAccount = new EmailAccount
 {
     Id="sales-email", DisplayName="Sales Team", EmailAddress="sales@example.com", UserName="sales@example.com",

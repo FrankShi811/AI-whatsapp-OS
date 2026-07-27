@@ -32,7 +32,7 @@ internal static class GuideCatalog
             ["intelligence"] = ModuleGuideVersion + 1,
             ["customers"] = ModuleGuideVersion + 1,
             ["inbox"] = ModuleGuideVersion + 1,
-            ["email"] = ModuleGuideVersion + 1,
+            ["email"] = ModuleGuideVersion + 2,
             ["broadcast"] = ModuleGuideVersion,
             ["analytics"] = ModuleGuideVersion,
             ["settings"] = ModuleGuideVersion + 1
@@ -147,7 +147,7 @@ internal static class GuideCatalog
                 "邮件 Inbox 通过 IMAP 收件、SMTP 发件，并按邮箱地址与客户列表和商机智能共享同一客户档案。",
                 "邮箱密码或应用专用密码只保存在 Windows 凭据管理器，不写入数据库。",
                 [
-                    new("连接邮件账号", "支持 Gmail、Outlook / Microsoft 365、Yahoo、iCloud 和自定义 IMAP / SMTP。", "建立真实邮件收发连接", ["点击“连接邮箱”。", "选择平台并填写邮箱。", "输入密码或应用专用密码。", "测试 IMAP 与 SMTP 后保存。"], "部分平台需要先在网页端开启 IMAP 或创建应用专用密码；本版不在软件中保存 OAuth 令牌。"),
+                    new("连接邮件账号", "Gmail、Outlook / Microsoft 365、Yahoo、iCloud 和自定义 IMAP / SMTP 都有独立的连接说明。", "按平台完成真实邮件收发连接", ["点击“连接邮箱”并选择邮件平台。", "阅读平台专属三步引导，点击窗口内入口打开官方设置页。", "填写邮箱；登录用户名会按完整邮箱自动同步。", "按提示生成应用专用密码或向管理员索取授权码。", "确认自动填入的服务器参数，再测试 IMAP 与 SMTP 后保存。"], "Gmail、Yahoo、iCloud 不应填写日常登录密码；Outlook.com 当前要求 OAuth2，本版会在窗口中明确提示兼容性，不会引导用户盲目反复试密码。"),
                     new("同步邮件历史", "同步会读取收件箱并按 Message-ID 去重保存到本地。", "建立可搜索的客户邮件轨迹", ["选择已连接账号。", "点击同步收件箱。", "在左侧搜索姓名、邮箱、主题或正文。", "选择会话查看历史。"], "首次同步最多读取最近 500 封，可重复同步且不会重复创建相同邮件。"),
                     new("发送与回复邮件", "中间区域可以直接填写主题和正文，通过 SMTP 发送并保存本地历史。", "在客户上下文中完成邮件沟通", ["选择邮件会话。", "确认收件客户。", "填写主题和正文。", "点击发送邮件并查看结果。"], "“发送成功”表示 SMTP 服务器已接受；退信或后续投递状态可能由收件服务器另行返回。"),
                     new("联动客户资料", "系统用标准化邮箱精确唯一匹配客户；未匹配时可从右侧创建新客户。", "让邮件与 CRM 使用同一份数据", ["核对客户邮箱。", "编辑姓名、公司、国家、阶段和负责人。", "点击保存并同步客户。", "回到客户列表或商机智能核对。"], "存在多个相同邮箱时系统不会猜测关联，避免串错客户。"),

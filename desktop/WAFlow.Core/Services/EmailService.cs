@@ -18,6 +18,22 @@ public sealed record EmailProviderPreset(
     int SmtpPort,
     bool UsesAppPassword);
 
+public sealed record EmailProviderGuide(
+    EmailProviderKind Provider,
+    string Title,
+    string Badge,
+    string Summary,
+    IReadOnlyList<string> Steps,
+    string EmailHint,
+    string UserNameHint,
+    string PasswordLabel,
+    string PasswordHint,
+    string SetupButtonLabel,
+    string SetupUrl,
+    string HelpButtonLabel,
+    string HelpUrl,
+    string CompatibilityNote);
+
 public sealed class EmailService
 {
     private readonly LocalRepository _repository;
@@ -33,15 +49,117 @@ public sealed class EmailService
         new(EmailProviderKind.Custom, "自定义 IMAP / SMTP", "", 993, "", 465, false)
     ];
 
+    public static IReadOnlyList<EmailProviderGuide> ProviderGuides { get; } =
+    [
+        new(
+            EmailProviderKind.Gmail,
+            "Gmail 三步连接",
+            "应用专用密码",
+            "IMAP / SMTP 服务器已经自动填好；你只需准备 Gmail 地址和 Google 生成的 16 位应用专用密码。",
+            [
+                "填写完整 Gmail 地址；“登录用户名”会自动同步，无需另找账号名。",
+                "打开 Google 账号“安全性”，先确认已开启两步验证。",
+                "点击下方入口生成应用专用密码，粘贴到密码框，然后点击“测试连接并保存”。"
+            ],
+            "例如 frank@gmail.com 或公司 Google Workspace 邮箱",
+            "使用完整邮箱地址；通常与上方邮箱地址相同",
+            "Gmail 16 位应用专用密码",
+            "不要填写 Gmail 日常登录密码。复制结果中即使带空格也可以，保存前会自动清理空格。",
+            "生成 Gmail 应用专用密码",
+            "https://myaccount.google.com/apppasswords",
+            "查看 Gmail 官方连接说明",
+            "https://support.google.com/mail/answer/7126229?hl=zh-Hans",
+            "个人 Gmail 自 2025 年起默认开启 IMAP，不需要再寻找“开启 IMAP”开关。若看不到应用专用密码入口，请先确认两步验证已开启；仅安全密钥、组织策略或高级保护也可能隐藏该入口。"),
+        new(
+            EmailProviderKind.Microsoft365,
+            "Outlook / Microsoft 365 连接说明",
+            "OAuth2 限制",
+            "服务器参数会自动填入，但 Microsoft 当前对 Outlook.com 明确要求 OAuth2 / Modern Auth，连接前请先确认账号策略。",
+            [
+                "填写完整 Outlook / Microsoft 365 邮箱地址，登录用户名保持为完整邮箱。",
+                "在 Outlook 网页设置的“邮件 → 转发和 IMAP”中允许 IMAP（若该选项可见）。",
+                "阅读下方兼容性说明；企业账号请向管理员确认是否允许 IMAP / SMTP 密码认证。"
+            ],
+            "例如 name@outlook.com 或 name@company.com",
+            "使用完整 Microsoft 邮箱地址",
+            "Microsoft 密码 / 应用密码",
+            "只有账号或组织仍允许密码认证时才可使用；OAuth-only 账号反复更换普通密码也不会成功。",
+            "打开 Outlook 邮件设置",
+            "https://outlook.live.com/mail/0/options/mail/forwarding",
+            "查看 Microsoft 官方服务器说明",
+            "https://support.microsoft.com/en-US/Outlook/pop-imap-and-smtp-settings-for-outlook-com",
+            "重要：Outlook.com 官方当前要求 OAuth2 / Modern Auth。本版尚未集成 Microsoft OAuth，因此 OAuth-only 账号暂时无法连接；企业管理员若提供可用的密码认证参数，可在下方高级服务器设置中调整后测试。"),
+        new(
+            EmailProviderKind.Yahoo,
+            "Yahoo Mail 三步连接",
+            "第三方应用密码",
+            "Yahoo 要求未使用 Yahoo 登录页面的第三方邮件程序使用单独生成的应用密码。",
+            [
+                "填写完整 Yahoo 邮箱地址；登录用户名保持与邮箱地址一致。",
+                "打开 Yahoo“账号安全”，在“外部连接”下选择“创建应用密码”。",
+                "应用名称可填写 AI Sales OS；将生成的密码粘贴到下方并测试保存。"
+            ],
+            "例如 name@yahoo.com",
+            "使用完整 Yahoo 邮箱地址",
+            "Yahoo 第三方应用密码",
+            "不要填写 Yahoo 日常登录密码；请粘贴“账号安全”页面生成的第三方应用密码。",
+            "生成 Yahoo 应用密码",
+            "https://login.yahoo.com/account/security",
+            "查看 Yahoo 官方连接说明",
+            "https://help.yahoo.com/kb/imap-internet-message-access-protocol-sln4075.html",
+            "Yahoo 可能根据账号安全状态决定是否显示应用密码入口；若入口暂不可用，请先用常用浏览器正常登录 Yahoo 邮箱后再试。"),
+        new(
+            EmailProviderKind.ICloud,
+            "iCloud Mail 三步连接",
+            "App 专用密码",
+            "iCloud Mail 需要已开启双重认证的 Apple 账户，并使用单独生成的 App 专用密码。",
+            [
+                "填写完整 @icloud.com、@me.com 或 @mac.com 邮箱地址。",
+                "登录 account.apple.com，在“登录与安全性 → App 专用密码”中生成新密码。",
+                "登录用户名先使用完整 iCloud 邮箱；粘贴专用密码后测试保存。"
+            ],
+            "例如 name@icloud.com",
+            "建议使用完整 iCloud 邮箱地址",
+            "iCloud App 专用密码",
+            "不要填写 Apple 账户主密码；请粘贴 account.apple.com 生成的 App 专用密码。",
+            "生成 iCloud App 专用密码",
+            "https://account.apple.com/account/manage/section/security",
+            "查看 Apple 官方服务器说明",
+            "https://support.apple.com/102525",
+            "Apple 官方说明 IMAP 用户名通常可用邮箱 @ 前的名称；为同时满足 SMTP，本页默认使用完整邮箱。若 IMAP 验证失败，可再尝试仅填写 @ 前的名称。"),
+        new(
+            EmailProviderKind.Custom,
+            "自定义企业邮箱连接清单",
+            "向服务商索取参数",
+            "适用于腾讯企业邮、阿里企业邮、Zoho、域名邮箱或其他支持 IMAP / SMTP 密码认证的服务。",
+            [
+                "向邮箱服务商或企业管理员索取 IMAP 主机、端口和加密方式。",
+                "同时索取 SMTP 主机、端口、加密方式，以及应使用完整邮箱还是独立用户名。",
+                "确认密码框应填写登录密码、应用密码还是客户端授权码，再测试保存。"
+            ],
+            "填写要收发邮件的完整地址",
+            "按服务商说明填写；多数情况为完整邮箱地址",
+            "邮箱密码 / 应用密码 / 客户端授权码",
+            "不同服务商要求不同。若网页邮箱提供“客户端授权码”，请填写授权码而不是网页登录密码。",
+            "",
+            "",
+            "了解需要向服务商索取哪些参数",
+            "https://support.microsoft.com/en-us/outlook/install-mobile/server-settings-you-ll-need-from-your-email-provider",
+            "若服务商强制 OAuth2 且不提供应用密码或客户端授权码，本版无法连接；请联系管理员确认可用的 IMAP / SMTP 认证方式。")
+    ];
+
     public static EmailProviderPreset Preset(EmailProviderKind provider) =>
         ProviderPresets.First(item => item.Provider == provider);
+
+    public static EmailProviderGuide Guide(EmailProviderKind provider) =>
+        ProviderGuides.First(item => item.Provider == provider);
 
     public async Task SaveAndTestAccountAsync(EmailAccount account, string password, CancellationToken cancellationToken = default)
     {
         ValidateAccount(account);
-        if (!string.IsNullOrWhiteSpace(password)) PasswordStore(account.Id).Save(password);
+        if (!string.IsNullOrWhiteSpace(password)) PasswordStore(account.Id).Save(NormalizeCredential(account.Provider, password));
         var storedPassword = PasswordStore(account.Id).Read();
-        if (string.IsNullOrWhiteSpace(storedPassword)) throw new InvalidOperationException("请输入邮箱密码或应用专用密码。");
+        if (string.IsNullOrWhiteSpace(storedPassword)) throw new InvalidOperationException($"请输入{Guide(account.Provider).PasswordLabel}。");
 
         try
         {
@@ -54,7 +172,7 @@ public sealed class EmailService
         catch (Exception error)
         {
             account.Status = EmailConnectionStatus.Error;
-            account.LastError = Safe(error.Message);
+            account.LastError = FriendlyConnectionError(account.Provider, error);
             await _repository.SaveEmailAccountAsync(account, cancellationToken);
             throw new InvalidOperationException($"邮箱连接失败：{account.LastError}", error);
         }
@@ -275,7 +393,7 @@ public sealed class EmailService
     private static WindowsCredentialStore PasswordStore(string accountId) => new($"WAFlow/EmailPassword/{accountId}");
 
     private static SecureSocketOptions SocketOptions(int port, bool useSsl) =>
-        !useSsl ? SecureSocketOptions.Auto : port == 465 || port == 993 ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTlsWhenAvailable;
+        !useSsl ? SecureSocketOptions.Auto : port == 465 || port == 993 ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls;
 
     private static void ValidateAccount(EmailAccount account)
     {
@@ -286,6 +404,28 @@ public sealed class EmailService
     }
 
     private static string NormalizeEmail(string? value) => (value ?? "").Trim().ToLowerInvariant();
+    private static string NormalizeCredential(EmailProviderKind provider, string value)
+    {
+        var trimmed = value.Trim();
+        return provider is EmailProviderKind.Gmail or EmailProviderKind.Yahoo or EmailProviderKind.ICloud
+            ? string.Concat(trimmed.Where(character => !char.IsWhiteSpace(character)))
+            : trimmed;
+    }
+
+    private static string FriendlyConnectionError(EmailProviderKind provider, Exception error)
+    {
+        var technical = Safe(error.Message);
+        var guidance = provider switch
+        {
+            EmailProviderKind.Gmail => "Gmail 连接或登录未通过。请确认已开启两步验证，并填写 Google 生成的 16 位应用专用密码，而不是日常登录密码。",
+            EmailProviderKind.Microsoft365 => "Microsoft 连接或登录未通过。Outlook.com 当前要求 OAuth2 / Modern Auth；若账号为 OAuth-only，本版暂时无法连接。企业账号请让管理员确认 IMAP / SMTP 密码认证策略。",
+            EmailProviderKind.Yahoo => "Yahoo 连接或登录未通过。请在“账号安全 → 外部连接”创建第三方应用密码，不要填写日常登录密码。",
+            EmailProviderKind.ICloud => "iCloud 连接或登录未通过。请确认 Apple 账户已开启双重认证，并填写 account.apple.com 生成的 App 专用密码。",
+            _ => "服务器拒绝连接。请向邮箱服务商核对主机、端口、加密方式、用户名和客户端授权码。"
+        };
+        return $"{guidance} 技术信息：{technical}";
+    }
+
     private static string Snippet(string? value)
     {
         var compact = string.Join(' ', (value ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
