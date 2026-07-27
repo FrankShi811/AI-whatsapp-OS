@@ -417,6 +417,8 @@ public sealed class CustomerSuccessAgentDecision
     public double Confidence { get; set; }
     public string Model { get; set; } = "";
     public string LatestIncomingMessageId { get; set; } = "";
+    [JsonIgnore] public bool UsedSafeFallback { get; set; }
+    [JsonIgnore] public string FallbackReason { get; set; } = "";
     public bool RequiresHuman => Safety == AgentQuestionSafety.ImmediateHuman;
 }
 

@@ -274,23 +274,37 @@ public sealed partial class CustomerSuccessAgentService
                 "approved_dhgate_knowledge", "current_sourcing_request", "evidence_backed_customer_brain", "ai_inference"
             },
             conversation = context.Messages.Where(item => !item.IsStatusUpdate && !item.IsRevoked)
-                .TakeLast(240).Select(item => new
+                .TakeLast(80).Select(item => new
                 {
                     item.AccountId, item.ConversationId, item.Id,
                     direction = item.Direction == WhatsAppMessageDirection.Incoming ? "incoming" : "outgoing",
-                    item.Timestamp, item.Kind, text = item.Body
+                    item.Timestamp, item.Kind, text = LimitText(item.Body, 1200)
                 }),
-            latestIncoming = new { source.Id, source.AccountId, source.ConversationId, source.Timestamp, text = source.Body }
+            latestIncoming = new
+            {
+                source.Id, source.AccountId, source.ConversationId, source.Timestamp,
+                text = LimitText(source.Body, 4000)
+            }
         };
-        var decision = await _provider.CompleteStructuredAsync<CustomerSuccessAgentDecision>(
-            Instructions, payload,
-            candidate => ValidateDecision(
-                candidate,
-                allowedFields,
-                evidence,
-                allowedKnowledgeChunkIds,
-                hardSafety == AgentQuestionSafety.DeferredHuman),
-            cancellationToken);
+        CustomerSuccessAgentDecision decision;
+        try
+        {
+            decision = await _provider.CompleteStructuredAsync<CustomerSuccessAgentDecision>(
+                Instructions, payload,
+                candidate => ValidateDecision(
+                    candidate,
+                    allowedFields,
+                    evidence,
+                    allowedKnowledgeChunkIds,
+                    hardSafety == AgentQuestionSafety.DeferredHuman),
+                cancellationToken);
+        }
+        catch (DeepSeekException error) when (
+            trigger == CustomerSuccessRunTrigger.Manual &&
+            error.Code == "invalid_structured_output")
+        {
+            decision = CreateSafeManualFallbackDecision(source, error);
+        }
         decision.Model = await _provider.GetSelectedModelAsync(cancellationToken);
         decision.LatestIncomingMessageId = source.Id;
         decision.KnowledgeRetrievalId = knowledge.Id;
@@ -333,7 +347,7 @@ public sealed partial class CustomerSuccessAgentService
             decision.ReplyText = IsChinese(source.Body) ? "我先和同事确认一下。" : "Let me check this with my colleague.";
             immediate = await CreateHandoffAsync(context, source, decision.SafetyReason, decision.ChineseSummary, cancellationToken);
         }
-        else
+        else if (!decision.UsedSafeFallback)
         {
             await UpdateMemoriesAsync(context, accountId, source, decision, cancellationToken);
         }
@@ -555,6 +569,8 @@ public sealed partial class CustomerSuccessAgentService
                     : CustomerSuccessRunStatus.AutoReplyPending;
         state.LastRunDetail = handoff is not null
             ? decision.SafetyReason
+            : decision.UsedSafeFallback
+                ? "AI 输出格式异常，已生成不包含价格、库存、交期或政策承诺的安全确认草稿；请人工检查后发送。"
             : trigger == CustomerSuccessRunTrigger.Manual
                 ? "建议已填入会话输入框，发送前由用户确认。"
                 : state.Mode == ConversationAgentMode.CopilotActive
@@ -570,7 +586,9 @@ public sealed partial class CustomerSuccessAgentService
         await _repository.UpsertConversationAgentStateAsync(state, cancellationToken);
         var lockMatches = context.AgentLock?.ActiveAccountId == source.AccountId &&
                           context.AgentLock.ActiveConversationId == source.ConversationId;
-        var autoAllowed = handoff is null && state.Mode == ConversationAgentMode.AutoActive && lockMatches;
+        var autoAllowed = handoff is null && !decision.UsedSafeFallback &&
+                          trigger == CustomerSuccessRunTrigger.IncomingAutomation &&
+                          state.Mode == ConversationAgentMode.AutoActive && lockMatches;
         await _repository.SaveAgentTurnLogAsync(new AgentTurnLog
         {
             CustomerId = context.CustomerId,
@@ -598,6 +616,7 @@ public sealed partial class CustomerSuccessAgentService
             source.AccountId, source.ConversationId, sourceMessageId = source.Id,
             identity = identity.Result.ToString(), safety = decision.Safety.ToString(),
             state = state.Mode.ToString(), autoAllowed, decision.RecommendedNextAction,
+            usedSafeFallback = decision.UsedSafeFallback,
             sourcingCompleteness = sourcing?.Completeness,
             knowledgeRetrievalId = knowledge?.Id,
             knowledgeChunks = decision.KnowledgeChunkIds,
@@ -703,6 +722,33 @@ public sealed partial class CustomerSuccessAgentService
         Confidence = 1,
         LatestIncomingMessageId = source.Id
     };
+
+    private static CustomerSuccessAgentDecision CreateSafeManualFallbackDecision(
+        WhatsAppMessage source,
+        DeepSeekException error)
+    {
+        var chinese = IsChinese(source.Body);
+        return new CustomerSuccessAgentDecision
+        {
+            ReplyText = chinese
+                ? "感谢你的消息，我已经记录下来。我会先确认相关信息，再尽快回复你。"
+                : "Thanks for your message. I’ve noted it and will confirm the details before getting back to you.",
+            ReplyLanguage = chinese ? "zh" : "en",
+            Safety = AgentQuestionSafety.SafeToAnswer,
+            SafetyReason = "模型结构化结果未通过校验，已降级为不包含任何业务承诺的人工确认草稿。",
+            ChineseSummary = "客户消息已保留；本轮模型结构化结果异常，未据此更新客户事实或采购需求。",
+            CustomerIntent = "等待人工结合上下文确认",
+            RecommendedNextAction = "人工检查客户最新原话和历史上下文，补充具体答复后再发送。",
+            Confidence = 0,
+            UsedSafeFallback = true,
+            FallbackReason = $"{error.Code}: {error.Message}"
+        };
+    }
+
+    private static string LimitText(string value, int maxLength) =>
+        string.IsNullOrEmpty(value) || value.Length <= maxLength
+            ? value
+            : value[..maxLength] + "…";
 
     private static IReadOnlyCollection<string> BuildAllowedFields(Lead? lead)
     {

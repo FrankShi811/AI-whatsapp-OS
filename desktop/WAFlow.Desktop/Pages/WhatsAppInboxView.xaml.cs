@@ -738,7 +738,18 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         }
         catch (DeepSeekException error)
         {
-            MessageBox.Show($"{error.Message}\n\n错误类型：{error.Code}", "AI 会话助理", MessageBoxButton.OK, MessageBoxImage.Warning);
+            try
+            {
+                await _services.CustomerSuccessAgent.UpdateRunOutcomeAsync(
+                    conversation.AccountId,
+                    conversation.Id,
+                    CustomerSuccessRunStatus.Failed,
+                    "建议生成未完成，运行状态已恢复，可以重新尝试。",
+                    error: $"{error.Code}: {error.Message}");
+                await LoadLeadAsync(conversation);
+            }
+            catch { /* 保留原始 AI 错误，不让状态刷新错误覆盖它。 */ }
+            MessageBox.Show(AgentErrorMessage(error), "AI 会话助理", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception error)
         {
@@ -754,6 +765,14 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             UpdateComposerState();
         }
     }
+
+    private static string AgentErrorMessage(DeepSeekException error) => error.Code switch
+    {
+        "provider_not_configured" or "model_not_selected" or "provider_unauthorized" => error.Message,
+        "provider_timeout" or "provider_unavailable" or "provider_rate_limited" =>
+            $"{error.Message}\n\n系统已恢复，可以稍后点击“重新生成建议”。",
+        _ => "本次建议没有生成完成，系统已恢复且未修改客户资料。\n\n请点击“重新生成建议”再次尝试。"
+    };
 
     private void ReplyMessage_Click(object sender, RoutedEventArgs e)
     {

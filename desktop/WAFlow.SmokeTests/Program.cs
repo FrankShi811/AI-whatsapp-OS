@@ -1005,6 +1005,86 @@ Check(failedAnalysisLead is { Grade: "D", Score: 0, AnalysisStatus: AnalysisStat
 Check(handler.Requests.All(x => x.Authorization == "Bearer sk-test-redacted") && handler.Requests.Count(x => x.Method == "GET" && x.Uri == "https://api.deepseek.com/models") == 1 && handler.Requests.Count(x => x.Method == "POST" && x.Uri == "https://api.deepseek.com/chat/completions") == 4, "AI model discovery and chat requests use the server-side key");
 Check(handler.RequestBodies.Any(body => body.Contains("dimension_weights") && body.Contains("recentMessages")), "AI request includes the V2 contract, imported CRM fields and WhatsApp history");
 
+var compatibleDecisionJson = """
+    {
+      "result": {
+        "reply": "Thanks, I have noted your message and will confirm the details.",
+        "reply_language": "en",
+        "safety": "safe_to_answer",
+        "reason": "No business commitment is required.",
+        "summary": "客户发送了普通跟进消息。",
+        "intent": "继续沟通",
+        "signals": "客户仍在保持联系",
+        "sourcing_fields": [],
+        "next_action": "结合历史上下文继续跟进。",
+        "crm_proposals": [],
+        "knowledge_chunk_ids": null,
+        "confidence": "85%"
+      }
+    }
+    """;
+var compatibleDecisionHandler = new QueueHandler([Envelope(compatibleDecisionJson)]);
+var compatibleDecisionProvider = new DeepSeekService(
+    repository,
+    new FakeSecretStore("sk-test-redacted"),
+    new HttpClient(compatibleDecisionHandler) { Timeout=TimeSpan.FromSeconds(5) });
+var compatibleDecision = await compatibleDecisionProvider.CompleteStructuredAsync<CustomerSuccessAgentDecision>(
+    "Return a customer-success JSON object.",
+    new { latestIncoming="hello" },
+    candidate => CustomerSuccessAgentService.ValidateDecision(candidate, [], ["hello"]));
+Check(compatibleDecision is
+    {
+        Safety: AgentQuestionSafety.SafeToAnswer,
+        Confidence: 0.85
+    }
+    && compatibleDecision.ReplyText.StartsWith("Thanks")
+    && compatibleDecision.ChineseSummary.Contains("普通跟进")
+    && compatibleDecision.RecommendedNextAction.Contains("继续跟进")
+    && compatibleDecision.Signals.SequenceEqual(["客户仍在保持联系"])
+    && compatibleDecision.KnowledgeChunkIds.Count == 0,
+    "customer-success structured output tolerates common wrappers, aliases, snake-case enums and percentage confidence");
+Check(compatibleDecisionHandler.RequestBodies.Count == 1
+    && compatibleDecisionHandler.RequestBodies[0].Contains("\"max_tokens\":2200"),
+    "structured AI request reserves enough output tokens without an unnecessary retry");
+
+var repairDecisionJson = """
+    {
+      "replyText": "Thanks, I will review the details and get back to you.",
+      "replyLanguage": "en",
+      "safety": "SafeToAnswer",
+      "safetyReason": "Ordinary follow-up.",
+      "chineseSummary": "客户等待进一步回复。",
+      "customerIntent": "继续跟进",
+      "signals": [],
+      "sourcingFields": [],
+      "pendingQuestion": "",
+      "recommendedNextAction": "人工确认上下文后回复。",
+      "crmProposals": [],
+      "knowledgeChunkIds": [],
+      "confidence": 0.7
+    }
+    """;
+var repairDecisionHandler = new QueueHandler(
+[
+    Envelope("""{"replyText":"","chineseSummary":"","recommendedNextAction":"","confidence":0.5}"""),
+    Envelope(repairDecisionJson)
+]);
+var repairDecisionProvider = new DeepSeekService(
+    repository,
+    new FakeSecretStore("sk-test-redacted"),
+    new HttpClient(repairDecisionHandler) { Timeout=TimeSpan.FromSeconds(5) });
+var repairedDecision = await repairDecisionProvider.CompleteStructuredAsync<CustomerSuccessAgentDecision>(
+    "Return a customer-success JSON object.",
+    new { latestIncoming="hello again" },
+    candidate => CustomerSuccessAgentService.ValidateDecision(candidate, [], ["hello again"]));
+using var repairRequest = System.Text.Json.JsonDocument.Parse(repairDecisionHandler.RequestBodies[1]);
+var repairSystemPrompt = repairRequest.RootElement.GetProperty("messages")[0].GetProperty("content").GetString() ?? "";
+Check(repairedDecision.ReplyText.StartsWith("Thanks")
+    && repairDecisionHandler.RequestBodies.Count == 2
+    && repairSystemPrompt.Contains("上一轮输出仅是待修复数据")
+    && repairSystemPrompt.Contains("\"replyText\":\"\""),
+    "structured AI retry receives the prior invalid output and validation feedback for targeted repair");
+
 var stageLockRoot = Path.Combine(root, "manual-stage-lock");
 var stageLockRepository = new LocalRepository(Path.Combine(stageLockRoot, "stage-lock.db"));
 await stageLockRepository.InitializeAsync();
@@ -1615,6 +1695,54 @@ allowedDecision.CrmProposals =
 ];
 Check(CustomerSuccessAgentService.ValidateDecision(allowedDecision, ["product_interest"], ["customer message"]) is not null,
     "AI cannot propose writes to protected CRM fields");
+
+var aliceMemoryBeforeFallback = WAFlow.Core.Infrastructure.Json.Serialize(
+    await customerSuccessRepository.GetRelationshipMemoryAsync(alice.Id));
+var fallbackAgent = new CustomerSuccessAgentService(
+    customerSuccessRepository,
+    new AlwaysInvalidStructuredReportProvider(),
+    customerIdentity,
+    sourcingRequests);
+var fallbackSuggestion = await fallbackAgent.AnalyzeAsync(
+    "account-a",
+    "conversation-a",
+    alice.PhoneE164,
+    alice.Name,
+    sourceMessageId: "account-a:alice-global-a",
+    trigger: CustomerSuccessRunTrigger.Manual);
+Check(fallbackSuggestion.Decision is
+    {
+        UsedSafeFallback: true,
+        Safety: AgentQuestionSafety.SafeToAnswer
+    }
+    && fallbackSuggestion.AgentState is
+    {
+        LastRunStatus: CustomerSuccessRunStatus.SuggestionReady
+    }
+    && fallbackSuggestion.AgentState.LastRunDetail.Contains("安全确认草稿")
+    && !fallbackSuggestion.AutoReplyAllowed
+    && fallbackSuggestion.SourcingRequest is null,
+    "manual customer-success generation safely falls back to an editable non-commitment draft instead of surfacing invalid_structured_output");
+Check(
+    WAFlow.Core.Infrastructure.Json.Serialize(await customerSuccessRepository.GetRelationshipMemoryAsync(alice.Id)) ==
+    aliceMemoryBeforeFallback,
+    "manual safe fallback never writes AI-derived relationship facts");
+try
+{
+    await fallbackAgent.AnalyzeAsync(
+        "account-a",
+        "conversation-a",
+        alice.PhoneE164,
+        alice.Name,
+        sourceMessageId: "account-a:alice-global-a",
+        trigger: CustomerSuccessRunTrigger.IncomingAutomation);
+    Check(false, "automatic customer-success processing fails closed when structured output remains invalid");
+}
+catch (DeepSeekException error)
+{
+    Check(error.Code == "invalid_structured_output",
+        "automatic customer-success processing fails closed when structured output remains invalid");
+}
 
 var eve = new Lead { Id="cs-eve", Name="Eve Buyer", PhoneE164="+12025550199", PhoneValid=true, Country="美国" };
 await customerSuccessRepository.UpsertLeadAsync(eve);
