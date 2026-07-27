@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Threading;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Services;
@@ -29,6 +30,9 @@ public partial class MainWindow : Window
     private OnboardingState _onboardingState = new();
     private bool _onboardingReady;
     private string _currentPage = "dashboard";
+    private readonly DispatcherTimer _unreadBadgeTimer = new() { Interval = TimeSpan.FromSeconds(5) };
+    private bool _unreadBadgeRefreshRunning;
+    private bool _unreadBadgeRefreshPending;
 
     public MainWindow(AppServices services, IApplicationUpdateService updates)
     {
@@ -58,7 +62,9 @@ public partial class MainWindow : Window
         _services.Campaigns.SafetyStopped += Campaigns_SafetyStopped;
         _services.LeadAutomation.AnalysisChanged += LeadAutomation_AnalysisChanged;
         _services.WhatsAppSync.MessageSynchronized += MessagingUnreadChanged;
+        _services.WhatsAppSync.SynchronizationChanged += WhatsAppSynchronizationChanged;
         _services.Email.SynchronizationChanged += EmailSynchronizationChanged;
+        _unreadBadgeTimer.Tick += UnreadBadgeTimer_Tick;
         _updates.StateChanged += Updates_StateChanged;
         ApplyUpdateState(_updates.State);
         OnboardingGuide.CloseRequested += OnboardingGuide_CloseRequested;
@@ -83,7 +89,10 @@ public partial class MainWindow : Window
         _services.Campaigns.SafetyStopped -= Campaigns_SafetyStopped;
         _services.LeadAutomation.AnalysisChanged -= LeadAutomation_AnalysisChanged;
         _services.WhatsAppSync.MessageSynchronized -= MessagingUnreadChanged;
+        _services.WhatsAppSync.SynchronizationChanged -= WhatsAppSynchronizationChanged;
         _services.Email.SynchronizationChanged -= EmailSynchronizationChanged;
+        _unreadBadgeTimer.Stop();
+        _unreadBadgeTimer.Tick -= UnreadBadgeTimer_Tick;
         _updates.StateChanged -= Updates_StateChanged;
         OnboardingGuide.CloseRequested -= OnboardingGuide_CloseRequested;
         OnboardingGuide.FinishedRequested -= OnboardingGuide_FinishedRequested;
@@ -97,6 +106,7 @@ public partial class MainWindow : Window
         await UpdateProviderStateAsync();
         await UpdateThemeStateAsync();
         await UpdateUnreadBadgesAsync();
+        _unreadBadgeTimer.Start();
         await NavigateAsync("dashboard", DashboardButton);
         _onboardingState = await _services.Repository.GetOnboardingStateAsync();
         if (GuideCatalog.MigrateLegacyState(_onboardingState))
@@ -399,11 +409,43 @@ public partial class MainWindow : Window
         });
     }
 
-    private void MessagingUnreadChanged(object? sender, WhatsAppMessage e) =>
-        _ = Dispatcher.InvokeAsync(UpdateUnreadBadgesAsync);
+    private void MessagingUnreadChanged(object? sender, WhatsAppMessage e) => QueueUnreadBadgeRefresh();
 
-    private void EmailSynchronizationChanged(object? sender, EmailSynchronizationState e) =>
-        _ = Dispatcher.InvokeAsync(UpdateUnreadBadgesAsync);
+    private void WhatsAppSynchronizationChanged(object? sender, WhatsAppSyncProgress e) => QueueUnreadBadgeRefresh();
+
+    private void EmailSynchronizationChanged(object? sender, EmailSynchronizationState e) => QueueUnreadBadgeRefresh();
+
+    private void UnreadBadgeTimer_Tick(object? sender, EventArgs e) => QueueUnreadBadgeRefresh();
+
+    private void QueueUnreadBadgeRefresh()
+    {
+        _ = Dispatcher.InvokeAsync(async () =>
+        {
+            if (_unreadBadgeRefreshRunning)
+            {
+                _unreadBadgeRefreshPending = true;
+                return;
+            }
+            _unreadBadgeRefreshRunning = true;
+            try
+            {
+                do
+                {
+                    _unreadBadgeRefreshPending = false;
+                    await UpdateUnreadBadgesAsync();
+                }
+                while (_unreadBadgeRefreshPending);
+            }
+            catch
+            {
+                // The five-second reconciliation timer retries transient database reads.
+            }
+            finally
+            {
+                _unreadBadgeRefreshRunning = false;
+            }
+        });
+    }
 
     private async Task UpdateUnreadBadgesAsync()
     {

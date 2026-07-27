@@ -102,7 +102,8 @@ public sealed class WhatsAppSyncService
         };
         await _repository.UpsertWhatsAppContactAsync(contact);
         if (string.IsNullOrWhiteSpace(phone)) return;
-        var lead = await _repository.GetLeadByPhoneAsync(phone);
+        var ownedPeer = await _repository.GetOwnedWhatsAppPeerAccountAsync(accountId, phone);
+        var lead = ownedPeer is null ? await _repository.GetLeadByPhoneAsync(phone) : null;
         var conversation = await _repository.GetWhatsAppConversationAsync(accountId, phone) ?? new WhatsAppConversation
         {
             Id = $"{accountId}:{phone}", AccountId = accountId, Phone = phone
@@ -110,11 +111,18 @@ public sealed class WhatsAppSyncService
         if (lead is not null)
         {
             conversation.LeadId = lead.Id;
-            conversation.DisplayName = lead.DisplayName;
         }
-        else if (!string.IsNullOrWhiteSpace(displayName) && displayName != $"+{phone}")
+        else if (ownedPeer is not null)
+        {
+            conversation.LeadId = "";
+        }
+        if (!string.IsNullOrWhiteSpace(displayName) && displayName != $"+{phone}")
         {
             conversation.DisplayName = displayName;
+        }
+        else if (ownedPeer is not null && string.IsNullOrWhiteSpace(conversation.DisplayName))
+        {
+            conversation.DisplayName = ownedPeer.Name;
         }
         await _repository.UpsertWhatsAppConversationAsync(conversation);
     }
@@ -152,7 +160,8 @@ public sealed class WhatsAppSyncService
 
         var phone = Digits(Text(data, "phone"));
         if (string.IsNullOrWhiteSpace(phone)) return;
-        var lead = await _repository.GetLeadByPhoneAsync(phone);
+        var ownedPeer = await _repository.GetOwnedWhatsAppPeerAccountAsync(accountId, phone);
+        var lead = ownedPeer is null ? await _repository.GetLeadByPhoneAsync(phone) : null;
         var conversation = await _repository.GetWhatsAppConversationAsync(accountId, phone) ?? new WhatsAppConversation
         {
             Id = $"{accountId}:{phone}", AccountId = accountId, Phone = phone
@@ -161,11 +170,18 @@ public sealed class WhatsAppSyncService
         if (lead is not null)
         {
             conversation.LeadId = lead.Id;
-            conversation.DisplayName = lead.DisplayName;
         }
-        else if (!string.IsNullOrWhiteSpace(displayName) && displayName != $"+{phone}")
+        else if (ownedPeer is not null)
+        {
+            conversation.LeadId = "";
+        }
+        if (!string.IsNullOrWhiteSpace(displayName) && displayName != $"+{phone}")
         {
             conversation.DisplayName = displayName;
+        }
+        else if (ownedPeer is not null && string.IsNullOrWhiteSpace(conversation.DisplayName))
+        {
+            conversation.DisplayName = ownedPeer.Name;
         }
         ApplyChatSnapshot(conversation, data);
         if (conversation.LastReadAt is not null)
@@ -199,7 +215,8 @@ public sealed class WhatsAppSyncService
         var readAt = ParseTimestamp(data, "readAt");
         var source = Text(data, "source");
         var historical = source.StartsWith("history:", StringComparison.OrdinalIgnoreCase);
-        var lead = isGroup ? null : await _repository.GetLeadByPhoneAsync(phone);
+        var ownedPeer = isGroup ? null : await _repository.GetOwnedWhatsAppPeerAccountAsync(accountId, phone);
+        var lead = isGroup || ownedPeer is not null ? null : await _repository.GetLeadByPhoneAsync(phone);
         var conversationId = isGroup ? $"{accountId}:{jid}" : $"{accountId}:{phone}";
         var conversation = isGroup
             ? await _repository.GetWhatsAppConversationByIdAsync(conversationId)
@@ -213,7 +230,9 @@ public sealed class WhatsAppSyncService
             IsGroup = isGroup,
             DisplayName = isGroup
                 ? WhatsAppTextEncodingRepair.Repair(FirstText(data, "groupName", "displayName"))
-                : string.IsNullOrWhiteSpace(Text(data, "pushName")) ? $"+{phone}" : WhatsAppTextEncodingRepair.Repair(Text(data, "pushName"))
+                : !fromMe && !string.IsNullOrWhiteSpace(Text(data, "pushName"))
+                    ? WhatsAppTextEncodingRepair.Repair(Text(data, "pushName"))
+                    : ownedPeer?.Name ?? $"+{phone}"
         };
         if (string.IsNullOrWhiteSpace(conversation.Jid)) conversation.Jid = jid;
         conversation.IsGroup = isGroup;
@@ -228,7 +247,16 @@ public sealed class WhatsAppSyncService
         if (lead is not null)
         {
             conversation.LeadId = lead.Id;
-            conversation.DisplayName = lead.DisplayName;
+        }
+        else if (ownedPeer is not null)
+        {
+            conversation.LeadId = "";
+        }
+        if (!isGroup && !fromMe)
+        {
+            var pushName = WhatsAppTextEncodingRepair.Repair(Text(data, "pushName"));
+            if (!string.IsNullOrWhiteSpace(pushName) && pushName != $"+{phone}")
+                conversation.DisplayName = pushName;
         }
         var message = new WhatsAppMessage
         {
@@ -281,14 +309,15 @@ public sealed class WhatsAppSyncService
             }
             conversation.LastMessage = message.IsStatusUpdate ? $"[最新动态] {preview}" : preview;
         }
-        if (inserted && !fromMe && !historical && !message.IsStatusUpdate &&
-            (conversation.LastReadAt is null || timestamp > conversation.LastReadAt.Value))
+        var unreadIncreased = inserted && !fromMe && !historical && !message.IsStatusUpdate &&
+                              (conversation.LastReadAt is null || timestamp > conversation.LastReadAt.Value);
+        if (unreadIncreased)
         {
             // Late/out-of-order bridge events that predate the local read cursor
             // are history, even when the bridge did not label them as history.
             conversation.UnreadCount++;
         }
-        await _repository.UpsertWhatsAppConversationAsync(conversation);
+        await _repository.UpsertWhatsAppConversationAsync(conversation, allowUnreadIncrease: unreadIncreased);
         var confirmedOutgoing = !fromMe ||
                                 message.Status is WhatsAppMessageStatus.Sent
                                     or WhatsAppMessageStatus.Delivered

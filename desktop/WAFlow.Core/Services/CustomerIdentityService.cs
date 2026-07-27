@@ -19,6 +19,20 @@ public sealed class CustomerIdentityService
         CancellationToken cancellationToken = default)
     {
         var existing = await _repository.GetWhatsAppIdentityLinkAsync(accountId, conversationId, cancellationToken);
+        var ownedPeer = await _repository.GetOwnedWhatsAppPeerAccountAsync(accountId, rawPhone, cancellationToken);
+        if (ownedPeer is not null)
+        {
+            if (existing is { IsActive: true })
+                await DetachAsync(accountId, conversationId, "owned_whatsapp_account_guard", cancellationToken);
+            await _repository.ClearWhatsAppLeadAssociationAsync(conversationId, cancellationToken);
+            return await LogAndReturnAsync(accountId, conversationId, rawPhone, new CustomerIdentityResolution
+            {
+                Result = CustomerIdentityMatchResult.NoMatch,
+                Method = CustomerIdentityMatchMethod.CandidateOnly,
+                Confidence = 0,
+                Reason = $"该号码属于本机已登录 WhatsApp 账号“{ownedPeer.Name}”，不会作为 CRM 客户绑定。"
+            }, cancellationToken);
+        }
         if (existing is { IsActive: true } &&
             existing.MatchResult is CustomerIdentityMatchResult.ExactMatch or
                 CustomerIdentityMatchResult.ConfirmedAliasMatch or CustomerIdentityMatchResult.UniqueInferredMatch)
@@ -207,6 +221,67 @@ public sealed class CustomerIdentityService
             BeforeJson = before,
             AfterJson = Json.Serialize(link)
         }, cancellationToken);
+        await RebuildGlobalAccountLinksAsync(link.CustomerId, cancellationToken);
+    }
+
+    public async Task<int> RepairOwnedAccountBindingsAsync(CancellationToken cancellationToken = default)
+    {
+        var repaired = 0;
+        foreach (var account in await _repository.GetWhatsAppAccountsAsync(cancellationToken))
+        {
+            var contacts = await _repository.GetWhatsAppContactsAsync(account.Id, cancellationToken);
+            foreach (var conversation in await _repository.GetWhatsAppConversationsAsync(account.Id, cancellationToken))
+            {
+                if (conversation.IsGroup || string.IsNullOrWhiteSpace(conversation.Phone)) continue;
+                if (await _repository.GetOwnedWhatsAppPeerAccountAsync(account.Id, conversation.Phone, cancellationToken) is null) continue;
+                var nativeName = contacts
+                    .Where(contact => PhoneIdentity.Digits(contact.Phone).Equals(
+                        PhoneIdentity.Digits(conversation.Phone), StringComparison.Ordinal))
+                    .Select(BestNativeContactName)
+                    .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
+                if (!string.IsNullOrWhiteSpace(nativeName) &&
+                    !nativeName.Equals(conversation.DisplayName, StringComparison.CurrentCulture))
+                {
+                    conversation.DisplayName = nativeName;
+                    await _repository.UpsertWhatsAppConversationAsync(conversation, cancellationToken);
+                    repaired++;
+                }
+                var link = await _repository.GetWhatsAppIdentityLinkAsync(account.Id, conversation.Id, cancellationToken);
+                if (link is { IsActive: true })
+                {
+                    await DetachAsync(account.Id, conversation.Id, "owned_whatsapp_account_repair", cancellationToken);
+                    repaired++;
+                }
+                if (await _repository.ClearWhatsAppLeadAssociationAsync(conversation.Id, cancellationToken))
+                    repaired++;
+            }
+        }
+        return repaired;
+    }
+
+    private static string BestNativeContactName(WhatsAppContact contact) => new[]
+    {
+        contact.SavedName,
+        contact.DisplayName,
+        contact.NotifyName,
+        contact.VerifiedName,
+        contact.Username
+    }.FirstOrDefault(name =>
+        !string.IsNullOrWhiteSpace(name)
+        && !name.Equals($"+{PhoneIdentity.Digits(contact.Phone)}", StringComparison.Ordinal)) ?? "";
+
+    private async Task RebuildGlobalAccountLinksAsync(string customerId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(customerId)) return;
+        var global = await _repository.GetGlobalCustomerIdentityAsync(customerId, cancellationToken);
+        if (global is null) return;
+        global.LinkedAccountIds = (await _repository.GetWhatsAppIdentityLinksAsync(customerId, cancellationToken))
+            .Select(item => item.AccountId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (!global.LinkedAccountIds.Contains(global.PrimaryAccountId, StringComparer.OrdinalIgnoreCase))
+            global.PrimaryAccountId = global.LinkedAccountIds.FirstOrDefault() ?? "";
+        await _repository.UpsertGlobalCustomerIdentityAsync(global, cancellationToken);
     }
 
     private static CustomerIdentityResolution? MatchUnique(

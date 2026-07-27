@@ -373,10 +373,15 @@ if ($mainWindowXaml -notmatch 'x:Name="WhatsAppUnreadBadge"' -or
     $mainWindowXaml -notmatch 'DynamicResource UnreadBadgeBackground' -or
     $mainWindowSource -notmatch [regex]::Escape('GetInboxUnreadTotalsAsync') -or
     $mainWindowSource -notmatch [regex]::Escape('_services.WhatsAppSync.MessageSynchronized += MessagingUnreadChanged') -or
+    $mainWindowSource -notmatch [regex]::Escape('_services.WhatsAppSync.SynchronizationChanged += WhatsAppSynchronizationChanged') -or
+    $mainWindowSource -notmatch [regex]::Escape('Interval = TimeSpan.FromSeconds(5)') -or
+    $localRepositorySource -notmatch [regex]::Escape('allowUnreadIncrease') -or
+    $whatsAppSyncSource -notmatch [regex]::Escape('allowUnreadIncrease: unreadIncreased') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('FindOwnedPeerAccount') -or
     $mainWindowSource -notmatch [regex]::Escape('_services.Email.SynchronizationChanged += EmailSynchronizationChanged')) {
-  throw 'WhatsApp and email sidebar navigation must expose live application-wide unread counters.'
+  throw 'WhatsApp and email sidebar navigation must expose durable live application-wide unread counters with periodic reconciliation.'
 }
-Write-Host 'PASS  application-wide account synchronization and sidebar unread badge contract'
+Write-Host 'PASS  application-wide account synchronization, durable unread cursor and sidebar badge contract'
 
 & $dotnet build (Join-Path $root 'desktop\WAFlow.sln') -c Release
 if ($LASTEXITCODE -ne 0) { throw 'WAFlow desktop build failed.' }

@@ -572,6 +572,41 @@ await using (var unreadBridge = new WhatsAppConnectionManager())
 }
 readConversation = (await repository.GetWhatsAppConversationsAsync()).Single(x => x.Id == conversation.Id);
 Check(readConversation.UnreadCount == 0, "late WhatsApp events older than the read cursor stay read after leaving and returning to Inbox");
+var unreadTotalsBeforeLiveReply = await repository.GetInboxUnreadTotalsAsync();
+await using (var liveUnreadBridge = new WhatsAppConnectionManager())
+{
+    var liveUnreadSync = new WhatsAppSyncService(repository, liveUnreadBridge);
+    var liveUnreadEventObserved = false;
+    liveUnreadSync.MessageSynchronized += (_, message) =>
+    {
+        if (message.ProviderMessageId == "wamid-live-after-read-cursor")
+            liveUnreadEventObserved = true;
+    };
+    var liveReplyAt = (readConversation.LastReadAt ?? DateTimeOffset.Now).AddSeconds(1);
+    using var liveReplyDocument = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        phone = conversation.Phone,
+        id = "wamid-live-after-read-cursor",
+        fromMe = false,
+        timestamp = liveReplyAt.ToString("O"),
+        source = "notify",
+        kind = "text",
+        text = "New reply while viewing another module",
+        pushName = "James in WhatsApp"
+    }));
+    var ingestMessage = typeof(WhatsAppSyncService).GetMethod("IngestMessageAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    await (Task)ingestMessage.Invoke(liveUnreadSync, ["primary", liveReplyDocument.RootElement.Clone()])!;
+    readConversation = (await repository.GetWhatsAppConversationsAsync()).Single(x => x.Id == conversation.Id);
+    var unreadTotalsAfterLiveReply = await repository.GetInboxUnreadTotalsAsync();
+    Check(
+        liveUnreadEventObserved
+        && readConversation.UnreadCount == 1
+        && unreadTotalsAfterLiveReply.WhatsApp == unreadTotalsBeforeLiveReply.WhatsApp + 1,
+        "live WhatsApp reply after an equal read cursor persists and immediately advances the application-wide unread badge");
+}
+await repository.MarkWhatsAppConversationReadAsync(conversation.Id);
+readConversation = (await repository.GetWhatsAppConversationsAsync()).Single(x => x.Id == conversation.Id);
+Check(readConversation.UnreadCount == 0, "opening the live WhatsApp reply clears its global unread badge again");
 var statusLead = new Lead { Id="status-lead", Name="Status Lead", PhoneE164="+14155550101", PhoneValid=true, LatestMessage="normal customer reply" };
 await repository.UpsertLeadAsync(statusLead);
 await repository.UpsertWhatsAppConversationAsync(new WhatsAppConversation
@@ -666,7 +701,7 @@ var suffixConversation = new WhatsAppConversation
 await repository.UpsertWhatsAppConversationAsync(suffixConversation);
 await repository.SynchronizeLeadConnectionsFromInboxAsync([suffixLead]);
 var linkedSuffixConversation = await repository.GetWhatsAppConversationAsync("primary", "13373224256");
-Check(linkedSuffixConversation?.LeadId == suffixLead.Id && linkedSuffixConversation.DisplayName == "softsam", "phone suffix match links CRM sidebar and prefers customer-list name");
+Check(linkedSuffixConversation?.LeadId == suffixLead.Id && linkedSuffixConversation.DisplayName == "RI", "phone suffix match links CRM data without overwriting the native WhatsApp conversation name");
 Check(linkedSuffixConversation?.IsPinned == true && linkedSuffixConversation.PinnedAt is not null, "WhatsApp pinned conversation state persists");
 var mediaMessage = new WhatsAppMessage
 {
@@ -1929,6 +1964,80 @@ Check(reboundDanaGlobal is not null
 await customerIdentity.DetachAsync("account-d", "conversation-dana", "smoke-user");
 Check((await customerSuccessRepository.GetWhatsAppIdentityLinkAsync("account-d", "conversation-dana"))?.IsActive == false,
     "incorrect identity binding can be detached without deleting customer history");
+var ownedAccountLead = new Lead
+{
+    Id = "owned-account-wrong-crm",
+    Name = "Wrong CRM customer",
+    PhoneE164 = "+15550000002",
+    PhoneValid = true
+};
+await customerSuccessRepository.UpsertLeadAsync(ownedAccountLead);
+await customerSuccessRepository.SaveWhatsAppAccountsAsync(
+[
+    new WhatsAppAccount { Id = "sales-a", Name = "Sales A", LinkedPhone = "+15550000001" },
+    new WhatsAppAccount { Id = "sales-b", Name = "Frank Shi", LinkedPhone = "+15550000002" }
+]);
+var ownedPeerConversation = new WhatsAppConversation
+{
+    Id = "sales-a:15550000002",
+    AccountId = "sales-a",
+    Phone = "15550000002",
+    LeadId = ownedAccountLead.Id,
+    DisplayName = "Wrong CRM customer",
+    LastMessage = "你好",
+    LastMessageAt = DateTimeOffset.Now
+};
+await customerSuccessRepository.UpsertWhatsAppConversationAsync(ownedPeerConversation);
+await customerSuccessRepository.UpsertWhatsAppContactAsync(new WhatsAppContact
+{
+    Id = "sales-a:15550000002@s.whatsapp.net",
+    AccountId = "sales-a",
+    Jid = "15550000002@s.whatsapp.net",
+    Phone = "15550000002",
+    DisplayName = "Frank Shi",
+    NotifyName = "Frank Shi",
+    Source = "live_update"
+});
+await customerSuccessRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id = "sales-a:owned-peer-message",
+    ProviderMessageId = "owned-peer-message",
+    AccountId = "sales-a",
+    ConversationId = ownedPeerConversation.Id,
+    LeadId = ownedAccountLead.Id,
+    Phone = ownedPeerConversation.Phone,
+    Direction = WhatsAppMessageDirection.Incoming,
+    Status = WhatsAppMessageStatus.Received,
+    Body = "你好",
+    PushName = "Frank Shi",
+    Timestamp = DateTimeOffset.Now
+});
+await customerIdentity.ConfirmBindingAsync(
+    ownedAccountLead.Id,
+    ownedPeerConversation.AccountId,
+    ownedPeerConversation.Id,
+    ownedPeerConversation.Phone,
+    "15550000002@s.whatsapp.net");
+var ownedRepairs = await customerIdentity.RepairOwnedAccountBindingsAsync();
+await customerSuccessRepository.SynchronizeLeadConnectionsFromInboxAsync([ownedAccountLead]);
+var repairedOwnedConversation = await customerSuccessRepository.GetWhatsAppConversationByIdAsync(ownedPeerConversation.Id);
+var repairedOwnedMessage = (await customerSuccessRepository.GetWhatsAppMessagesAsync(ownedPeerConversation.Id)).Single();
+var repairedOwnedLink = await customerSuccessRepository.GetWhatsAppIdentityLinkAsync(
+    ownedPeerConversation.AccountId,
+    ownedPeerConversation.Id);
+var ownedIdentity = await customerIdentity.ResolveAsync(
+    ownedPeerConversation.AccountId,
+    ownedPeerConversation.Id,
+    ownedPeerConversation.Phone,
+    displayName: ownedPeerConversation.DisplayName);
+Check(
+    ownedRepairs >= 2
+    && repairedOwnedConversation is { LeadId.Length: 0, DisplayName: "Frank Shi" }
+    && string.IsNullOrWhiteSpace(repairedOwnedMessage.LeadId)
+    && repairedOwnedLink is { IsActive: false }
+    && ownedIdentity.Result == CustomerIdentityMatchResult.NoMatch
+    && ownedIdentity.Reason.Contains("本机已登录 WhatsApp 账号", StringComparison.Ordinal),
+    "cross-account self messages keep the WhatsApp name and cannot be mislabeled or automated as a CRM customer");
 
 var persistedCustomerSuccessRepository = new LocalRepository(Path.Combine(customerSuccessRoot, "customer-success.db"));
 await persistedCustomerSuccessRepository.InitializeAsync();

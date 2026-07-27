@@ -1059,6 +1059,19 @@ public sealed class LocalRepository
         return SaveSettingAsync("whatsapp_accounts", accounts.ToList(), cancellationToken);
     }
 
+    public async Task<WhatsAppAccount?> GetOwnedWhatsAppPeerAccountAsync(
+        string currentAccountId,
+        string phone,
+        CancellationToken cancellationToken = default)
+    {
+        var digits = Services.PhoneIdentity.Digits(phone);
+        if (digits.Length == 0) return null;
+        return (await GetWhatsAppAccountsAsync(cancellationToken))
+            .FirstOrDefault(account =>
+                !account.Id.Equals(currentAccountId, StringComparison.OrdinalIgnoreCase)
+                && Services.PhoneIdentity.Digits(account.LinkedPhone).Equals(digits, StringComparison.Ordinal));
+    }
+
     private async Task<T?> GetSettingAsync<T>(string key, CancellationToken cancellationToken)
     {
         await using var db = Open(); await db.OpenAsync(cancellationToken);
@@ -1336,6 +1349,14 @@ public sealed class LocalRepository
 
     public async Task<int> SynchronizeLeadConnectionsFromInboxAsync(IReadOnlyList<Lead> leads, CancellationToken cancellationToken = default)
     {
+        var accountPhones = (await GetWhatsAppAccountsAsync(cancellationToken))
+            .Select(account => new { account.Id, Phone = Services.PhoneIdentity.Digits(account.LinkedPhone) })
+            .Where(item => item.Phone.Length > 0)
+            .GroupBy(item => item.Phone, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(item => item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase),
+                StringComparer.Ordinal);
         var byPhone = leads
             .SelectMany(lead => Services.PhoneIdentity.LeadPhoneCandidates(lead).Select(phone => (Phone: phone, Lead: lead)))
             .Where(item => item.Phone.Length > 0)
@@ -1376,9 +1397,22 @@ public sealed class LocalRepository
         foreach (var conversation in conversations)
         {
             var digits = Services.PhoneIdentity.Digits(conversation.Phone);
+            if (IsOwnedWhatsAppPeer(accountPhones, conversation.AccountId, digits))
+            {
+                if (!string.IsNullOrWhiteSpace(conversation.LeadId))
+                {
+                    conversation.LeadId = "";
+                    await using var clear = db.CreateCommand();
+                    clear.Transaction = transaction as SqliteTransaction;
+                    clear.CommandText = "UPDATE whatsapp_conversations SET lead_id=NULL,data_json=$json WHERE id=$id";
+                    clear.Parameters.AddWithValue("$json", Json.Serialize(conversation));
+                    clear.Parameters.AddWithValue("$id", conversation.Id);
+                    await clear.ExecuteNonQueryAsync(cancellationToken);
+                }
+                continue;
+            }
             if (!resolvedPhones.TryGetValue(digits, out var lead) || lead is null) continue;
             conversation.LeadId = lead.Id;
-            if (!string.IsNullOrWhiteSpace(lead.DisplayName)) conversation.DisplayName = lead.DisplayName;
             linked.Add(lead.Id);
             if (!latestConversations.TryGetValue(lead.Id, out var previous) || conversation.LastMessageAt > previous.LastMessageAt) latestConversations[lead.Id] = conversation;
             await using var update = db.CreateCommand();
@@ -1391,6 +1425,20 @@ public sealed class LocalRepository
         foreach (var message in messages)
         {
             var digits = Services.PhoneIdentity.Digits(message.Phone);
+            if (IsOwnedWhatsAppPeer(accountPhones, message.AccountId, digits))
+            {
+                if (!string.IsNullOrWhiteSpace(message.LeadId))
+                {
+                    message.LeadId = "";
+                    await using var clear = db.CreateCommand();
+                    clear.Transaction = transaction as SqliteTransaction;
+                    clear.CommandText = "UPDATE whatsapp_messages SET lead_id=NULL,data_json=$json WHERE id=$id";
+                    clear.Parameters.AddWithValue("$json", Json.Serialize(message));
+                    clear.Parameters.AddWithValue("$id", message.Id);
+                    await clear.ExecuteNonQueryAsync(cancellationToken);
+                }
+                continue;
+            }
             if (!resolvedPhones.TryGetValue(digits, out var lead) || lead is null) continue;
             message.LeadId = lead.Id;
             linked.Add(lead.Id);
@@ -1418,6 +1466,14 @@ public sealed class LocalRepository
         return linked.Count;
     }
 
+    private static bool IsOwnedWhatsAppPeer(
+        IReadOnlyDictionary<string, HashSet<string>> accountPhones,
+        string accountId,
+        string phone) =>
+        phone.Length > 0
+        && accountPhones.TryGetValue(phone, out var owners)
+        && owners.Any(owner => !owner.Equals(accountId, StringComparison.OrdinalIgnoreCase));
+
     public async Task<List<WhatsAppConversation>> GetWhatsAppConversationsAsync(string accountId = "primary", CancellationToken cancellationToken = default)
     {
         var items = new List<WhatsAppConversation>();
@@ -1437,6 +1493,28 @@ public sealed class LocalRepository
         command.CommandText = "SELECT data_json FROM whatsapp_conversations WHERE account_id=$account AND phone=$phone LIMIT 1";
         command.Parameters.AddWithValue("$account", accountId); command.Parameters.AddWithValue("$phone", new string(phone.Where(char.IsDigit).ToArray()));
         return Json.Deserialize<WhatsAppConversation>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task<bool> ClearWhatsAppLeadAssociationAsync(
+        string conversationId,
+        CancellationToken cancellationToken = default)
+    {
+        var changed = false;
+        if (await GetWhatsAppConversationByIdAsync(conversationId, cancellationToken) is { } conversation &&
+            !string.IsNullOrWhiteSpace(conversation.LeadId))
+        {
+            conversation.LeadId = "";
+            await UpsertWhatsAppConversationAsync(conversation, cancellationToken);
+            changed = true;
+        }
+        foreach (var message in await GetWhatsAppMessagesAsync(conversationId, 100000, cancellationToken))
+        {
+            if (string.IsNullOrWhiteSpace(message.LeadId)) continue;
+            message.LeadId = "";
+            await UpsertWhatsAppMessageAsync(message, cancellationToken);
+            changed = true;
+        }
+        return changed;
     }
 
     public async Task<WhatsAppConversation?> GetWhatsAppConversationByIdAsync(string conversationId, CancellationToken cancellationToken = default)
@@ -1482,7 +1560,10 @@ public sealed class LocalRepository
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task UpsertWhatsAppConversationAsync(WhatsAppConversation conversation, CancellationToken cancellationToken = default)
+    public async Task UpsertWhatsAppConversationAsync(
+        WhatsAppConversation conversation,
+        CancellationToken cancellationToken = default,
+        bool allowUnreadIncrease = false)
     {
         await _conversationWriteGate.WaitAsync(cancellationToken);
         try
@@ -1501,7 +1582,10 @@ public sealed class LocalRepository
                     // Read cursors are monotonic: an older snapshot must never restore
                     // a badge that the newer local read action already cleared.
                     conversation.LastReadAt = persistedReadAt;
-                    conversation.UnreadCount = existing.UnreadCount;
+                    var verifiedLiveIncrease = allowUnreadIncrease
+                                               && conversation.UnreadCount > existing.UnreadCount
+                                               && conversation.LastMessageAt > persistedReadAt;
+                    if (!verifiedLiveIncrease) conversation.UnreadCount = existing.UnreadCount;
                 }
             }
             await using var command = db.CreateCommand();

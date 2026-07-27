@@ -70,7 +70,11 @@ public sealed class AppServices
         TodayBrief = new TodayBriefService(Repository, SalesLearning);
     }
 
-    public Task InitializeAsync(CancellationToken cancellationToken = default) => Repository.InitializeAsync(cancellationToken);
+    public async Task InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        await Repository.InitializeAsync(cancellationToken);
+        await CustomerIdentity.RepairOwnedAccountBindingsAsync(cancellationToken);
+    }
 
     private static LocalRepository CreateDefaultRepository()
     {
