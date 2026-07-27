@@ -79,7 +79,9 @@
                             <TextBlock Grid.Column="2" Text="›" Foreground="{DynamicResource SidebarMuted}" FontSize="18" VerticalAlignment="Center"/>
                         </Grid>
                     </Button>
-                    <Button Content="⌘  快速操作   Ctrl + K" Style="{StaticResource NavButton}" Click="CommandButton_Click"/>
+                    <Button Style="{StaticResource NavButton}" Click="CommandButton_Click">
+                        <TextBlock Text="⌘  快捷操作   Ctrl + K" Style="{StaticResource NavText}"/>
+                    </Button>
                 </StackPanel>
             </Grid>
         </Border>

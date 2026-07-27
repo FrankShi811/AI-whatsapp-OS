@@ -60,7 +60,7 @@
                         <Grid Margin="0,0,0,10">
                             <StackPanel>
                                 <TextBlock Text="今日行动简报" Style="{StaticResource SectionTitle}"/>
-                                <TextBlock x:Name="TodayBriefSummaryText" Text="正在整理 AI 建议和跟进任务" Style="{StaticResource LabelText}" Margin="0,3,0,0"/>
+                                <TextBlock x:Name="TodayBriefSummaryText" Text="正在整理客户、下一步行动和截止时间" Style="{StaticResource LabelText}" Margin="0,3,0,0"/>
                             </StackPanel>
                             <TextBlock Text="CUSTOMER BRAIN" HorizontalAlignment="Right" Style="{StaticResource PageEyebrow}"/>
                         </Grid>
@@ -69,11 +69,19 @@
                                 <DataTemplate>
                                     <Border Background="{DynamicResource SurfaceMuted}" CornerRadius="8" Padding="10,8" Margin="0,0,0,6">
                                         <Grid>
-                                            <Grid.ColumnDefinitions><ColumnDefinition Width="130"/><ColumnDefinition Width="*"/><ColumnDefinition Width="85"/><ColumnDefinition Width="100"/></Grid.ColumnDefinitions>
-                                            <TextBlock Text="{Binding CustomerName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock Grid.Column="1" Text="{Binding Action}" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource InkSecondary}" Margin="8,0"/>
-                                            <TextBlock Grid.Column="2" Text="{Binding CategoryLabel}" Foreground="{DynamicResource AiAccent}" HorizontalAlignment="Center"/>
-                                            <TextBlock Grid.Column="3" Text="{Binding DueLabel}" Foreground="{DynamicResource Muted}" HorizontalAlignment="Right"/>
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="180"/><ColumnDefinition Width="*"/><ColumnDefinition Width="112"/></Grid.ColumnDefinitions>
+                                            <StackPanel VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding CustomerLabel}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Text="{Binding CategoryLabel}" Foreground="{DynamicResource AiAccent}" FontSize="10.5" Margin="0,3,0,0"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Margin="12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding ActionLabel}" Foreground="{DynamicResource InkSecondary}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                                <TextBlock Text="{Binding ReasonLabel}" Foreground="{DynamicResource Muted}" FontSize="10.5" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding PriorityLabel}" Foreground="{DynamicResource Warning}" FontWeight="SemiBold" HorizontalAlignment="Right"/>
+                                                <TextBlock Text="{Binding DueLabel}" Foreground="{DynamicResource Muted}" HorizontalAlignment="Right" Margin="0,3,0,0"/>
+                                            </StackPanel>
                                         </Grid>
                                     </Border>
                                 </DataTemplate>

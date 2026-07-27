@@ -34,8 +34,9 @@ public partial class DashboardView : UserControl, IRefreshableView
         StageItems.ItemsSource = Enum.GetValues<LeadStage>().Select(stage => new StageMetric(Labels.Stage(stage), data.Stages.GetValueOrDefault(stage), data.Stages.GetValueOrDefault(stage) * 100d / maximum)).ToList();
         PriorityGrid.ItemsSource = data.PriorityLeads;
         var brief = await _services.TodayBrief.GetAsync();
-        TodayBriefSummaryText.Text =
-            $"逾期 {brief.OverdueCount} · 人工接管 {brief.HumanHandoffCount} · 身份待确认 {brief.IdentityPendingCount} · 采购完整 {brief.SourcingCompleteCount}";
+        TodayBriefSummaryText.Text = brief.Items.Count == 0
+            ? "今天暂无待处理行动；新客户回复、人工接管或 AI 建议会自动进入这里。"
+            : $"待处理 {brief.Items.Count} 项｜逾期 {brief.OverdueCount}｜今天到期 {brief.DueTodayCount}｜进行中 {brief.InProgressCount}｜人工接管 {brief.HumanHandoffCount}｜身份确认 {brief.IdentityPendingCount}｜跨账号复核 {brief.CrossAccountFollowUpCount}";
         TodayBriefItems.ItemsSource = brief.Items.Take(6).ToList();
         LearningCompletionText.Text = brief.Learning.Accepted == 0
             ? "完成率 —"

@@ -25,16 +25,71 @@ public sealed class TodayBriefService
             .OrderByDescending(item => PriorityRank(item.Priority))
             .ThenBy(item => item.DueAt)
             .ToList();
+        var states = await _repository.GetAgentStatesAsync(cancellationToken: cancellationToken);
+        var handoffs = await _repository.GetOpenHumanHandoffsAsync(cancellationToken);
+        var sourcingRequests = await _repository.GetLatestSourcingRequestsAsync(cancellationToken);
+        var sourceAccountIds = states.Select(item => item.AccountId)
+            .Concat(handoffs.Select(item => item.AccountId))
+            .Concat(sourcingRequests.SelectMany(item => item.Fields.Values.Select(field => field.SourceAccountId)))
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var conversationsById = new Dictionary<string, WhatsAppConversation>(StringComparer.OrdinalIgnoreCase);
+        foreach (var accountId in sourceAccountIds)
+        {
+            foreach (var conversation in await _repository.GetWhatsAppConversationsAsync(accountId, cancellationToken))
+                conversationsById.TryAdd(conversation.Id, conversation);
+        }
+        var profileCache = new Dictionary<string, CustomerIntelligenceProfile?>(StringComparer.Ordinal);
+        var identityCache = new Dictionary<string, GlobalCustomerIdentity?>(StringComparer.Ordinal);
+
+        async Task<CustomerIntelligenceProfile?> GetProfileAsync(string customerId)
+        {
+            if (string.IsNullOrWhiteSpace(customerId)) return null;
+            if (profileCache.TryGetValue(customerId, out var cached)) return cached;
+            var profile = await _repository.GetCustomerIntelligenceProfileAsync(customerId, cancellationToken);
+            profileCache[customerId] = profile;
+            return profile;
+        }
+
+        async Task<string> ResolveCustomerNameAsync(string customerId, string conversationId = "")
+        {
+            if (leadsById.TryGetValue(customerId, out var lead) && ResolveLeadCustomerName(lead, customerId) is { } leadName)
+                return leadName;
+
+            var profile = await GetProfileAsync(customerId);
+            if (IsReadableCustomerName(profile?.CustomerName, customerId)) return profile!.CustomerName.Trim();
+
+            if (!string.IsNullOrWhiteSpace(customerId))
+            {
+                if (!identityCache.TryGetValue(customerId, out var identity))
+                {
+                    identity = await _repository.GetGlobalCustomerIdentityAsync(customerId, cancellationToken);
+                    identityCache[customerId] = identity;
+                }
+                if (IsReadableCustomerName(identity?.CanonicalName, customerId)) return identity!.CanonicalName.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(conversationId) &&
+                conversationsById.TryGetValue(conversationId, out var conversation))
+            {
+                if (IsReadableCustomerName(conversation.DisplayName, customerId)) return conversation.DisplayName.Trim();
+                var digits = new string(conversation.Phone.Where(char.IsDigit).ToArray());
+                if (digits.Length >= 4) return $"WhatsApp 客户 · 尾号 {digits[^4..]}";
+            }
+
+            return "未命名客户";
+        }
 
         var items = new List<TodayBriefItem>();
         foreach (var task in activeTasks.Take(20))
         {
             leadsById.TryGetValue(task.CustomerId, out var lead);
-            var profile = await _repository.GetCustomerIntelligenceProfileAsync(task.CustomerId, cancellationToken);
+            var profile = await GetProfileAsync(task.CustomerId);
             items.Add(new TodayBriefItem
             {
                 CustomerId = task.CustomerId,
-                CustomerName = lead?.DisplayName ?? profile?.CustomerName ?? task.CustomerId,
+                CustomerName = await ResolveCustomerNameAsync(task.CustomerId),
                 RecommendationId = task.RecommendationId,
                 Action = task.Title,
                 Reason = task.Reason,
@@ -47,7 +102,6 @@ public sealed class TodayBriefService
             });
         }
 
-        var states = await _repository.GetAgentStatesAsync(cancellationToken: cancellationToken);
         var identityPending = states
             .Where(item => item.Mode == ConversationAgentMode.IdentityResolutionRequired)
             .GroupBy(
@@ -56,8 +110,6 @@ public sealed class TodayBriefService
                     : $"customer:{item.CustomerId}",
                 StringComparer.Ordinal)
             .Select(group => group.First()).ToList();
-        var handoffs = await _repository.GetOpenHumanHandoffsAsync(cancellationToken);
-        var sourcingRequests = await _repository.GetLatestSourcingRequestsAsync(cancellationToken);
         var sourcingComplete = sourcingRequests
             .Where(item => item.Status == SourcingRequestStatus.Complete)
             .ToList();
@@ -68,20 +120,26 @@ public sealed class TodayBriefService
             .Select(group => group.OrderByDescending(item => item.UpdatedAt).First()).ToList();
 
         foreach (var state in identityPending.Take(8))
-            items.Insert(0, BuildSpecialItem(state.CustomerId, "identity", "确认跨账号客户身份",
-                "号码或 WhatsApp 身份存在歧义；确认前所有自动回复保持关闭。", FollowUpPriority.Urgent,
+            items.Insert(0, BuildSpecialItem(state.CustomerId, await ResolveCustomerNameAsync(state.CustomerId, state.ConversationId),
+                "identity", "核对 WhatsApp 昵称、号码与 CRM 资料，确认正确客户后再恢复自动回复",
+                "当前客户身份存在歧义；确认前所有自动回复保持关闭。", FollowUpPriority.Urgent,
                 state.AccountId, state.ConversationId, now));
         foreach (var handoff in handoffs.Take(8))
-            items.Insert(0, BuildSpecialItem(handoff.CustomerId, "handoff", "处理人工接管事件",
+            items.Insert(0, BuildSpecialItem(handoff.CustomerId, await ResolveCustomerNameAsync(handoff.CustomerId, handoff.ConversationId),
+                "handoff", "打开对应 WhatsApp 会话，完成人工处理并记录结果",
                 handoff.Reason, FollowUpPriority.Urgent, handoff.AccountId, handoff.ConversationId, now));
         foreach (var sourcing in sourcingComplete.Take(8))
-            items.Add(BuildSpecialItem(sourcing.CustomerId, "sourcing_complete", "确认并提交完整采购需求",
+        {
+            var source = sourcing.Fields.Values.OrderByDescending(item => item.ObservedAt).FirstOrDefault();
+            items.Add(BuildSpecialItem(sourcing.CustomerId, await ResolveCustomerNameAsync(sourcing.CustomerId, source?.SourceConversationId ?? ""),
+                "sourcing_complete", "复核五项采购信息，确认无误后提交采购需求",
                 "图片、数量、目标价、目的地和运输偏好已收齐。", FollowUpPriority.High,
-                sourcing.Fields.Values.OrderByDescending(item => item.ObservedAt)
-                    .Select(item => item.SourceAccountId).FirstOrDefault() ?? "", "", now));
+                source?.SourceAccountId ?? "", source?.SourceConversationId ?? "", now));
+        }
         foreach (var state in crossAccount.Take(8))
-            items.Add(BuildSpecialItem(state.CustomerId, "cross_account", "复核跨账号连续跟进",
-                "该客户出现在多个 WhatsApp 账号中，请确认本轮主跟进账号。", FollowUpPriority.High,
+            items.Add(BuildSpecialItem(state.CustomerId, await ResolveCustomerNameAsync(state.CustomerId, state.ConversationId),
+                "cross_account", "指定本轮主跟进账号，并检查其他账号是否存在重复触达",
+                "该客户出现在多个 WhatsApp 账号中，需要统一本轮跟进责任。", FollowUpPriority.High,
                 state.AccountId, state.ConversationId, now));
 
         var learning = await _learning.RefreshAsync(cancellationToken);
@@ -105,13 +163,13 @@ public sealed class TodayBriefService
     }
 
     private TodayBriefItem BuildSpecialItem(
-        string customerId, string category, string action, string reason, FollowUpPriority priority,
+        string customerId, string customerName, string category, string action, string reason, FollowUpPriority priority,
         string accountId, string conversationId, DateTimeOffset dueAt)
     {
         return new TodayBriefItem
         {
             CustomerId = customerId,
-            CustomerName = customerId,
+            CustomerName = customerName,
             Category = category,
             Action = action,
             Reason = reason,
@@ -121,6 +179,33 @@ public sealed class TodayBriefService
             SourceAccountId = accountId,
             SourceConversationId = conversationId
         };
+    }
+
+    private static bool IsReadableCustomerName(string? value, string customerId)
+    {
+        var candidate = value?.Trim() ?? "";
+        if (string.IsNullOrWhiteSpace(candidate) || candidate.Equals(customerId, StringComparison.OrdinalIgnoreCase)) return false;
+        return candidate.Length < 24 || !candidate.All(Uri.IsHexDigit);
+    }
+
+    private static string? ResolveLeadCustomerName(Lead lead, string customerId)
+    {
+        var candidates = new List<string?> { lead.Name };
+        candidates.AddRange(lead.CustomFields
+            .Where(item =>
+            {
+                var key = item.Key.Replace("_", "", StringComparison.Ordinal).Replace(" ", "", StringComparison.Ordinal).ToLowerInvariant();
+                return key.Contains("nickname", StringComparison.Ordinal)
+                       || key.Contains("buyername", StringComparison.Ordinal)
+                       || key.Contains("customername", StringComparison.Ordinal)
+                       || key.Contains("买家昵称", StringComparison.Ordinal)
+                       || key.Contains("买家姓名", StringComparison.Ordinal)
+                       || key.Contains("客户姓名", StringComparison.Ordinal);
+            })
+            .Select(item => item.Value));
+        candidates.Add(lead.Company);
+        return candidates.Select(item => item?.Trim())
+            .FirstOrDefault(item => IsReadableCustomerName(item, customerId));
     }
 
     private static int PriorityRank(FollowUpPriority priority) => priority switch

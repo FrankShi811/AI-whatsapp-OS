@@ -26,6 +26,8 @@ $appStartupSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $roo
 $desktopShortcutSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\DesktopShortcutService.cs')
 $themeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ThemeManager.cs')
 $mainWindowXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MainWindow.xaml')
+$dashboardXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\DashboardView.xaml')
+$todayBriefSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\TodayBriefService.cs')
 $whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml')
 $bridgeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\index.mjs')
 $bridgeMessageSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\message-content.mjs')
@@ -103,9 +105,21 @@ if ($appXaml -notmatch '<Style TargetType="\{x:Type TextBlock\}">[\s\S]*?<Setter
   throw 'Implicit WPF text controls must inherit high-contrast semantic foregrounds in dark mode.'
 }
 $navTextCount = ([regex]::Matches($mainWindowXaml, 'Style="\{StaticResource NavText\}"')).Count
-if ($navTextCount -ne 14 -or
+if ($navTextCount -ne 15 -or
     $appXaml -notmatch 'x:Key="NavText"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}') {
-  throw "Every sidebar navigation icon and label must inherit the owning NavButton foreground. expected=14 actual=$navTextCount"
+  throw "Every sidebar navigation icon, label and shortcut footer must inherit the owning NavButton foreground. expected=15 actual=$navTextCount"
+}
+if ($mainWindowXaml -notmatch '<Button Style="\{StaticResource NavButton\}" Click="CommandButton_Click">\s*<TextBlock Text="[^"]*Ctrl \+ K" Style="\{StaticResource NavText\}"/>\s*</Button>' -or
+    $mainWindowXaml -match 'Content="[^"]*Ctrl \+ K"') {
+  throw 'The sidebar shortcut footer must use NavText instead of implicit Ink text on the dark sidebar.'
+}
+if ($dashboardXaml -notmatch 'Text="\{Binding CustomerLabel\}"' -or
+    $dashboardXaml -notmatch 'Text="\{Binding ActionLabel\}"' -or
+    $dashboardXaml -notmatch 'Text="\{Binding ReasonLabel\}"' -or
+    $todayBriefSource -notmatch [regex]::Escape('CustomerName = customerName') -or
+    $todayBriefSource -match [regex]::Escape('CustomerName = customerId') -or
+    $todayBriefSource -notmatch [regex]::Escape('digits[^4..]')) {
+  throw 'Today Brief must show readable customer identity, explicit next action and supporting reason instead of internal buyer IDs.'
 }
 
 function Convert-HexToRgb([string]$hex) {

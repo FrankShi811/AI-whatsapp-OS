@@ -352,6 +352,10 @@ public sealed class TodayBriefItem
     public string SourceAccountId { get; set; } = "";
     public string SourceConversationId { get; set; } = "";
 
+    [JsonIgnore] public string CustomerLabel => $"客户：{(string.IsNullOrWhiteSpace(CustomerName) ? "未命名客户" : CustomerName)}";
+    [JsonIgnore] public string ActionLabel => $"下一步：{(string.IsNullOrWhiteSpace(Action) ? "打开客户资料并确认下一步" : Action)}";
+    [JsonIgnore] public string ReasonLabel => $"处理依据：{(string.IsNullOrWhiteSpace(Reason) ? "暂无补充说明" : Reason)}";
+
     [JsonIgnore] public string PriorityLabel => Priority switch
     {
         FollowUpPriority.Urgent => "紧急",
@@ -374,7 +378,14 @@ public sealed class TodayBriefItem
         get
         {
             var now = DateTimeOffset.Now;
-            if (DueAt <= now) return $"已逾期 {Math.Max(1, (int)Math.Ceiling((now - DueAt).TotalHours))} 小时";
+            var overdue = now - DueAt;
+            if (overdue >= TimeSpan.FromMinutes(1))
+            {
+                if (overdue < TimeSpan.FromHours(1)) return $"已逾期 {Math.Max(1, (int)Math.Ceiling(overdue.TotalMinutes))} 分钟";
+                if (overdue < TimeSpan.FromDays(1)) return $"已逾期 {Math.Max(1, (int)Math.Ceiling(overdue.TotalHours))} 小时";
+                return $"已逾期 {Math.Max(1, (int)Math.Ceiling(overdue.TotalDays))} 天";
+            }
+            if (DueAt <= now.AddMinutes(5)) return "现在处理";
             if (DueAt.Date == now.Date) return $"今天 {DueAt:HH:mm}";
             if (DueAt.Date == now.Date.AddDays(1)) return $"明天 {DueAt:HH:mm}";
             return DueAt.ToString("MM-dd HH:mm");

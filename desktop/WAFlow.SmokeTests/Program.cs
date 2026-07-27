@@ -1088,10 +1088,31 @@ var deferredTask = (await reportRepository.GetFollowUpTasksAsync(reportLead.Id))
 Check(deferredTask.Status == FollowUpTaskStatus.Open && deferredTask.DueAt > DateTimeOffset.Now.AddHours(23),
     "accepted Customer Brain recommendation can be deferred without losing its execution state");
 await actionLifecycle.StartAsync(reportLead.Id, brainRecommendation.Id);
+var nicknameBriefLead = new Lead
+{
+    Id="brief-nickname-customer",
+    Name="8ccbf06f920541c79183bfc3a9413a6a",
+    CustomFields=new Dictionary<string, string> { ["buyer_nickname"] = "Readable Buyer Nickname" }
+};
+await reportRepository.UpsertLeadAsync(nicknameBriefLead);
+await reportRepository.UpsertFollowUpTaskAsync(new FollowUpTask
+{
+    Id="brief-nickname-task",
+    CustomerId=nicknameBriefLead.Id,
+    Title="核对客户最新采购计划",
+    Reason="客户昵称来自原始导入字段",
+    Priority=FollowUpPriority.High,
+    DueAt=DateTimeOffset.Now.AddHours(1)
+});
 var activeBrief = await new TodayBriefService(reportRepository).GetAsync();
 Check(activeBrief.Items.Any(item => item.CustomerId == reportLead.Id && item.RecommendationId == brainRecommendation.Id && item.Status == FollowUpTaskStatus.InProgress)
+    && activeBrief.Items.Any(item => item.CustomerId == reportLead.Id && item.CustomerName == reportLead.DisplayName
+        && item.CustomerLabel.Contains(reportLead.DisplayName, StringComparison.Ordinal)
+        && item.ActionLabel.StartsWith("下一步：", StringComparison.Ordinal)
+        && item.ReasonLabel.StartsWith("处理依据：", StringComparison.Ordinal))
+    && activeBrief.Items.Any(item => item.CustomerId == nicknameBriefLead.Id && item.CustomerName == "Readable Buyer Nickname")
     && activeBrief.InProgressCount >= 1,
-    "Today Brief prioritizes active Customer Brain follow-up work");
+    "Today Brief prioritizes active work with explicit labels and prefers imported buyer nicknames over opaque IDs");
 await actionLifecycle.CompleteAsync(reportLead.Id, brainRecommendation.Id, "客户已回复并补充采购条件");
 Check((await reportRepository.GetAiRecommendationHistoryAsync(reportLead.Id)).First(item => item.Id == brainRecommendation.Id).Status == AiRecommendationStatus.Completed
     && (await reportRepository.GetFollowUpTasksAsync(reportLead.Id)).Single(item => item.RecommendationId == brainRecommendation.Id).Status == FollowUpTaskStatus.Completed
@@ -1527,6 +1548,14 @@ Check(todayBrief.IdentityPendingCount >= 2
     && todayBrief.Items.Any(item => item.Category == "handoff")
     && todayBrief.Items.Any(item => item.Category == "sourcing_complete"),
     "Today Brief surfaces identity, handoff, completed sourcing and cross-account work");
+var specialBriefItems = todayBrief.Items.Where(item => item.Category is "identity" or "handoff" or "sourcing_complete" or "cross_account").ToList();
+Check(specialBriefItems.Count > 0
+    && specialBriefItems.All(item => !string.IsNullOrWhiteSpace(item.CustomerName)
+        && !item.CustomerName.Equals(item.CustomerId, StringComparison.OrdinalIgnoreCase)
+        && item.ActionLabel.StartsWith("下一步：", StringComparison.Ordinal)
+        && item.ReasonLabel.StartsWith("处理依据：", StringComparison.Ordinal))
+    && specialBriefItems.Any(item => item.DueLabel == "现在处理"),
+    "Today Brief special work shows a readable CRM or WhatsApp customer name and immediate timing instead of internal buyer IDs");
 var takenOver = await customerSuccessAgent.TakeOverAsync(eve.Id, "smoke-user");
 Check(takenOver.Status == HandoffStatus.TakenOver
     && (await customerSuccessRepository.GetCustomerAgentStatesAsync(eve.Id))
