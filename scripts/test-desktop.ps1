@@ -8,6 +8,10 @@ $dotnet = $env:WAFLOW_DOTNET_PATH
 if (-not $dotnet -or -not (Test-Path -LiteralPath $dotnet)) {
   $dotnet = if (Test-Path -LiteralPath $localDotnet) { $localDotnet } else { (Get-Command dotnet -ErrorAction Stop).Source }
 }
+$node = $env:WAFLOW_NODE_PATH
+if (-not $node -or -not (Test-Path -LiteralPath $node)) {
+  $node = (Get-Command node -ErrorAction Stop).Source
+}
 $work = Join-Path $root 'work'
 $env:DOTNET_CLI_HOME = $work
 $env:NUGET_PACKAGES = Join-Path $work 'nuget'
@@ -24,6 +28,7 @@ $themeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'de
 $mainWindowXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MainWindow.xaml')
 $whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml')
 $bridgeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\index.mjs')
+$bridgeMessageSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\message-content.mjs')
 $whatsAppInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml.cs')
 $whatsAppSyncSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppSyncService.cs')
 $campaignAutomationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CampaignAutomationService.cs')
@@ -203,6 +208,18 @@ if ($customerSuccessSource -match 'holding-\{Guid\.NewGuid') {
 }
 
 Write-Host 'PASS  WhatsApp real-send acknowledgement contract'
+
+if ($bridgeSource -notmatch [regex]::Escape('proto.WebMessageInfo.StubType.CIPHERTEXT') -or
+    $bridgeSource -notmatch [regex]::Escape('update.update?.message') -or
+    $bridgeSource -notmatch [regex]::Escape('if (numericStatus == null) continue') -or
+    $bridgeMessageSource -notmatch [regex]::Escape('normalizeMessageContent') -or
+    $whatsAppInboxSource -match '媒体消息' -or
+    $whatsAppInboxSource -notmatch 'ShouldReplaceContentWith') {
+  throw 'WhatsApp Inbox must recover ciphertext placeholders, replace stale bubbles and never mislabel empty text as media.'
+}
+& $node (Join-Path $root 'bridge\scripts\message-content-smoke.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'WhatsApp bridge message-content smoke test failed.' }
+Write-Host 'PASS  WhatsApp placeholder recovery and accurate message classification contract'
 
 & $dotnet build (Join-Path $root 'desktop\WAFlow.sln') -c Release
 if ($LASTEXITCODE -ne 0) { throw 'WAFlow desktop build failed.' }

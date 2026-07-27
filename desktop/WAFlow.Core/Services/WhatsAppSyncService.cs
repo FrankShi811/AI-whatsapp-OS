@@ -169,6 +169,7 @@ public sealed class WhatsAppSyncService
         var phone = Digits(Text(data, "phone"));
         var providerId = Text(data, "id");
         if (string.IsNullOrWhiteSpace(phone) || string.IsNullOrWhiteSpace(providerId)) return;
+        var existingMessage = await _repository.GetWhatsAppMessageByProviderIdAsync(accountId, providerId);
         var fromMe = Bool(data, "fromMe");
         var timestamp = DateTimeOffset.TryParse(Text(data, "timestamp"), out var parsed) ? parsed : DateTimeOffset.Now;
         var deliveredAt = ParseTimestamp(data, "deliveredAt");
@@ -219,11 +220,15 @@ public sealed class WhatsAppSyncService
             StatusUpdatedAt = readAt ?? deliveredAt,
             Source = source
         };
+        var contentRecovered = existingMessage is not null
+                               && !HasUsableContent(existingMessage)
+                               && HasUsableContent(message);
         var inserted = await _repository.UpsertWhatsAppMessageAsync(message);
+        var usableContent = HasUsableContent(message);
         if (timestamp >= conversation.LastMessageAt)
         {
             conversation.LastMessageAt = timestamp;
-            var preview = string.IsNullOrWhiteSpace(message.Body) ? $"[{message.Kind}]" : message.Body;
+            var preview = MessagePreview(message);
             conversation.LastMessage = message.IsStatusUpdate ? $"[最新动态] {preview}" : preview;
         }
         if (inserted && !fromMe && !historical && !message.IsStatusUpdate &&
@@ -238,13 +243,40 @@ public sealed class WhatsAppSyncService
                                 message.Status is WhatsAppMessageStatus.Sent
                                     or WhatsAppMessageStatus.Delivered
                                     or WhatsAppMessageStatus.Read;
-        if (lead is not null && inserted && !message.IsStatusUpdate && confirmedOutgoing)
+        var newlyAvailable = (inserted && usableContent) || contentRecovered;
+        if (lead is not null && newlyAvailable && !message.IsStatusUpdate && confirmedOutgoing)
         {
             LeadConnectionStatus.ApplyFromMessage(lead, message);
             await _repository.UpsertLeadAsync(lead);
             await _repository.LogEventAsync(fromMe ? "whatsapp_message_sent" : "whatsapp_message_received", lead.Id, null, $"message_id={providerId}; account={accountId}");
         }
-        if (inserted && !historical) MessageSynchronized?.Invoke(this, message);
+        if (newlyAvailable && !historical) MessageSynchronized?.Invoke(this, message);
+    }
+
+    private static bool HasUsableContent(WhatsAppMessage message) =>
+        !string.IsNullOrWhiteSpace(message.Body)
+        || message.Kind is "image" or "video" or "audio" or "document" or "sticker"
+            or "contact" or "location" or "poll" or "reaction" or "event";
+
+    private static string MessagePreview(WhatsAppMessage message)
+    {
+        if (!string.IsNullOrWhiteSpace(message.Body)) return message.Body;
+        return message.Kind switch
+        {
+            "image" => "[图片]",
+            "video" => "[视频]",
+            "audio" => "[音频]",
+            "document" => string.IsNullOrWhiteSpace(message.FileName) ? "[文件]" : $"[文件] {message.FileName}",
+            "sticker" => "[贴图]",
+            "contact" => "[联系人]",
+            "location" => "[位置]",
+            "poll" => "[投票]",
+            "reaction" => "[表情回应]",
+            "event" => "[活动]",
+            "unavailable" => "[正在从手机恢复消息内容]",
+            "unknown" => "[消息内容未同步成功]",
+            _ => "[暂不支持的 WhatsApp 消息]"
+        };
     }
 
     private async Task IngestRevocationAsync(string accountId, JsonElement data)

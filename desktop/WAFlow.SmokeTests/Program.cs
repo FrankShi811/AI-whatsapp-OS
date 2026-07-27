@@ -383,8 +383,68 @@ var whatsappMessage = new WhatsAppMessage { Id="primary:wamid-smoke", ProviderMe
 var messageInserted = await repository.UpsertWhatsAppMessageAsync(whatsappMessage);
 var messageInsertedTwice = await repository.UpsertWhatsAppMessageAsync(whatsappMessage);
 Check(messageInserted && !messageInsertedTwice && (await repository.GetWhatsAppMessagesAsync(conversation.Id)).Count == 1, "WhatsApp message idempotency");
+var unavailableMessage = new WhatsAppMessage
+{
+    Id="primary:wamid-recovery", ProviderMessageId="wamid-recovery", AccountId="primary", ConversationId=conversation.Id,
+    LeadId=whatsappLead.Id, Phone=conversation.Phone, Direction=WhatsAppMessageDirection.Incoming,
+    Status=WhatsAppMessageStatus.Received, Kind="unavailable", Body="", Timestamp=DateTimeOffset.Now
+};
+await repository.UpsertWhatsAppMessageAsync(unavailableMessage);
+var recoveredMessage = new WhatsAppMessage
+{
+    Id=unavailableMessage.Id, ProviderMessageId=unavailableMessage.ProviderMessageId, AccountId=unavailableMessage.AccountId,
+    ConversationId=unavailableMessage.ConversationId, LeadId=unavailableMessage.LeadId, Phone=unavailableMessage.Phone,
+    Direction=unavailableMessage.Direction, Status=unavailableMessage.Status, Kind="text",
+    Body="hello, how are you?", Timestamp=unavailableMessage.Timestamp, Source="placeholder_recovery"
+};
+Check(!await repository.UpsertWhatsAppMessageAsync(recoveredMessage), "recovered WhatsApp content remains idempotent");
+var recoveredStored = (await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single(message => message.Id == unavailableMessage.Id);
+Check(recoveredStored.Kind == "text" && recoveredStored.Body == "hello, how are you?", "WhatsApp placeholder is replaced by recovered text");
+await repository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id=unavailableMessage.Id, ProviderMessageId=unavailableMessage.ProviderMessageId, AccountId=unavailableMessage.AccountId,
+    ConversationId=unavailableMessage.ConversationId, LeadId=unavailableMessage.LeadId, Phone=unavailableMessage.Phone,
+    Direction=unavailableMessage.Direction, Status=unavailableMessage.Status, Kind="unavailable",
+    Body="", Timestamp=unavailableMessage.Timestamp, Source="late_placeholder"
+});
+recoveredStored = (await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single(message => message.Id == unavailableMessage.Id);
+Check(recoveredStored.Kind == "text" && recoveredStored.Body == "hello, how are you?", "late WhatsApp placeholder cannot erase recovered text");
+await using (var recoveryBridge = new WhatsAppConnectionManager())
+{
+    var recoverySync = new WhatsAppSyncService(repository, recoveryBridge);
+    var synchronizedContentCount = 0;
+    recoverySync.MessageSynchronized += (_, message) =>
+    {
+        if (message.ProviderMessageId == "wamid-live-recovery") synchronizedContentCount++;
+    };
+    var ingestRecovery = typeof(WhatsAppSyncService).GetMethod("IngestMessageAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    using var placeholderDocument = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        phone = conversation.Phone,
+        id = "wamid-live-recovery",
+        fromMe = false,
+        timestamp = DateTimeOffset.Now.ToString("O"),
+        source = "notify",
+        kind = "unavailable",
+        text = ""
+    }));
+    await (Task)ingestRecovery.Invoke(recoverySync, ["primary", placeholderDocument.RootElement.Clone()])!;
+    using var recoveredDocument = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        phone = conversation.Phone,
+        id = "wamid-live-recovery",
+        fromMe = false,
+        timestamp = DateTimeOffset.Now.ToString("O"),
+        source = "placeholder_recovery",
+        kind = "text",
+        text = "what's up bro?"
+    }));
+    await (Task)ingestRecovery.Invoke(recoverySync, ["primary", recoveredDocument.RootElement.Clone()])!;
+    var liveRecovered = await repository.GetWhatsAppMessageByProviderIdAsync("primary", "wamid-live-recovery");
+    Check(synchronizedContentCount == 1 && liveRecovered?.Body == "what's up bro?", "WhatsApp recovered content is processed exactly once");
+}
 await repository.UpdateWhatsAppMessageStatusAsync("primary", "wamid-smoke", WhatsAppMessageStatus.Read);
-Check((await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single().Status == WhatsAppMessageStatus.Read, "WhatsApp message status persistence");
+Check((await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single(message => message.Id == whatsappMessage.Id).Status == WhatsAppMessageStatus.Read, "WhatsApp message status persistence");
 var quotedReply = new WhatsAppMessage
 {
     Id="primary:wamid-reply", ProviderMessageId="wamid-reply", AccountId="primary", ConversationId=conversation.Id,

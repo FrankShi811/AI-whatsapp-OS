@@ -15,6 +15,7 @@ import makeWASocket, {
   initAuthCreds,
   proto
 } from '@whiskeysockets/baileys'
+import { isDisplayableMessage, messageContent, messageKind, messageText } from './message-content.mjs'
 
 const logger = pino({ level: 'silent' })
 const state = {
@@ -342,17 +343,6 @@ function emitItems(event, items, source = 'live', extra = {}, chunkSize = 100) {
   }
 }
 
-function messageContent(message) {
-  if (!message) return null
-  if (message.ephemeralMessage?.message) return messageContent(message.ephemeralMessage.message)
-  if (message.viewOnceMessage?.message) return messageContent(message.viewOnceMessage.message)
-  if (message.viewOnceMessageV2?.message) return messageContent(message.viewOnceMessageV2.message)
-  if (message.documentWithCaptionMessage?.message) return messageContent(message.documentWithCaptionMessage.message)
-  if (message.statusMentionMessage?.message) return messageContent(message.statusMentionMessage.message)
-  if (message.groupStatusMentionMessage?.message) return messageContent(message.groupStatusMentionMessage.message)
-  return message
-}
-
 function isStatusUpdateMessage(webMessage) {
   const raw = webMessage?.message ?? webMessage
   const context = messageContextInfo(raw)
@@ -388,6 +378,15 @@ function revocationTarget(message) {
 function rememberMessage(message) {
   const id = String(message?.key?.id ?? '')
   if (!id) return
+  const existing = state.messages.get(id)
+  if (existing?.message && !message?.message) {
+    message = {
+      ...existing,
+      ...message,
+      key: { ...(existing.key ?? {}), ...(message?.key ?? {}) },
+      message: existing.message
+    }
+  }
   state.messages.delete(id)
   state.messages.set(id, message)
   while (state.messages.size > 10000) state.messages.delete(state.messages.keys().next().value)
@@ -419,31 +418,6 @@ function quotedSendOptions(command, jid) {
     }
   }
   return { quoted }
-}
-
-function messageText(message) {
-  message = messageContent(message)
-  if (!message) return ''
-  return message.conversation
-    ?? message.extendedTextMessage?.text
-    ?? message.imageMessage?.caption
-    ?? message.videoMessage?.caption
-    ?? message.documentMessage?.caption
-    ?? message.buttonsResponseMessage?.selectedDisplayText
-    ?? message.listResponseMessage?.title
-    ?? message.templateButtonReplyMessage?.selectedDisplayText
-    ?? ''
-}
-
-function messageKind(message) {
-  message = messageContent(message)
-  if (!message) return 'unknown'
-  if (message.imageMessage) return 'image'
-  if (message.videoMessage) return 'video'
-  if (message.audioMessage) return 'audio'
-  if (message.documentMessage) return 'document'
-  if (message.stickerMessage) return 'sticker'
-  return 'text'
 }
 
 function messageFileName(message) {
@@ -500,7 +474,7 @@ function fallbackMediaExtension(kind, mimeType) {
 }
 
 async function downloadMessageMedia(message, kind, fileName, mimeType) {
-  if (kind === 'text' || kind === 'unknown') return { mediaPath: '', mediaDownloadError: '' }
+  if (!['image', 'video', 'audio', 'document', 'sticker'].includes(kind)) return { mediaPath: '', mediaDownloadError: '' }
   const announcedLength = messageFileLength(message.message)
   if (announcedLength > 100 * 1024 * 1024) return { mediaPath: '', mediaDownloadError: '媒体超过 100MB，未自动下载' }
 
@@ -659,7 +633,10 @@ async function normalizeMessage(message, source) {
       source
     }
   }
-  const kind = messageKind(message.message)
+  const recoveryPending = message.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT
+    && !isDisplayableMessage(message.message)
+  if (!recoveryPending && !isDisplayableMessage(message.message)) return null
+  const kind = recoveryPending ? 'unavailable' : messageKind(message.message)
   const fileName = messageFileName(message.message)
   const mimeType = messageMimeType(message.message)
   const media = await downloadMessageMedia(message, kind, fileName, mimeType)
@@ -683,6 +660,7 @@ async function normalizeMessage(message, source) {
     timestamp,
     text: messageText(message.message),
     kind,
+    recoveryPending,
     fileName,
     mimeType,
     ...media,
@@ -758,7 +736,7 @@ async function normalizeMessages(messages, source) {
     if (item.isRevocation) continue
     const contact = [...state.contacts.values()].find(value => value.phone === item.phone)
     if (!item.fromMe && item.pushName) rememberContact({ jid: item.jid, sourceJid: item.sourceJid, phone: item.phone, displayName: item.pushName, notifyName: item.pushName, source })
-    const preview = item.text || `[${item.kind}]`
+    const preview = messagePreview(item)
     rememberChat({ jid: item.jid, sourceJid: item.sourceJid, phone: item.phone, displayName: contact?.displayName || item.pushName || `+${item.phone}`, lastMessage: item.isStatusUpdate ? `[最新动态] ${preview}` : preview, lastMessageAt: item.timestamp, unreadCount: null, source })
   }
   return items
@@ -773,7 +751,7 @@ async function forwardMessage(message, source) {
   }
   if (!data.fromMe && data.pushName) rememberContact({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: data.pushName, notifyName: data.pushName, source })
   const contact = [...state.contacts.values()].find(value => value.phone === data.phone)
-  const preview = data.text || `[${data.kind}]`
+  const preview = messagePreview(data)
   rememberChat({ jid: data.jid, sourceJid: data.sourceJid, phone: data.phone, displayName: contact?.displayName || data.pushName || `+${data.phone}`, lastMessage: data.isStatusUpdate ? `[最新动态] ${preview}` : preview, lastMessageAt: data.timestamp, unreadCount: null, source })
   emit({
     type: 'event',
@@ -781,6 +759,15 @@ async function forwardMessage(message, source) {
     accountId: state.accountId,
     data
   })
+}
+
+function messagePreview(message) {
+  if (message.text) return message.text
+  return ({
+    image: '[图片]', video: '[视频]', audio: '[音频]', document: '[文件]', sticker: '[贴图]',
+    contact: '[联系人]', location: '[位置]', poll: '[投票]', reaction: '[表情回应]', event: '[活动]',
+    unavailable: '[正在从手机恢复消息内容]', unknown: '[消息内容未同步成功]'
+  })[message.kind] ?? '[暂不支持的 WhatsApp 消息]'
 }
 
 async function handleHistorySync(update) {
@@ -930,6 +917,15 @@ async function connect() {
       const jid = await resolveDirectJid(update.key)
       if (!shouldForward(jid)) continue
       const providerMessageId = String(update.key?.id ?? '').trim()
+      if (update.update?.message && providerMessageId) {
+        const cached = state.messages.get(providerMessageId)
+        await forwardMessage({
+          ...(cached ?? {}),
+          key: { ...(cached?.key ?? {}), ...(update.key ?? {}) },
+          message: update.update.message,
+          messageTimestamp: update.update.messageTimestamp ?? cached?.messageTimestamp ?? Math.floor(Date.now() / 1000)
+        }, 'update')
+      }
       const trackedTarget = state.outboundTargets.get(providerMessageId)
       if (trackedTarget) {
         const actualPhone = phoneFromJid(await phoneJidFromAnyJid(jid))
@@ -953,6 +949,7 @@ async function connect() {
         }
       }
       const numericStatus = update.update?.status ?? null
+      if (numericStatus == null) continue
       const failureDetails = [
         update.update?.error?.message,
         update.update?.error?.output?.payload?.message,

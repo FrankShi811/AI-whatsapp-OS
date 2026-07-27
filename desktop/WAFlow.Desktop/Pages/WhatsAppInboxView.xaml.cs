@@ -432,13 +432,32 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             _conversations.Insert(0, conversation);
         }
         var isStatusUpdate = Bool(e.Data, "isStatusUpdate");
-        if (!conversation.Messages.Any(x => x.Id == messageId))
-            conversation.Messages.Add(new MessageItem(messageId, text, timestamp, fromMe, kind, fileName, mimeType, mediaPath, mediaDownloadError, ParseMessageStatus(e.Data, fromMe), ParseTime(e.Data, "statusAt"), ParseTime(e.Data, "deliveredAt"), ParseTime(e.Data, "readAt"), Text(e.Data, "failureReason"), Text(e.Data, "quotedMessageId"), WhatsAppTextEncodingRepair.Repair(Text(e.Data, "quotedText")), Bool(e.Data, "quotedFromMe"), Bool(e.Data, "isRevoked"), ParseTime(e.Data, "revokedAt"), isStatusUpdate, ParseTime(e.Data, "statusExpiresAt")));
-        var preview = MessagePreview(text, kind, fileName);
-        conversation.LastMessage = isStatusUpdate ? $"[最新动态] {preview}" : preview;
+        var incomingMessage = new MessageItem(messageId, text, timestamp, fromMe, kind, fileName, mimeType, mediaPath, mediaDownloadError, ParseMessageStatus(e.Data, fromMe), ParseTime(e.Data, "statusAt"), ParseTime(e.Data, "deliveredAt"), ParseTime(e.Data, "readAt"), Text(e.Data, "failureReason"), Text(e.Data, "quotedMessageId"), WhatsAppTextEncodingRepair.Repair(Text(e.Data, "quotedText")), Bool(e.Data, "quotedFromMe"), Bool(e.Data, "isRevoked"), ParseTime(e.Data, "revokedAt"), isStatusUpdate, ParseTime(e.Data, "statusExpiresAt"));
+        var existingIndex = conversation.Messages
+            .Select((item, index) => (item, index))
+            .FirstOrDefault(entry => entry.item.Id == messageId);
+        var contentAccepted = false;
+        if (existingIndex.item is null)
+        {
+            conversation.Messages.Add(incomingMessage);
+            contentAccepted = true;
+        }
+        else if (existingIndex.item.ShouldReplaceContentWith(incomingMessage))
+        {
+            incomingMessage.UpdateStatus(existingIndex.item.Status, existingIndex.item.StatusUpdatedAt, existingIndex.item.DeliveredAt, existingIndex.item.ReadAt, existingIndex.item.FailureReason);
+            if (existingIndex.item.IsRevoked) incomingMessage.MarkRevoked(existingIndex.item.RevokedAt);
+            if (ReferenceEquals(_replyingTo, existingIndex.item)) _replyingTo = incomingMessage;
+            conversation.Messages[existingIndex.index] = incomingMessage;
+            contentAccepted = true;
+        }
+        if (contentAccepted)
+        {
+            var preview = MessagePreview(text, kind, fileName);
+            conversation.LastMessage = isStatusUpdate ? $"[最新动态] {preview}" : preview;
+        }
         conversation.LastAt = timestamp;
-        if (!fromMe && !isStatusUpdate && ConversationList.SelectedItem != conversation) conversation.Unread++;
-        else if (!fromMe) _ = PersistConversationReadAfterSyncAsync(conversation);
+        if (existingIndex.item is null && !fromMe && !isStatusUpdate && ConversationList.SelectedItem != conversation) conversation.Unread++;
+        else if (!fromMe && ConversationList.SelectedItem == conversation) _ = PersistConversationReadAfterSyncAsync(conversation);
         ReorderConversations(conversation);
         if (ConversationList.SelectedItem == conversation)
         {
@@ -992,7 +1011,22 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private static string MessagePreview(string text, string kind, string fileName)
     {
         if (!string.IsNullOrWhiteSpace(text)) return text;
-        var type = kind switch { "image" => "图片", "video" => "视频", "audio" => "音频", "document" => "文件", "sticker" => "贴图", _ => "媒体消息" };
+        var type = kind switch
+        {
+            "image" => "图片",
+            "video" => "视频",
+            "audio" => "音频",
+            "document" => "文件",
+            "sticker" => "贴图",
+            "contact" => "联系人",
+            "location" => "位置",
+            "poll" => "投票",
+            "reaction" => "表情回应",
+            "event" => "活动",
+            "unavailable" => "正在从手机恢复消息内容",
+            "unknown" => "消息内容未同步成功",
+            _ => "暂不支持的 WhatsApp 消息"
+        };
         return string.IsNullOrWhiteSpace(fileName) ? $"[{type}]" : $"[{type}] {fileName}";
     }
 
@@ -1458,6 +1492,25 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             WhatsAppMessageStatus.Failed => $"发送失败 {At(StatusUpdatedAt ?? Timestamp)}{(string.IsNullOrWhiteSpace(FailureReason) ? "" : $" · {ShortReason(FailureReason)}")}",
             _ => $"发送 {At(Timestamp)}"
         };
+
+        public bool ShouldReplaceContentWith(MessageItem candidate)
+        {
+            var currentQuality = ContentQuality();
+            var candidateQuality = candidate.ContentQuality();
+            if (candidateQuality != currentQuality) return candidateQuality > currentQuality;
+            if (!string.Equals(candidate.Text, Text, StringComparison.Ordinal)) return !string.IsNullOrWhiteSpace(candidate.Text);
+            if (!HasDownloadedMedia && candidate.HasDownloadedMedia) return true;
+            return candidate.IsRevoked && !IsRevoked;
+        }
+
+        private int ContentQuality()
+        {
+            if (IsRevoked) return 4;
+            if (!string.IsNullOrWhiteSpace(Text)) return 3;
+            if (HasMedia || Kind is "contact" or "location" or "poll" or "reaction" or "event") return 2;
+            if (Kind is "unavailable" or "unknown" or "text") return 0;
+            return 1;
+        }
 
         public void UpdateTransport(string id, DateTimeOffset timestamp, string kind, string fileName)
         {

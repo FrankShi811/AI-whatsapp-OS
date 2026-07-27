@@ -1410,6 +1410,7 @@ public sealed class LocalRepository
             if (Json.Deserialize<WhatsAppMessage>(await select.ExecuteScalarAsync(cancellationToken) as string) is { } existing)
             {
                 if (!CanAdvanceStatus(existing.Status, message.Status)) message.Status = existing.Status;
+                MergeWhatsAppMessageContent(existing, message);
                 if (string.IsNullOrWhiteSpace(message.MediaPath))
                 {
                     if (!string.IsNullOrWhiteSpace(existing.MediaPath)) message.MediaPath = existing.MediaPath;
@@ -1434,6 +1435,39 @@ public sealed class LocalRepository
         }
         return inserted;
     }
+
+    private static void MergeWhatsAppMessageContent(WhatsAppMessage existing, WhatsAppMessage incoming)
+    {
+        var existingHasContent = HasUsableWhatsAppContent(existing);
+        var incomingHasContent = HasUsableWhatsAppContent(incoming);
+        if (!incomingHasContent && existingHasContent)
+        {
+            incoming.Kind = existing.Kind;
+            incoming.Body = existing.Body;
+            incoming.FileName = existing.FileName;
+            incoming.MimeType = existing.MimeType;
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(incoming.Body)) incoming.Body = existing.Body;
+            if (string.IsNullOrWhiteSpace(incoming.FileName)) incoming.FileName = existing.FileName;
+            if (string.IsNullOrWhiteSpace(incoming.MimeType)) incoming.MimeType = existing.MimeType;
+        }
+        if (string.IsNullOrWhiteSpace(incoming.PushName)) incoming.PushName = existing.PushName;
+        if (string.IsNullOrWhiteSpace(incoming.FailureReason)) incoming.FailureReason = existing.FailureReason;
+        incoming.DeliveredAt ??= existing.DeliveredAt;
+        incoming.ReadAt ??= existing.ReadAt;
+        incoming.FailedAt ??= existing.FailedAt;
+        if (incoming.StatusUpdatedAt is null || existing.StatusUpdatedAt > incoming.StatusUpdatedAt)
+            incoming.StatusUpdatedAt = existing.StatusUpdatedAt;
+        incoming.IsStatusUpdate |= existing.IsStatusUpdate;
+        incoming.StatusExpiresAt ??= existing.StatusExpiresAt;
+    }
+
+    private static bool HasUsableWhatsAppContent(WhatsAppMessage message) =>
+        !string.IsNullOrWhiteSpace(message.Body)
+        || message.Kind is "image" or "video" or "audio" or "document" or "sticker"
+            or "contact" or "location" or "poll" or "reaction" or "event";
 
     public async Task<WhatsAppMessage?> MarkWhatsAppMessageRevokedAsync(
         string accountId,
