@@ -28,16 +28,28 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     {
         var selectedId = (LeadGrid.SelectedItem as Lead)?.Id;
         _leads = await _services.Repository.GetLeadsAsync(SearchBox.Text, GradeFilter.SelectedItem as string);
+        var allLeads = await _services.Repository.GetLeadsAsync();
         var settings = await _services.Repository.GetAppSettingsAsync();
-        var retryableCount = _leads.Count(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed);
-        BulkAnalyzeButton.Content = retryableCount > 0
-            ? $"使用 {settings.DeepSeekModel} 重试失败 {retryableCount}"
-            : $"使用 {settings.DeepSeekModel} 分析全部";
+        UpdateBulkAnalyzeButtonIdleContent(
+            settings.DeepSeekModel,
+            allLeads.Count(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed));
         LeadGrid.ItemsSource = _leads;
         LeadGrid.SelectedItem = _leads.FirstOrDefault(x => x.Id == selectedId) ?? _leads.FirstOrDefault();
         var selectedLead = LeadGrid.SelectedItem as Lead;
         UpdateInspector(selectedLead);
         await UpdateCustomerBrainAsync(selectedLead);
+    }
+
+    private void UpdateBulkAnalyzeButtonIdleContent(string model, int retryableCount)
+    {
+        BulkAnalyzeButton.Content = retryableCount > 0
+            ? $"使用 {model} 重试失败 {retryableCount}"
+            : $"使用 {model} 分析全部";
+    }
+
+    private void UpdateBulkAnalyzeButtonRunningContent(int completed, int total)
+    {
+        BulkAnalyzeButton.Content = $"正在分析 {Math.Min(completed, total)} / {total}";
     }
 
     private void UpdateInspector(Lead? lead)
@@ -132,33 +144,30 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         BulkProgressBar.Maximum = Math.Max(1, allLeads.Count);
         BulkProgressBar.Value = 0;
         BulkProgressText.Text = $"准备分析 0 / {allLeads.Count}";
+        UpdateBulkAnalyzeButtonRunningContent(0, allLeads.Count);
         var progress = new Progress<LeadBulkAnalysisProgress>(UpdateBulkProgress);
+        (string Message, string Title, MessageBoxImage Icon)? outcome = null;
         try
         {
             var result = await _services.LeadAutomation.AnalyzeAllLeadsAsync(progress, _bulkCancellation.Token);
-            await RefreshAsync();
             DataChanged?.Invoke(this, EventArgs.Empty);
-            MessageBox.Show(
+            outcome = (
                 $"批量分析完成。\n\n总数：{result.Total}\n成功：{result.Succeeded}\n失败：{result.Failed}",
                 "AI Sales OS",
-                MessageBoxButton.OK,
                 result.Failed == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
         }
         catch (OperationCanceledException)
         {
-            await RefreshAsync();
             DataChanged?.Invoke(this, EventArgs.Empty);
             var state = _lastBulkProgress;
-            MessageBox.Show(
+            outcome = (
                 $"批量分析已停止。\n\n已完成：{state?.Completed ?? 0} / {state?.Total ?? allLeads.Count}\n成功：{state?.Succeeded ?? 0}\n失败：{state?.Failed ?? 0}\n停止位置：{state?.CurrentLeadName ?? "—"}",
                 "AI Sales OS",
-                MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }
         catch (Exception error)
         {
-            MessageBox.Show(error.Message, "批量分析无法继续", MessageBoxButton.OK, MessageBoxImage.Warning);
-            await RefreshAsync();
+            outcome = (error.Message, "批量分析无法继续", MessageBoxImage.Warning);
         }
         finally
         {
@@ -167,7 +176,10 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
             BulkAnalyzeButton.IsEnabled = true;
             ImportButton.IsEnabled = true;
             CancelBulkButton.Visibility = Visibility.Collapsed;
+            await RefreshAsync();
         }
+        if (outcome is { } resultDialog)
+            MessageBox.Show(resultDialog.Message, resultDialog.Title, MessageBoxButton.OK, resultDialog.Icon);
     }
 
     private void CancelBulk_Click(object sender, RoutedEventArgs e)
@@ -179,10 +191,12 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
 
     private void UpdateBulkProgress(LeadBulkAnalysisProgress progress)
     {
+        if (_bulkCancellation is null) return;
         _lastBulkProgress = progress;
         BulkProgressBar.Maximum = Math.Max(1, progress.Total);
         BulkProgressBar.Value = Math.Min(progress.Completed, progress.Total);
         BulkProgressText.Text = $"{progress.Message} · {progress.Completed}/{progress.Total} · 成功 {progress.Succeeded} · 失败 {progress.Failed}";
+        UpdateBulkAnalyzeButtonRunningContent(progress.Completed, progress.Total);
         CancelBulkButton.IsEnabled = progress.State is not "cancelled";
     }
 

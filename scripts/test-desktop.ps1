@@ -29,6 +29,7 @@ $mainWindowXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 
 $mainWindowSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MainWindow.xaml.cs')
 $dashboardXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\DashboardView.xaml')
 $todayBriefSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\TodayBriefService.cs')
+$leadIntelligenceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\LeadIntelligenceView.xaml.cs')
 $whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml')
 $emailInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\EmailInboxView.xaml')
 $bridgeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\index.mjs')
@@ -174,6 +175,17 @@ if ($missingBuyerIdentityContracts.Count -gt 0) {
   throw "Buyer ID must be the authoritative cross-module customer identity, with phone fallback and conflict-safe writes. missing=$($missingBuyerIdentityContracts -join ',')"
 }
 Write-Host 'PASS  Buyer ID primary identity, phone fallback and cross-module memory contract'
+
+if (-not ($leadIntelligenceSource.Contains('var allLeads = await _services.Repository.GetLeadsAsync();')) -or
+    -not ($leadIntelligenceSource.Contains('allLeads.Count(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed)')) -or
+    -not ($leadIntelligenceSource.Contains('private void UpdateBulkAnalyzeButtonRunningContent(int completed, int total)')) -or
+    -not ($leadIntelligenceSource.Contains('UpdateBulkAnalyzeButtonRunningContent(0, allLeads.Count);')) -or
+    -not ($leadIntelligenceSource.Contains('UpdateBulkAnalyzeButtonRunningContent(progress.Completed, progress.Total);')) -or
+    -not ($leadIntelligenceSource.Contains('if (_bulkCancellation is null) return;')) -or
+    -not ($guideCatalogSource.Contains('["intelligence"] = ModuleGuideVersion + 2'))) {
+  throw 'Lead Intelligence bulk action must show global idle counts, live running progress, ignore late callbacks and explain filter scope.'
+}
+Write-Host 'PASS  Lead Intelligence global retry count and live bulk-action text contract'
 
 function Convert-HexToRgb([string]$hex) {
   $value = $hex.TrimStart('#')
