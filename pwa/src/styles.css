@@ -8,6 +8,8 @@
   --primary: #0c9a70;
   --primary-dark: #087a59;
   --primary-soft: #daf4ea;
+  --action-fill: #087a59;
+  --action-fill-hover: #066747;
   --ai: #7868ff;
   --ai-soft: #f4f1ff;
   --surface: #ffffff;
@@ -30,6 +32,8 @@
   --primary: #36d0a0;
   --primary-dark: #75e6c2;
   --primary-soft: #163d31;
+  --action-fill: #087a59;
+  --action-fill-hover: #0b684e;
   --ai: #a99fff;
   --ai-soft: #292547;
   --surface: #10211b;
@@ -118,8 +122,8 @@ h1, h2, h3, strong { letter-spacing: -.015em; }
   min-height: 42px; padding: 0 17px; border: 1px solid transparent; border-radius: 12px;
   display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-weight: 700; cursor: pointer; white-space: nowrap;
 }
-.button.primary { background: var(--primary); color: #fff; }
-.button.primary:hover { background: var(--primary-dark); }
+.button.primary { background: var(--action-fill); color: #fff; }
+.button.primary:hover { background: var(--action-fill-hover); }
 .button.secondary { border-color: var(--line); background: var(--surface); color: var(--ink); }
 .button.secondary:hover { border-color: var(--primary); }
 .button.ghost { background: transparent; color: var(--muted); }
@@ -154,7 +158,8 @@ h1, h2, h3, strong { letter-spacing: -.015em; }
 }
 .hero-band h2 { margin: 0 0 9px; font-size: clamp(25px, 2.5vw, 36px); }
 .hero-band p { max-width: 820px; margin: 0; color: var(--muted); }
-.hero-band button { padding: 14px 19px; border: 0; border-radius: 13px; display: flex; align-items: center; gap: 8px; background: var(--primary); color: #fff; font-weight: 800; cursor: pointer; white-space: nowrap; }
+.hero-band button { padding: 14px 19px; border: 0; border-radius: 13px; display: flex; align-items: center; gap: 8px; background: var(--action-fill); color: #fff; font-weight: 800; cursor: pointer; white-space: nowrap; }
+.hero-band button:hover { background: var(--action-fill-hover); }
 .metrics { margin-bottom: 24px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
 .metrics.compact { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .metric { position: relative; min-height: 148px; padding: 22px; display: flex; flex-direction: column; box-shadow: var(--shadow); }

@@ -1,4 +1,4 @@
-const CACHE = "ai-sales-os-pwa-v5.5.1-1";
+const CACHE = "ai-sales-os-pwa-v5.5.1-2";
 const APP_ROOT = "/AI-whatsapp-OS/";
 const CORE = [
   APP_ROOT,
