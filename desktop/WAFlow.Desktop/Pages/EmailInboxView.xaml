@@ -179,7 +179,7 @@
                     <TextBlock Text="姓名" Style="{StaticResource LabelText}" Margin="0,14,0,4"/><TextBox x:Name="NameBox"/>
                     <TextBlock Text="邮箱" Style="{StaticResource LabelText}" Margin="0,10,0,4"/><TextBox x:Name="CustomerEmailBox"/>
                     <TextBlock Text="公司" Style="{StaticResource LabelText}" Margin="0,10,0,4"/><TextBox x:Name="CompanyBox"/>
-                    <TextBlock Text="国家 / 地区" Style="{StaticResource LabelText}" Margin="0,10,0,4"/><TextBox x:Name="CountryBox"/>
+                    <TextBlock Text="国家" Style="{StaticResource LabelText}" Margin="0,10,0,4"/><TextBox x:Name="CountryBox"/>
                     <TextBlock Text="阶段" Style="{StaticResource LabelText}" Margin="0,10,0,4"/><ComboBox x:Name="StageBox" DisplayMemberPath="Label"/>
                     <TextBlock Text="负责人" Style="{StaticResource LabelText}" Margin="0,10,0,4"/><TextBox x:Name="OwnerBox"/>
                     <TextBlock Text="标签（逗号分隔）" Style="{StaticResource LabelText}" Margin="0,10,0,4"/><TextBox x:Name="TagsBox"/>

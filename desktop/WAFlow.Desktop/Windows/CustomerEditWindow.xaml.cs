@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
+using WAFlow.Core.Imports;
 using WAFlow.Core.Services;
 
 namespace WAFlow.Desktop.Windows;
@@ -15,6 +16,7 @@ public partial class CustomerEditWindow : Window
     private readonly Lead _lead;
     private readonly LeadStage _originalStage;
     private readonly ObservableCollection<EditableDimension> _dimensions;
+    private readonly Dictionary<string, ImportField> _canonicalDimensions;
 
     public CustomerEditWindow(AppServices services, Lead lead)
     {
@@ -22,7 +24,13 @@ public partial class CustomerEditWindow : Window
         _services = services;
         _lead = lead;
         _originalStage = lead.Stage;
-        _dimensions = new ObservableCollection<EditableDimension>(lead.CustomFields.Select(pair => new EditableDimension(pair.Key, pair.Value)));
+        _canonicalDimensions = lead.CustomFields
+            .Where(pair => ImportService.IsCoreDimension(pair.Key))
+            .ToDictionary(pair => pair.Key, pair => ImportService.ResolveField(pair.Key), StringComparer.OrdinalIgnoreCase);
+        _dimensions = new ObservableCollection<EditableDimension>(
+            lead.CustomFields
+                .Where(pair => !ImportService.IsCoreDimension(pair.Key))
+                .Select(pair => new EditableDimension(pair.Key, pair.Value)));
         OriginalDimensions.ItemsSource = _dimensions;
 
         NameBox.Text = lead.Name;
@@ -221,6 +229,11 @@ public partial class CustomerEditWindow : Window
             MessageBox.Show("请输入新维度名称。", "AI Sales OS");
             return;
         }
+        if (ImportService.IsCoreDimension(header))
+        {
+            MessageBox.Show("该名称属于上方系统字段，请直接修改对应的系统字段。", "AI Sales OS");
+            return;
+        }
         if (_dimensions.Any(item => item.Header.Equals(header, StringComparison.CurrentCultureIgnoreCase)))
         {
             MessageBox.Show("这个维度已经存在，可直接修改右侧的值。", "AI Sales OS");
@@ -280,6 +293,8 @@ public partial class CustomerEditWindow : Window
             _lead.StageSource = _lead.StageManuallyLocked ? "user" : "ai";
             _lead.StageManuallyUpdatedAt = stageChangedByUser ? DateTimeOffset.Now : _lead.StageManuallyUpdatedAt;
             _lead.CustomFields = _dimensions.ToDictionary(item => item.Header, item => item.Value ?? "", StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in _canonicalDimensions)
+                _lead.CustomFields[pair.Key] = CoreFieldValue(_lead, pair.Value);
             foreach (var key in _lead.CustomFields.Keys.Where(BuyerIdentity.IsField).ToList())
                 _lead.CustomFields[key] = buyerId;
             BuyerIdentity.Synchronize(_lead);
@@ -358,6 +373,27 @@ public partial class CustomerEditWindow : Window
             return Math.Max(0, amount);
         throw new InvalidDataException("预计订单额必须是数字。");
     }
+
+    private static string CoreFieldValue(Lead lead, ImportField field) => field switch
+    {
+        ImportField.BuyerId => BuyerIdentity.Resolve(lead),
+        ImportField.Name => lead.Name,
+        ImportField.Company => lead.Company,
+        ImportField.Country => lead.Country,
+        ImportField.WhatsApp => lead.PhoneE164,
+        ImportField.Email => lead.Email,
+        ImportField.ProductInterest => lead.ProductInterest,
+        ImportField.EstimatedOrderValue => lead.EstimatedOrderValue == 0 ? "" : lead.EstimatedOrderValue.ToString(CultureInfo.InvariantCulture),
+        ImportField.CompanyScale => lead.CompanyScale.ToString(CultureInfo.InvariantCulture),
+        ImportField.PurchasePower => lead.PurchasePower.ToString(CultureInfo.InvariantCulture),
+        ImportField.ExplicitDemand => lead.ExplicitDemand ? "是" : "否",
+        ImportField.Source => lead.Source,
+        ImportField.Owner => lead.Owner,
+        ImportField.Stage => Labels.Stage(lead.Stage),
+        ImportField.Tags => string.Join("，", lead.Tags),
+        ImportField.Notes => lead.LatestMessage,
+        _ => ""
+    };
 
     private static string RecommendationStatusLabel(AiRecommendationStatus status) => status switch
     {

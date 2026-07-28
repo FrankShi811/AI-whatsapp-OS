@@ -219,11 +219,18 @@ var directSheet = new ImportSheet
 var directMapping = imports.SuggestMapping(directSheet);
 Check(directMapping.Single(x => x.Header == buyerHeader).Target == ImportField.Name &&
       directMapping.Single(x => x.Header == "现Owner").Target == ImportField.Owner &&
-      directMapping.Single(x => x.Header == "电话").Target == ImportField.WhatsApp, "long and mixed-language headers inferred without manual mapping");
+      directMapping.Single(x => x.Header == "电话").Target == ImportField.WhatsApp &&
+      directMapping.Single(x => x.Header == "国家/邮箱").Target == ImportField.Country,
+    "long and mixed-language headers, including the legacy country/email label, infer canonical CRM fields");
 var directPreview = await imports.BuildPreviewAsync(directSheet, directMapping);
 var directCommit = await imports.CommitAsync("direct.xlsx", directPreview, allowStageChange:true, allowOwnerChange:true);
 var directLead = (await repository.GetLeadsAsync("direct_buyer_01")).Single();
-Check(directCommit.Failed == 0 && directLead.CustomFields.Count == directSheet.Headers.Count && directLead.Owner == "Daisy", "direct import retains every source dimension and links core fields");
+Check(directCommit.Failed == 0 && directLead.CustomFields.Count == directSheet.Headers.Count && directLead.Owner == "Daisy" && directLead.Country == "美国",
+    "direct import retains every source dimension while projecting one canonical country field");
+Check(ImportService.ResolveField("国家/地区") == ImportField.Country
+      && ImportService.ResolveField("国家/邮箱") == ImportField.Country
+      && ImportService.IsCoreDimension("国家/邮箱"),
+    "country/region and legacy country/email headers share the single canonical country meaning");
 
 var rowIdentityRoot = Path.Combine(root, "row-identity-import");
 var rowIdentityRepository = new LocalRepository(Path.Combine(rowIdentityRoot, "row-identity.db"));
@@ -285,11 +292,11 @@ var buyerIdentityCommit = await buyerIdentityImports.CommitAsync(
     allowOwnerChange: true);
 var buyerIdentityLead = await buyerIdentityRepository.GetLeadByBuyerIdAsync(" Buyer-100 ");
 Check(buyerIdentityCommit is { Created: 1, Updated: 1 }
-      && buyerIdentityLead is { BuyerId: "BUYER-100", PhoneE164: "+14155553002" }
+      && buyerIdentityLead is { BuyerId: "buyer-100", PhoneE164: "+14155553002" }
       && (await buyerIdentityRepository.GetLeadsByBuyerIdAsync("buyer-100")).Count == 1,
-    "Buyer ID is case-insensitive and remains the single customer target when the phone changes");
+    "Buyer ID is case-insensitive, preserves its first canonical spelling and remains the single customer target when the phone changes");
 var buyerGlobalIdentity = await buyerIdentityRepository.GetGlobalCustomerIdentityAsync(buyerIdentityLead!.Id);
-Check(buyerGlobalIdentity is { BuyerId: "BUYER-100" }
+Check(buyerGlobalIdentity is { BuyerId: "buyer-100" }
       && buyerGlobalIdentity.CanonicalKey == "buyer:BUYER-100",
     "cross-module customer memory persists the Buyer ID canonical key");
 
@@ -414,17 +421,18 @@ await repository.UpsertLeadAsync(directLead);
 Check((await repository.GetLeadAsync(directLead.Id))?.CustomFields.GetValueOrDefault("任意业务维度") == "人工修改后的值", "manual custom-dimension edits persist");
 
 const string protectedNameHeader = "buyer_nickname";
-const string protectedStageHeader = "\u8ddf\u8fdb\u9636\u6bb5\uff08\u6bcf\u5468\u66f4\u65b0\uff09";
+const string protectedStageHeader = "\u6bcf\u5468\u8ddf\u8fdb\u8bb0\u5f55";
 const string protectedDetailHeader = "\u8be6\u60c5\u8bb0\u5f55";
 const string protectedBusinessHeader = "\u5ba2\u6237\u751f\u610f\u6a21\u5f0f";
 const string protectedConnectionHeader = "\u5efa\u8054\u60c5\u51b5";
 var protectedLead = new Lead
 {
-    Name="Protected Name", Company="Old Company", Country="US", PhoneE164="+14155550124", PhoneValid=true,
+    BuyerId="BUYER-MERGE-001", Name="Protected Name", Company="Old Company", Country="US", PhoneE164="+14155550124", PhoneValid=true,
     Email="old@example.com", Stage=LeadStage.Negotiation, LatestMessage="human detail record",
     CustomFields=new Dictionary<string, string>
     {
-        [protectedNameHeader]="Protected Name", [protectedStageHeader]="old follow-up", [protectedDetailHeader]="old detail",
+        ["Buyer ID"]="BUYER-MERGE-001", [protectedNameHeader]="Protected Name", ["国家/地区"]="US",
+        [protectedStageHeader]="old follow-up", [protectedDetailHeader]="old detail",
         [protectedBusinessHeader]="old business", [protectedConnectionHeader]="old connection", ["overwrite"]="old", ["remove me"]="old"
     }
 };
@@ -432,20 +440,42 @@ await repository.UpsertLeadAsync(protectedLead);
 var replacementSheet = new ImportSheet
 {
     Name="replacement",
-    Headers=[protectedNameHeader,"\u516c\u53f8\u540d\u79f0","\u7535\u8bdd","\u90ae\u7bb1","\u9636\u6bb5","\u5907\u6ce8",protectedStageHeader,protectedDetailHeader,protectedBusinessHeader,protectedConnectionHeader,"overwrite","new field"],
+    Headers=["Buyer ID",protectedNameHeader,"\u516c\u53f8\u540d\u79f0","\u56fd\u5bb6/\u90ae\u7bb1","\u7535\u8bdd","\u90ae\u7bb1","\u9636\u6bb5","\u5907\u6ce8",protectedDetailHeader,protectedBusinessHeader,protectedConnectionHeader,"overwrite","new field"],
     Rows=[new Dictionary<string, string>
     {
-        [protectedNameHeader]="Changed Name", ["\u516c\u53f8\u540d\u79f0"]="New Company", ["\u7535\u8bdd"]="+14155550124", ["\u90ae\u7bb1"]="",
-        ["\u9636\u6bb5"]="lost", ["\u5907\u6ce8"]="replacement note", [protectedStageHeader]="new follow-up", [protectedDetailHeader]="new detail",
+        ["Buyer ID"]="buyer-merge-001", [protectedNameHeader]="Changed Name", ["\u516c\u53f8\u540d\u79f0"]="New Company",
+        ["\u56fd\u5bb6/\u90ae\u7bb1"]="英国", ["\u7535\u8bdd"]="+14155550999", ["\u90ae\u7bb1"]="",
+        ["\u9636\u6bb5"]="lost", ["\u5907\u6ce8"]="replacement note", [protectedDetailHeader]="new detail",
         [protectedBusinessHeader]="new business", [protectedConnectionHeader]="new connection", ["overwrite"]="", ["new field"]="fresh"
     }]
 };
 var replacementPreview = await imports.BuildPreviewAsync(replacementSheet, imports.SuggestMapping(replacementSheet));
-await imports.CommitAsync("replacement.xlsx", replacementPreview, allowStageChange:true, allowOwnerChange:true);
+var replacementCommit = await imports.CommitAsync("replacement.xlsx", replacementPreview, allowStageChange:true, allowOwnerChange:true);
 var protectedUpdated = (await repository.GetLeadAsync(protectedLead.Id))!;
-Check(protectedUpdated.Name == "Protected Name" && protectedUpdated.Stage == LeadStage.Negotiation && protectedUpdated.LatestMessage == "human detail record", "duplicate import preserves customer name, stage and detail record");
-Check(protectedUpdated.CustomFields[protectedStageHeader] == "old follow-up" && protectedUpdated.CustomFields[protectedDetailHeader] == "old detail" && protectedUpdated.CustomFields[protectedBusinessHeader] == "old business" && protectedUpdated.CustomFields[protectedConnectionHeader] == "old connection", "duplicate import preserves protected business dimensions");
-Check(protectedUpdated.Company == "New Company" && protectedUpdated.Email == "" && protectedUpdated.CustomFields["overwrite"] == "" && protectedUpdated.CustomFields["new field"] == "fresh" && !protectedUpdated.CustomFields.ContainsKey("remove me"), "duplicate import replaces every unprotected field including blanks and removes stale dimensions");
+Check(replacementPreview.Single() is { IsDuplicate: true, DuplicateLeadId: not null }
+      && replacementCommit is { Created: 0, Updated: 1 }
+      && protectedUpdated.Id == protectedLead.Id
+      && protectedUpdated.BuyerId == "BUYER-MERGE-001",
+    "reimport resolves an existing customer by Buyer ID even when the phone changes");
+Check(protectedUpdated.Name == "Changed Name"
+      && protectedUpdated.Company == "New Company"
+      && protectedUpdated.Country == "英国"
+      && protectedUpdated.PhoneE164 == "+14155550999"
+      && protectedUpdated.Email == ""
+      && protectedUpdated.Stage == LeadStage.Lost
+      && protectedUpdated.LatestMessage == "replacement note",
+    "columns present in a Buyer ID reimport overwrite the same customer's canonical values, including blanks");
+Check(protectedUpdated.CustomFields[protectedStageHeader] == "old follow-up"
+      && protectedUpdated.CustomFields[protectedDetailHeader] == "new detail"
+      && protectedUpdated.CustomFields[protectedBusinessHeader] == "new business"
+      && protectedUpdated.CustomFields[protectedConnectionHeader] == "new connection"
+      && protectedUpdated.CustomFields["overwrite"] == ""
+      && protectedUpdated.CustomFields["new field"] == "fresh"
+      && protectedUpdated.CustomFields["remove me"] == "old",
+    "reimport merges dimensions: present columns update, new columns extend the schema and absent old columns remain");
+Check(protectedUpdated.CustomFields["国家/地区"] == "英国"
+      && !protectedUpdated.CustomFields.ContainsKey("国家/邮箱"),
+    "equivalent country aliases update the existing source dimension instead of creating a duplicate vertical column");
 
 var riskyPhoneSheet = new ImportSheet
 {

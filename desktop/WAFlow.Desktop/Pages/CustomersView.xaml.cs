@@ -6,6 +6,7 @@ using System.Windows.Input;
 using System.Windows.Data;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
+using WAFlow.Core.Imports;
 using WAFlow.Desktop.Windows;
 
 namespace WAFlow.Desktop.Pages;
@@ -191,15 +192,15 @@ public partial class CustomersView : UserControl, IRefreshableView
         var seen = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
         foreach (var lead in leads)
             foreach (var key in lead.CustomFields.Keys)
-                if (!IsBuyerNicknameDimension(key) && seen.Add(key)) result.Add(key);
+                if (!ImportService.IsCoreDimension(key) && seen.Add(key)) result.Add(key);
         return result;
     }
 
     private static bool IsBuyerNicknameDimension(string header)
     {
-        var firstLine = header.Split(['\r','\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() ?? header.Trim();
-        var normalized = new string(firstLine.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
-        return normalized is "buyernickname" or "买家昵称";
+        return ImportService.ResolveField(header) == ImportField.Name
+            && (header.Contains("nickname", StringComparison.OrdinalIgnoreCase)
+                || header.Contains("昵称", StringComparison.CurrentCultureIgnoreCase));
     }
 
     private static string CustomerDisplayName(Lead lead)

@@ -10,7 +10,7 @@ public sealed class ConversationAssistantService
     private static readonly IReadOnlyDictionary<string, string> CoreFields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
         ["company"] = "公司",
-        ["country"] = "国家 / 地区",
+        ["country"] = "国家",
         ["product_interest"] = "关注产品",
         ["estimated_order_value"] = "预计订单额",
         ["currency"] = "币种",

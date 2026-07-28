@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -194,11 +194,34 @@ if ($customersXaml -match 'TagFilterBox|OwnerFilterBox|CustomValueFilterBox' -or
     $customersSource -notmatch 'new PageSizeOption\([^,]+,\s*30\)' -or
     $customersSource -notmatch 'new PageSizeOption\([^,]+,\s*50\)' -or
     $customersSource -notmatch [regex]::Escape('Skip(startIndex).Take(_pageSize)') -or
-    $customersSource -notmatch [regex]::Escape('!IsBuyerNicknameDimension(key)') -or
-    $customersSource -notmatch [regex]::Escape('normalized is "buyernickname"')) {
-  throw 'Customer list must remove advanced text filters, merge Buyer Nickname into customer name, and paginate by 10, 30 or 50 rows.'
+    $customersSource -notmatch [regex]::Escape('!ImportService.IsCoreDimension(key)') -or
+    $customersSource -notmatch [regex]::Escape('ImportService.ResolveField(header) == ImportField.Name')) {
+  throw 'Customer list must remove advanced text filters, merge canonical source aliases into system fields, and paginate by 10, 30 or 50 rows.'
 }
 Write-Host 'PASS  compact customer list, Buyer Nickname merge and 10/30/50 pagination contract'
+
+$customerEditCountryFailures = @()
+if ($customerEditXaml.Contains('{StaticResource AiLine}')) { $customerEditCountryFailures += 'undefined_ai_line' }
+if (-not $customerEditXaml.Contains('BorderBrush="{DynamicResource AiAccent}"')) { $customerEditCountryFailures += 'dynamic_ai_border' }
+if ($customersXaml -notmatch 'Header="[^"]+" Binding="\{Binding Country\}"') { $customerEditCountryFailures += 'customer_country_header' }
+if ($customersXaml -match 'Header="[^"]*/[^"]*" Binding="\{Binding Country\}"') { $customerEditCountryFailures += 'legacy_customer_country_header' }
+if ($emailInboxXaml -match 'Text="[^"]*/[^"]+"[^>]*?/>\s*<TextBox x:Name="CountryBox"') { $customerEditCountryFailures += 'legacy_email_country_label' }
+if ($customerEditXaml -match 'Text="[^"]*/[^"]+"[^>]*?/>\s*<TextBox x:Name="CountryBox"') { $customerEditCountryFailures += 'legacy_editor_country_label' }
+if (-not $importServiceSource.Contains('"countryemail"')) { $customerEditCountryFailures += 'country_email_alias' }
+if (-not $customerEditSource.Contains('ImportService.IsCoreDimension(pair.Key)')) { $customerEditCountryFailures += 'canonical_dimension_filter' }
+if ($customerEditCountryFailures.Count -gt 0) {
+  throw "Customer editing must load only defined theme resources and unify country aliases into one canonical country field. missing=$($customerEditCountryFailures -join ',')"
+}
+Write-Host 'PASS  customer editor theme resource and canonical country-field contract'
+
+if ($importServiceSource -notmatch [regex]::Escape('MergeCustomDimensions(lead, customValues, isNew)') -or
+    $importServiceSource -match [regex]::Escape('lead.CustomFields.Clear()') -or
+    $importServiceSource -notmatch [regex]::Escape('SetExact(ImportField.Name, x => lead.Name = x);') -or
+    $importServiceSource -notmatch [regex]::Escape('SetExact(ImportField.Notes, x => lead.LatestMessage = x);') -or
+    $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 4')) {
+  throw 'Spreadsheet reimports must merge by Buyer ID: update present columns, add new dimensions and preserve absent old dimensions.'
+}
+Write-Host 'PASS  Buyer ID incremental spreadsheet-merge contract'
 
 if (-not ($leadIntelligenceSource.Contains('var allLeads = await _services.Repository.GetLeadsAsync();')) -or
     -not ($leadIntelligenceSource.Contains('allLeads.Count(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed)')) -or
@@ -491,7 +514,7 @@ if ($emailInboxXaml -notmatch 'x:Name="NewEmailButton"' -or
     $guideCatalogSource -notmatch [regex]::Escape('GlobalGuideVersion = 8') -or
     $guideCatalogSource -notmatch 'Ctrl\+1 . Ctrl\+8' -or
     $guideCatalogSource -match 'Ctrl\+1 . Ctrl\+7' -or
-    $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 3') -or
+    $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 4') -or
     $guideCatalogSource -notmatch [regex]::Escape('["broadcast"] = ModuleGuideVersion + 1') -or
     $guideCatalogSource -notmatch [regex]::Escape('["analytics"] = ModuleGuideVersion + 1') -or
     $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 4')) {

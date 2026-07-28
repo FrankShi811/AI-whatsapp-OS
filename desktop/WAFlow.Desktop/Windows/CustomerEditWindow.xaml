@@ -33,7 +33,7 @@
                             <TextBlock Grid.Row="0" Text="客户名称" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="NameBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,10"/>
                             <TextBlock Grid.Row="0" Grid.Column="3" Text="公司" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="CompanyBox" Grid.Row="0" Grid.Column="4" Margin="0,0,0,10"/>
 
-                            <TextBlock Grid.Row="1" Text="国家 / 地区" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="CountryBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,10"/>
+                            <TextBlock Grid.Row="1" Text="国家" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="CountryBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,10"/>
                             <TextBlock Grid.Row="1" Grid.Column="3" Text="WhatsApp" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="PhoneBox" Grid.Row="1" Grid.Column="4" Margin="0,0,0,10"/>
 
                             <TextBlock Grid.Row="2" Text="邮箱" Style="{StaticResource LabelText}" VerticalAlignment="Center"/><TextBox x:Name="EmailBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,10"/>
@@ -136,7 +136,7 @@
                                 <TextBlock x:Name="BrainNextActionText" Text="等待分析" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,5,0,0"/>
                             </StackPanel>
                         </Border>
-                        <Border Background="{DynamicResource AiSoft}" BorderBrush="{StaticResource AiLine}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,10,0,0">
+                        <Border Background="{DynamicResource AiSoft}" BorderBrush="{DynamicResource AiAccent}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,10,0,0">
                             <StackPanel>
                                 <TextBlock Text="真实结果与个人经验" Style="{StaticResource LabelText}"/>
                                 <TextBlock x:Name="BrainLearningMetricsText" Text="尚无已执行行动的真实结果" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,5,0,0"/>

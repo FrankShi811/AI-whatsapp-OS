@@ -187,7 +187,7 @@ public sealed partial class MainWindow : Window
         page.Children.Add(summary);
         var table = Card("客户评分列表");
         var rows = new StackPanel();
-        rows.Children.Add(TableHeader(["客户", "国家 / 地区", "等级", "AI 评分", "阶段", "分析状态"], [2.2, 1.2, 0.7, 0.8, 1, 1.2]));
+        rows.Children.Add(TableHeader(["客户", "国家", "等级", "AI 评分", "阶段", "分析状态"], [2.2, 1.2, 0.7, 0.8, 1, 1.2]));
         foreach (var lead in _leads.Take(250)) rows.Children.Add(LeadRow(lead, false));
         if (_leads.Count == 0) rows.Children.Add(EmptyText("暂无客户。请先在 Windows 客户端导入数据，或将数据库复制到此 Mac 的 WAFlow 数据目录。"));
         table.Child = rows;
@@ -203,7 +203,7 @@ public sealed partial class MainWindow : Window
         page.Children.Add(path);
         var table = Card("客户列表");
         var rows = new StackPanel();
-        rows.Children.Add(TableHeader(["客户", "国家 / 地区", "WhatsApp", "负责人", "等级", "阶段"], [2.1, 1.2, 1.5, 1.1, 0.7, 1]));
+        rows.Children.Add(TableHeader(["客户", "国家", "WhatsApp", "负责人", "等级", "阶段"], [2.1, 1.2, 1.5, 1.1, 0.7, 1]));
         foreach (var lead in _leads.Take(500)) rows.Children.Add(CustomerRow(lead));
         if (_leads.Count == 0) rows.Children.Add(EmptyText("客户列表为空。安装验证阶段可先确认程序启动、导航、中文界面和 API 钥匙串保存是否正常。"));
         table.Child = rows;

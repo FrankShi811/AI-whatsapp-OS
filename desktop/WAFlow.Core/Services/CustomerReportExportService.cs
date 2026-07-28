@@ -95,7 +95,7 @@ internal static class WordCustomerReportRenderer
         var report = source.Report;
         body.Append(Heading("客户概览", 1));
         body.Append(KeyValueTable([
-            ("客户", source.CustomerName), ("国家/地区", lead.Country), ("WhatsApp", lead.PhoneE164),
+            ("客户", source.CustomerName), ("国家", lead.Country), ("WhatsApp", lead.PhoneE164),
             ("当前等级", report.OpportunityJudgment.Grade), ("AI评分", $"{report.OpportunityJudgment.AiScore}/100"),
             ("成交概率", $"{report.OpportunityJudgment.DealProbability}%"), ("CRM阶段", lead.StageLabel), ("负责人", lead.Owner)
         ]));

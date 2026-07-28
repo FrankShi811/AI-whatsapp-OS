@@ -48,6 +48,11 @@ public sealed class ImportService
         }).ToList();
     }
 
+    public static ImportField ResolveField(string header) => FieldAliases.Suggest(header);
+
+    public static bool IsCoreDimension(string header) =>
+        ResolveField(header) is not (ImportField.Ignore or ImportField.Custom);
+
     public async Task<List<ImportPreviewRow>> BuildPreviewAsync(ImportSheet sheet, IEnumerable<MappingRow> mapping, IProgress<ImportProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         var selected = mapping.Where(m => m.Target != ImportField.Ignore).ToList();
@@ -170,8 +175,8 @@ public sealed class ImportService
             }
             if (buyerKey.Length > 0 && !firstRowsByBuyerId.ContainsKey(buyerKey))
                 firstRowsByBuyerId[buyerKey] = item;
-            // Buyer ID is the authoritative business identity. Without Buyer ID, rows are
-            // never collapsed merely because a customer name or phone is repeated.
+            // Buyer ID is the authoritative business identity. Only when it is absent do
+            // we use an unambiguous normalized phone or stable prior-import row identity.
             output.Add(item);
             if ((i + 1) % 250 == 0 || i + 1 == sheet.Rows.Count) progress?.Report(new("正在生成重复与风险预览", i + 1, sheet.Rows.Count));
         }
@@ -317,8 +322,18 @@ public sealed class ImportService
 
     private static void ApplyImportedValues(Lead lead, IReadOnlyDictionary<ImportField, string> values, IReadOnlyDictionary<string, string> customValues, string phone, bool phoneValid, bool allowStageChange, bool allowOwnerChange, bool isNew)
     {
-        SetExact(ImportField.BuyerId, x => lead.BuyerId = BuyerIdentity.Canonicalize(x));
-        if (isNew) SetExact(ImportField.Name, x => lead.Name = x);
+        if (values.TryGetValue(ImportField.BuyerId, out var importedBuyerId))
+        {
+            var incomingBuyerId = BuyerIdentity.Canonicalize(importedBuyerId);
+            var currentBuyerId = BuyerIdentity.Resolve(lead);
+            if (isNew
+                || currentBuyerId.Length == 0
+                || !BuyerIdentity.Normalize(currentBuyerId).Equals(BuyerIdentity.Normalize(incomingBuyerId), StringComparison.OrdinalIgnoreCase))
+            {
+                lead.BuyerId = incomingBuyerId;
+            }
+        }
+        SetExact(ImportField.Name, x => lead.Name = x);
         SetExact(ImportField.Company, x => lead.Company = x); SetExact(ImportField.Country, x => lead.Country = x);
         SetExact(ImportField.Email, x => lead.Email = x); SetExact(ImportField.ProductInterest, x => lead.ProductInterest = x); SetExact(ImportField.Source, x => lead.Source = x);
         if (values.ContainsKey(ImportField.WhatsApp)) { lead.PhoneE164 = phone; lead.PhoneValid = phoneValid; }
@@ -328,17 +343,17 @@ public sealed class ImportService
         if (values.TryGetValue(ImportField.PurchasePower, out var power)) lead.PurchasePower = LeadScoringService.ParseSignal(power);
         if (values.TryGetValue(ImportField.ExplicitDemand, out var explicitDemand)) lead.ExplicitDemand = ParseBool(explicitDemand);
         if (values.TryGetValue(ImportField.Tags, out var tags)) lead.Tags = tags.Split([',','，',';','；','|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct().ToList();
-        if (isNew && allowStageChange && values.TryGetValue(ImportField.Stage, out var stage)) lead.Stage = StageParser.Parse(stage);
+        if (allowStageChange && values.TryGetValue(ImportField.Stage, out var stage)) lead.Stage = StageParser.Parse(stage);
         if (allowOwnerChange) SetExact(ImportField.Owner, x => lead.Owner = x);
-        ReplaceCustomDimensions(lead, customValues, isNew);
+        MergeCustomDimensions(lead, customValues, isNew);
         BuyerIdentity.Synchronize(lead);
         lead.RegisteredOrConsulted = lead.ExplicitDemand || !string.IsNullOrWhiteSpace(lead.ProductInterest);
-        if (isNew) SetExact(ImportField.Notes, x => lead.LatestMessage = x);
+        SetExact(ImportField.Notes, x => lead.LatestMessage = x);
         return;
         void SetExact(ImportField field, Action<string> apply) { if (values.TryGetValue(field, out var value)) apply(value.Trim()); }
     }
 
-    private static void ReplaceCustomDimensions(Lead lead, IReadOnlyDictionary<string, string> incoming, bool isNew)
+    private static void MergeCustomDimensions(Lead lead, IReadOnlyDictionary<string, string> incoming, bool isNew)
     {
         if (isNew)
         {
@@ -346,30 +361,30 @@ public sealed class ImportService
             return;
         }
 
-        var protectedValues = lead.CustomFields
-            .Where(pair => IsProtectedDimension(pair.Key))
-            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
-        lead.CustomFields.Clear();
+        // Reimports are schema merges, not replacements: incoming columns overwrite the
+        // same dimension, new columns extend the schema, and columns absent from the new
+        // spreadsheet remain untouched. Canonical aliases share one semantic dimension.
         foreach (var pair in incoming)
         {
-            var retained = protectedValues.FirstOrDefault(item => item.Key.Equals(pair.Key, StringComparison.OrdinalIgnoreCase));
-            lead.CustomFields[pair.Key] = retained.Key is not null && !string.IsNullOrWhiteSpace(retained.Value) ? retained.Value : pair.Value;
-        }
-        foreach (var pair in protectedValues)
-            if (!lead.CustomFields.Keys.Any(key => key.Equals(pair.Key, StringComparison.OrdinalIgnoreCase)))
+            var semanticField = FieldAliases.Suggest(pair.Key);
+            if (semanticField is ImportField.Ignore or ImportField.Custom)
+            {
                 lead.CustomFields[pair.Key] = pair.Value;
-    }
+                continue;
+            }
 
-    internal static bool IsProtectedDimension(string header)
-    {
-        if (FieldAliases.Suggest(header) is ImportField.BuyerId or ImportField.Name or ImportField.Stage) return true;
-        var normalized = new string(header.Where(char.IsLetterOrDigit).ToArray());
-        return normalized.Contains("\u8be6\u60c5\u8bb0\u5f55", StringComparison.OrdinalIgnoreCase)
-            || normalized.Contains("\u8be6\u7ec6\u8bb0\u5f55", StringComparison.OrdinalIgnoreCase)
-            || normalized.Contains("\u5ba2\u6237\u751f\u610f\u6a21\u5f0f", StringComparison.OrdinalIgnoreCase)
-            || normalized.Contains("\u751f\u610f\u6a21\u5f0f", StringComparison.OrdinalIgnoreCase)
-            || normalized.Contains("\u5546\u4e1a\u6a21\u5f0f", StringComparison.OrdinalIgnoreCase)
-            || LeadConnectionStatus.IsDimension(header);
+            var equivalentKeys = lead.CustomFields.Keys
+                .Where(key => FieldAliases.Suggest(key) == semanticField)
+                .ToList();
+            if (equivalentKeys.Count == 0)
+            {
+                lead.CustomFields[pair.Key] = pair.Value;
+                continue;
+            }
+
+            foreach (var key in equivalentKeys)
+                lead.CustomFields[key] = pair.Value;
+        }
     }
 
     private static bool ParseBool(string value) => value.Trim().ToLowerInvariant() is "1" or "true" or "yes" or "y" or "是" or "有" or "明确";
@@ -524,7 +539,7 @@ internal static class FieldAliases
         [ImportField.BuyerId]=["buyerid","buyeridentifier","buyeraccountid","dhgatebuyerid","customerid","customeridentifier","买家id","客户id","采购商id","买家编号","客户编号","采购商编号"],
         [ImportField.Name]=["name","fullname","contactname","buyername","buyernickname","姓名","联系人","客户姓名","买家姓名","买家昵称"],
         [ImportField.Company]=["company","companyname","business","organization","公司","公司名称","企业名称"],
-        [ImportField.Country]=["country","market","region","国家","国家地区","市场","地区"],
+        [ImportField.Country]=["country","market","region","countryemail","国家","国家地区","国家邮箱","市场","地区"],
         [ImportField.WhatsApp]=["whatsapp","whatsappnumber","whatsapp号码","phone","mobile","tel","电话","电话号码","手机号","手机","联系电话","号码"],
         [ImportField.Email]=["email","emailaddress","mail","邮箱","电子邮箱"],
         [ImportField.ProductInterest]=["productinterest","interestedproduct","product","sku","产品兴趣","意向产品","产品","询盘产品"],

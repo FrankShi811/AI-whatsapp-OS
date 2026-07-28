@@ -61,7 +61,7 @@
                     <DataGrid.Columns>
                         <DataGridTemplateColumn Header="" Width="46" CanUserSort="False"><DataGridTemplateColumn.CellTemplate><DataTemplate><CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" VerticalAlignment="Center" ToolTip="选择该客户"/></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
                         <DataGridTextColumn Header="客户" Binding="{Binding DisplayName}" SortMemberPath="DisplayName" Width="180" ElementStyle="{StaticResource CustomerCellText}"/>
-                        <DataGridTextColumn Header="国家 / 地区" Binding="{Binding Country}" SortMemberPath="Country" Width="120" ElementStyle="{StaticResource CustomerCellText}"/>
+                        <DataGridTextColumn Header="国家" Binding="{Binding Country}" SortMemberPath="Country" Width="120" ElementStyle="{StaticResource CustomerCellText}"/>
                         <DataGridTextColumn Header="WhatsApp" Binding="{Binding PhoneE164}" SortMemberPath="PhoneE164" Width="145" ElementStyle="{StaticResource CustomerCellText}"/>
                         <DataGridTextColumn Header="号码" Binding="{Binding PhoneState}" SortMemberPath="PhoneState" Width="65" ElementStyle="{StaticResource CustomerCellText}"/>
                         <DataGridTextColumn Header="标签" Binding="{Binding TagsLabel}" SortMemberPath="TagsLabel" Width="150" ElementStyle="{StaticResource CustomerCellText}"/>
