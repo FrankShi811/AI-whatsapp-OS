@@ -119,9 +119,10 @@
                             <TextBlock Grid.Column="1" x:Name="EligibleCountText" Text="已选 0" Foreground="{DynamicResource Primary}" FontWeight="SemiBold" VerticalAlignment="Center"/>
                         </Grid>
                         <TextBox x:Name="AudienceSearchBox" Margin="0,9,0,7" ToolTip="搜索姓名、公司、WhatsApp、邮箱或标签" TextChanged="AudienceFilter_Changed"/>
-                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="6"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="6"/><ColumnDefinition Width="*"/><ColumnDefinition Width="6"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                             <ComboBox x:Name="CustomerGradeFilterBox" SelectionChanged="AudienceFilter_Changed"/>
                             <ComboBox Grid.Column="2" x:Name="CustomerStageFilterBox" DisplayMemberPath="Label" SelectionChanged="AudienceFilter_Changed"/>
+                            <ComboBox Grid.Column="4" x:Name="CustomerCategoryPreferenceFilterBox" DisplayMemberPath="Label" ToolTip="按一级品类偏好筛选发送客户" SelectionChanged="AudienceFilter_Changed"/>
                         </Grid>
                         <WrapPanel Margin="0,7,0,0"><Button Content="全选当前可发送" Style="{StaticResource SecondaryButton}" Click="SelectAllEligible_Click" Padding="10,5" Margin="0,0,6,0"/><Button Content="清空选择" Style="{StaticResource SecondaryButton}" Click="ClearSelection_Click" Padding="10,5"/></WrapPanel>
                     </StackPanel>
@@ -130,6 +131,7 @@
                             <DataGridTemplateColumn Header="选" Width="38"><DataGridTemplateColumn.CellTemplate><DataTemplate><CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" Click="AudienceCheck_Click" IsEnabled="{Binding Eligible}"/></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
                             <DataGridTextColumn Header="客户" Binding="{Binding DisplayName}" Width="1.05*" IsReadOnly="True"/>
                             <DataGridTextColumn Header="发送目标" Binding="{Binding Contact}" Width="1.15*" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="一级品类偏好" Binding="{Binding PrimaryCategoryPreference}" Width="1*" IsReadOnly="True"/>
                             <DataGridTextColumn Header="等级" Binding="{Binding Grade}" Width="48" IsReadOnly="True"/>
                             <DataGridTextColumn Header="状态" Binding="{Binding StatusText}" Width="75" IsReadOnly="True"/>
                         </DataGrid.Columns>

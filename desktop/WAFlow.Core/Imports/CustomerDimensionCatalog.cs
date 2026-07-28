@@ -16,6 +16,8 @@ public sealed record CustomerDimension(
 
 public static partial class CustomerDimensionCatalog
 {
+    public const string PrimaryCategoryPreferenceLabel = "一级品类偏好";
+
     public static IReadOnlyList<CustomerDimension> Build(IEnumerable<Lead> leads)
     {
         var ordered = new List<DimensionBuilder>();
@@ -32,6 +34,8 @@ public static partial class CustomerDimensionCatalog
                 var visibleLabel = DisplayLabel(sourceKey);
                 var normalizedLabel = RemoveDuplicateSuffix(visibleLabel);
                 var semanticKey = NormalizeSemanticKey(normalizedLabel);
+                if (IsPrimaryCategoryPreferenceHeader(normalizedLabel))
+                    semanticKey = NormalizeSemanticKey(PrimaryCategoryPreferenceLabel);
                 if (semanticKey.Length == 0)
                 {
                     semanticKey = "unnamed:" + Convert.ToHexString(
@@ -76,6 +80,32 @@ public static partial class CustomerDimensionCatalog
         }
         return firstValue?.Trim() ?? "";
     }
+
+    public static bool IsPrimaryCategoryPreferenceHeader(string? header)
+    {
+        var normalized = NormalizeSemanticKey(RemoveDuplicateSuffix(DisplayLabel(header)));
+        return normalized is "一级品类偏好" or "一级类目偏好" or "一级品类" or "一级类目"
+            or "primarycategorypreference" or "primarycategory"
+            or "level1categorypreference" or "firstlevelcategorypreference";
+    }
+
+    public static bool IsPrimaryCategoryPreference(CustomerDimension dimension) =>
+        dimension.SourceKeys.Any(IsPrimaryCategoryPreferenceHeader);
+
+    public static string ResolvePrimaryCategoryPreference(IReadOnlyDictionary<string, string> fields)
+    {
+        string? firstValue = null;
+        foreach (var pair in fields)
+        {
+            if (!IsPrimaryCategoryPreferenceHeader(pair.Key)) continue;
+            firstValue ??= pair.Value ?? "";
+            if (!string.IsNullOrWhiteSpace(pair.Value)) return pair.Value.Trim();
+        }
+        return firstValue?.Trim() ?? "";
+    }
+
+    public static string ResolvePrimaryCategoryPreference(Lead lead) =>
+        ResolvePrimaryCategoryPreference(lead.CustomFields);
 
     public static string NormalizeForStorage(string? value)
     {

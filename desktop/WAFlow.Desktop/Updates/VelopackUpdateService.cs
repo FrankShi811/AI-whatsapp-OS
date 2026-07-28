@@ -13,15 +13,22 @@ namespace WAFlow.Desktop.Updates;
 public sealed class VelopackUpdateService : IApplicationUpdateService
 {
     private readonly UpdateConfiguration _configuration;
+    private readonly TimeSpan _monitorInterval;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly object _monitorSync = new();
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMinutes(10) };
     private UpdateManager? _manager;
     private VelopackAsset? _downloadedRelease;
     private string? _portableInstallerPath;
+    private CancellationTokenSource? _monitorCancellation;
+    private Task? _monitorTask;
 
-    public VelopackUpdateService(UpdateConfiguration? configuration = null)
+    public VelopackUpdateService(UpdateConfiguration? configuration = null, TimeSpan? monitorInterval = null)
     {
         _configuration = configuration ?? UpdateConfiguration.Load();
+        _monitorInterval = monitorInterval ?? TimeSpan.FromMinutes(2);
+        if (_monitorInterval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(monitorInterval), "更新监控间隔必须大于零。");
         State = ApplicationUpdateState.Initial(ReleaseCatalog.CurrentVersion);
         if (!_configuration.IsConfigured)
             State = State with { Stage = ApplicationUpdateStage.Disabled, Message = "尚未配置 GitHub Release 仓库", CanCheck = false };
@@ -29,6 +36,18 @@ public sealed class VelopackUpdateService : IApplicationUpdateService
 
     public ApplicationUpdateState State { get; private set; }
     public event EventHandler<ApplicationUpdateState>? StateChanged;
+
+    public void StartMonitoring()
+    {
+        if (!_configuration.IsConfigured) return;
+        lock (_monitorSync)
+        {
+            if (_monitorTask is { IsCompleted: false }) return;
+            _monitorCancellation?.Dispose();
+            _monitorCancellation = new CancellationTokenSource();
+            _monitorTask = MonitorAsync(_monitorCancellation.Token);
+        }
+    }
 
     public async Task CheckAndDownloadAsync(bool force = false, CancellationToken cancellationToken = default)
     {
@@ -150,6 +169,48 @@ public sealed class VelopackUpdateService : IApplicationUpdateService
         _manager.WaitExitThenApplyUpdates(_downloadedRelease, silent: true, restart: true, restartArgs: null);
     }
 
+    public async ValueTask DisposeAsync()
+    {
+        CancellationTokenSource? cancellation;
+        Task? monitorTask;
+        lock (_monitorSync)
+        {
+            cancellation = _monitorCancellation;
+            monitorTask = _monitorTask;
+            _monitorCancellation = null;
+            _monitorTask = null;
+        }
+
+        if (cancellation is not null)
+        {
+            cancellation.Cancel();
+            if (monitorTask is not null)
+            {
+                try { await monitorTask; }
+                catch (OperationCanceledException) { }
+            }
+            cancellation.Dispose();
+        }
+        _http.Dispose();
+        _gate.Dispose();
+    }
+
+    private async Task MonitorAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await CheckAndDownloadAsync(cancellationToken: cancellationToken);
+                await Task.Delay(_monitorInterval, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+    }
+
     private async Task CheckPortableReleaseAsync(CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(_configuration.GitHubRepositoryUrl))
@@ -199,7 +260,7 @@ public sealed class VelopackUpdateService : IApplicationUpdateService
         var notes = fullAsset.Notes;
         if (!TryCompareVersion(latestVersion, State.CurrentVersion, out var versionComparison))
             throw new InvalidOperationException("GitHub Release 返回的版本号无效。");
-        if (versionComparison < 0)
+        if (versionComparison <= 0)
         {
             Publish(State with
             {
@@ -207,7 +268,9 @@ public sealed class VelopackUpdateService : IApplicationUpdateService
                 LatestVersion = string.IsNullOrWhiteSpace(latestVersion) ? State.CurrentVersion : latestVersion,
                 ReleaseNotes = notes,
                 DownloadProgress = 100,
-                Message = "当前便携版版本高于公开 Release，暂不执行安装。",
+                Message = versionComparison == 0
+                    ? "当前已是最新版本"
+                    : "当前便携版版本高于公开 Release，暂不执行安装。",
                 IsInstalled = false,
                 CanCheck = true,
                 CanInstall = false

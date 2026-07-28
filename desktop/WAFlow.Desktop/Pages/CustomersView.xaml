@@ -83,15 +83,16 @@
 
         <Border Grid.Row="1" Style="{StaticResource Card}" Padding="14" Margin="0,19,0,14">
             <Grid>
-                <Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="120"/><ColumnDefinition Width="145"/><ColumnDefinition Width="1.15*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="120"/><ColumnDefinition Width="145"/><ColumnDefinition Width="165"/><ColumnDefinition Width="1.05*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <Grid>
                     <TextBlock Text="⌕" FontSize="16" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="11,0,0,0" Panel.ZIndex="1" IsHitTestVisible="False"/>
                     <TextBox x:Name="SearchBox" ToolTip="搜索所有核心字段与原表维度" Padding="34,8,11,8" Margin="0,0,10,0" KeyDown="SearchBox_KeyDown"/>
                 </Grid>
                 <ComboBox x:Name="GradeFilter" Grid.Column="1" Margin="0,0,10,0" SelectionChanged="Filter_SelectionChanged"/>
                 <ComboBox x:Name="StageFilter" Grid.Column="2" Margin="0,0,10,0" DisplayMemberPath="Label" SelectionChanged="Filter_SelectionChanged"/>
-                <ComboBox x:Name="CustomFieldFilter" Grid.Column="3" ToolTip="选择要显示的原始表格维度列" Margin="0,0,10,0" SelectionChanged="Filter_SelectionChanged"/>
-                <Button Grid.Column="4" Content="清除筛选" Style="{StaticResource SecondaryButton}" Click="Clear_Click"/>
+                <ComboBox x:Name="CategoryPreferenceFilter" Grid.Column="3" DisplayMemberPath="Label" ToolTip="按一级品类偏好筛选客户" Margin="0,0,10,0" SelectionChanged="Filter_SelectionChanged"/>
+                <ComboBox x:Name="CustomFieldFilter" Grid.Column="4" ToolTip="选择要显示的原始表格维度列" Margin="0,0,10,0" SelectionChanged="Filter_SelectionChanged"/>
+                <Button Grid.Column="5" Content="清除筛选" Style="{StaticResource SecondaryButton}" Click="Clear_Click"/>
             </Grid>
         </Border>
 
@@ -129,6 +130,7 @@
                         <DataGridTextColumn Header="负责人" Binding="{Binding Owner}" SortMemberPath="Owner" Width="110" ElementStyle="{StaticResource CustomerCellText}"/>
                         <DataGridTextColumn Header="等级" Binding="{Binding Grade}" SortMemberPath="Grade" Width="58" ElementStyle="{StaticResource CustomerCellText}"/>
                         <DataGridTextColumn Header="阶段" Binding="{Binding StageLabel}" SortMemberPath="Stage" Width="88" ElementStyle="{StaticResource CustomerCellText}"/>
+                        <DataGridTextColumn Header="一级品类偏好" Binding="{Binding PrimaryCategoryPreference}" SortMemberPath="PrimaryCategoryPreference" Width="165" ElementStyle="{StaticResource CustomerCellText}"/>
                     </DataGrid.Columns>
                 </DataGrid>
                 <Border Grid.Row="2" Background="{DynamicResource SurfaceMuted}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="16,9" CornerRadius="0,0,16,16">

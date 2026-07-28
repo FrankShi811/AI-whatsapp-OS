@@ -162,7 +162,7 @@
                             <TextBlock x:Name="SidebarUpdateIcon" Text="↻" Foreground="{DynamicResource Success}" FontSize="16" VerticalAlignment="Center"/>
                             <StackPanel Grid.Column="1">
                                 <TextBlock x:Name="SidebarVersionText" Text="AI Sales OS" Foreground="{DynamicResource SidebarText}" FontSize="11" FontWeight="SemiBold"/>
-                                <TextBlock x:Name="SidebarUpdateText" Text="启动后自动检查更新" Foreground="{DynamicResource SidebarMuted}" FontSize="9.5" Margin="0,3,0,0"/>
+                                <TextBlock x:Name="SidebarUpdateText" Text="启动后持续监控更新" Foreground="{DynamicResource SidebarMuted}" FontSize="9.5" Margin="0,3,0,0"/>
                             </StackPanel>
                             <TextBlock Grid.Column="2" Text="›" Foreground="{DynamicResource SidebarMuted}" FontSize="18" VerticalAlignment="Center"/>
                         </Grid>

@@ -31,6 +31,8 @@ $dashboardXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root '
 $dashboardSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\DashboardView.xaml.cs')
 $customersXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CustomersView.xaml')
 $customersSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CustomersView.xaml.cs')
+$campaignsXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CampaignsView.xaml')
+$campaignsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CampaignsView.xaml.cs')
 $todayBriefSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\TodayBriefService.cs')
 $customerBrainModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Domain\CustomerBrainModels.cs')
 $leadIntelligenceXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\LeadIntelligenceView.xaml')
@@ -62,6 +64,8 @@ $knowledgeModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path
 $localRepositorySource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Infrastructure\LocalRepository.cs')
 $guideCatalogSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\GuideCatalog.cs')
 $releaseCatalogSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ReleaseCatalog.cs')
+$updateStateSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Updates\ApplicationUpdateState.cs')
+$updateServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Updates\VelopackUpdateService.cs')
 $settingsXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\SettingsWindow.xaml')
 $settingsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\SettingsWindow.xaml.cs')
 $domainModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Domain\Models.cs')
@@ -264,10 +268,38 @@ if ($importServiceSource -notmatch [regex]::Escape('MergeCustomDimensions(lead, 
     $importServiceSource -match [regex]::Escape('lead.CustomFields.Clear()') -or
     $importServiceSource -notmatch [regex]::Escape('SetExact(ImportField.Name, x => lead.Name = x);') -or
     $importServiceSource -notmatch [regex]::Escape('SetExact(ImportField.Notes, x => lead.LatestMessage = x);') -or
-    $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 5')) {
+    $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 6')) {
   throw 'Spreadsheet reimports must merge by Buyer ID: update present columns, add new dimensions and preserve absent old dimensions.'
 }
 Write-Host 'PASS  Buyer ID incremental spreadsheet-merge contract'
+
+if ($mainWindowSource -notmatch [regex]::Escape('_updates.StartMonitoring();') -or
+    $mainWindowSource -notmatch [regex]::Escape('ApplyAndRestart();') -or
+    $mainWindowSource -notmatch [regex]::Escape('已下载 · 点击更新并重启') -or
+    $updateStateSource -notmatch 'IAsyncDisposable' -or
+    $updateStateSource -notmatch [regex]::Escape('void StartMonitoring();') -or
+    $updateServiceSource -notmatch [regex]::Escape('TimeSpan.FromMinutes(2)') -or
+    $updateServiceSource -notmatch [regex]::Escape('private async Task MonitorAsync') -or
+    $updateServiceSource -notmatch [regex]::Escape('await CheckAndDownloadAsync(cancellationToken: cancellationToken);') -or
+    $updateServiceSource -notmatch [regex]::Escape('if (versionComparison <= 0)') -or
+    $appStartupSource -notmatch [regex]::Escape('Updates.DisposeAsync().AsTask().GetAwaiter().GetResult();')) {
+  throw 'The app must continuously monitor GitHub Releases, download only newer versions, expose a direct update-and-restart action and stop the monitor cleanly.'
+}
+Write-Host 'PASS  continuous GitHub update monitoring, automatic download and user-confirmed restart contract'
+
+if ($customerDimensionSource -notmatch [regex]::Escape('PrimaryCategoryPreferenceLabel = "一级品类偏好"') -or
+    $customerDimensionSource -notmatch [regex]::Escape('ResolvePrimaryCategoryPreference') -or
+    $customersXaml -notmatch 'x:Name="CategoryPreferenceFilter"' -or
+    $customersXaml -notmatch 'Header="一级品类偏好" Binding="\{Binding PrimaryCategoryPreference\}"' -or
+    $customersSource -notmatch [regex]::Escape('Where(dimension => !CustomerDimensionCatalog.IsPrimaryCategoryPreference(dimension))') -or
+    $customersSource -notmatch [regex]::Escape('CustomerDimensionCatalog.ResolvePrimaryCategoryPreference(lead)') -or
+    $campaignsXaml -notmatch 'x:Name="CustomerCategoryPreferenceFilterBox"' -or
+    $campaignsXaml -notmatch 'Header="一级品类偏好" Binding="\{Binding PrimaryCategoryPreference\}"' -or
+    $campaignsSource -notmatch [regex]::Escape('row.PrimaryCategoryPreference.Equals(category') -or
+    $guideCatalogSource -notmatch [regex]::Escape('["broadcast"] = ModuleGuideVersion + 2')) {
+  throw 'Customer List and Automation Campaigns must share one primary-category preference resolver, column and filter without duplicating the dynamic source field.'
+}
+Write-Host 'PASS  shared primary-category preference display and filtering contract'
 
 if (-not ($leadIntelligenceSource.Contains('var allLeads = await _services.Repository.GetLeadsAsync();')) -or
     -not ($leadIntelligenceSource.Contains('allLeads.Count(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed)')) -or
@@ -560,8 +592,8 @@ if ($emailInboxXaml -notmatch 'x:Name="NewEmailButton"' -or
     $guideCatalogSource -notmatch [regex]::Escape('GlobalGuideVersion = 8') -or
     $guideCatalogSource -notmatch 'Ctrl\+1 . Ctrl\+8' -or
     $guideCatalogSource -match 'Ctrl\+1 . Ctrl\+7' -or
-    $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 5') -or
-    $guideCatalogSource -notmatch [regex]::Escape('["broadcast"] = ModuleGuideVersion + 1') -or
+    $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 6') -or
+    $guideCatalogSource -notmatch [regex]::Escape('["broadcast"] = ModuleGuideVersion + 2') -or
     $guideCatalogSource -notmatch [regex]::Escape('["analytics"] = ModuleGuideVersion + 1') -or
     $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 5')) {
   throw 'Email Inbox must support new-message composition, CRM/Customer Brain-aware AI drafting, manual-send safety and current module guidance.'

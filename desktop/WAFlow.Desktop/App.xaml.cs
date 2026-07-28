@@ -87,6 +87,8 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        if (Updates is not null)
+            Updates.DisposeAsync().AsTask().GetAwaiter().GetResult();
         if (Services is not null)
         {
             Services.LeadAutomation.DisposeAsync().AsTask().GetAwaiter().GetResult();

@@ -464,17 +464,23 @@ var dimensionCatalogLead = new Lead
         ["建联情况"] = "",
         ["建联情况\n最近一次跟进"] = "已建联",
         ["建联情况 (2)"] = "重复旧值",
+        ["Primary Category Preference"] = "鞋类及鞋类辅料",
+        ["一级品类偏好 (2)"] = "",
         ["\u200B\uFEFF"] = "23"
     }
 };
 var customerDimensions = CustomerDimensionCatalog.Build([dimensionCatalogLead]);
 var connectionDimension = customerDimensions.Single(dimension => dimension.Label == "建联情况");
+var categoryDimension = customerDimensions.Single(CustomerDimensionCatalog.IsPrimaryCategoryPreference);
 var unnamedDimension = customerDimensions.Single(dimension => dimension.Label == "未命名维度 1");
-Check(customerDimensions.Count == 2
+Check(customerDimensions.Count == 3
       && connectionDimension.SourceKeys.Count == 3
+      && categoryDimension.SourceKeys.Count == 2
+      && CustomerDimensionCatalog.ResolvePrimaryCategoryPreference(dimensionCatalogLead) == "鞋类及鞋类辅料"
+      && CustomerDimensionCatalog.IsPrimaryCategoryPreferenceHeader("一级类目偏好")
       && CustomerDimensionCatalog.ResolveValue(dimensionCatalogLead.CustomFields, connectionDimension) == "已建联"
       && CustomerDimensionCatalog.ResolveValue(dimensionCatalogLead.CustomFields, unnamedDimension) == "23",
-    "customer dimension catalog merges duplicate visible headers, hides canonical fields and gives invisible legacy headers a visible fallback");
+    "customer dimension catalog resolves the shared primary-category preference, merges duplicate headers and gives invisible legacy headers a visible fallback");
 
 var invisibleHeaderPath = Path.Combine(root, "invisible-header.xlsx");
 using (var invisibleHeaderWorkbook = new XLWorkbook())

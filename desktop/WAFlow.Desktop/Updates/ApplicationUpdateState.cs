@@ -28,16 +28,18 @@ public sealed record ApplicationUpdateState(
         null,
         string.Empty,
         0,
-        "启动后自动检查 GitHub Release",
+        "启动后持续监控 GitHub Release",
         false,
         true,
         false);
 }
 
 public interface IApplicationUpdateService
+    : IAsyncDisposable
 {
     ApplicationUpdateState State { get; }
     event EventHandler<ApplicationUpdateState>? StateChanged;
+    void StartMonitoring();
     Task CheckAndDownloadAsync(bool force = false, CancellationToken cancellationToken = default);
     void ApplyAndRestart();
 }

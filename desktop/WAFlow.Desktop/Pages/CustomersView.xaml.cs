@@ -21,6 +21,7 @@ public partial class CustomersView : UserControl, IRefreshableView
     private IReadOnlyDictionary<string, CustomerDimension> _dimensionsBySortKey =
         new Dictionary<string, CustomerDimension>(StringComparer.OrdinalIgnoreCase);
     private bool _updatingCustomFilter;
+    private bool _updatingCategoryFilter;
     private bool _updatingSelectionUi;
     private string? _sortKey;
     private ListSortDirection _sortDirection = ListSortDirection.Ascending;
@@ -36,6 +37,7 @@ public partial class CustomersView : UserControl, IRefreshableView
         _services.WhatsAppNumberValidation.StatusChanged += WhatsAppNumberValidation_StatusChanged;
         GradeFilter.ItemsSource = new[] { "全部等级", "A", "B", "C", "D" }; GradeFilter.SelectedIndex = 0;
         StageFilter.ItemsSource = new[] { new StageOption("全部阶段", null) }.Concat(Enum.GetValues<LeadStage>().Select(x => new StageOption(Labels.Stage(x), x))).ToList(); StageFilter.SelectedIndex = 0;
+        CategoryPreferenceFilter.ItemsSource = new[] { new CategoryPreferenceOption("全部一级品类", null) }; CategoryPreferenceFilter.SelectedIndex = 0;
         CustomFieldFilter.ItemsSource = new[] { new DimensionOption("全部表格维度", null) }; CustomFieldFilter.DisplayMemberPath = nameof(DimensionOption.Label); CustomFieldFilter.SelectedIndex = 0;
         PageSizeBox.ItemsSource = new[] { new PageSizeOption("10 条/页", 10), new PageSizeOption("30 条/页", 30), new PageSizeOption("50 条/页", 50) };
         PageSizeBox.SelectedIndex = 1;
@@ -52,8 +54,16 @@ public partial class CustomersView : UserControl, IRefreshableView
     {
         var grade = GradeFilter.SelectedIndex <= 0 ? null : GradeFilter.SelectedItem as string;
         var stage = (StageFilter.SelectedItem as StageOption)?.Value;
-        var leads = await _services.Repository.GetLeadsAsync(SearchBox.Text, grade, stage);
-        var dimensions = CustomerDimensionCatalog.Build(leads);
+        var leads = (await _services.Repository.GetLeadsAsync(SearchBox.Text, grade, stage)).ToList();
+        UpdateCategoryPreferenceFilter(leads);
+        var category = (CategoryPreferenceFilter.SelectedItem as CategoryPreferenceOption)?.Value;
+        if (!string.IsNullOrWhiteSpace(category))
+            leads = leads.Where(lead => CustomerDimensionCatalog.ResolvePrimaryCategoryPreference(lead)
+                    .Equals(category, StringComparison.CurrentCultureIgnoreCase))
+                .ToList();
+        var dimensions = CustomerDimensionCatalog.Build(leads)
+            .Where(dimension => !CustomerDimensionCatalog.IsPrimaryCategoryPreference(dimension))
+            .ToList();
         _dimensionsBySortKey = dimensions.ToDictionary(
             dimension => dimension.SortKey,
             dimension => dimension,
@@ -68,6 +78,29 @@ public partial class CustomersView : UserControl, IRefreshableView
         ApplyCurrentSort();
         ApplyPagination();
         EditButton.IsEnabled = CustomerGrid.SelectedItem is CustomerRow;
+    }
+
+    private void UpdateCategoryPreferenceFilter(IReadOnlyList<Lead> leads)
+    {
+        var selected = (CategoryPreferenceFilter.SelectedItem as CategoryPreferenceOption)?.Value;
+        var values = leads
+            .Select(CustomerDimensionCatalog.ResolvePrimaryCategoryPreference)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var options = new[] { new CategoryPreferenceOption("全部一级品类", null) }
+            .Concat(values.Select(value => new CategoryPreferenceOption(value, value)))
+            .ToList();
+        _updatingCategoryFilter = true;
+        try
+        {
+            CategoryPreferenceFilter.ItemsSource = options;
+            CategoryPreferenceFilter.SelectedItem = string.IsNullOrWhiteSpace(selected)
+                ? options[0]
+                : options.FirstOrDefault(option => option.Value?.Equals(selected, StringComparison.CurrentCultureIgnoreCase) == true) ?? options[0];
+        }
+        finally { _updatingCategoryFilter = false; }
     }
 
     private void UpdateCustomFieldFilter(IReadOnlyList<CustomerDimension> dimensions)
@@ -185,6 +218,7 @@ public partial class CustomersView : UserControl, IRefreshableView
             nameof(CustomerRow.Owner) => row.Owner,
             nameof(CustomerRow.Grade) => row.Grade,
             "Stage" => ((int)row.Lead.Stage).ToString("D2", CultureInfo.InvariantCulture),
+            nameof(CustomerRow.PrimaryCategoryPreference) => row.PrimaryCategoryPreference,
             _ => ""
         };
     }
@@ -314,7 +348,7 @@ public partial class CustomersView : UserControl, IRefreshableView
         }
     }
 
-    private async void Filter_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (IsLoaded && !_updatingCustomFilter) { _currentPage = 1; await RefreshAsync(); } }
+    private async void Filter_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (IsLoaded && !_updatingCustomFilter && !_updatingCategoryFilter) { _currentPage = 1; await RefreshAsync(); } }
     private async void SearchBox_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) { _currentPage = 1; await RefreshAsync(); } }
     private async void Clear_Click(object sender, RoutedEventArgs e)
     {
@@ -324,6 +358,7 @@ public partial class CustomersView : UserControl, IRefreshableView
         {
             GradeFilter.SelectedIndex = 0;
             StageFilter.SelectedIndex = 0;
+            CategoryPreferenceFilter.SelectedIndex = 0;
             CustomFieldFilter.SelectedIndex = 0;
         }
         finally
@@ -347,6 +382,7 @@ public partial class CustomersView : UserControl, IRefreshableView
         if (_currentPage < totalPages) { _currentPage++; ApplyPagination(); }
     }
     private sealed record StageOption(string Label, LeadStage? Value);
+    private sealed record CategoryPreferenceOption(string Label, string? Value);
     private sealed record DimensionOption(string Label, string? Key);
     private sealed record PageSizeOption(string Label, int Value);
 
@@ -372,6 +408,7 @@ public partial class CustomersView : UserControl, IRefreshableView
         public string Owner => Lead.Owner;
         public string Grade => Lead.Grade;
         public string StageLabel => Lead.StageLabel;
+        public string PrimaryCategoryPreference => CustomerDimensionCatalog.ResolvePrimaryCategoryPreference(Lead);
         public IReadOnlyDictionary<string, string> CustomFields => Lead.CustomFields;
         public void UpdateWhatsAppRegistration(WAFlow.Core.Services.WhatsAppNumberValidationChanged state)
         {

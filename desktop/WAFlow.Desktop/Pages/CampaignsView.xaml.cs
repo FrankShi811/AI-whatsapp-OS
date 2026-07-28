@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
+using WAFlow.Core.Imports;
 using WAFlow.Core.Services;
 
 namespace WAFlow.Desktop.Pages;
@@ -54,6 +55,8 @@ public partial class CampaignsView : UserControl, IRefreshableView
         };
         CustomerGradeFilterBox.ItemsSource = new[] { "全部等级", "A", "B", "C", "D" };
         CustomerStageFilterBox.ItemsSource = new[] { new StageChoice("全部阶段", null) }.Concat(Enum.GetValues<LeadStage>().Select(value => new StageChoice(Labels.Stage(value), value))).ToList();
+        CustomerCategoryPreferenceFilterBox.ItemsSource = new[] { new CategoryPreferenceChoice("全部一级品类", null) };
+        CustomerCategoryPreferenceFilterBox.SelectedIndex = 0;
         _services.Campaigns.CampaignChanged += (_, _) => Dispatcher.InvokeAsync(async () => await RefreshAsync());
         _services.WhatsApp.EventReceived += (_, e) => { if (e.Name == "connection") Dispatcher.InvokeAsync(UpdateConnectionState); };
         ResetFormCore();
@@ -167,6 +170,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
                 Detail = recipient is null ? item.Reason : string.IsNullOrWhiteSpace(recipient.LastError) ? recipient.ScheduledLabel : recipient.LastError
             });
         }
+        UpdateCategoryPreferenceFilter();
         ApplyAudienceFilter();
         UpdateSelectionSummary();
         SelectedPreviewText.Text = "选择表格中的客户可查看字段替换结果。";
@@ -367,6 +371,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
         DailyLimitBox.Text = "50";
         CustomerGradeFilterBox.SelectedIndex = 0;
         CustomerStageFilterBox.SelectedIndex = 0;
+        CustomerCategoryPreferenceFilterBox.SelectedIndex = 0;
         AudienceSearchBox.Clear();
         _rows.Clear();
         PreviewSummaryText.Text = "请勾选一位或多位客户";
@@ -449,12 +454,32 @@ public partial class CampaignsView : UserControl, IRefreshableView
         var query = AudienceSearchBox?.Text.Trim() ?? "";
         var grade = CustomerGradeFilterBox?.SelectedItem as string ?? "全部等级";
         var stage = (CustomerStageFilterBox?.SelectedItem as StageChoice)?.Value;
+        var category = (CustomerCategoryPreferenceFilterBox?.SelectedItem as CategoryPreferenceChoice)?.Value;
         var view = CollectionViewSource.GetDefaultView(_rows);
         view.Filter = item => item is AudienceRow row
             && (grade == "全部等级" || row.Grade.Equals(grade, StringComparison.OrdinalIgnoreCase))
             && (stage is null || row.Lead.Stage == stage)
-            && (query.Length == 0 || string.Join(" ", row.DisplayName, row.Company, row.Phone, row.Email, row.Lead.TagsLabel).Contains(query, StringComparison.CurrentCultureIgnoreCase));
+            && (string.IsNullOrWhiteSpace(category) || row.PrimaryCategoryPreference.Equals(category, StringComparison.CurrentCultureIgnoreCase))
+            && (query.Length == 0 || string.Join(" ", row.DisplayName, row.Company, row.Phone, row.Email, row.PrimaryCategoryPreference, row.Lead.TagsLabel).Contains(query, StringComparison.CurrentCultureIgnoreCase));
         PreviewSummaryText.Text = $"显示 {view.Cast<object>().Count()} / {_rows.Count} 位客户";
+    }
+
+    private void UpdateCategoryPreferenceFilter()
+    {
+        var selected = (CustomerCategoryPreferenceFilterBox.SelectedItem as CategoryPreferenceChoice)?.Value;
+        var values = _rows
+            .Select(row => row.PrimaryCategoryPreference)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var options = new[] { new CategoryPreferenceChoice("全部一级品类", null) }
+            .Concat(values.Select(value => new CategoryPreferenceChoice(value, value)))
+            .ToList();
+        CustomerCategoryPreferenceFilterBox.ItemsSource = options;
+        CustomerCategoryPreferenceFilterBox.SelectedItem = string.IsNullOrWhiteSpace(selected)
+            ? options[0]
+            : options.FirstOrDefault(option => option.Value?.Equals(selected, StringComparison.CurrentCultureIgnoreCase) == true) ?? options[0];
     }
 
     private void SelectAllEligible_Click(object sender, RoutedEventArgs e)
@@ -523,6 +548,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
     private static void ShowError(Exception error, string title) => MessageBox.Show(error.Message, title, MessageBoxButton.OK, MessageBoxImage.Warning);
 
     private sealed record StageChoice(string Label, LeadStage? Value);
+    private sealed record CategoryPreferenceChoice(string Label, string? Value);
     private sealed record Choice<T>(string Label, T Value);
     private sealed record CampaignAccountChoice(string Id, string DisplayLabel, CampaignChannel Channel, bool Connected);
 
@@ -541,6 +567,7 @@ public partial class CampaignsView : UserControl, IRefreshableView
         public string Email => Lead.Email;
         public string Contact => Channel == CampaignChannel.Email ? Lead.Email : Lead.PhoneE164;
         public string Grade => Lead.Grade;
+        public string PrimaryCategoryPreference => CustomerDimensionCatalog.ResolvePrimaryCategoryPreference(Lead);
         public bool Eligible { get; init; }
         public bool IsSelected { get => _isSelected; set { if (_isSelected == value) return; _isSelected = value; OnPropertyChanged(nameof(IsSelected)); } }
         public string StatusText { get => _statusText; set { _statusText = value; OnPropertyChanged(nameof(StatusText)); } }

@@ -74,8 +74,30 @@ public partial class MainWindow : Window
         Loaded += MainWindow_Loaded;
     }
 
-    private void VersionHistory_Click(object sender, RoutedEventArgs e) =>
+    private void VersionHistory_Click(object sender, RoutedEventArgs e)
+    {
+        if (_updates.State is { Stage: ApplicationUpdateStage.ReadyToInstall, CanInstall: true } ready)
+        {
+            var version = string.IsNullOrWhiteSpace(ready.LatestVersion) ? "新版本" : $"v{ready.LatestVersion}";
+            if (MessageBox.Show(
+                    $"{version} 已在后台下载并校验完成。\n\n现在关闭 AI Sales OS、安装更新并自动重启吗？",
+                    "更新已准备完成",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Information) != MessageBoxResult.Yes)
+                return;
+            try
+            {
+                _updates.ApplyAndRestart();
+                Application.Current.Shutdown();
+            }
+            catch (Exception error)
+            {
+                MessageBox.Show(error.Message, "无法安装更新", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            return;
+        }
         new VersionHistoryWindow(_updates) { Owner = this }.ShowDialog();
+    }
 
     protected override void OnSourceInitialized(EventArgs e)
     {
@@ -116,7 +138,7 @@ public partial class MainWindow : Window
             OnboardingGuide.ShowGuide(GuideCatalog.Global);
         else
             await ShowModuleGuideIfNeededAsync(_currentPage);
-        _ = _updates.CheckAndDownloadAsync();
+        _updates.StartMonitoring();
     }
 
     private void Updates_StateChanged(object? sender, ApplicationUpdateState state) =>
@@ -125,6 +147,9 @@ public partial class MainWindow : Window
     private void ApplyUpdateState(ApplicationUpdateState state)
     {
         SidebarUpdateIcon.Foreground = (Brush)FindResource("Success");
+        SidebarUpdateText.Foreground = (Brush)FindResource("SidebarMuted");
+        VersionButton.BorderBrush = Brushes.Transparent;
+        VersionButton.BorderThickness = new Thickness(0);
         VersionButton.ToolTip = "查看版本与更新";
         switch (state.Stage)
         {
@@ -142,7 +167,10 @@ public partial class MainWindow : Window
                 SidebarUpdateIcon.Text = "●";
                 SidebarUpdateIcon.Foreground = (Brush)FindResource("Warning");
                 SidebarVersionText.Text = $"新版本  v{state.LatestVersion}";
-                SidebarUpdateText.Text = "已下载 · 点击安装并重启";
+                SidebarUpdateText.Text = "已下载 · 点击更新并重启";
+                SidebarUpdateText.Foreground = (Brush)FindResource("SidebarText");
+                VersionButton.BorderBrush = (Brush)FindResource("Warning");
+                VersionButton.BorderThickness = new Thickness(2);
                 VersionButton.ToolTip = "更新已下载，点击安装并重启";
                 break;
             case ApplicationUpdateStage.Failed:
@@ -150,6 +178,7 @@ public partial class MainWindow : Window
                 SidebarUpdateIcon.Foreground = (Brush)FindResource("Danger");
                 SidebarVersionText.Text = $"当前版本  v{state.CurrentVersion}";
                 SidebarUpdateText.Text = "检查失败 · 点击查看详情";
+                SidebarUpdateText.Foreground = (Brush)FindResource("SidebarText");
                 break;
             case ApplicationUpdateStage.Disabled:
                 SidebarUpdateIcon.Text = "↻";
@@ -159,7 +188,7 @@ public partial class MainWindow : Window
             default:
                 SidebarUpdateIcon.Text = "✓";
                 SidebarVersionText.Text = $"当前版本  v{state.CurrentVersion}";
-                SidebarUpdateText.Text = state.Stage == ApplicationUpdateStage.UpToDate ? "已是最新版本" : "启动后自动检查更新";
+                SidebarUpdateText.Text = state.Stage == ApplicationUpdateStage.UpToDate ? "后台持续监控 GitHub 更新" : "启动后持续监控更新";
                 break;
         }
     }
