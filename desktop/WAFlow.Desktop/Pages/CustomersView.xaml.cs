@@ -18,6 +18,8 @@ public partial class CustomersView : UserControl, IRefreshableView
     private readonly HashSet<string> _checkedLeadIds = new(StringComparer.OrdinalIgnoreCase);
     private List<CustomerRow> _filteredRows = [];
     private List<CustomerRow> _visibleRows = [];
+    private IReadOnlyDictionary<string, CustomerDimension> _dimensionsBySortKey =
+        new Dictionary<string, CustomerDimension>(StringComparer.OrdinalIgnoreCase);
     private bool _updatingCustomFilter;
     private bool _updatingSelectionUi;
     private string? _sortKey;
@@ -43,10 +45,16 @@ public partial class CustomersView : UserControl, IRefreshableView
         var grade = GradeFilter.SelectedIndex <= 0 ? null : GradeFilter.SelectedItem as string;
         var stage = (StageFilter.SelectedItem as StageOption)?.Value;
         var leads = await _services.Repository.GetLeadsAsync(SearchBox.Text, grade, stage);
-        var dimensions = OrderedDimensions(leads);
+        var dimensions = CustomerDimensionCatalog.Build(leads);
+        _dimensionsBySortKey = dimensions.ToDictionary(
+            dimension => dimension.SortKey,
+            dimension => dimension,
+            StringComparer.OrdinalIgnoreCase);
         UpdateCustomFieldFilter(dimensions);
         var selectedDimension = (CustomFieldFilter.SelectedItem as DimensionOption)?.Key;
-        RenderCustomColumns(selectedDimension is null ? dimensions : dimensions.Where(dimension => dimension.Equals(selectedDimension, StringComparison.CurrentCultureIgnoreCase)));
+        RenderCustomColumns(selectedDimension is null
+            ? dimensions
+            : dimensions.Where(dimension => dimension.Key.Equals(selectedDimension, StringComparison.CurrentCultureIgnoreCase)));
         _dimensionCount = dimensions.Count;
         _filteredRows = leads.Select(lead => new CustomerRow(lead, _checkedLeadIds.Contains(lead.Id), RowSelectionChanged)).ToList();
         ApplyCurrentSort();
@@ -54,12 +62,12 @@ public partial class CustomersView : UserControl, IRefreshableView
         EditButton.IsEnabled = CustomerGrid.SelectedItem is CustomerRow;
     }
 
-    private void UpdateCustomFieldFilter(IReadOnlyList<string> dimensions)
+    private void UpdateCustomFieldFilter(IReadOnlyList<CustomerDimension> dimensions)
     {
         var selected = (CustomFieldFilter.SelectedItem as DimensionOption)?.Key;
         _updatingCustomFilter = true;
         var options = new[] { new DimensionOption("全部表格维度", null) }
-            .Concat(dimensions.Select(value => new DimensionOption(CompactHeader(value), value))).ToList();
+            .Concat(dimensions.Select(dimension => new DimensionOption(dimension.Label, dimension.Key))).ToList();
         CustomFieldFilter.ItemsSource = options;
         CustomFieldFilter.SelectedItem = selected is null
             ? options[0]
@@ -67,7 +75,7 @@ public partial class CustomersView : UserControl, IRefreshableView
         _updatingCustomFilter = false;
     }
 
-    private void RenderCustomColumns(IEnumerable<string> dimensions)
+    private void RenderCustomColumns(IEnumerable<CustomerDimension> dimensions)
     {
         foreach (var column in _customColumns) CustomerGrid.Columns.Remove(column);
         _customColumns.Clear();
@@ -77,12 +85,16 @@ public partial class CustomersView : UserControl, IRefreshableView
             {
                 Header = new TextBlock
                 {
-                    Text = CompactHeader(dimension), ToolTip = dimension, TextWrapping = TextWrapping.NoWrap,
+                    Text = dimension.Label, ToolTip = dimension.ToolTip, TextWrapping = TextWrapping.NoWrap,
                     TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 150
                 },
                 Width = new DataGridLength(165),
-                SortMemberPath = "custom:" + dimension,
-                Binding = new Binding(nameof(Lead.CustomFields)) { Converter = CustomFieldValueConverter.Instance, ConverterParameter = dimension },
+                SortMemberPath = dimension.SortKey,
+                Binding = new Binding(nameof(Lead.CustomFields))
+                {
+                    Converter = CustomFieldValueConverter.Instance,
+                    ConverterParameter = dimension
+                },
                 ElementStyle = (Style)FindResource("CustomerCellText")
             };
             _customColumns.Add(column);
@@ -150,10 +162,11 @@ public partial class CustomersView : UserControl, IRefreshableView
         UpdateSelectionUi();
     }
 
-    private static string SortValue(CustomerRow row, string key)
+    private string SortValue(CustomerRow row, string key)
     {
-        if (key.StartsWith("custom:", StringComparison.Ordinal))
-            return TryGetCustomValue(row.Lead, key[7..], out var custom) ? custom : "";
+        if (key.StartsWith("custom:", StringComparison.Ordinal)
+            && _dimensionsBySortKey.TryGetValue(key, out var dimension))
+            return CustomerDimensionCatalog.ResolveValue(row.CustomFields, dimension);
         return key switch
         {
             nameof(CustomerRow.DisplayName) => row.DisplayName,
@@ -186,16 +199,6 @@ public partial class CustomersView : UserControl, IRefreshableView
             column.SortDirection = column.SortMemberPath == _sortKey ? _sortDirection : null;
     }
 
-    private static List<string> OrderedDimensions(IEnumerable<Lead> leads)
-    {
-        var result = new List<string>();
-        var seen = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
-        foreach (var lead in leads)
-            foreach (var key in lead.CustomFields.Keys)
-                if (!ImportService.IsCoreDimension(key) && seen.Add(key)) result.Add(key);
-        return result;
-    }
-
     private static bool IsBuyerNicknameDimension(string header)
     {
         return ImportService.ResolveField(header) == ImportField.Name
@@ -212,19 +215,6 @@ public partial class CustomersView : UserControl, IRefreshableView
             .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
         if (!string.IsNullOrWhiteSpace(buyerNickname)) return buyerNickname;
         return string.IsNullOrWhiteSpace(lead.Company) ? "未命名客户" : lead.Company;
-    }
-
-    private static string CompactHeader(string header)
-    {
-        var firstLine = header.Split(['\r','\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() ?? header.Trim();
-        return firstLine.Length <= 22 ? firstLine : firstLine[..21] + "…";
-    }
-
-    private static bool TryGetCustomValue(Lead lead, string key, out string value)
-    {
-        var match = lead.CustomFields.FirstOrDefault(x => x.Key.Equals(key, StringComparison.CurrentCultureIgnoreCase));
-        value = match.Value ?? "";
-        return match.Key is not null;
     }
 
     private void Import_Click(object sender, RoutedEventArgs e) => ImportRequested?.Invoke(this, EventArgs.Empty);
@@ -395,8 +385,8 @@ public partial class CustomersView : UserControl, IRefreshableView
         public static readonly CustomFieldValueConverter Instance = new();
         public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
         {
-            if (value is not IReadOnlyDictionary<string, string> fields || parameter is not string key) return "";
-            return fields.FirstOrDefault(x => x.Key.Equals(key, StringComparison.CurrentCultureIgnoreCase)).Value ?? "";
+            if (value is not IReadOnlyDictionary<string, string> fields || parameter is not CustomerDimension dimension) return "";
+            return CustomerDimensionCatalog.ResolveValue(fields, dimension);
         }
         public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) => Binding.DoNothing;
     }

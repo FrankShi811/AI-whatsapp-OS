@@ -518,7 +518,8 @@ public sealed class ImportService
         var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         return input.Select((value, index) =>
         {
-            var baseName = string.IsNullOrWhiteSpace(value) ? $"Column {index + 1}" : value.Trim();
+            var cleaned = CustomerDimensionCatalog.NormalizeForStorage(value);
+            var baseName = string.IsNullOrWhiteSpace(cleaned) ? $"未命名列 {index + 1}" : cleaned;
             counts[baseName] = counts.GetValueOrDefault(baseName) + 1;
             return counts[baseName] == 1 ? baseName : $"{baseName} ({counts[baseName]})";
         }).ToList();
@@ -566,7 +567,8 @@ internal static class FieldAliases
         if (!string.IsNullOrWhiteSpace(prefix.Key)) return prefix.Value;
         return ImportField.Custom;
     }
-    private static string Normalize(string value) => new(value.Trim().ToLowerInvariant().Where(c => !char.IsWhiteSpace(c) && !"_-./\\()（）[]【】".Contains(c)).ToArray());
+    private static string Normalize(string value) =>
+        CustomerDimensionCatalog.NormalizeSemanticKey(value);
 }
 
 internal static class Csv

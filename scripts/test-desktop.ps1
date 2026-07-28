@@ -69,6 +69,7 @@ $buyerIdentitySource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $
 $customerIdentitySource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerIdentityService.cs')
 $importModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Imports\ImportModels.cs')
 $importServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Imports\ImportService.cs')
+$customerDimensionSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Imports\CustomerDimensionCatalog.cs')
 $customerEditXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\CustomerEditWindow.xaml')
 $customerEditSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\CustomerEditWindow.xaml.cs')
 $knowledgeProcessingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\KnowledgeProcessingComponents.cs')
@@ -194,11 +195,21 @@ if ($customersXaml -match 'TagFilterBox|OwnerFilterBox|CustomValueFilterBox' -or
     $customersSource -notmatch 'new PageSizeOption\([^,]+,\s*30\)' -or
     $customersSource -notmatch 'new PageSizeOption\([^,]+,\s*50\)' -or
     $customersSource -notmatch [regex]::Escape('Skip(startIndex).Take(_pageSize)') -or
-    $customersSource -notmatch [regex]::Escape('!ImportService.IsCoreDimension(key)') -or
+    $customersSource -notmatch [regex]::Escape('CustomerDimensionCatalog.Build(leads)') -or
+    $customerDimensionSource -notmatch [regex]::Escape('ImportService.IsCoreDimension(sourceKey)') -or
     $customersSource -notmatch [regex]::Escape('ImportService.ResolveField(header) == ImportField.Name')) {
   throw 'Customer list must remove advanced text filters, merge canonical source aliases into system fields, and paginate by 10, 30 or 50 rows.'
 }
 Write-Host 'PASS  compact customer list, Buyer Nickname merge and 10/30/50 pagination contract'
+
+if ($customerDimensionSource -notmatch [regex]::Escape('RemoveDuplicateSuffix(visibleLabel)') -or
+    $customerDimensionSource -notmatch [regex]::Escape('$"未命名维度 {unnamedOrdinal}"') -or
+    $customerDimensionSource -notmatch [regex]::Escape('NormalizeForStorage') -or
+    $customersSource -notmatch [regex]::Escape('CustomerDimensionCatalog.ResolveValue(fields, dimension)') -or
+    $importServiceSource -notmatch [regex]::Escape('$"未命名列 {index + 1}"')) {
+  throw 'Customer dynamic columns must merge equivalent visible headers and replace blank or invisible headers with stable labels.'
+}
+Write-Host 'PASS  customer dynamic-column deduplication and nonblank-header contract'
 
 $customerEditCountryFailures = @()
 if ($customerEditXaml.Contains('{StaticResource AiLine}')) { $customerEditCountryFailures += 'undefined_ai_line' }

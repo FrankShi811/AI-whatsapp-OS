@@ -420,6 +420,47 @@ directLead.CustomFields["任意业务维度"] = "人工修改后的值";
 await repository.UpsertLeadAsync(directLead);
 Check((await repository.GetLeadAsync(directLead.Id))?.CustomFields.GetValueOrDefault("任意业务维度") == "人工修改后的值", "manual custom-dimension edits persist");
 
+var dimensionCatalogLead = new Lead
+{
+    Name = "Dimension Catalog",
+    CustomFields = new Dictionary<string, string>
+    {
+        ["buyer_nickname"] = "Dimension Catalog",
+        ["国家/邮箱"] = "US",
+        ["建联情况"] = "",
+        ["建联情况\n最近一次跟进"] = "已建联",
+        ["建联情况 (2)"] = "重复旧值",
+        ["\u200B\uFEFF"] = "23"
+    }
+};
+var customerDimensions = CustomerDimensionCatalog.Build([dimensionCatalogLead]);
+var connectionDimension = customerDimensions.Single(dimension => dimension.Label == "建联情况");
+var unnamedDimension = customerDimensions.Single(dimension => dimension.Label == "未命名维度 1");
+Check(customerDimensions.Count == 2
+      && connectionDimension.SourceKeys.Count == 3
+      && CustomerDimensionCatalog.ResolveValue(dimensionCatalogLead.CustomFields, connectionDimension) == "已建联"
+      && CustomerDimensionCatalog.ResolveValue(dimensionCatalogLead.CustomFields, unnamedDimension) == "23",
+    "customer dimension catalog merges duplicate visible headers, hides canonical fields and gives invisible legacy headers a visible fallback");
+
+var invisibleHeaderPath = Path.Combine(root, "invisible-header.xlsx");
+using (var invisibleHeaderWorkbook = new XLWorkbook())
+{
+    var sheet = invisibleHeaderWorkbook.AddWorksheet("customers");
+    sheet.Cell(1, 1).Value = "Buyer ID";
+    sheet.Cell(1, 2).Value = "\u200B\uFEFF";
+    sheet.Cell(1, 3).Value = "建联情况";
+    sheet.Cell(1, 4).Value = "建联情况";
+    sheet.Cell(2, 1).Value = "BUYER-INVISIBLE-001";
+    sheet.Cell(2, 2).Value = 23;
+    sheet.Cell(2, 3).Value = "已建联";
+    sheet.Cell(2, 4).Value = "重复值";
+    invisibleHeaderWorkbook.SaveAs(invisibleHeaderPath);
+}
+var invisibleHeaderParsed = imports.Parse(invisibleHeaderPath).Sheets.Single();
+Check(invisibleHeaderParsed.Headers.SequenceEqual(["Buyer ID", "未命名列 2", "建联情况", "建联情况 (2)"])
+      && invisibleHeaderParsed.Headers.All(header => !string.IsNullOrWhiteSpace(CustomerDimensionCatalog.DisplayLabel(header))),
+    "new spreadsheet imports replace blank or invisible headers with visible stable names");
+
 const string protectedNameHeader = "buyer_nickname";
 const string protectedStageHeader = "\u6bcf\u5468\u8ddf\u8fdb\u8bb0\u5f55";
 const string protectedDetailHeader = "\u8be6\u60c5\u8bb0\u5f55";
