@@ -32,7 +32,7 @@
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="150"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <Grid>
                     <TextBlock Text="⌕" FontSize="16" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="11,0,0,0" Panel.ZIndex="1" IsHitTestVisible="False"/>
-                    <TextBox x:Name="SearchBox" ToolTip="搜索姓名、公司或号码" Padding="34,8,11,8" Margin="0,0,10,0" KeyDown="SearchBox_KeyDown"/>
+                    <TextBox x:Name="SearchBox" ToolTip="搜索客户、市场或号码" Padding="34,8,11,8" Margin="0,0,10,0" KeyDown="SearchBox_KeyDown"/>
                 </Grid>
                 <ComboBox x:Name="GradeFilter" Grid.Column="1" SelectionChanged="GradeFilter_SelectionChanged" Margin="0,0,10,0"/>
                 <Button Grid.Column="2" Content="↻  刷新" Style="{StaticResource SecondaryButton}" Click="Refresh_Click"/>
@@ -52,9 +52,8 @@
                     </Grid>
                     <DataGrid Grid.Row="1" x:Name="LeadGrid" IsReadOnly="True" SelectionChanged="LeadGrid_SelectionChanged" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource Line}" MinHeight="350">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="客户" Binding="{Binding DisplayName}" Width="1.35*"/>
-                            <DataGridTextColumn Header="公司" Binding="{Binding Company}" Width="1.15*"/>
-                            <DataGridTextColumn Header="市场" Binding="{Binding Country}" Width="0.8*"/>
+                            <DataGridTextColumn Header="客户" Binding="{Binding DisplayName}" Width="1.75*"/>
+                            <DataGridTextColumn Header="市场" Binding="{Binding Country}" Width="1.05*"/>
                             <DataGridTextColumn Header="等级" Binding="{Binding Grade}" Width="52"/>
                             <DataGridTextColumn Header="AI 分数" Binding="{Binding Score}" Width="64"/>
                             <DataGridTextColumn Header="阶段" Binding="{Binding StageLabel}" Width="82"/>

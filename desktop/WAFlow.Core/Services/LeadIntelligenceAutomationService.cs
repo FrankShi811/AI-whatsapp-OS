@@ -67,7 +67,7 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
     public async Task<LeadBulkAnalysisResult> AnalyzeAllLeadsAsync(IProgress<LeadBulkAnalysisProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         if (!_provider.HasApiKey()) throw new DeepSeekException("provider_not_configured", "请先在 API 对接中配置 API Key。", false);
-        var execution = await _provider.ResolveExecutionProfileAsync(AiModuleKeys.Global, cancellationToken);
+        var execution = await _provider.ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence, cancellationToken);
 
         var leads = await _repository.GetLeadsAsync(cancellationToken: cancellationToken);
         var currentIds = leads.Select(lead => lead.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);

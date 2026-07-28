@@ -241,6 +241,7 @@ public partial class SettingsWindow : Window
             StringComparer.OrdinalIgnoreCase);
         var definitions = new[]
         {
+            new ModuleDefinition(AiModuleKeys.LeadIntelligence, "Command Center · 商机智能", "客户价值、成交可能性、证据、风险与下一步的结构化分析；查看列表和筛选不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.Customers, "Customer Operations · 客户列表", "Customer Brain 人工分析；查看、编辑和同步客户资料不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.WhatsAppInbox, "Customer Operations · WhatsApp Inbox", "AI 会话助理与 Customer Success Agent；普通消息同步不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.EmailInbox, "Customer Operations · 邮件 Inbox", "Email Sales Copilot 根据 CRM、Customer Brain、邮件上下文和你的写信意图生成新邮件或回复草稿；同步和手写收发不耗 Token。"),

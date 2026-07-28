@@ -1350,6 +1350,7 @@ await repository.SaveAppSettingsAsync(new AppSettings
     ],
     AiModulePreferences=new Dictionary<string, AiModuleModelPreference>(StringComparer.OrdinalIgnoreCase)
     {
+        [AiModuleKeys.LeadIntelligence]=new() { ProviderId="openai", Model="gpt-5-mini", ReasoningEffort="high" },
         [AiModuleKeys.WhatsAppInbox]=new() { ProviderId="openai", Model="gpt-5-mini", ReasoningEffort="ultra" },
         [AiModuleKeys.EmailInbox]=new() { ProviderId="openai", Model="gpt-4.1-mini", ReasoningEffort="ultra" },
         [AiModuleKeys.KnowledgeBase]=new() { ProviderId="openai", Model="removed-model", ReasoningEffort="high" }
@@ -1362,6 +1363,7 @@ var routedResult = await routingProvider.CompleteStructuredAsync<RoutingProbe>(
     _ => null);
 var unsupportedReasoningRoute = await routingProvider.ResolveExecutionProfileAsync(AiModuleKeys.EmailInbox);
 var invalidModelFallbackRoute = await routingProvider.ResolveExecutionProfileAsync(AiModuleKeys.KnowledgeBase);
+var leadIntelligenceRoute = await routingProvider.ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence);
 Check(
     routedResult.Value == "ok"
     && routingHandler.Requests.Single().Uri == "https://api.openai.com/v1/chat/completions"
@@ -1379,6 +1381,13 @@ Check(
     && invalidModelFallbackRoute.Model == "deepseek-chat"
     && invalidModelFallbackRoute.ReasoningEffort == AiReasoningEfforts.Auto,
     "removed per-module models fall back to the global provider and model without mutating saved data");
+Check(
+    leadIntelligenceRoute.ModuleKey == AiModuleKeys.LeadIntelligence
+    && leadIntelligenceRoute.ProviderId == "openai"
+    && leadIntelligenceRoute.Model == "gpt-5-mini"
+    && leadIntelligenceRoute.ReasoningEffort == "high"
+    && leadIntelligenceRoute.ReasoningParameter == "reasoning_effort",
+    "Lead Intelligence has an independent provider, model and declared reasoning-depth route");
 
 await using (var embeddedBridge = new WhatsAppConnectionManager())
 {
@@ -2372,14 +2381,14 @@ Check(pausedRun.Decision is null && !pausedRun.AutoReplyAllowed
     "new messages are saved but the assistant stays silent during global human-required state");
 
 var todayBrief = await new TodayBriefService(customerSuccessRepository).GetAsync();
-Check(todayBrief.IdentityPendingCount >= 2
-    && todayBrief.HumanHandoffCount == 1
+Check(todayBrief.HumanHandoffCount == 1
     && todayBrief.SourcingCompleteCount >= 2
     && todayBrief.CrossAccountFollowUpCount >= 2
     && todayBrief.Items.Any(item => item.Category == "handoff")
-    && todayBrief.Items.Any(item => item.Category == "sourcing_complete"),
-    "Today Brief surfaces identity, handoff, completed sourcing and cross-account work");
-var specialBriefItems = todayBrief.Items.Where(item => item.Category is "identity" or "handoff" or "sourcing_complete" or "cross_account").ToList();
+    && todayBrief.Items.Any(item => item.Category == "sourcing_complete")
+    && todayBrief.Items.All(item => item.Category != "identity"),
+    "Today Brief surfaces known-customer handoff, completed sourcing and cross-account work without identity-confirmation tasks");
+var specialBriefItems = todayBrief.Items.Where(item => item.Category is "handoff" or "sourcing_complete" or "cross_account").ToList();
 Check(specialBriefItems.Count > 0
     && specialBriefItems.All(item => !string.IsNullOrWhiteSpace(item.CustomerName)
         && !item.CustomerName.Equals(item.CustomerId, StringComparison.OrdinalIgnoreCase)

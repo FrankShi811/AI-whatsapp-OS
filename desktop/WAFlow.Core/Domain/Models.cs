@@ -551,6 +551,7 @@ public static class AiReasoningEfforts
 public static class AiModuleKeys
 {
     public const string Global = "global";
+    public const string LeadIntelligence = "command_center.lead_intelligence";
     public const string Customers = "customer_operations.customers";
     public const string WhatsAppInbox = "customer_operations.whatsapp_inbox";
     public const string EmailInbox = "customer_operations.email_inbox";
@@ -560,6 +561,7 @@ public static class AiModuleKeys
 
     public static readonly IReadOnlyList<string> Configurable =
     [
+        LeadIntelligence,
         Customers,
         WhatsAppInbox,
         EmailInbox,

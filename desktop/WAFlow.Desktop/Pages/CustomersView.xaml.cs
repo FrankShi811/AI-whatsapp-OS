@@ -36,7 +36,7 @@ public partial class CustomersView : UserControl, IRefreshableView
         GradeFilter.ItemsSource = new[] { "全部等级", "A", "B", "C", "D" }; GradeFilter.SelectedIndex = 0;
         StageFilter.ItemsSource = new[] { new StageOption("全部阶段", null) }.Concat(Enum.GetValues<LeadStage>().Select(x => new StageOption(Labels.Stage(x), x))).ToList(); StageFilter.SelectedIndex = 0;
         CustomFieldFilter.ItemsSource = new[] { new DimensionOption("全部表格维度", null) }; CustomFieldFilter.DisplayMemberPath = nameof(DimensionOption.Label); CustomFieldFilter.SelectedIndex = 0;
-        PageSizeBox.ItemsSource = new[] { new PageSizeOption("10 条 / 页", 10), new PageSizeOption("30 条 / 页", 30), new PageSizeOption("50 条 / 页", 50) };
+        PageSizeBox.ItemsSource = new[] { new PageSizeOption("10 条/页", 10), new PageSizeOption("30 条/页", 30), new PageSizeOption("50 条/页", 50) };
         PageSizeBox.SelectedIndex = 1;
     }
 

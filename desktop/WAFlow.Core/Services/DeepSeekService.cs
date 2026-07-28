@@ -350,7 +350,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
 
     private async Task<Lead> AnalyzeLeadCoreAsync(Lead lead, CancellationToken cancellationToken)
     {
-        var execution = await ResolveExecutionProfileAsync(AiModuleKeys.Global, cancellationToken);
+        var execution = await ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence, cancellationToken);
         var runId = Guid.NewGuid().ToString("N");
         var requestedAt = lead.AnalysisRequestedAt;
         LeadScoringService.ResetToAiBaseline(lead, "AI 正在分析客户资料与 WhatsApp 行为", "等待本次 AI 分析完成。");

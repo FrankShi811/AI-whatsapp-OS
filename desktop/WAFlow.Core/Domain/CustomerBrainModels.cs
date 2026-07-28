@@ -368,7 +368,6 @@ public sealed class TodayBriefItem
 
     [JsonIgnore] public string CategoryLabel => Category switch
     {
-        "identity" => "身份待确认",
         "handoff" => "人工接管",
         "sourcing_complete" => "采购需求完整",
         "cross_account" => "跨账号跟进",
@@ -431,7 +430,6 @@ public sealed class TodayBriefSnapshot
     public int OverdueCount { get; set; }
     public int DueTodayCount { get; set; }
     public int InProgressCount { get; set; }
-    public int IdentityPendingCount { get; set; }
     public int HumanHandoffCount { get; set; }
     public int SourcingCompleteCount { get; set; }
     public int CrossAccountFollowUpCount { get; set; }

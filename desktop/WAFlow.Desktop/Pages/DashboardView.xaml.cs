@@ -36,7 +36,7 @@ public partial class DashboardView : UserControl, IRefreshableView
         var brief = await _services.TodayBrief.GetAsync();
         TodayBriefSummaryText.Text = brief.Items.Count == 0
             ? "今天暂无待处理行动；新客户回复、人工接管或 AI 建议会自动进入这里。"
-            : $"待处理 {brief.Items.Count} 项｜逾期 {brief.OverdueCount}｜今天到期 {brief.DueTodayCount}｜人工接管 {brief.HumanHandoffCount}｜身份确认 {brief.IdentityPendingCount}｜知识审核 {brief.KnowledgeReviewCount}｜知识冲突 {brief.KnowledgeConflictCount}｜候选审批 {brief.KnowledgeCandidateCount}";
+            : $"待处理 {brief.Items.Count} 项｜逾期 {brief.OverdueCount}｜今天到期 {brief.DueTodayCount}｜人工接管 {brief.HumanHandoffCount}｜知识审核 {brief.KnowledgeReviewCount}｜知识冲突 {brief.KnowledgeConflictCount}｜候选审批 {brief.KnowledgeCandidateCount}";
         TodayBriefItems.ItemsSource = brief.Items.Take(6).ToList();
         LearningCompletionText.Text = brief.Learning.Accepted == 0
             ? "完成率 —"

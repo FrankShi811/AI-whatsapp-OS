@@ -28,10 +28,14 @@ $themeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'de
 $mainWindowXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MainWindow.xaml')
 $mainWindowSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MainWindow.xaml.cs')
 $dashboardXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\DashboardView.xaml')
+$dashboardSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\DashboardView.xaml.cs')
 $customersXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CustomersView.xaml')
 $customersSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CustomersView.xaml.cs')
 $todayBriefSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\TodayBriefService.cs')
+$customerBrainModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Domain\CustomerBrainModels.cs')
+$leadIntelligenceXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\LeadIntelligenceView.xaml')
 $leadIntelligenceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\LeadIntelligenceView.xaml.cs')
+$leadAutomationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\LeadIntelligenceAutomationService.cs')
 $whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml')
 $emailInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\EmailInboxView.xaml')
 $bridgeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\index.mjs')
@@ -195,12 +199,31 @@ if ($customersXaml -match 'TagFilterBox|OwnerFilterBox|CustomValueFilterBox' -or
     $customersSource -notmatch 'new PageSizeOption\([^,]+,\s*30\)' -or
     $customersSource -notmatch 'new PageSizeOption\([^,]+,\s*50\)' -or
     $customersSource -notmatch [regex]::Escape('Skip(startIndex).Take(_pageSize)') -or
+    $customersSource -match [regex]::Escape('条 / 页') -or
+    $customersXaml -notmatch 'x:Name="PageSizeBox" Width="112"' -or
+    $customersXaml -notmatch 'x:Key="CustomerScrollBar"' -or
+    $customersXaml -notmatch 'BasedOn="\{StaticResource CustomerScrollBar\}"' -or
     $customersSource -notmatch [regex]::Escape('CustomerDimensionCatalog.Build(leads)') -or
     $customerDimensionSource -notmatch [regex]::Escape('ImportService.IsCoreDimension(sourceKey)') -or
     $customersSource -notmatch [regex]::Escape('ImportService.ResolveField(header) == ImportField.Name')) {
   throw 'Customer list must remove advanced text filters, merge canonical source aliases into system fields, and paginate by 10, 30 or 50 rows.'
 }
 Write-Host 'PASS  compact customer list, Buyer Nickname merge and 10/30/50 pagination contract'
+
+if ($leadIntelligenceXaml -match 'DataGridTextColumn Header="公司"' -or
+    $leadIntelligenceXaml -notmatch 'DataGridTextColumn Header="客户"' -or
+    $leadIntelligenceXaml -notmatch 'DataGridTextColumn Header="市场"') {
+  throw 'Lead Intelligence opportunity queue must omit the company column while retaining customer and market dimensions.'
+}
+Write-Host 'PASS  Lead Intelligence compact opportunity dimensions without company column'
+
+if ($todayBriefSource -match '"identity"' -or
+    $todayBriefSource -match 'identityPending' -or
+    $dashboardSource -match '身份确认' -or
+    $customerBrainModelsSource -match 'IdentityPendingCount') {
+  throw 'Dashboard Today Brief must not create or count identity-confirmation work; unmatched Inbox contacts wait for manual CRM creation.'
+}
+Write-Host 'PASS  Today Brief known-customer workflow without identity-confirmation tasks'
 
 if ($customerDimensionSource -notmatch [regex]::Escape('RemoveDuplicateSuffix(visibleLabel)') -or
     $customerDimensionSource -notmatch [regex]::Escape('$"未命名维度 {unnamedOrdinal}"') -or
@@ -240,7 +263,7 @@ if (-not ($leadIntelligenceSource.Contains('var allLeads = await _services.Repos
     -not ($leadIntelligenceSource.Contains('UpdateBulkAnalyzeButtonRunningContent(0, allLeads.Count);')) -or
     -not ($leadIntelligenceSource.Contains('UpdateBulkAnalyzeButtonRunningContent(progress.Completed, progress.Total);')) -or
     -not ($leadIntelligenceSource.Contains('if (_bulkCancellation is null) return;')) -or
-    -not ($guideCatalogSource.Contains('["intelligence"] = ModuleGuideVersion + 2'))) {
+    -not ($guideCatalogSource.Contains('["intelligence"] = ModuleGuideVersion + 3'))) {
   throw 'Lead Intelligence bulk action must show global idle counts, live running progress, ignore late callbacks and explain filter scope.'
 }
 Write-Host 'PASS  Lead Intelligence global retry count and live bulk-action text contract'
@@ -528,7 +551,7 @@ if ($emailInboxXaml -notmatch 'x:Name="NewEmailButton"' -or
     $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 4') -or
     $guideCatalogSource -notmatch [regex]::Escape('["broadcast"] = ModuleGuideVersion + 1') -or
     $guideCatalogSource -notmatch [regex]::Escape('["analytics"] = ModuleGuideVersion + 1') -or
-    $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 4')) {
+    $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 5')) {
   throw 'Email Inbox must support new-message composition, CRM/Customer Brain-aware AI drafting, manual-send safety and current module guidance.'
 }
 Write-Host 'PASS  Email Inbox new-message, Customer Intelligence, AI draft and all-module guide audit contract'
@@ -560,10 +583,15 @@ if ($missingAiRoutingCoreTokens.Count -gt 0) {
 }
 if (-not $conversationAssistantSource.Contains('AiModuleKeys.WhatsAppInbox') -or
     -not $customerSuccessAgentSource.Contains('AiModuleKeys.WhatsAppInbox') -or
+    -not $domainModelsSource.Contains('AiModuleKeys') -or
+    -not $domainModelsSource.Contains('public const string LeadIntelligence') -or
+    -not $settingsSource.Contains('AiModuleKeys.LeadIntelligence') -or
+    -not $deepSeekSource.Contains('ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence') -or
+    -not $leadAutomationSource.Contains('ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence') -or
     -not $customerBrainSource.Contains('AiModuleKeys.Customers') -or
     -not $customerAnalysisSource.Contains('AiModuleKeys.CustomerAnalytics') -or
     -not $knowledgeProcessingSource.Contains('AiModuleKeys.KnowledgeBase')) {
-  throw 'Every current AI workload under Customer Operations and Insights must route through its own module key.'
+  throw 'Every current AI workload, including Lead Intelligence, must route through its own module key.'
 }
 Write-Host 'PASS  global/per-module AI model, token-cost and declared reasoning-depth routing contract'
 

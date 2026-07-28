@@ -104,14 +104,6 @@ public sealed class TodayBriefService
             });
         }
 
-        var identityPending = states
-            .Where(item => item.Mode == ConversationAgentMode.IdentityResolutionRequired)
-            .GroupBy(
-                item => string.IsNullOrWhiteSpace(item.CustomerId)
-                    ? $"conversation:{item.AccountId}:{item.ConversationId}"
-                    : $"customer:{item.CustomerId}",
-                StringComparer.Ordinal)
-            .Select(group => group.First()).ToList();
         var sourcingComplete = sourcingRequests
             .Where(item => item.Status == SourcingRequestStatus.Complete)
             .ToList();
@@ -121,11 +113,6 @@ public sealed class TodayBriefService
             .Where(group => group.Select(item => item.AccountId).Distinct(StringComparer.Ordinal).Count() > 1)
             .Select(group => group.OrderByDescending(item => item.UpdatedAt).First()).ToList();
 
-        foreach (var state in identityPending.Take(8))
-            items.Insert(0, BuildSpecialItem(state.CustomerId, await ResolveCustomerNameAsync(state.CustomerId, state.ConversationId),
-                "identity", "核对 WhatsApp 昵称、号码与 CRM 资料，确认正确客户后再恢复自动回复",
-                "当前客户身份存在歧义；确认前所有自动回复保持关闭。", FollowUpPriority.Urgent,
-                state.AccountId, state.ConversationId, now));
         foreach (var handoff in handoffs.Take(8))
             items.Insert(0, BuildSpecialItem(handoff.CustomerId, await ResolveCustomerNameAsync(handoff.CustomerId, handoff.ConversationId),
                 "handoff", "打开对应 WhatsApp 会话，完成人工处理并记录结果",
@@ -190,7 +177,6 @@ public sealed class TodayBriefService
             OverdueCount = activeTasks.Count(item => item.DueAt < now),
             DueTodayCount = activeTasks.Count(item => item.DueAt.Date == now.Date),
             InProgressCount = activeTasks.Count(item => item.Status == FollowUpTaskStatus.InProgress),
-            IdentityPendingCount = identityPending.Count,
             HumanHandoffCount = handoffs.Count,
             SourcingCompleteCount = sourcingComplete.Count,
             CrossAccountFollowUpCount = crossAccount.Count,
