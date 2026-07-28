@@ -6,6 +6,10 @@ on:
       - main
     tags:
       - 'v*'
+    paths-ignore:
+      - 'pwa/**'
+      - '.github/workflows/pwa-pages.yml'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
       version:
