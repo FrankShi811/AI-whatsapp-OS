@@ -15,11 +15,15 @@ public partial class CustomersView : UserControl, IRefreshableView
     private readonly AppServices _services;
     private readonly List<DataGridColumn> _customColumns = [];
     private readonly HashSet<string> _checkedLeadIds = new(StringComparer.OrdinalIgnoreCase);
+    private List<CustomerRow> _filteredRows = [];
     private List<CustomerRow> _visibleRows = [];
     private bool _updatingCustomFilter;
     private bool _updatingSelectionUi;
     private string? _sortKey;
     private ListSortDirection _sortDirection = ListSortDirection.Ascending;
+    private int _currentPage = 1;
+    private int _pageSize = 30;
+    private int _dimensionCount;
     public event EventHandler? ImportRequested;
     public event EventHandler? DataChanged;
 
@@ -29,6 +33,8 @@ public partial class CustomersView : UserControl, IRefreshableView
         GradeFilter.ItemsSource = new[] { "全部等级", "A", "B", "C", "D" }; GradeFilter.SelectedIndex = 0;
         StageFilter.ItemsSource = new[] { new StageOption("全部阶段", null) }.Concat(Enum.GetValues<LeadStage>().Select(x => new StageOption(Labels.Stage(x), x))).ToList(); StageFilter.SelectedIndex = 0;
         CustomFieldFilter.ItemsSource = new[] { new DimensionOption("全部表格维度", null) }; CustomFieldFilter.DisplayMemberPath = nameof(DimensionOption.Label); CustomFieldFilter.SelectedIndex = 0;
+        PageSizeBox.ItemsSource = new[] { new PageSizeOption("10 条 / 页", 10), new PageSizeOption("30 条 / 页", 30), new PageSizeOption("50 条 / 页", 50) };
+        PageSizeBox.SelectedIndex = 1;
     }
 
     public async Task RefreshAsync()
@@ -36,27 +42,15 @@ public partial class CustomersView : UserControl, IRefreshableView
         var grade = GradeFilter.SelectedIndex <= 0 ? null : GradeFilter.SelectedItem as string;
         var stage = (StageFilter.SelectedItem as StageOption)?.Value;
         var leads = await _services.Repository.GetLeadsAsync(SearchBox.Text, grade, stage);
-        var tag = TagFilterBox.Text.Trim(); var owner = OwnerFilterBox.Text.Trim();
-        if (tag.Length > 0) leads = leads.Where(l => l.Tags.Any(x => x.Contains(tag, StringComparison.CurrentCultureIgnoreCase))).ToList();
-        if (owner.Length > 0) leads = leads.Where(l => l.Owner.Contains(owner, StringComparison.CurrentCultureIgnoreCase)).ToList();
         var dimensions = OrderedDimensions(leads);
         UpdateCustomFieldFilter(dimensions);
         var selectedDimension = (CustomFieldFilter.SelectedItem as DimensionOption)?.Key;
-        var customValue = CustomValueFilterBox.Text.Trim();
-        if (customValue.Length > 0)
-        {
-            leads = selectedDimension is null
-                ? leads.Where(l => l.CustomFields.Values.Any(value => value.Contains(customValue, StringComparison.CurrentCultureIgnoreCase))).ToList()
-                : leads.Where(l => TryGetCustomValue(l, selectedDimension, out var value) && value.Contains(customValue, StringComparison.CurrentCultureIgnoreCase)).ToList();
-        }
-        RenderCustomColumns(dimensions);
-        _visibleRows = leads.Select(lead => new CustomerRow(lead, _checkedLeadIds.Contains(lead.Id), RowSelectionChanged)).ToList();
+        RenderCustomColumns(selectedDimension is null ? dimensions : dimensions.Where(dimension => dimension.Equals(selectedDimension, StringComparison.CurrentCultureIgnoreCase)));
+        _dimensionCount = dimensions.Count;
+        _filteredRows = leads.Select(lead => new CustomerRow(lead, _checkedLeadIds.Contains(lead.Id), RowSelectionChanged)).ToList();
         ApplyCurrentSort();
-        CustomerGrid.ItemsSource = _visibleRows;
-        RestoreSortGlyph();
-        ListStatsText.Text = $"{leads.Count:N0} 位客户 · {dimensions.Count:N0} 个原表维度 · 横向滚动查看全部列";
+        ApplyPagination();
         EditButton.IsEnabled = CustomerGrid.SelectedItem is CustomerRow;
-        UpdateSelectionUi();
     }
 
     private void UpdateCustomFieldFilter(IReadOnlyList<string> dimensions)
@@ -107,16 +101,15 @@ public partial class CustomersView : UserControl, IRefreshableView
         foreach (var column in CustomerGrid.Columns) column.SortDirection = null;
         e.Column.SortDirection = _sortDirection;
         ApplyCurrentSort();
-        CustomerGrid.ItemsSource = null;
-        CustomerGrid.ItemsSource = _visibleRows;
-        UpdateSelectionUi();
+        _currentPage = 1;
+        ApplyPagination();
     }
 
     private void ApplyCurrentSort()
     {
         if (string.IsNullOrWhiteSpace(_sortKey)) return;
         var key = _sortKey;
-        _visibleRows.Sort((left, right) =>
+        _filteredRows.Sort((left, right) =>
         {
             var leftValue = SortValue(left, key);
             var rightValue = SortValue(right, key);
@@ -131,6 +124,29 @@ public partial class CustomersView : UserControl, IRefreshableView
             if (_sortDirection == ListSortDirection.Descending) comparison = -comparison;
             return comparison != 0 ? comparison : StringComparer.CurrentCultureIgnoreCase.Compare(left.DisplayName, right.DisplayName);
         });
+    }
+
+    private void ApplyPagination()
+    {
+        var total = _filteredRows.Count;
+        var totalPages = Math.Max(1, (int)Math.Ceiling(total / (double)_pageSize));
+        _currentPage = Math.Clamp(_currentPage, 1, totalPages);
+        var startIndex = (_currentPage - 1) * _pageSize;
+        _visibleRows = _filteredRows.Skip(startIndex).Take(_pageSize).ToList();
+        CustomerGrid.ItemsSource = null;
+        CustomerGrid.ItemsSource = _visibleRows;
+        RestoreSortGlyph();
+
+        var first = total == 0 ? 0 : startIndex + 1;
+        var last = total == 0 ? 0 : startIndex + _visibleRows.Count;
+        ListStatsText.Text = $"{total:N0} 位客户 · {_dimensionCount:N0} 个原表维度 · 第 {_currentPage:N0} / {totalPages:N0} 页";
+        PageRangeText.Text = total == 0 ? "暂无客户" : $"显示第 {first:N0}–{last:N0} 位，共 {total:N0} 位";
+        PageStatusText.Text = $"第 {_currentPage:N0} / {totalPages:N0} 页";
+        PreviousPageButton.IsEnabled = _currentPage > 1;
+        NextPageButton.IsEnabled = _currentPage < totalPages;
+        CustomerGrid.SelectedItem = null;
+        EditButton.IsEnabled = false;
+        UpdateSelectionUi();
     }
 
     private static string SortValue(CustomerRow row, string key)
@@ -175,8 +191,26 @@ public partial class CustomersView : UserControl, IRefreshableView
         var seen = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
         foreach (var lead in leads)
             foreach (var key in lead.CustomFields.Keys)
-                if (seen.Add(key)) result.Add(key);
+                if (!IsBuyerNicknameDimension(key) && seen.Add(key)) result.Add(key);
         return result;
+    }
+
+    private static bool IsBuyerNicknameDimension(string header)
+    {
+        var firstLine = header.Split(['\r','\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() ?? header.Trim();
+        var normalized = new string(firstLine.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+        return normalized is "buyernickname" or "买家昵称";
+    }
+
+    private static string CustomerDisplayName(Lead lead)
+    {
+        if (!string.IsNullOrWhiteSpace(lead.Name)) return lead.Name;
+        var buyerNickname = lead.CustomFields
+            .Where(pair => IsBuyerNicknameDimension(pair.Key))
+            .Select(pair => pair.Value?.Trim() ?? "")
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+        if (!string.IsNullOrWhiteSpace(buyerNickname)) return buyerNickname;
+        return string.IsNullOrWhiteSpace(lead.Company) ? "未命名客户" : lead.Company;
     }
 
     private static string CompactHeader(string header)
@@ -239,7 +273,7 @@ public partial class CustomersView : UserControl, IRefreshableView
     {
         _checkedLeadIds.Clear();
         _updatingSelectionUi = true;
-        try { foreach (var row in _visibleRows) row.IsSelected = false; }
+        try { foreach (var row in _filteredRows) row.IsSelected = false; }
         finally { _updatingSelectionUi = false; UpdateSelectionUi(); }
     }
 
@@ -281,11 +315,41 @@ public partial class CustomersView : UserControl, IRefreshableView
         }
     }
 
-    private async void Filter_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (IsLoaded && !_updatingCustomFilter) await RefreshAsync(); }
-    private async void SearchBox_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) await RefreshAsync(); }
-    private async void Clear_Click(object sender, RoutedEventArgs e) { SearchBox.Clear(); TagFilterBox.Clear(); OwnerFilterBox.Clear(); CustomValueFilterBox.Clear(); GradeFilter.SelectedIndex = 0; StageFilter.SelectedIndex = 0; CustomFieldFilter.SelectedIndex = 0; await RefreshAsync(); }
+    private async void Filter_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (IsLoaded && !_updatingCustomFilter) { _currentPage = 1; await RefreshAsync(); } }
+    private async void SearchBox_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) { _currentPage = 1; await RefreshAsync(); } }
+    private async void Clear_Click(object sender, RoutedEventArgs e)
+    {
+        SearchBox.Clear();
+        _updatingCustomFilter = true;
+        try
+        {
+            GradeFilter.SelectedIndex = 0;
+            StageFilter.SelectedIndex = 0;
+            CustomFieldFilter.SelectedIndex = 0;
+        }
+        finally
+        {
+            _updatingCustomFilter = false;
+        }
+        _currentPage = 1;
+        await RefreshAsync();
+    }
+    private void PageSizeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (PageSizeBox.SelectedItem is not PageSizeOption option || _pageSize == option.Value) return;
+        _pageSize = option.Value;
+        _currentPage = 1;
+        if (IsLoaded) ApplyPagination();
+    }
+    private void PreviousPage_Click(object sender, RoutedEventArgs e) { if (_currentPage > 1) { _currentPage--; ApplyPagination(); } }
+    private void NextPage_Click(object sender, RoutedEventArgs e)
+    {
+        var totalPages = Math.Max(1, (int)Math.Ceiling(_filteredRows.Count / (double)_pageSize));
+        if (_currentPage < totalPages) { _currentPage++; ApplyPagination(); }
+    }
     private sealed record StageOption(string Label, LeadStage? Value);
     private sealed record DimensionOption(string Label, string? Key);
+    private sealed record PageSizeOption(string Label, int Value);
 
     private sealed class CustomerRow : INotifyPropertyChanged
     {
@@ -301,7 +365,7 @@ public partial class CustomersView : UserControl, IRefreshableView
 
         public Lead Lead { get; }
         public string Id => Lead.Id;
-        public string DisplayName => Lead.DisplayName;
+        public string DisplayName => CustomerDisplayName(Lead);
         public string Country => Lead.Country;
         public string PhoneE164 => Lead.PhoneE164;
         public string PhoneState => Lead.PhoneState;

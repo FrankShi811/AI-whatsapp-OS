@@ -28,6 +28,8 @@ $themeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'de
 $mainWindowXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MainWindow.xaml')
 $mainWindowSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MainWindow.xaml.cs')
 $dashboardXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\DashboardView.xaml')
+$customersXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CustomersView.xaml')
+$customersSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CustomersView.xaml.cs')
 $todayBriefSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\TodayBriefService.cs')
 $leadIntelligenceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\LeadIntelligenceView.xaml.cs')
 $whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml')
@@ -182,6 +184,21 @@ if ($missingBuyerIdentityContracts.Count -gt 0) {
   throw "Buyer ID must be the authoritative cross-module customer identity, with phone fallback and conflict-safe writes. missing=$($missingBuyerIdentityContracts -join ',')"
 }
 Write-Host 'PASS  Buyer ID primary identity, phone fallback and cross-module memory contract'
+
+if ($customersXaml -match 'TagFilterBox|OwnerFilterBox|CustomValueFilterBox' -or
+    $customersXaml -notmatch 'x:Name="PageSizeBox"' -or
+    $customersXaml -notmatch 'x:Name="PreviousPageButton"' -or
+    $customersXaml -notmatch 'x:Name="NextPageButton"' -or
+    $customersXaml -notmatch 'x:Name="SelectAllCheckBox"' -or
+    $customersSource -notmatch 'new PageSizeOption\([^,]+,\s*10\)' -or
+    $customersSource -notmatch 'new PageSizeOption\([^,]+,\s*30\)' -or
+    $customersSource -notmatch 'new PageSizeOption\([^,]+,\s*50\)' -or
+    $customersSource -notmatch [regex]::Escape('Skip(startIndex).Take(_pageSize)') -or
+    $customersSource -notmatch [regex]::Escape('!IsBuyerNicknameDimension(key)') -or
+    $customersSource -notmatch [regex]::Escape('normalized is "buyernickname"')) {
+  throw 'Customer list must remove advanced text filters, merge Buyer Nickname into customer name, and paginate by 10, 30 or 50 rows.'
+}
+Write-Host 'PASS  compact customer list, Buyer Nickname merge and 10/30/50 pagination contract'
 
 if (-not ($leadIntelligenceSource.Contains('var allLeads = await _services.Repository.GetLeadsAsync();')) -or
     -not ($leadIntelligenceSource.Contains('allLeads.Count(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed)')) -or
@@ -474,7 +491,7 @@ if ($emailInboxXaml -notmatch 'x:Name="NewEmailButton"' -or
     $guideCatalogSource -notmatch [regex]::Escape('GlobalGuideVersion = 8') -or
     $guideCatalogSource -notmatch 'Ctrl\+1 . Ctrl\+8' -or
     $guideCatalogSource -match 'Ctrl\+1 . Ctrl\+7' -or
-    $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 2') -or
+    $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 3') -or
     $guideCatalogSource -notmatch [regex]::Escape('["broadcast"] = ModuleGuideVersion + 1') -or
     $guideCatalogSource -notmatch [regex]::Escape('["analytics"] = ModuleGuideVersion + 1') -or
     $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 4')) {
