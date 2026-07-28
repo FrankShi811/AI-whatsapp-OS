@@ -67,17 +67,21 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
     public async Task<LeadBulkAnalysisResult> AnalyzeAllLeadsAsync(IProgress<LeadBulkAnalysisProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         if (!_provider.HasApiKey()) throw new DeepSeekException("provider_not_configured", "请先在 API 对接中配置 API Key。", false);
-        var settings = await _repository.GetAppSettingsAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(settings.DeepSeekModel)) throw new DeepSeekException("model_not_selected", "请先从模型列表中选择工作模型。", false);
+        var execution = await _provider.ResolveExecutionProfileAsync(AiModuleKeys.Global, cancellationToken);
 
         var leads = await _repository.GetLeadsAsync(cancellationToken: cancellationToken);
         var currentIds = leads.Select(lead => lead.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var previous = await _repository.GetLeadBulkAnalysisRunStateAsync(cancellationToken);
-        var providerId = string.IsNullOrWhiteSpace(settings.ActiveProviderId) ? "deepseek" : settings.ActiveProviderId;
+        var providerId = execution.ProviderId;
         var canResume = previous is { IsComplete: false, PendingLeadIds.Count: > 0 }
             && (string.IsNullOrWhiteSpace(previous.ProviderId)
                 || previous.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase))
-            && previous.Model.Equals(settings.DeepSeekModel, StringComparison.OrdinalIgnoreCase);
+            && previous.Model.Equals(execution.Model, StringComparison.OrdinalIgnoreCase);
+        var retryableLeadIds = leads
+            .Where(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed)
+            .Select(lead => lead.Id)
+            .ToList();
+        var retryFailedOnly = !canResume && retryableLeadIds.Count > 0;
 
         LeadBulkAnalysisRunState run;
         if (canResume)
@@ -91,23 +95,36 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
                 .Where(currentIds.Contains)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
+            var requeuedFailures = retryableLeadIds
+                .Where(id => run.AllLeadIds.Contains(id, StringComparer.OrdinalIgnoreCase)
+                    && !run.PendingLeadIds.Contains(id, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+            run.PendingLeadIds = requeuedFailures
+                .Concat(run.PendingLeadIds)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            run.Failed = Math.Max(0, run.Failed - requeuedFailures.Count);
         }
         else
         {
+            var selectedLeadIds = retryFailedOnly
+                ? retryableLeadIds
+                : leads.Select(lead => lead.Id).ToList();
             run = new LeadBulkAnalysisRunState
             {
                 ProviderId = providerId,
-                Model = settings.DeepSeekModel,
-                AllLeadIds = leads.Select(lead => lead.Id).ToList(),
-                PendingLeadIds = leads.Select(lead => lead.Id).ToList()
+                Model = execution.Model,
+                AllLeadIds = selectedLeadIds.ToList(),
+                PendingLeadIds = selectedLeadIds.ToList()
             };
         }
         run.ProviderId = providerId;
+        run.Model = execution.Model;
 
         // An interrupted run resumes from its first unfinished customer. Leads
         // imported afterwards are appended, while completed customers are not
         // replayed and do not consume another AI request.
-        foreach (var lead in leads)
+        foreach (var lead in retryFailedOnly ? [] : leads)
         {
             if (run.AllLeadIds.Contains(lead.Id, StringComparer.OrdinalIgnoreCase)) continue;
             run.AllLeadIds.Add(lead.Id);
@@ -122,11 +139,16 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
             canResume ? "lead_bulk_analysis_resumed" : "lead_bulk_analysis_started",
             null,
             null,
-            $"run={run.RunId}; total={total}; completed={completed}; pending={run.PendingLeadIds.Count}; provider={providerId}; model={settings.DeepSeekModel}",
+            $"run={run.RunId}; total={total}; completed={completed}; pending={run.PendingLeadIds.Count}; provider={providerId}; model={execution.Model}; retry_failed_only={retryFailedOnly}",
             cancellationToken);
         progress?.Report(new(total, completed, run.Succeeded, run.Failed, "", "", canResume ? "resuming" : "starting",
-            canResume ? $"继续上次任务：剩余 {run.PendingLeadIds.Count} 位客户" : $"准备分析 {total} 位客户"));
+            canResume
+                ? $"继续上次任务并优先重试失败客户：剩余 {run.PendingLeadIds.Count} 位"
+                : retryFailedOnly
+                    ? $"仅重试 {total} 位失败客户，不重复消耗已成功客户 Token"
+                    : $"准备分析 {total} 位客户"));
 
+        var consecutiveFailures = 0;
         while (run.PendingLeadIds.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -150,6 +172,7 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
             try
             {
                 await _provider.AnalyzeLeadAsync(lead, cancellationToken);
+                consecutiveFailures = 0;
                 run.Succeeded++;
                 run.PendingLeadIds.RemoveAt(0);
                 run.UpdatedAt = DateTimeOffset.Now;
@@ -166,6 +189,31 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
             }
             catch (Exception error)
             {
+                if (error is DeepSeekException { Retryable: false })
+                {
+                    run.UpdatedAt = DateTimeOffset.Now;
+                    await _repository.SaveLeadBulkAnalysisRunStateAsync(run, cancellationToken);
+                    throw;
+                }
+                consecutiveFailures++;
+                if (consecutiveFailures >= 3)
+                {
+                    run.UpdatedAt = DateTimeOffset.Now;
+                    await _repository.SaveLeadBulkAnalysisRunStateAsync(run, cancellationToken);
+                    await _repository.LogEventAsync(
+                        "lead_bulk_analysis_paused",
+                        lead.Id,
+                        null,
+                        $"run={run.RunId}; consecutive_failures={consecutiveFailures}; pending={run.PendingLeadIds.Count}; error={error.GetType().Name}",
+                        cancellationToken);
+                    progress?.Report(new(total, completed, run.Succeeded, run.Failed, lead.Id, lead.DisplayName, "paused",
+                        $"AI 连续 {consecutiveFailures} 位客户分析失败，已暂停并保留剩余队列"));
+                    throw new DeepSeekException(
+                        "bulk_analysis_paused",
+                        $"AI 连续 {consecutiveFailures} 位客户分析失败，批量任务已自动暂停，剩余 {run.PendingLeadIds.Count} 位客户仍保留在队列中，未继续消耗 Token。请稍后重试或检查模型设置。",
+                        true,
+                        error);
+                }
                 run.Failed++;
                 run.PendingLeadIds.RemoveAt(0);
                 run.UpdatedAt = DateTimeOffset.Now;
@@ -178,7 +226,7 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
         run.IsComplete = true;
         run.UpdatedAt = DateTimeOffset.Now;
         await _repository.SaveLeadBulkAnalysisRunStateAsync(run, cancellationToken);
-        await _repository.LogEventAsync("lead_bulk_analysis_completed", null, null, $"run={run.RunId}; total={total}; succeeded={run.Succeeded}; failed={run.Failed}; provider={providerId}; model={settings.DeepSeekModel}", cancellationToken);
+        await _repository.LogEventAsync("lead_bulk_analysis_completed", null, null, $"run={run.RunId}; total={total}; succeeded={run.Succeeded}; failed={run.Failed}; provider={providerId}; model={execution.Model}", cancellationToken);
         return new LeadBulkAnalysisResult(total, run.Succeeded, run.Failed);
     }
 

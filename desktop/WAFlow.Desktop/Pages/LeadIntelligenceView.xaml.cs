@@ -29,7 +29,10 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         var selectedId = (LeadGrid.SelectedItem as Lead)?.Id;
         _leads = await _services.Repository.GetLeadsAsync(SearchBox.Text, GradeFilter.SelectedItem as string);
         var settings = await _services.Repository.GetAppSettingsAsync();
-        BulkAnalyzeButton.Content = $"使用 {settings.DeepSeekModel} 分析 / 重试全部";
+        var retryableCount = _leads.Count(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed);
+        BulkAnalyzeButton.Content = retryableCount > 0
+            ? $"使用 {settings.DeepSeekModel} 重试失败 {retryableCount}"
+            : $"使用 {settings.DeepSeekModel} 分析全部";
         LeadGrid.ItemsSource = _leads;
         LeadGrid.SelectedItem = _leads.FirstOrDefault(x => x.Id == selectedId) ?? _leads.FirstOrDefault();
         var selectedLead = LeadGrid.SelectedItem as Lead;

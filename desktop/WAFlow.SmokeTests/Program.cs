@@ -1271,7 +1271,7 @@ await using (var embeddedBridge = new WhatsAppConnectionManager())
 var analysisJson = V2AnalysisJson("Could you quote 300 units?");
 var draftJson = WAFlow.Core.Infrastructure.Json.Serialize(new { purpose="follow_up", language="en", body="Hi Elena, thank you for confirming 300 units. I will verify the lead time and share the next details with you.", rationale=new[] { "承接客户的数量与交期问题" }, assumptions=Array.Empty<string>(), risks=new[] { "交期需人工确认" } });
 var invalidAnalysisJson = "{\"score\":99,\"grade\":\"A\",\"factors\":[],\"stage\":\"new\",\"confidence\":0.8,\"evidence\":[],\"profileSummary\":\"x\",\"customerSegment\":\"x\",\"nextAction\":\"x\",\"risks\":[]}";
-var handler = new QueueHandler([Envelope(analysisJson), Envelope(draftJson), Envelope(invalidAnalysisJson), Envelope(invalidAnalysisJson)]);
+var handler = new QueueHandler([Envelope(analysisJson), Envelope(draftJson), Envelope(invalidAnalysisJson), Envelope(invalidAnalysisJson), Envelope(invalidAnalysisJson)]);
 var deepSeek = new DeepSeekService(repository, new FakeSecretStore("sk-test-redacted"), new HttpClient(handler) { Timeout=TimeSpan.FromSeconds(5) });
 await repository.SaveAppSettingsAsync(new AppSettings { DeepSeekBaseUrl="https://api.deepseek.com", DeepSeekModel="deepseek-chat" });
 var catalog = await deepSeek.DiscoverModelsAsync("https://api.deepseek.com");
@@ -1295,8 +1295,59 @@ try
 catch (DeepSeekException error) { Check(error.Code == "invalid_structured_output" && error.Retryable, "DeepSeek invalid structure rejected"); }
 var failedAnalysisLead = await repository.GetLeadAsync("lead_ahmed");
 Check(failedAnalysisLead is { Grade: "D", Score: 0, AnalysisStatus: AnalysisStatus.RetryableFailed, AiScoreApplied: false }, "AI analysis failure remains D/0 and is retryable");
-Check(handler.Requests.All(x => x.Authorization == "Bearer sk-test-redacted") && handler.Requests.Count(x => x.Method == "GET" && x.Uri == "https://api.deepseek.com/models") == 1 && handler.Requests.Count(x => x.Method == "POST" && x.Uri == "https://api.deepseek.com/chat/completions") == 4, "AI model discovery and chat requests use the server-side key");
+Check(handler.Requests.All(x => x.Authorization == "Bearer sk-test-redacted") && handler.Requests.Count(x => x.Method == "GET" && x.Uri == "https://api.deepseek.com/models") == 1 && handler.Requests.Count(x => x.Method == "POST" && x.Uri == "https://api.deepseek.com/chat/completions") == 5, "AI model discovery and chat requests use the server-side key");
 Check(handler.RequestBodies.Any(body => body.Contains("dimension_weights") && body.Contains("recentMessages")), "AI request includes the V2 contract, imported CRM fields and WhatsApp history");
+
+var reasoningRecoveryRoot = Path.Combine(root, "reasoning-output-recovery");
+var reasoningRecoveryRepository = new LocalRepository(Path.Combine(reasoningRecoveryRoot, "reasoning.db"));
+await reasoningRecoveryRepository.InitializeAsync();
+var reasoningRecoveryLead = new Lead { Id="reasoning-recovery", Name="Reasoning Recovery", PhoneE164="+14155550901", PhoneValid=true };
+await reasoningRecoveryRepository.UpsertLeadAsync(reasoningRecoveryLead);
+await reasoningRecoveryRepository.RemoveDemoLeadsIfRealDataExistsAsync();
+await reasoningRecoveryRepository.SaveAppSettingsAsync(new AppSettings { DeepSeekBaseUrl="https://api.deepseek.com", DeepSeekModel="deepseek-v4-pro" });
+var emptyThinkingEnvelope = System.Text.Json.JsonSerializer.Serialize(new
+{
+    choices=new[]
+    {
+        new
+        {
+            finish_reason="stop",
+            message=new { content=(string?)null, reasoning_content="The model completed reasoning but did not emit the final JSON." }
+        }
+    }
+});
+var reasoningRecoveryHandler = new QueueHandler([emptyThinkingEnvelope, Envelope(V2AnalysisJson("Please quote 600 pcs"))]);
+var reasoningRecoveryProvider = new DeepSeekService(
+    reasoningRecoveryRepository,
+    new FakeSecretStore("sk-reasoning-recovery"),
+    new HttpClient(reasoningRecoveryHandler) { Timeout=TimeSpan.FromSeconds(5) });
+var reasoningRecovered = await reasoningRecoveryProvider.AnalyzeLeadAsync(reasoningRecoveryLead);
+using var reasoningRepairRequest = System.Text.Json.JsonDocument.Parse(reasoningRecoveryHandler.RequestBodies[1]);
+var reasoningRepairPrompt = reasoningRepairRequest.RootElement.GetProperty("messages")[0].GetProperty("content").GetString() ?? "";
+Check(
+    reasoningRecovered is { AnalysisStatus: AnalysisStatus.Succeeded, Score: 88 }
+    && reasoningRecoveryHandler.RequestBodies.Count == 2
+    && reasoningRecoveryHandler.RequestBodies.All(body => body.Contains("\"max_tokens\":16384"))
+    && reasoningRepairPrompt.Contains("上一轮输出未通过 Lead Intelligence V2 校验"),
+    "Lead Intelligence retries a thinking-model response with empty final content and reserves enough structured-output tokens");
+
+var transientRecoveryRoot = Path.Combine(root, "provider-transient-recovery");
+var transientRecoveryRepository = new LocalRepository(Path.Combine(transientRecoveryRoot, "transient.db"));
+await transientRecoveryRepository.InitializeAsync();
+var transientRecoveryLead = new Lead { Id="transient-recovery", Name="Transient Recovery", PhoneE164="+14155550902", PhoneValid=true };
+await transientRecoveryRepository.UpsertLeadAsync(transientRecoveryLead);
+await transientRecoveryRepository.RemoveDemoLeadsIfRealDataExistsAsync();
+await transientRecoveryRepository.SaveAppSettingsAsync(new AppSettings { DeepSeekBaseUrl="https://api.deepseek.com", DeepSeekModel="deepseek-v4-pro" });
+var transientRecoveryHandler = new QueueHandler(["{\"choices\":[]}", Envelope(V2AnalysisJson("Please quote 700 pcs"))]);
+var transientRecoveryProvider = new DeepSeekService(
+    transientRecoveryRepository,
+    new FakeSecretStore("sk-transient-recovery"),
+    new HttpClient(transientRecoveryHandler) { Timeout=TimeSpan.FromSeconds(5) });
+var transientRecovered = await transientRecoveryProvider.AnalyzeLeadAsync(transientRecoveryLead);
+Check(
+    transientRecovered is { AnalysisStatus: AnalysisStatus.Succeeded, Score: 88 }
+    && transientRecoveryHandler.RequestBodies.Count == 2,
+    "Lead Intelligence retries a transient malformed Provider response before failing the customer");
 
 var compatibleDecisionJson = """
     {
@@ -1337,7 +1388,7 @@ Check(compatibleDecision is
     && compatibleDecision.KnowledgeChunkIds.Count == 0,
     "customer-success structured output tolerates common wrappers, aliases, snake-case enums and percentage confidence");
 Check(compatibleDecisionHandler.RequestBodies.Count == 1
-    && compatibleDecisionHandler.RequestBodies[0].Contains("\"max_tokens\":2200"),
+    && compatibleDecisionHandler.RequestBodies[0].Contains("\"max_tokens\":16384"),
     "structured AI request reserves enough output tokens without an unnecessary retry");
 
 var repairDecisionJson = """
@@ -1432,7 +1483,7 @@ await bulkRepository.UpsertLeadAsync(new Lead { Id="bulk-one", Name="Bulk One", 
 await bulkRepository.UpsertLeadAsync(new Lead { Id="bulk-two", Name="Bulk Two", PhoneE164="+14155550102", PhoneValid=true });
 await bulkRepository.RemoveDemoLeadsIfRealDataExistsAsync();
 await bulkRepository.SaveAppSettingsAsync(new AppSettings { DeepSeekBaseUrl="https://api.deepseek.com", DeepSeekModel="deepseek-chat" });
-var bulkHandler = new QueueHandler([Envelope(invalidAnalysisJson), Envelope(invalidAnalysisJson), Envelope(V2AnalysisJson("Please send a quotation for 500 pcs"))]);
+var bulkHandler = new QueueHandler([Envelope(invalidAnalysisJson), Envelope(invalidAnalysisJson), Envelope(invalidAnalysisJson), Envelope(V2AnalysisJson("Please send a quotation for 500 pcs"))]);
 var bulkProvider = new DeepSeekService(bulkRepository, new FakeSecretStore("sk-bulk"), new HttpClient(bulkHandler) { Timeout=TimeSpan.FromSeconds(5) });
 await using (var bulkBridge = new WhatsAppConnectionManager())
 {
@@ -1440,8 +1491,37 @@ await using (var bulkBridge = new WhatsAppConnectionManager())
     await using var bulkAutomation = new LeadIntelligenceAutomationService(bulkRepository, bulkProvider, bulkSync);
     var bulkResult = await bulkAutomation.AnalyzeAllLeadsAsync();
     var bulkDashboard = await bulkRepository.GetDashboardAsync();
-    Check(bulkResult is { Total: 2, Succeeded: 1, Failed: 1 } && bulkHandler.RequestBodies.Count == 3, "bulk lead analysis continues after one customer fails");
+    Check(bulkResult is { Total: 2, Succeeded: 1, Failed: 1 } && bulkHandler.RequestBodies.Count == 4, "bulk lead analysis continues after one customer fails");
     Check(bulkDashboard.Grades["A"] == 1 && bulkDashboard.Grades["D"] == 1, "bulk AI results update Dashboard while failed customers remain D/0");
+}
+
+var circuitRoot = Path.Combine(root, "bulk-lead-analysis-circuit");
+var circuitRepository = new LocalRepository(Path.Combine(circuitRoot, "circuit.db"));
+await circuitRepository.InitializeAsync();
+for (var index = 1; index <= 4; index++)
+    await circuitRepository.UpsertLeadAsync(new Lead { Id=$"circuit-{index}", Name=$"Circuit {index}", PhoneE164=$"+1415555091{index}", PhoneValid=true });
+await circuitRepository.RemoveDemoLeadsIfRealDataExistsAsync();
+await circuitRepository.SaveAppSettingsAsync(new AppSettings { DeepSeekBaseUrl="https://api.deepseek.com", DeepSeekModel="deepseek-v4-pro" });
+var circuitHandler = new QueueHandler(Enumerable.Repeat(Envelope(invalidAnalysisJson), 9));
+var circuitProvider = new DeepSeekService(circuitRepository, new FakeSecretStore("sk-circuit"), new HttpClient(circuitHandler) { Timeout=TimeSpan.FromSeconds(5) });
+await using (var circuitBridge = new WhatsAppConnectionManager())
+{
+    var circuitSync = new WhatsAppSyncService(circuitRepository, circuitBridge);
+    await using var circuitAutomation = new LeadIntelligenceAutomationService(circuitRepository, circuitProvider, circuitSync);
+    try
+    {
+        await circuitAutomation.AnalyzeAllLeadsAsync();
+        Check(false, "bulk lead analysis circuit breaker");
+    }
+    catch (DeepSeekException error)
+    {
+        var circuitState = await circuitRepository.GetLeadBulkAnalysisRunStateAsync();
+        Check(
+            error.Code == "bulk_analysis_paused"
+            && circuitHandler.RequestBodies.Count == 9
+            && circuitState is { IsComplete: false, Failed: 2, PendingLeadIds.Count: 2 },
+            "bulk lead analysis pauses after three consecutive fully retried failures and preserves the remaining queue");
+    }
 }
 
 var bulkLeadIds = (await bulkRepository.GetLeadsAsync()).Select(lead => lead.Id).OrderBy(id => id, StringComparer.Ordinal).ToList();
