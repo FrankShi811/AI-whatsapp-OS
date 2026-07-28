@@ -40,20 +40,58 @@
                     <StackPanel>
                         <TextBlock Text="COMMAND CENTER" Foreground="{DynamicResource SidebarMuted}" FontSize="9" FontWeight="SemiBold" Margin="13,3,0,7"/>
                         <Button x:Name="DashboardButton" Tag="dashboard" Click="Navigate_Click" Style="{StaticResource NavButton}">
-                            <StackPanel Orientation="Horizontal"><TextBlock Text="▦" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="Dashboard" Style="{StaticResource NavText}"/></StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Viewbox Style="{StaticResource NavIconFrame}">
+                                    <Canvas Width="24" Height="24">
+                                        <Rectangle Canvas.Left="3" Canvas.Top="3" Width="7" Height="9" RadiusX="1" RadiusY="1" Style="{StaticResource NavIconRectangle}"/>
+                                        <Rectangle Canvas.Left="14" Canvas.Top="3" Width="7" Height="5" RadiusX="1" RadiusY="1" Style="{StaticResource NavIconRectangle}"/>
+                                        <Rectangle Canvas.Left="14" Canvas.Top="12" Width="7" Height="9" RadiusX="1" RadiusY="1" Style="{StaticResource NavIconRectangle}"/>
+                                        <Rectangle Canvas.Left="3" Canvas.Top="16" Width="7" Height="5" RadiusX="1" RadiusY="1" Style="{StaticResource NavIconRectangle}"/>
+                                    </Canvas>
+                                </Viewbox>
+                                <TextBlock Grid.Column="1" Text="Dashboard" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
+                            </Grid>
                         </Button>
                         <Button x:Name="IntelligenceButton" Tag="intelligence" Click="Navigate_Click" Style="{StaticResource NavButton}">
-                            <StackPanel Orientation="Horizontal"><TextBlock Text="✦" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="商机智能" Style="{StaticResource NavText}"/></StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Viewbox Style="{StaticResource NavIconFrame}">
+                                    <Canvas Width="24" Height="24">
+                                        <Path Data="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z M9 13a4.5 4.5 0 0 0 3-4 M6.003 5.125A3 3 0 0 0 6.401 6.5 M3.477 10.896a4 4 0 0 1 .585-.396 M6 18a4 4 0 0 1-1.967-.516 M12 13h4 M12 18h6a2 2 0 0 1 2 2v1 M12 8h8 M16 8V5a2 2 0 0 1 2-2" Style="{StaticResource NavIconPath}"/>
+                                        <Ellipse Canvas.Left="15" Canvas.Top="12" Style="{StaticResource NavIconDot}"/>
+                                        <Ellipse Canvas.Left="17" Canvas.Top="2" Style="{StaticResource NavIconDot}"/>
+                                        <Ellipse Canvas.Left="19" Canvas.Top="20" Style="{StaticResource NavIconDot}"/>
+                                        <Ellipse Canvas.Left="19" Canvas.Top="7" Style="{StaticResource NavIconDot}"/>
+                                    </Canvas>
+                                </Viewbox>
+                                <TextBlock Grid.Column="1" Text="商机智能" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
+                            </Grid>
                         </Button>
 
                         <TextBlock Text="CUSTOMER OPERATIONS" Foreground="{DynamicResource SidebarMuted}" FontSize="9" FontWeight="SemiBold" Margin="13,20,0,7"/>
                         <Button x:Name="CustomersButton" Tag="customers" Click="Navigate_Click" Style="{StaticResource NavButton}">
-                            <StackPanel Orientation="Horizontal"><TextBlock Text="◎" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="客户列表" Style="{StaticResource NavText}"/></StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Viewbox Style="{StaticResource NavIconFrame}">
+                                    <Canvas Width="24" Height="24">
+                                        <Path Data="M16 2v2 M17.915 22a6 6 0 0 0-12 0 M8 2v2" Style="{StaticResource NavIconPath}"/>
+                                        <Ellipse Canvas.Left="8" Canvas.Top="8" Width="8" Height="8" Style="{StaticResource NavIconEllipse}"/>
+                                        <Rectangle Canvas.Left="3" Canvas.Top="4" Width="18" Height="18" RadiusX="2" RadiusY="2" Style="{StaticResource NavIconRectangle}"/>
+                                    </Canvas>
+                                </Viewbox>
+                                <TextBlock Grid.Column="1" Text="客户列表" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
+                            </Grid>
                         </Button>
                         <Button x:Name="InboxButton" Tag="inbox" Click="Navigate_Click" Style="{StaticResource NavButton}" HorizontalContentAlignment="Stretch">
                             <Grid>
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="26"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                <TextBlock Text="◉" FontSize="14" Style="{StaticResource NavText}"/>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <Viewbox Style="{StaticResource NavIconFrame}">
+                                    <Canvas Width="24" Height="24">
+                                        <Path Data="M12 8V4H8 M2 14h2 M20 14h2 M15 13v2 M9 13v2" Style="{StaticResource NavIconPath}"/>
+                                        <Rectangle Canvas.Left="4" Canvas.Top="8" Width="16" Height="12" RadiusX="2" RadiusY="2" Style="{StaticResource NavIconRectangle}"/>
+                                    </Canvas>
+                                </Viewbox>
                                 <TextBlock Grid.Column="1" Text="WhatsApp Inbox" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
                                 <Border x:Name="WhatsAppUnreadBadge" Grid.Column="2" MinWidth="22" Height="20" Margin="8,0,0,0" Padding="6,0"
                                         CornerRadius="10" Background="{DynamicResource UnreadBadgeBackground}" Visibility="Collapsed">
@@ -64,8 +102,13 @@
                         </Button>
                         <Button x:Name="EmailButton" Tag="email" Click="Navigate_Click" Style="{StaticResource NavButton}" HorizontalContentAlignment="Stretch">
                             <Grid>
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="26"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                <TextBlock Text="✉" FontSize="14" Style="{StaticResource NavText}"/>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <Viewbox Style="{StaticResource NavIconFrame}">
+                                    <Canvas Width="24" Height="24">
+                                        <Rectangle Canvas.Left="2" Canvas.Top="4" Width="20" Height="16" RadiusX="2" RadiusY="2" Style="{StaticResource NavIconRectangle}"/>
+                                        <Path Data="M22 7l-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" Style="{StaticResource NavIconPath}"/>
+                                    </Canvas>
+                                </Viewbox>
                                 <TextBlock Grid.Column="1" Text="邮件 Inbox" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
                                 <Border x:Name="EmailUnreadBadge" Grid.Column="2" MinWidth="22" Height="20" Margin="8,0,0,0" Padding="6,0"
                                         CornerRadius="10" Background="{DynamicResource UnreadBadgeBackground}" Visibility="Collapsed">
@@ -75,15 +118,39 @@
                             </Grid>
                         </Button>
                         <Button x:Name="BroadcastButton" Tag="broadcast" Click="Navigate_Click" Style="{StaticResource NavButton}">
-                            <StackPanel Orientation="Horizontal"><TextBlock Text="◌" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="自动化群发" Style="{StaticResource NavText}"/></StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Viewbox Style="{StaticResource NavIconFrame}">
+                                    <Canvas Width="24" Height="24">
+                                        <Path Data="M3 11l18-5v12L3 14v-3z M11.6 16.8a3 3 0 1 1-5.8-1.6" Style="{StaticResource NavIconPath}"/>
+                                    </Canvas>
+                                </Viewbox>
+                                <TextBlock Grid.Column="1" Text="自动化群发" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
+                            </Grid>
                         </Button>
 
                         <TextBlock Text="INSIGHTS" Foreground="{DynamicResource SidebarMuted}" FontSize="9" FontWeight="SemiBold" Margin="13,20,0,7"/>
                         <Button x:Name="KnowledgeButton" Tag="knowledge" Click="Navigate_Click" Style="{StaticResource NavButton}">
-                            <StackPanel Orientation="Horizontal"><TextBlock Text="▤" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="知识库" Style="{StaticResource NavText}"/></StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Viewbox Style="{StaticResource NavIconFrame}">
+                                    <Canvas Width="24" Height="24">
+                                        <Path Data="M12 7v14 M16 12h2 M16 8h2 M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z M6 12h2 M6 8h2" Style="{StaticResource NavIconPath}"/>
+                                    </Canvas>
+                                </Viewbox>
+                                <TextBlock Grid.Column="1" Text="知识库" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
+                            </Grid>
                         </Button>
                         <Button x:Name="AnalyticsButton" Tag="analytics" Click="Navigate_Click" Style="{StaticResource NavButton}">
-                            <StackPanel Orientation="Horizontal"><TextBlock Text="◫" Width="26" FontSize="14" Style="{StaticResource NavText}"/><TextBlock Text="客户智能分析" Style="{StaticResource NavText}"/></StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Viewbox Style="{StaticResource NavIconFrame}">
+                                    <Canvas Width="24" Height="24">
+                                        <Path Data="M3 3v16a2 2 0 0 0 2 2h16 M18 17V9 M13 17V5 M8 17v-3" Style="{StaticResource NavIconPath}"/>
+                                    </Canvas>
+                                </Viewbox>
+                                <TextBlock Grid.Column="1" Text="客户智能分析" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
+                            </Grid>
                         </Button>
                     </StackPanel>
                 </ScrollViewer>

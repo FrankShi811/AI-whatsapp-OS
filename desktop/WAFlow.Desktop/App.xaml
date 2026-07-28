@@ -403,6 +403,38 @@
         <Style x:Key="MicroText" TargetType="TextBlock"><Setter Property="FontSize" Value="11"/><Setter Property="LineHeight" Value="16"/><Setter Property="Foreground" Value="{DynamicResource Muted}"/></Style>
         <Style x:Key="MetricValue" TargetType="TextBlock"><Setter Property="FontSize" Value="30"/><Setter Property="FontWeight" Value="Bold"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="FontFamily" Value="Segoe UI Variable Display, Segoe UI"/></Style>
         <Style x:Key="PillText" TargetType="TextBlock"><Setter Property="FontSize" Value="11"/><Setter Property="FontWeight" Value="SemiBold"/></Style>
+        <Style x:Key="NavIconFrame" TargetType="Viewbox">
+            <Setter Property="Width" Value="18"/>
+            <Setter Property="Height" Value="18"/>
+            <Setter Property="Stretch" Value="Uniform"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+        </Style>
+        <Style x:Key="NavIconPath" TargetType="Path">
+            <Setter Property="Fill" Value="Transparent"/>
+            <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"/>
+            <Setter Property="StrokeThickness" Value="2"/>
+            <Setter Property="StrokeStartLineCap" Value="Round"/>
+            <Setter Property="StrokeEndLineCap" Value="Round"/>
+            <Setter Property="StrokeLineJoin" Value="Round"/>
+        </Style>
+        <Style x:Key="NavIconRectangle" TargetType="Rectangle">
+            <Setter Property="Fill" Value="Transparent"/>
+            <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"/>
+            <Setter Property="StrokeThickness" Value="2"/>
+            <Setter Property="StrokeLineJoin" Value="Round"/>
+        </Style>
+        <Style x:Key="NavIconEllipse" TargetType="Ellipse">
+            <Setter Property="Fill" Value="Transparent"/>
+            <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"/>
+            <Setter Property="StrokeThickness" Value="2"/>
+        </Style>
+        <Style x:Key="NavIconDot" TargetType="Ellipse">
+            <Setter Property="Width" Value="2"/>
+            <Setter Property="Height" Value="2"/>
+            <Setter Property="Fill" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"/>
+        </Style>
         <Style x:Key="NavText" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"/>
         </Style>

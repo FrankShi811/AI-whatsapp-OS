@@ -139,9 +139,15 @@ if ($appXaml -notmatch '<Style TargetType="\{x:Type TextBlock\}">[\s\S]*?<Setter
   throw 'Implicit WPF text controls must inherit high-contrast semantic foregrounds in dark mode.'
 }
 $navTextCount = ([regex]::Matches($mainWindowXaml, 'Style="\{StaticResource NavText\}"')).Count
-if ($navTextCount -ne 17 -or
-    $appXaml -notmatch 'x:Key="NavText"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}') {
-  throw "Every sidebar navigation icon, label and shortcut footer must inherit the owning NavButton foreground. expected=17 actual=$navTextCount"
+$navIconCount = ([regex]::Matches($mainWindowXaml, 'Style="\{StaticResource NavIconFrame\}"')).Count
+if ($navTextCount -ne 9 -or
+    $navIconCount -ne 8 -or
+    $appXaml -notmatch 'x:Key="NavText"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}' -or
+    $appXaml -notmatch 'x:Key="NavIconFrame"[\s\S]*?<Setter Property="Width" Value="18"/>' -or
+    $appXaml -notmatch 'x:Key="NavIconPath"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}[\s\S]*?<Setter Property="StrokeThickness" Value="2"/>' -or
+    $appXaml -notmatch 'x:Key="NavIconRectangle"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}' -or
+    $appXaml -notmatch 'x:Key="NavIconEllipse"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}') {
+  throw "Every sidebar module must use one aligned 18px vector icon and a semantic foreground. expected_text=9 actual_text=$navTextCount expected_icons=8 actual_icons=$navIconCount"
 }
 if ($mainWindowXaml -notmatch '<Button Style="\{StaticResource NavButton\}" Click="CommandButton_Click">\s*<TextBlock Text="[^"]*Ctrl \+ K" Style="\{StaticResource NavText\}"/>\s*</Button>' -or
     $mainWindowXaml -match 'Content="[^"]*Ctrl \+ K"') {
@@ -235,7 +241,7 @@ foreach ($paletteEntry in @(@('Light', $lightPalette), @('Dark', $darkPalette)))
     }
   }
 }
-Write-Host 'PASS  light/dark-theme dynamic resources and high-contrast text contract'
+Write-Host 'PASS  light/dark-theme dynamic resources, aligned vector navigation icons and high-contrast text contract'
 
 if ($appStartupSource -notmatch [regex]::Escape('DesktopShortcutService.EnsureForInstalledApp();') -or
     $desktopShortcutSource -notmatch [regex]::Escape('ShortcutLocation.Desktop') -or
