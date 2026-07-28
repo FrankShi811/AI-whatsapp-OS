@@ -1586,6 +1586,10 @@ public sealed class LocalRepository
             }
             if (!resolvedPhones.TryGetValue(digits, out var lead) || lead is null) continue;
             conversation.LeadId = lead.Id;
+            conversation.DisplayName = Services.WhatsAppConversationNaming.Resolve(
+                lead,
+                conversation.Phone,
+                conversation.DisplayName);
             linked.Add(lead.Id);
             if (!latestConversations.TryGetValue(lead.Id, out var previous) || conversation.LastMessageAt > previous.LastMessageAt) latestConversations[lead.Id] = conversation;
             await using var update = db.CreateCommand();

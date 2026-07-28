@@ -39,6 +39,7 @@ $bridgeConversationRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath 
 $whatsAppInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml.cs')
 $emailInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\EmailInboxView.xaml.cs')
 $whatsAppSyncSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppSyncService.cs')
+$whatsAppNamingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppConversationNaming.cs')
 $whatsAppManagerSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppConnectionManager.cs')
 $campaignAutomationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CampaignAutomationService.cs')
 $customerSuccessSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerSuccessAgentCoordinator.cs')
@@ -438,6 +439,14 @@ if ($mainWindowXaml -notmatch 'x:Name="WhatsAppUnreadBadge"' -or
   throw 'WhatsApp and email sidebar navigation must expose durable live application-wide unread counters with periodic reconciliation.'
 }
 Write-Host 'PASS  application-wide account synchronization, durable unread cursor and sidebar badge contract'
+
+if ($whatsAppNamingSource -notmatch [regex]::Escape('lead?.DisplayName') -or
+    $whatsAppSyncSource -notmatch 'WhatsAppConversationNaming\.Resolve' -or
+    $localRepositorySource -notmatch 'WhatsAppConversationNaming\.Resolve' -or
+    $whatsAppInboxSource -notmatch 'WhatsAppConversationNaming\.Resolve') {
+  throw 'WhatsApp conversation naming must prefer the unique CRM phone match and fall back to the native phone remark.'
+}
+Write-Host 'PASS  WhatsApp conversation CRM-name priority and phone-remark fallback contract'
 
 if ($emailInboxXaml -notmatch [regex]::Escape('Visibility="{Binding UnreadVisibility}"') -or
     $emailInboxXaml -notmatch [regex]::Escape('Text="{Binding UnreadLabel}"') -or

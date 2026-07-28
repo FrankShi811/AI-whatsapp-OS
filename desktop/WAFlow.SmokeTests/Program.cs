@@ -80,6 +80,8 @@ Check(alreadyInternationalUsPhone.Valid && alreadyInternationalUsPhone.E164 == "
 Check(PhoneIdentity.IsMatch("+113373224256", "+13373224256"), "legacy duplicated country code still matches WhatsApp number by complete suffix");
 var customPhoneLead = new Lead { Name="custom phone", CustomFields=new Dictionary<string, string> { ["WhatsApp号码"]="1-337-322-4256" } };
 Check(PhoneIdentity.FindUniqueLead([customPhoneLead], "+13373224256")?.Id == customPhoneLead.Id, "WhatsApp custom column participates in customer matching");
+Check(WhatsAppConversationNaming.Resolve(customPhoneLead, "+13373224256", "Phone Remark") == customPhoneLead.DisplayName, "CRM customer name takes precedence over the WhatsApp contact remark after a safe phone match");
+Check(WhatsAppConversationNaming.Resolve(null, "+13373224256", "Phone Remark", "Provider Push Name") == "Phone Remark", "unmatched WhatsApp contact keeps the phone remark");
 var groupRequest = WhatsAppGroupCreateRequest.CreateValidated("Priority Buyers", ["+44 7700 900123", "447700900123", "+1 415 555 0103"]);
 Check(groupRequest.Subject == "Priority Buyers" && groupRequest.ParticipantPhones.SequenceEqual(["+447700900123", "+14155550103"]), "WhatsApp group request validates and deduplicates international members");
 try { WhatsAppGroupCreateRequest.CreateValidated("", ["+447700900123"]); Check(false, "WhatsApp group rejects empty subject"); }
@@ -512,12 +514,59 @@ whatsappContact.NotifyName = "James updated";
 await repository.UpsertWhatsAppContactAsync(whatsappContact);
 var storedContact = (await repository.GetWhatsAppContactsAsync()).Single(x => x.Id == whatsappContact.Id);
 Check(storedContact.Phone == "447700900123" && storedContact.NotifyName == "James updated", "WhatsApp contact history is persisted and updated idempotently");
+await using (var namingBridge = new WhatsAppConnectionManager())
+{
+    var namingSync = new WhatsAppSyncService(repository, namingBridge);
+    var ingestContact = typeof(WhatsAppSyncService).GetMethod("IngestContactAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    using var matchedContactDocument = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        jid = whatsappContact.Jid,
+        phone = whatsappContact.Phone,
+        displayName = "WhatsApp James",
+        savedName = "James Phone Remark",
+        source = "history:contacts"
+    }));
+    await (Task)ingestContact.Invoke(namingSync, ["primary", matchedContactDocument.RootElement.Clone()])!;
+    var matchedConversation = await repository.GetWhatsAppConversationAsync("primary", whatsappContact.Phone);
+    Check(matchedConversation?.LeadId == whatsappLead.Id && matchedConversation.DisplayName == whatsappLead.DisplayName, "live WhatsApp contact sync uses the CRM customer name after a unique phone match");
+
+    using var unmatchedContactDocument = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        jid = "15550001111@s.whatsapp.net",
+        phone = "15550001111",
+        displayName = "Provider Name",
+        savedName = "Only On Phone",
+        source = "history:contacts"
+    }));
+    await (Task)ingestContact.Invoke(namingSync, ["primary", unmatchedContactDocument.RootElement.Clone()])!;
+    var unmatchedConversation = await repository.GetWhatsAppConversationAsync("primary", "15550001111");
+    Check(unmatchedConversation?.LeadId.Length == 0 && unmatchedConversation.DisplayName == "Only On Phone", "unmatched live WhatsApp contact sync preserves the phone remark");
+
+    var ingestMessageName = typeof(WhatsAppSyncService).GetMethod("IngestMessageAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    using var matchedMessageDocument = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        jid = whatsappContact.Jid,
+        phone = whatsappContact.Phone,
+        id = "wamid-crm-name-priority",
+        fromMe = false,
+        timestamp = DateTimeOffset.Now.ToString("O"),
+        source = "notify",
+        kind = "text",
+        text = "Name priority",
+        pushName = "Wrong Push Name"
+    }));
+    await (Task)ingestMessageName.Invoke(namingSync, ["primary", matchedMessageDocument.RootElement.Clone()])!;
+    matchedConversation = await repository.GetWhatsAppConversationAsync("primary", whatsappContact.Phone);
+    Check(matchedConversation?.DisplayName == whatsappLead.DisplayName, "incoming WhatsApp push name cannot overwrite a matched CRM customer name");
+}
 var conversation = new WhatsAppConversation { Id="primary:447700900123", AccountId="primary", Phone="447700900123", LeadId=whatsappLead.Id, DisplayName=whatsappLead.DisplayName, LastMessage="Hello", LastMessageAt=DateTimeOffset.Now, UnreadCount=1 };
 await repository.UpsertWhatsAppConversationAsync(conversation);
 var whatsappMessage = new WhatsAppMessage { Id="primary:wamid-smoke", ProviderMessageId="wamid-smoke", AccountId="primary", ConversationId=conversation.Id, LeadId=whatsappLead.Id, Phone=conversation.Phone, Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received, Body="Hello", Timestamp=DateTimeOffset.Now };
 var messageInserted = await repository.UpsertWhatsAppMessageAsync(whatsappMessage);
 var messageInsertedTwice = await repository.UpsertWhatsAppMessageAsync(whatsappMessage);
-Check(messageInserted && !messageInsertedTwice && (await repository.GetWhatsAppMessagesAsync(conversation.Id)).Count == 1, "WhatsApp message idempotency");
+Check(messageInserted && !messageInsertedTwice
+      && (await repository.GetWhatsAppMessagesAsync(conversation.Id)).Count(message => message.Id == whatsappMessage.Id) == 1,
+    "WhatsApp message idempotency");
 var unavailableMessage = new WhatsAppMessage
 {
     Id="primary:wamid-recovery", ProviderMessageId="wamid-recovery", AccountId="primary", ConversationId=conversation.Id,
@@ -832,7 +881,7 @@ var suffixConversation = new WhatsAppConversation
 await repository.UpsertWhatsAppConversationAsync(suffixConversation);
 await repository.SynchronizeLeadConnectionsFromInboxAsync([suffixLead]);
 var linkedSuffixConversation = await repository.GetWhatsAppConversationAsync("primary", "13373224256");
-Check(linkedSuffixConversation?.LeadId == suffixLead.Id && linkedSuffixConversation.DisplayName == "RI", "phone suffix match links CRM data without overwriting the native WhatsApp conversation name");
+Check(linkedSuffixConversation?.LeadId == suffixLead.Id && linkedSuffixConversation.DisplayName == suffixLead.DisplayName, "unique phone suffix match links CRM data and replaces the native WhatsApp name with the CRM customer name");
 Check(linkedSuffixConversation?.IsPinned == true && linkedSuffixConversation.PinnedAt is not null, "WhatsApp pinned conversation state persists");
 var mediaMessage = new WhatsAppMessage
 {

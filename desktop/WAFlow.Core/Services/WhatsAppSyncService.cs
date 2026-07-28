@@ -116,14 +116,16 @@ public sealed class WhatsAppSyncService
         {
             conversation.LeadId = "";
         }
-        if (!string.IsNullOrWhiteSpace(displayName) && displayName != $"+{phone}")
-        {
-            conversation.DisplayName = displayName;
-        }
-        else if (ownedPeer is not null && string.IsNullOrWhiteSpace(conversation.DisplayName))
-        {
-            conversation.DisplayName = ownedPeer.Name;
-        }
+        conversation.DisplayName = WhatsAppConversationNaming.Resolve(
+            lead,
+            phone,
+            contact.SavedName,
+            contact.DisplayName,
+            contact.NotifyName,
+            contact.VerifiedName,
+            contact.Username,
+            conversation.DisplayName,
+            ownedPeer?.Name);
         await _repository.UpsertWhatsAppConversationAsync(conversation);
     }
 
@@ -175,14 +177,12 @@ public sealed class WhatsAppSyncService
         {
             conversation.LeadId = "";
         }
-        if (!string.IsNullOrWhiteSpace(displayName) && displayName != $"+{phone}")
-        {
-            conversation.DisplayName = displayName;
-        }
-        else if (ownedPeer is not null && string.IsNullOrWhiteSpace(conversation.DisplayName))
-        {
-            conversation.DisplayName = ownedPeer.Name;
-        }
+        conversation.DisplayName = WhatsAppConversationNaming.Resolve(
+            lead,
+            phone,
+            displayName,
+            conversation.DisplayName,
+            ownedPeer?.Name);
         ApplyChatSnapshot(conversation, data);
         if (conversation.LastReadAt is not null)
         {
@@ -252,11 +252,15 @@ public sealed class WhatsAppSyncService
         {
             conversation.LeadId = "";
         }
-        if (!isGroup && !fromMe)
+        if (!isGroup)
         {
             var pushName = WhatsAppTextEncodingRepair.Repair(Text(data, "pushName"));
-            if (!string.IsNullOrWhiteSpace(pushName) && pushName != $"+{phone}")
-                conversation.DisplayName = pushName;
+            conversation.DisplayName = WhatsAppConversationNaming.Resolve(
+                lead,
+                phone,
+                conversation.DisplayName,
+                pushName,
+                ownedPeer?.Name);
         }
         var message = new WhatsAppMessage
         {

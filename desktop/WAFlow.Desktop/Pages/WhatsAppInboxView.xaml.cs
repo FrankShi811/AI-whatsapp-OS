@@ -101,8 +101,11 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         var refreshed = new Dictionary<string, ConversationItem>(StringComparer.OrdinalIgnoreCase);
         foreach (var saved in persisted)
         {
-            var conversation = new ConversationItem(saved.AccountId, saved.Phone, saved.DisplayName, saved.Jid) { IsGroup = saved.IsGroup };
             var linkedLead = saved.IsGroup ? null : FindLead(saved.Phone);
+            var preferredName = saved.IsGroup
+                ? saved.DisplayName
+                : WhatsAppConversationNaming.Resolve(linkedLead, saved.Phone, saved.DisplayName);
+            var conversation = new ConversationItem(saved.AccountId, saved.Phone, preferredName, saved.Jid) { IsGroup = saved.IsGroup };
             conversation.LeadId = !saved.IsGroup && FindOwnedPeerAccount(saved.AccountId, saved.Phone) is not null
                 ? ""
                 : linkedLead?.Id ?? saved.LeadId;
@@ -114,7 +117,10 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         {
             var itemId = string.IsNullOrWhiteSpace(contact.Phone) ? contact.Id : $"{contact.AccountId}:{contact.Phone}";
             var linkedLead = string.IsNullOrWhiteSpace(contact.Phone) ? null : FindLead(contact.Phone);
-            var contactName = BestContactName(contact);
+            var contactName = WhatsAppConversationNaming.Resolve(
+                linkedLead,
+                contact.Phone,
+                BestContactName(contact));
             if (!refreshed.TryGetValue(itemId, out var conversation))
             {
                 conversation = new ConversationItem(contact.AccountId, contact.Phone, contactName, contact.Jid) { LastMessage = "WhatsApp 联系人", LeadId = linkedLead?.Id ?? "" };
@@ -124,7 +130,11 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             {
                 conversation.Jid = contact.Jid;
                 if (linkedLead is not null) conversation.LeadId = linkedLead.Id;
-                if (!string.IsNullOrWhiteSpace(contactName)) conversation.DisplayName = contactName;
+                conversation.DisplayName = WhatsAppConversationNaming.Resolve(
+                    linkedLead,
+                    contact.Phone,
+                    contactName,
+                    conversation.DisplayName);
             }
         }
         var ordered = OrderConversations(refreshed.Values).ToList();
@@ -169,10 +179,11 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             var contacts = await _services.Repository.GetWhatsAppContactsAsync(CurrentAccountId);
             var candidates = contacts
                 .Where(contact => PhoneNormalizer.Normalize(contact.Phone, null).Valid)
-                .Select(contact => new CreateWhatsAppGroupWindow.GroupMemberCandidate(
-                    string.IsNullOrWhiteSpace(contact.DisplayName) ? $"+{new string(contact.Phone.Where(char.IsDigit).ToArray())}" : contact.DisplayName,
-                    contact.Phone,
-                    "WhatsApp 联系人"))
+                .Select(contact => new { Contact = contact, Lead = FindLead(contact.Phone) })
+                .Select(item => new CreateWhatsAppGroupWindow.GroupMemberCandidate(
+                    WhatsAppConversationNaming.Resolve(item.Lead, item.Contact.Phone, BestContactName(item.Contact)),
+                    item.Contact.Phone,
+                    item.Lead is null ? "WhatsApp 联系人" : "CRM 客户"))
                 .ToList();
             var dialog = new CreateWhatsAppGroupWindow(candidates) { Owner = Window.GetWindow(this) };
             if (dialog.ShowDialog() != true || dialog.Request is null) return;
@@ -454,12 +465,29 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             var preferredName = string.IsNullOrWhiteSpace(displayName)
                 ? isGroup ? "WhatsApp 群聊" : FindOwnedPeerAccount(accountId, phone)?.Name ?? $"+{phone}"
                 : displayName;
+            if (!isGroup)
+                preferredName = WhatsAppConversationNaming.Resolve(
+                    linkedLead,
+                    phone,
+                    preferredName,
+                    FindOwnedPeerAccount(accountId, phone)?.Name);
             conversation = new ConversationItem(accountId, phone, preferredName, jid) { LeadId = linkedLead?.Id ?? "", IsGroup = isGroup };
             _conversations.Insert(0, conversation);
         }
         else if (isGroup && !string.IsNullOrWhiteSpace(displayName))
         {
             conversation.DisplayName = displayName;
+        }
+        else if (!isGroup)
+        {
+            var linkedLead = FindLead(phone);
+            conversation.LeadId = linkedLead?.Id ?? conversation.LeadId;
+            conversation.DisplayName = WhatsAppConversationNaming.Resolve(
+                linkedLead,
+                phone,
+                conversation.DisplayName,
+                displayName,
+                FindOwnedPeerAccount(accountId, phone)?.Name);
         }
         var isStatusUpdate = Bool(e.Data, "isStatusUpdate");
         var senderName = WhatsAppTextEncodingRepair.Repair(Text(e.Data, "participantName"));
