@@ -30,6 +30,15 @@ export const dbPromise = openDB<SalesDb>("ai-sales-os-pwa", 1, {
 export const storage = {
   leads: async () => (await dbPromise).getAll("leads"),
   saveLead: async (lead: Lead) => (await dbPromise).put("leads", lead),
+  importLeads: async (leads: Lead[], removeIds: string[] = []) => {
+    const db = await dbPromise;
+    const tx = db.transaction("leads", "readwrite");
+    await Promise.all([
+      ...removeIds.map(id => tx.store.delete(id)),
+      ...leads.map(lead => tx.store.put(lead))
+    ]);
+    await tx.done;
+  },
   deleteLead: async (id: string) => (await dbPromise).delete("leads", id),
   touches: async () => (await dbPromise).getAll("touches"),
   saveTouch: async (touch: Touch) => (await dbPromise).put("touches", touch),

@@ -1,4 +1,4 @@
-# AI Sales OS PWA v5.5
+# AI Sales OS PWA v5.5.1
 
 AI Sales OS 的纯浏览器版本，面向 macOS、Windows、iPhone、Android 等现代浏览器。它与 Windows 原生正式版共用产品方向，但数据和运行环境完全独立。
 

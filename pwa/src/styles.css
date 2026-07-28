@@ -195,7 +195,7 @@ progress::-moz-progress-bar { background: var(--primary); }
 .next-action strong { line-height: 1.45; }
 
 .toolbar { margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-.toolbar > span { color: var(--muted); font-size: 13px; }
+.toolbar > span { flex: none; color: var(--muted); font-size: 13px; white-space: nowrap; }
 .search { height: 46px; border: 1px solid var(--line); border-radius: 12px; display: flex; align-items: center; gap: 10px; background: var(--surface); }
 .toolbar .search { width: min(620px, 100%); }
 .search svg { flex: none; margin-left: 13px; width: 17px; color: var(--muted); }
@@ -203,12 +203,34 @@ progress::-moz-progress-bar { background: var(--primary); }
 .table-shell { min-height: 430px; border: 1px solid var(--line); border-radius: 18px; overflow: hidden; background: var(--surface); box-shadow: var(--shadow); }
 .data-table { min-width: 880px; }
 .table-row { width: 100%; min-height: 76px; padding: 0 20px; border: 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1.2fr 1.05fr 1.2fr .7fr .65fr 35px; gap: 18px; align-items: center; background: var(--surface); text-align: left; cursor: pointer; }
+.table-row:not(.table-head) { content-visibility: auto; contain-intrinsic-size: auto 76px; }
 .table-row:not(.table-head):hover { background: var(--surface-muted); }
 .table-row span { min-width: 0; display: flex; flex-direction: column; gap: 3px; overflow: hidden; text-overflow: ellipsis; }
 .table-row small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table-head { min-height: 50px; background: var(--surface-muted); color: var(--muted); font-size: 12px; font-weight: 800; cursor: default; }
 .row-delete { width: 34px; height: 34px; border: 0; border-radius: 9px; display: grid; place-items: center; background: transparent; color: var(--muted); cursor: pointer; }
 .row-delete:hover { background: color-mix(in srgb, var(--danger) 12%, var(--surface)); color: var(--danger); }
+.import-file-summary { padding: 15px; border: 1px solid var(--line); border-radius: 14px; display: flex; align-items: center; gap: 13px; background: var(--surface-muted); }
+.import-file-summary > span { flex: none; width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; background: var(--primary-soft); color: var(--primary-dark); }
+.import-file-summary > div { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.import-file-summary strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-file-summary small { color: var(--muted); }
+.import-controls { margin-top: 16px; align-items: end; }
+.import-shape { min-height: 69px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: 8px; background: var(--surface-muted); }
+.import-shape span, .import-shape small { color: var(--muted); }
+.import-shape strong { color: var(--primary-dark); font-size: 27px; }
+.mapped-fields { margin-top: 18px; }
+.mapped-fields > strong { display: block; margin-bottom: 9px; font-size: 13px; }
+.mapped-fields > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.mapped-fields span { padding: 6px 9px; border-radius: 99px; background: var(--primary-soft); color: var(--primary-dark); font-size: 11px; font-weight: 700; }
+.import-preview { margin-top: 17px; border: 1px solid var(--line); border-radius: 14px; overflow: auto; }
+.import-preview > div { min-width: 720px; min-height: 54px; padding: 9px 13px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1fr 1.25fr 1fr .8fr; gap: 14px; align-items: center; font-size: 12px; }
+.import-preview > div:last-child { border-bottom: 0; }
+.import-preview > div > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-preview > div > span:first-child, .import-preview > div > span:nth-child(3), .import-preview > div > span:nth-child(4) { display: flex; flex-direction: column; }
+.import-preview small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.import-preview-head { min-height: 40px !important; background: var(--surface-muted); color: var(--muted); font-weight: 800; }
+.import-note { margin: 14px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
 
 .intelligence-layout, .analytics-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 18px; }
 .lead-rail, .analysis-people { padding: 18px; align-self: start; }

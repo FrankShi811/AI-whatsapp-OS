@@ -4,6 +4,7 @@ export type Direction = "incoming" | "outgoing";
 
 export interface Lead {
   id: string;
+  importKey?: string;
   buyerId: string;
   name: string;
   nickname: string;

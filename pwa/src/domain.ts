@@ -3,7 +3,7 @@ import type { BrainProfile, Grade, KnowledgeDocument, Lead, Touch } from "./type
 export const uid = () => crypto.randomUUID();
 export const normalizePhone = (value: string) => {
   const digits = value.replace(/\D/g, "");
-  return digits ? `+${digits}` : "";
+  return digits.length >= 7 && !/^0+$/.test(digits) ? `+${digits}` : "";
 };
 export const normalizeBuyer = (value: string) => value.trim().toLowerCase();
 

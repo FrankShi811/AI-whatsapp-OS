@@ -12,6 +12,7 @@ interface StoreValue {
   aiSettings: AiSettings;
   refresh: () => Promise<void>;
   saveLead: (lead: Lead) => Promise<void>;
+  importLeads: (leads: Lead[], removeIds?: string[]) => Promise<void>;
   removeLead: (id: string) => Promise<void>;
   saveTouch: (touch: Touch) => Promise<void>;
   saveKnowledge: (doc: KnowledgeDocument) => Promise<void>;
@@ -49,6 +50,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const actions = useMemo(() => ({
     saveLead: async (lead: Lead) => { await storage.saveLead(lead); await refresh(); },
+    importLeads: async (leads: Lead[], removeIds: string[] = []) => {
+      await storage.importLeads(leads, removeIds);
+      await refresh();
+    },
     removeLead: async (id: string) => { await storage.deleteLead(id); await refresh(); },
     saveTouch: async (touch: Touch) => { await storage.saveTouch(touch); await refresh(); },
     saveKnowledge: async (doc: KnowledgeDocument) => { await storage.saveKnowledge(doc); await refresh(); },
