@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace WAFlow.Core.Services;
 
-public sealed class WhatsAppConnectionManager : IAsyncDisposable
+public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLookup, IAsyncDisposable
 {
     private readonly ConcurrentDictionary<string, WhatsAppBridgeClient> _clients = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _connectionGates = new(StringComparer.OrdinalIgnoreCase);
@@ -71,6 +71,15 @@ public sealed class WhatsAppConnectionManager : IAsyncDisposable
     public Task<JsonElement> SendTextAsync(string phone, string text, CancellationToken cancellationToken = default) => SendTextAsync(ActiveAccountId, phone, text, cancellationToken);
     public Task<JsonElement> SendTextAsync(string accountId, string phone, string text, CancellationToken cancellationToken = default) => GetClient(accountId).SendTextAsync(phone, text, cancellationToken);
     public Task<JsonElement> ValidateNumberAsync(string accountId, string phone, CancellationToken cancellationToken = default) => GetClient(accountId).ValidateNumberAsync(phone, cancellationToken);
+    public async Task<WhatsAppNumberRegistrationLookupResult> LookupRegistrationAsync(string accountId, string phone, CancellationToken cancellationToken = default)
+    {
+        var result = await ValidateNumberAsync(accountId, phone, cancellationToken);
+        if (!result.TryGetProperty("exists", out var existsElement)
+            || existsElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+            throw new JsonException("WhatsApp 号码检测未返回明确的注册结果。");
+        var jid = result.TryGetProperty("jid", out var jidElement) ? jidElement.GetString() ?? "" : "";
+        return new WhatsAppNumberRegistrationLookupResult(existsElement.GetBoolean(), jid);
+    }
     public Task<JsonElement> SendReplyTextAsync(string accountId, string phone, string text, string quotedMessageId, string quotedText, bool quotedFromMe, CancellationToken cancellationToken = default) => GetClient(accountId).SendReplyTextAsync(phone, text, quotedMessageId, quotedText, quotedFromMe, cancellationToken);
     public Task<JsonElement> SendMediaAsync(string phone, string path, string caption = "", CancellationToken cancellationToken = default) => SendMediaAsync(ActiveAccountId, phone, path, caption, cancellationToken);
     public Task<JsonElement> SendMediaAsync(string accountId, string phone, string path, string caption, CancellationToken cancellationToken = default) => GetClient(accountId).SendMediaAsync(phone, path, caption, cancellationToken);

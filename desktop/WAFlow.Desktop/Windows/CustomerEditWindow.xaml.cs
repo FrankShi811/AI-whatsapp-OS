@@ -272,10 +272,13 @@ public partial class CustomerEditWindow : Window
             _lead.Name = name;
             _lead.Company = company;
             _lead.Country = CountryBox.Text.Trim();
+            var previousPhone = _lead.PhoneE164;
             var rawPhone = PhoneBox.Text.Trim();
             var normalized = PhoneNormalizer.Normalize(rawPhone, _lead.Country);
             _lead.PhoneE164 = rawPhone.Length == 0 ? "" : normalized.E164.Length > 0 ? normalized.E164 : rawPhone;
             _lead.PhoneValid = normalized.Valid;
+            if (!PhoneIdentity.Digits(previousPhone).Equals(PhoneIdentity.Digits(_lead.PhoneE164), StringComparison.Ordinal))
+                _lead.QueueWhatsAppRegistrationCheck();
             _lead.Email = EmailBox.Text.Trim();
             _lead.Owner = OwnerBox.Text.Trim();
             _lead.PreferredLanguage = string.IsNullOrWhiteSpace(LanguageBox.Text) ? "en" : LanguageBox.Text.Trim();
@@ -304,6 +307,8 @@ public partial class CustomerEditWindow : Window
                 LeadScoringService.ResetToAiBaseline(_lead);
             }
             await _services.Repository.UpsertLeadAsync(_lead);
+            if (_lead.PhoneValid && _lead.WhatsAppRegistrationStatus == WhatsAppRegistrationStatus.Pending)
+                _services.WhatsAppNumberValidation.NotifyPendingWork();
             await _services.Repository.LogEventAsync("customer_edited", _lead.Id, null, $"edited core fields and {_lead.CustomFields.Count} table dimensions");
             await _services.Repository.UpsertCustomerEventAsync(new CustomerEventLogEntry
             {

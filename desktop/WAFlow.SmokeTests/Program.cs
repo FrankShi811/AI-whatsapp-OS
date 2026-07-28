@@ -167,11 +167,45 @@ var elena = await repository.GetLeadAsync("lead_elena");
 Check(elena?.Stage == WAFlow.Core.Domain.LeadStage.Negotiation, "duplicate stage protected by default");
 var newBuyer = (await repository.GetLeadsAsync("New Buyer")).Single();
 Check(newBuyer.PhoneE164 == "+07700900999" && !newBuyer.PhoneValid, "import never prepends a country dialing code and only adds plus");
+Check(committed.PendingWhatsAppChecks == 1
+      && elena?.WhatsAppRegistrationStatus == WhatsAppRegistrationStatus.Pending
+      && elena.PhoneState == "待检测"
+      && newBuyer.PhoneState == "格式风险",
+    "spreadsheet import queues real WhatsApp registration checks instead of treating number shape as validity");
 Check(newBuyer.CustomFields.GetValueOrDefault("门店数量") == "12" && newBuyer.CustomFields.GetValueOrDefault("采购周期") == "Quarterly", "custom dimensions persisted on lead");
 Check(newBuyer.CustomFields.Count == parsed.Sheets[0].Headers.Count && newBuyer.CustomFields.GetValueOrDefault("客户姓名") == "New Buyer", "every original spreadsheet column persisted");
 Check(newBuyer is { Grade: "D", Score: 0, AnalysisStatus: AnalysisStatus.NotRun, AiScoreApplied: false }, "new imports stay D until an AI analysis succeeds");
 var dashboard = await repository.GetDashboardAsync();
 Check(dashboard.TotalLeads == 6, "SQLite persisted seed plus imported lead");
+
+var numberValidationRoot = Path.Combine(root, "whatsapp-number-validation");
+var numberValidationRepository = new LocalRepository(Path.Combine(numberValidationRoot, "validation.db"));
+await numberValidationRepository.InitializeAsync();
+await numberValidationRepository.SaveWhatsAppAccountsAsync([
+    new WhatsAppAccount { Id="validation", Name="Validation", LinkedPhone="+14155550000" }
+]);
+await numberValidationRepository.UpsertLeadAsync(new Lead { Id="registered-number", Name="Registered", PhoneE164="+14155550101", PhoneValid=true });
+await numberValidationRepository.UpsertLeadAsync(new Lead { Id="unregistered-number", Name="Unregistered", PhoneE164="+14155550102", PhoneValid=true });
+await numberValidationRepository.UpsertLeadAsync(new Lead { Id="retry-number", Name="Retry", PhoneE164="+14155550103", PhoneValid=true });
+var numberLookup = new FakeWhatsAppNumberRegistrationLookup();
+await using (var numberValidation = new WhatsAppNumberValidationService(numberValidationRepository, numberLookup, TimeSpan.Zero))
+{
+    Check(await numberValidation.ProcessPendingAsync() == 0, "WhatsApp registration queue waits for a connected account");
+    numberLookup.Connected = true;
+    Check(await numberValidation.ProcessPendingAsync() >= 3, "connected WhatsApp account processes all queued registration checks");
+}
+var registeredNumber = await numberValidationRepository.GetLeadAsync("registered-number");
+var unregisteredNumber = await numberValidationRepository.GetLeadAsync("unregistered-number");
+var retryNumber = await numberValidationRepository.GetLeadAsync("retry-number");
+Check(registeredNumber is { IsWhatsAppRegistered: true, PhoneState: "有效" }
+      && registeredNumber.WhatsAppRegistrationCheckedAt is not null,
+    "WhatsApp explicit exists=true is the only path to a valid number");
+Check(unregisteredNumber is { IsWhatsAppRegistered: false, PhoneState: "无效", WhatsAppRegistrationStatus: WhatsAppRegistrationStatus.NotRegistered }
+      && unregisteredNumber.WhatsAppRegistrationCheckedAt is not null,
+    "WhatsApp explicit exists=false marks the number invalid");
+Check(retryNumber is { PhoneState: "待重试", WhatsAppRegistrationStatus: WhatsAppRegistrationStatus.RetryableFailed }
+      && retryNumber.WhatsAppRegistrationNextRetryAt is not null,
+    "network or provider errors stay retryable and never become invalid");
 
 var assistantLead = new Lead { Id="assistant-lead", Name="Assistant Buyer", PhoneE164="+14155550999", PhoneValid=true, Grade="D", Score=0 };
 await repository.UpsertLeadAsync(assistantLead);
@@ -3343,4 +3377,25 @@ sealed class FakeCustomerSuccessAgentProvider : IStructuredAiProvider
         ],
         Confidence = .94
     };
+}
+
+sealed class FakeWhatsAppNumberRegistrationLookup : IWhatsAppNumberRegistrationLookup
+{
+    public bool Connected { get; set; }
+
+    public bool IsConnectedFor(string accountId) => Connected && accountId == "validation";
+
+    public Task<WhatsAppNumberRegistrationLookupResult> LookupRegistrationAsync(
+        string accountId,
+        string phone,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!IsConnectedFor(accountId)) throw new WhatsAppBridgeException("whatsapp_not_connected", "not connected");
+        if (phone.EndsWith("103", StringComparison.Ordinal))
+            throw new WhatsAppBridgeException("whatsapp_check_unavailable", "temporary lookup failure");
+        var exists = phone.EndsWith("101", StringComparison.Ordinal);
+        var digits = new string(phone.Where(char.IsDigit).ToArray());
+        return Task.FromResult(new WhatsAppNumberRegistrationLookupResult(exists, exists ? $"{digits}@s.whatsapp.net" : ""));
+    }
 }

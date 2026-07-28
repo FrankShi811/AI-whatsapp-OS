@@ -124,7 +124,7 @@
                         <DataGridTextColumn Header="客户" Binding="{Binding DisplayName}" SortMemberPath="DisplayName" Width="180" ElementStyle="{StaticResource CustomerCellText}"/>
                         <DataGridTextColumn Header="国家" Binding="{Binding Country}" SortMemberPath="Country" Width="120" ElementStyle="{StaticResource CustomerCellText}"/>
                         <DataGridTextColumn Header="WhatsApp" Binding="{Binding PhoneE164}" SortMemberPath="PhoneE164" Width="145" ElementStyle="{StaticResource CustomerCellText}"/>
-                        <DataGridTextColumn Header="号码" Binding="{Binding PhoneState}" SortMemberPath="PhoneState" Width="65" ElementStyle="{StaticResource CustomerCellText}"/>
+                        <DataGridTextColumn Header="WhatsApp 状态" Binding="{Binding PhoneState}" SortMemberPath="PhoneState" Width="105" ElementStyle="{StaticResource CustomerCellText}"/>
                         <DataGridTextColumn Header="标签" Binding="{Binding TagsLabel}" SortMemberPath="TagsLabel" Width="150" ElementStyle="{StaticResource CustomerCellText}"/>
                         <DataGridTextColumn Header="负责人" Binding="{Binding Owner}" SortMemberPath="Owner" Width="110" ElementStyle="{StaticResource CustomerCellText}"/>
                         <DataGridTextColumn Header="等级" Binding="{Binding Grade}" SortMemberPath="Grade" Width="58" ElementStyle="{StaticResource CustomerCellText}"/>

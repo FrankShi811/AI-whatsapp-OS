@@ -12,6 +12,7 @@ public sealed class AppServices
     public WindowsCredentialStore Secrets { get; }
     public DeepSeekService DeepSeek { get; }
     public WhatsAppConnectionManager WhatsApp { get; }
+    public WhatsAppNumberValidationService WhatsAppNumberValidation { get; }
     public WhatsAppSyncService WhatsAppSync { get; }
     public EmailService Email { get; }
     public EmailAssistantService EmailAssistant { get; }
@@ -50,6 +51,7 @@ public sealed class AppServices
             new CompositeKnowledgeDocumentParser(new AiProviderImageTextExtractor(DeepSeek)));
         Imports = new ImportService(Repository);
         WhatsApp = new WhatsAppConnectionManager();
+        WhatsAppNumberValidation = new WhatsAppNumberValidationService(Repository, WhatsApp);
         WhatsAppSync = new WhatsAppSyncService(Repository, WhatsApp);
         Email = new EmailService(Repository);
         EmailAssistant = new EmailAssistantService(Repository, DeepSeek, KnowledgeRetrieval);

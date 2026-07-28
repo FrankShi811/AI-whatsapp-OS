@@ -64,10 +64,11 @@ public partial class ImportWindow : Window
                 return (Commit: commit, DemosRemoved: demosRemoved);
             });
             var result = outcome.Commit;
+            _services.WhatsAppNumberValidation.NotifyPendingWork();
             var cleanupText = outcome.DemosRemoved > 0 ? $"\n\u5df2\u81ea\u52a8\u6e05\u7406 {outcome.DemosRemoved} \u6761\u6f14\u793a\u5ba2\u6237\u3002" : "";
 
             MessageBox.Show(
-                $"\u5bfc\u5165\u5b8c\u6210\n\u5904\u7406 {result.Total:N0} \u884c \u00b7 \u65b0\u5efa {result.Created:N0} \u00b7 \u66f4\u65b0 {result.Updated:N0}\n\u53f7\u7801\u98ce\u9669 {result.InvalidPhones:N0} \u00b7 \u5931\u8d25 {result.Failed:N0}\n\n\u539f\u5de5\u4f5c\u8868\u7684 {sheet.Headers.Count} \u5217\u5df2\u5168\u90e8\u4fdd\u7559\u4e3a\u5ba2\u6237\u7ef4\u5ea6\u3002{cleanupText}",
+                $"\u5bfc\u5165\u5b8c\u6210\n\u5904\u7406 {result.Total:N0} \u884c \u00b7 \u65b0\u5efa {result.Created:N0} \u00b7 \u66f4\u65b0 {result.Updated:N0}\n\u5df2\u52a0\u5165 WhatsApp \u771f\u5b9e\u53f7\u7801\u68c0\u6d4b {result.PendingWhatsAppChecks:N0} \u4e2a \u00b7 \u683c\u5f0f\u98ce\u9669 {result.InvalidPhones:N0} \u00b7 \u5931\u8d25 {result.Failed:N0}\n\n\u53ea\u6709 WhatsApp \u660e\u786e\u8fd4\u56de\u5df2\u6ce8\u518c\u624d\u4f1a\u6807\u8bb0\u201c\u6709\u6548\u201d\uff1b\u8d26\u53f7\u672a\u8fde\u63a5\u6216\u7f51\u7edc\u5f02\u5e38\u4f1a\u4fdd\u7559\u5f85\u91cd\u8bd5\u3002\n\u539f\u5de5\u4f5c\u8868\u7684 {sheet.Headers.Count} \u5217\u5df2\u5168\u90e8\u4fdd\u7559\u4e3a\u5ba2\u6237\u7ef4\u5ea6\u3002{cleanupText}",
                 "AI Sales OS", MessageBoxButton.OK, result.Failed > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
             DialogResult = true;
         }

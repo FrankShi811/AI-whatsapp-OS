@@ -58,7 +58,7 @@ public sealed class ImportPreviewRow
     public string ErrorsLabel => string.Join("；", Errors);
 }
 
-public sealed record ImportCommitResult(int Total, int Created, int Updated, int InvalidPhones, int Failed);
+public sealed record ImportCommitResult(int Total, int Created, int Updated, int InvalidPhones, int PendingWhatsAppChecks, int Failed);
 
 public sealed record ImportProgress(string Phase, int Completed, int Total)
 {

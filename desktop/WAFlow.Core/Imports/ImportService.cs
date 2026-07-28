@@ -303,8 +303,12 @@ public sealed class ImportService
         await _repository.SynchronizeLeadConnectionsFromInboxAsync(pending.Values.ToList(), cancellationToken);
         var invalid = preview.Count(x => !x.PhoneValid);
         await _repository.SaveImportSummaryAsync(fileName, preview.Count, created, updated, invalid, cancellationToken);
-        await _repository.LogEventAsync("import_committed", null, null, $"{fileName}; total={preview.Count}; created={created}; updated={updated}; invalid={invalid}", cancellationToken);
-        return new(preview.Count, created, updated, invalid, failed);
+        var pendingWhatsAppChecks = pending.Values.Count(lead =>
+            lead.PhoneValid
+            && !string.IsNullOrWhiteSpace(lead.PhoneE164)
+            && lead.WhatsAppRegistrationStatus == WhatsAppRegistrationStatus.Pending);
+        await _repository.LogEventAsync("import_committed", null, null, $"{fileName}; total={preview.Count}; created={created}; updated={updated}; invalid={invalid}; whatsapp_checks={pendingWhatsAppChecks}", cancellationToken);
+        return new(preview.Count, created, updated, invalid, pendingWhatsAppChecks, failed);
     }
 
     private static string BuildChanges(Lead lead, IReadOnlyDictionary<ImportField, string> values, IReadOnlyDictionary<string, string> customValues, NormalizedPhone normalized)
@@ -336,7 +340,12 @@ public sealed class ImportService
         SetExact(ImportField.Name, x => lead.Name = x);
         SetExact(ImportField.Company, x => lead.Company = x); SetExact(ImportField.Country, x => lead.Country = x);
         SetExact(ImportField.Email, x => lead.Email = x); SetExact(ImportField.ProductInterest, x => lead.ProductInterest = x); SetExact(ImportField.Source, x => lead.Source = x);
-        if (values.ContainsKey(ImportField.WhatsApp)) { lead.PhoneE164 = phone; lead.PhoneValid = phoneValid; }
+        if (values.ContainsKey(ImportField.WhatsApp))
+        {
+            lead.PhoneE164 = phone;
+            lead.PhoneValid = phoneValid;
+            lead.QueueWhatsAppRegistrationCheck();
+        }
         if (values.TryGetValue(ImportField.EstimatedOrderValue, out var amount))
             lead.EstimatedOrderValue = decimal.TryParse(amount.Replace(",", ""), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsedAmount) ? Math.Max(0, parsedAmount) : 0;
         if (values.TryGetValue(ImportField.CompanyScale, out var scale)) lead.CompanyScale = LeadScoringService.ParseSignal(scale);

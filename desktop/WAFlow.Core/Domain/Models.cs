@@ -50,6 +50,9 @@ public enum EmailMessageDirection { Incoming, Outgoing }
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum EmailMessageStatus { Draft, Sending, Sent, Received, Failed }
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum WhatsAppRegistrationStatus { Pending, Checking, Registered, NotRegistered, RetryableFailed }
+
 public sealed class Lead
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
@@ -59,6 +62,13 @@ public sealed class Lead
     public string Country { get; set; } = "";
     public string PhoneE164 { get; set; } = "";
     public bool PhoneValid { get; set; }
+    public WhatsAppRegistrationStatus WhatsAppRegistrationStatus { get; set; } = WhatsAppRegistrationStatus.Pending;
+    public string WhatsAppRegistrationPhone { get; set; } = "";
+    public DateTimeOffset? WhatsAppRegistrationCheckedAt { get; set; }
+    public DateTimeOffset? WhatsAppRegistrationLastAttemptAt { get; set; }
+    public DateTimeOffset? WhatsAppRegistrationNextRetryAt { get; set; }
+    public int WhatsAppRegistrationAttemptCount { get; set; }
+    public string WhatsAppRegistrationError { get; set; } = "";
     public bool OptedOut { get; set; }
     public bool WhatsAppOptIn { get; set; }
     public DateTimeOffset? WhatsAppOptInAt { get; set; }
@@ -114,7 +124,25 @@ public sealed class Lead
     [JsonIgnore] public string DisplayName => string.IsNullOrWhiteSpace(Name) ? Company : Name;
     [JsonIgnore] public string StageLabel => Labels.Stage(Stage);
     [JsonIgnore] public string AmountLabel => EstimatedOrderValue <= 0 ? "—" : $"{Currency} {EstimatedOrderValue:N0}";
-    [JsonIgnore] public string PhoneState => PhoneValid ? "有效" : "风险";
+    [JsonIgnore] public bool WhatsAppRegistrationMatchesCurrentPhone =>
+        PhoneDigits(WhatsAppRegistrationPhone).Length >= 7
+        && PhoneDigits(WhatsAppRegistrationPhone).Equals(PhoneDigits(PhoneE164), StringComparison.Ordinal);
+    [JsonIgnore] public bool IsWhatsAppRegistered =>
+        PhoneValid
+        && WhatsAppRegistrationStatus == WhatsAppRegistrationStatus.Registered
+        && WhatsAppRegistrationMatchesCurrentPhone;
+    [JsonIgnore] public string PhoneState => string.IsNullOrWhiteSpace(PhoneE164)
+        ? "无号码"
+        : !PhoneValid
+            ? "格式风险"
+            : WhatsAppRegistrationStatus switch
+            {
+                WhatsAppRegistrationStatus.Registered when WhatsAppRegistrationMatchesCurrentPhone => "有效",
+                WhatsAppRegistrationStatus.NotRegistered when WhatsAppRegistrationMatchesCurrentPhone => "无效",
+                WhatsAppRegistrationStatus.Checking => "检测中",
+                WhatsAppRegistrationStatus.RetryableFailed => "待重试",
+                _ => "待检测"
+            };
     [JsonIgnore] public string TagsLabel => string.Join(" · ", Tags);
     [JsonIgnore] public string CustomFieldsLabel => string.Join(" · ", CustomFields.Where(x => !string.IsNullOrWhiteSpace(x.Value)).Select(x => $"{x.Key}: {x.Value}"));
     [JsonIgnore] public string AnalysisStateLabel => AnalysisStatus == AnalysisStatus.RetryableFailed
@@ -129,6 +157,19 @@ public sealed class Lead
         }
         : Labels.Analysis(AnalysisStatus);
     [JsonIgnore] public bool HasCurrentAiScore => AiScoreApplied && AnalysisContractVersion == LeadIntelligenceContract.Version && AnalysisStatus == AnalysisStatus.Succeeded;
+
+    public void QueueWhatsAppRegistrationCheck()
+    {
+        WhatsAppRegistrationStatus = WhatsAppRegistrationStatus.Pending;
+        WhatsAppRegistrationPhone = "";
+        WhatsAppRegistrationCheckedAt = null;
+        WhatsAppRegistrationLastAttemptAt = null;
+        WhatsAppRegistrationNextRetryAt = null;
+        WhatsAppRegistrationAttemptCount = 0;
+        WhatsAppRegistrationError = "";
+    }
+
+    private static string PhoneDigits(string value) => new(value.Where(char.IsDigit).ToArray());
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]

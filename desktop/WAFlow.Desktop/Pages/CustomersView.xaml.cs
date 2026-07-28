@@ -33,12 +33,20 @@ public partial class CustomersView : UserControl, IRefreshableView
     public CustomersView(AppServices services)
     {
         InitializeComponent(); _services = services;
+        _services.WhatsAppNumberValidation.StatusChanged += WhatsAppNumberValidation_StatusChanged;
         GradeFilter.ItemsSource = new[] { "全部等级", "A", "B", "C", "D" }; GradeFilter.SelectedIndex = 0;
         StageFilter.ItemsSource = new[] { new StageOption("全部阶段", null) }.Concat(Enum.GetValues<LeadStage>().Select(x => new StageOption(Labels.Stage(x), x))).ToList(); StageFilter.SelectedIndex = 0;
         CustomFieldFilter.ItemsSource = new[] { new DimensionOption("全部表格维度", null) }; CustomFieldFilter.DisplayMemberPath = nameof(DimensionOption.Label); CustomFieldFilter.SelectedIndex = 0;
         PageSizeBox.ItemsSource = new[] { new PageSizeOption("10 条/页", 10), new PageSizeOption("30 条/页", 30), new PageSizeOption("50 条/页", 50) };
         PageSizeBox.SelectedIndex = 1;
     }
+
+    private void WhatsAppNumberValidation_StatusChanged(object? sender, WAFlow.Core.Services.WhatsAppNumberValidationChanged e) =>
+        Dispatcher.InvokeAsync(() =>
+        {
+            foreach (var row in _filteredRows.Where(item => item.Id.Equals(e.LeadId, StringComparison.OrdinalIgnoreCase)))
+                row.UpdateWhatsAppRegistration(e);
+        });
 
     public async Task RefreshAsync()
     {
@@ -365,6 +373,17 @@ public partial class CustomersView : UserControl, IRefreshableView
         public string Grade => Lead.Grade;
         public string StageLabel => Lead.StageLabel;
         public IReadOnlyDictionary<string, string> CustomFields => Lead.CustomFields;
+        public void UpdateWhatsAppRegistration(WAFlow.Core.Services.WhatsAppNumberValidationChanged state)
+        {
+            Lead.PhoneE164 = state.Phone;
+            Lead.WhatsAppRegistrationStatus = state.Status;
+            Lead.WhatsAppRegistrationCheckedAt = state.CheckedAt;
+            Lead.WhatsAppRegistrationError = state.Error;
+            if (state.Status is WhatsAppRegistrationStatus.Registered or WhatsAppRegistrationStatus.NotRegistered)
+                Lead.WhatsAppRegistrationPhone = state.Phone;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PhoneE164)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PhoneState)));
+        }
         public bool IsSelected
         {
             get => _isSelected;

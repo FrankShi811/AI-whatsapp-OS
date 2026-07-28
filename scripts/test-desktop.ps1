@@ -47,6 +47,7 @@ $emailInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $roo
 $whatsAppSyncSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppSyncService.cs')
 $whatsAppNamingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppConversationNaming.cs')
 $whatsAppManagerSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppConnectionManager.cs')
+$whatsAppNumberValidationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppNumberValidationService.cs')
 $campaignAutomationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CampaignAutomationService.cs')
 $customerSuccessSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerSuccessAgentCoordinator.cs')
 $emailServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\EmailService.cs')
@@ -161,6 +162,17 @@ if ($mainWindowXaml -notmatch '<Button Style="\{StaticResource NavButton\}" Clic
     $mainWindowXaml -match 'Content="[^"]*Ctrl \+ K"') {
   throw 'The sidebar shortcut footer must use NavText instead of implicit Ink text on the dark sidebar.'
 }
+if ($domainModelsSource -notmatch 'enum WhatsAppRegistrationStatus' -or
+    $domainModelsSource -notmatch 'WhatsAppRegistrationStatus\.Registered when WhatsAppRegistrationMatchesCurrentPhone => "有效"' -or
+    $domainModelsSource -notmatch 'WhatsAppRegistrationStatus\.NotRegistered when WhatsAppRegistrationMatchesCurrentPhone => "无效"' -or
+    $importServiceSource -notmatch 'lead\.QueueWhatsAppRegistrationCheck\(\)' -or
+    $whatsAppNumberValidationSource -notmatch 'LookupRegistrationAsync' -or
+    $whatsAppNumberValidationSource -notmatch 'WhatsAppRegistrationStatus\.RetryableFailed' -or
+    $whatsAppNumberValidationSource -notmatch 'TimeSpan\.FromMilliseconds\(900\)' -or
+    $whatsAppManagerSource -notmatch 'LookupRegistrationAsync' -or
+    $customersXaml -notmatch 'Header="WhatsApp 状态"') {
+  throw 'Spreadsheet imports must queue rate-limited real WhatsApp registration checks and only explicit provider results may become valid or invalid.'
+}
 if ($dashboardXaml -notmatch 'Text="\{Binding CustomerLabel\}"' -or
     $dashboardXaml -notmatch 'Text="\{Binding ActionLabel\}"' -or
     $dashboardXaml -notmatch 'Text="\{Binding ReasonLabel\}"' -or
@@ -252,7 +264,7 @@ if ($importServiceSource -notmatch [regex]::Escape('MergeCustomDimensions(lead, 
     $importServiceSource -match [regex]::Escape('lead.CustomFields.Clear()') -or
     $importServiceSource -notmatch [regex]::Escape('SetExact(ImportField.Name, x => lead.Name = x);') -or
     $importServiceSource -notmatch [regex]::Escape('SetExact(ImportField.Notes, x => lead.LatestMessage = x);') -or
-    $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 4')) {
+    $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 5')) {
   throw 'Spreadsheet reimports must merge by Buyer ID: update present columns, add new dimensions and preserve absent old dimensions.'
 }
 Write-Host 'PASS  Buyer ID incremental spreadsheet-merge contract'
@@ -548,7 +560,7 @@ if ($emailInboxXaml -notmatch 'x:Name="NewEmailButton"' -or
     $guideCatalogSource -notmatch [regex]::Escape('GlobalGuideVersion = 8') -or
     $guideCatalogSource -notmatch 'Ctrl\+1 . Ctrl\+8' -or
     $guideCatalogSource -match 'Ctrl\+1 . Ctrl\+7' -or
-    $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 4') -or
+    $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 5') -or
     $guideCatalogSource -notmatch [regex]::Escape('["broadcast"] = ModuleGuideVersion + 1') -or
     $guideCatalogSource -notmatch [regex]::Escape('["analytics"] = ModuleGuideVersion + 1') -or
     $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 5')) {

@@ -384,7 +384,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
                 }
                 else
                 {
-                    await RecordNumberValidationAdvisoryAsync(campaign, recipient, eligibleLead, cancellationToken);
+                    await ConfirmNumberRegistrationAsync(campaign, recipient, eligibleLead, cancellationToken);
                     var result = await _bridge.SendTextAsync(campaign.AccountId, recipient.Phone, recipient.RenderedMessage, cancellationToken);
                     recipient.ProviderMessageId = result.TryGetProperty("id", out var id) ? id.GetString() ?? "" : "";
                     if (string.IsNullOrWhiteSpace(recipient.ProviderMessageId))
@@ -413,7 +413,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
             catch (Exception error)
             {
                 recipient.LastError = Safe(error.Message);
-                if (campaign.Channel == CampaignChannel.Email || error is WhatsAppBridgeException { Code: "message_send_failed" or "message_id_missing" or "target_not_verified" })
+                if (campaign.Channel == CampaignChannel.Email || error is WhatsAppBridgeException { Code: "message_send_failed" or "message_id_missing" or "target_not_verified" or "number_not_registered" })
                 {
                     recipient.Status = CampaignRecipientStatus.Failed;
                     recipient.SentAt = null;
@@ -456,18 +456,40 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         await ApplyStoredMessageStatusAsync(storedMessage, cancellationToken);
     }
 
-    private async Task RecordNumberValidationAdvisoryAsync(WhatsAppCampaign campaign, CampaignRecipient recipient, Lead lead, CancellationToken cancellationToken)
+    private async Task ConfirmNumberRegistrationAsync(WhatsAppCampaign campaign, CampaignRecipient recipient, Lead lead, CancellationToken cancellationToken)
     {
         try
         {
             var registration = await _bridge.ValidateNumberAsync(campaign.AccountId, recipient.Phone, cancellationToken);
             var confirmed = registration.TryGetProperty("exists", out var existsElement) && existsElement.ValueKind == System.Text.Json.JsonValueKind.True;
+            lead.WhatsAppRegistrationStatus = confirmed
+                ? WhatsAppRegistrationStatus.Registered
+                : WhatsAppRegistrationStatus.NotRegistered;
+            lead.WhatsAppRegistrationPhone = recipient.Phone;
+            lead.WhatsAppRegistrationCheckedAt = DateTimeOffset.Now;
+            lead.WhatsAppRegistrationLastAttemptAt = DateTimeOffset.Now;
+            lead.WhatsAppRegistrationNextRetryAt = null;
+            lead.WhatsAppRegistrationError = "";
+            await _repository.UpsertLeadAsync(lead, cancellationToken);
             if (!confirmed)
+            {
                 await _repository.LogEventAsync("campaign_whatsapp_registration_unconfirmed", lead.Id, null,
-                    $"campaign_id={campaign.Id};recipient_id={recipient.Id};diagnostic_only=true;send_continued=true", cancellationToken);
+                    $"campaign_id={campaign.Id};recipient_id={recipient.Id};send_blocked=true", cancellationToken);
+                throw new WhatsAppBridgeException("number_not_registered", "WhatsApp 明确返回该号码未注册，消息未发送。");
+            }
+        }
+        catch (WhatsAppBridgeException error) when (error.Code == "number_not_registered")
+        {
+            throw;
         }
         catch (Exception error)
         {
+            lead.WhatsAppRegistrationStatus = WhatsAppRegistrationStatus.RetryableFailed;
+            lead.WhatsAppRegistrationPhone = "";
+            lead.WhatsAppRegistrationCheckedAt = null;
+            lead.WhatsAppRegistrationError = error is WhatsAppBridgeException bridge ? bridge.Code : "whatsapp_check_unavailable";
+            lead.WhatsAppRegistrationNextRetryAt = DateTimeOffset.Now.AddMinutes(2);
+            await _repository.UpsertLeadAsync(lead, cancellationToken);
             await _repository.LogEventAsync("campaign_whatsapp_registration_check_unavailable", lead.Id, null,
                 $"campaign_id={campaign.Id};recipient_id={recipient.Id};diagnostic_only=true;send_continued=true;error={Safe(error.Message)}", cancellationToken);
         }
@@ -752,8 +774,15 @@ public sealed class CampaignAutomationService : IAsyncDisposable
             reason = "邮箱有效";
             return true;
         }
-        if (!lead.PhoneValid) { reason = "号码无效"; return false; }
-        reason = lead.WhatsAppOptIn ? "号码有效 · 已记录营销同意" : "号码有效 · 未记录营销同意";
+        if (!lead.PhoneValid) { reason = "号码格式无效"; return false; }
+        if (lead.WhatsAppRegistrationStatus == WhatsAppRegistrationStatus.NotRegistered
+            && lead.WhatsAppRegistrationMatchesCurrentPhone)
+        {
+            reason = "号码未注册 WhatsApp";
+            return false;
+        }
+        var numberState = lead.IsWhatsAppRegistered ? "WhatsApp 已确认有效" : "发送前将由 WhatsApp 实时检测";
+        reason = lead.WhatsAppOptIn ? $"{numberState} · 已记录营销同意" : $"{numberState} · 未记录营销同意";
         return true;
     }
 
