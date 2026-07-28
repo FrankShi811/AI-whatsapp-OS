@@ -1,4 +1,4 @@
-import { Download, FileSpreadsheet, FileUp, Plus, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, FileSpreadsheet, FileUp, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { uid } from "../domain";
 import { keyForHeader, readWorkbook, rowsToLeads, type ParsedImport } from "../importers";
@@ -28,6 +28,9 @@ const coreLabels: Record<string, string> = {
   source: "来源"
 };
 
+const pageSizes = [10, 30] as const;
+type PageSize = typeof pageSizes[number];
+
 export function Customers() {
   const { leads, saveLead, importLeads, removeLead, loadDemo } = useStore();
   const [query, setQuery] = useState("");
@@ -36,8 +39,18 @@ export function Customers() {
   const [reading, setReading] = useState(false);
   const [pending, setPending] = useState<ParsedImport | null>(null);
   const [selectedSheetName, setSelectedSheetName] = useState("");
+  const [pageSize, setPageSize] = useState<PageSize>(10);
+  const [page, setPage] = useState(1);
   const fileRef = useRef<HTMLInputElement>(null);
   const filtered = useMemo(() => leads.filter(lead => JSON.stringify(lead).toLowerCase().includes(query.toLowerCase())), [leads, query]);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pageLeads = useMemo(
+    () => filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+    [currentPage, filtered, pageSize]
+  );
+  const rangeStart = filtered.length ? (currentPage - 1) * pageSize + 1 : 0;
+  const rangeEnd = Math.min(currentPage * pageSize, filtered.length);
 
   const prepareImport = async (file?: File) => {
     if (!file) return;
@@ -64,6 +77,7 @@ export function Customers() {
       ? `；已清理 ${result.removedPlaceholderIds.length} 条旧版错误占位记录`
       : "";
     setNotice(`已从“${sheet.name}”导入 ${result.total} 行：新增 ${result.created} 位，更新 ${result.updated} 位客户${cleanup}。`);
+    setPage(1);
     setPending(null);
   };
 
@@ -80,12 +94,12 @@ export function Customers() {
       event.currentTarget.value = "";
     }}/>
     {notice && <div className="notice">{notice}<button onClick={() => setNotice("")}>×</button></div>}
-    <div className="toolbar"><div className="search"><Search/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索姓名、Buyer ID、电话、邮箱或自定义字段"/></div><span>{filtered.length} 位客户</span></div>
+    <div className="toolbar"><div className="search"><Search/><input value={query} onChange={event => { setQuery(event.target.value); setPage(1); }} placeholder="搜索姓名、Buyer ID、电话、邮箱或自定义字段"/></div><span>{filtered.length} 位客户</span></div>
     <section className="table-shell">
       {!leads.length ? <EmptyState title="建立统一客户档案" body="支持 Excel / CSV 动态字段导入；也可以先加载示例数据体验。" action={<Button variant="secondary" onClick={loadDemo}>加载示例数据</Button>}/> :
       <div className="data-table">
         <div className="table-row table-head"><span>客户</span><span>统一身份</span><span>公司 / 产品</span><span>阶段</span><span>AI 等级</span><span/></div>
-        {filtered.map(lead => <div className="table-row" role="button" tabIndex={0} key={lead.id}
+        {pageLeads.map(lead => <div className="table-row" role="button" tabIndex={0} key={lead.id}
           onClick={() => setEditing({ ...lead })}
           onKeyDown={event => {
             if (event.key === "Enter" || event.key === " ") {
@@ -99,8 +113,23 @@ export function Customers() {
           <span>{lead.stage}</span><span><GradeBadge grade={lead.grade} score={lead.score}/></span>
           <span><button className="row-delete" aria-label={`删除 ${lead.name}`} onClick={event => { event.stopPropagation(); if (confirm(`删除 ${lead.name}？`)) void removeLead(lead.id); }}><Trash2 size={15}/></button></span>
         </div>)}
+        {!pageLeads.length && <div className="table-empty">没有找到匹配的客户</div>}
       </div>}
     </section>
+    {leads.length > 0 && <nav className="pagination" aria-label="客户列表分页">
+      <label className="page-size-control">
+        <span>每页显示</span>
+        <select aria-label="每页客户数" value={pageSize} onChange={event => { setPageSize(Number(event.target.value) as PageSize); setPage(1); }}>
+          {pageSizes.map(size => <option key={size} value={size}>{size} 位</option>)}
+        </select>
+      </label>
+      <span className="pagination-summary">第 {rangeStart}–{rangeEnd} 条，共 {filtered.length} 位客户</span>
+      <div className="pager">
+        <button aria-label="上一页" disabled={currentPage === 1} onClick={() => setPage(current => Math.max(1, current - 1))}><ChevronLeft/></button>
+        <span>第 <strong>{currentPage}</strong> / {totalPages} 页</span>
+        <button aria-label="下一页" disabled={currentPage === totalPages} onClick={() => setPage(current => Math.min(totalPages, current + 1))}><ChevronRight/></button>
+      </div>
+    </nav>}
     {pending && <ImportPreview parsed={pending} sheetName={selectedSheetName} onSheetChange={setSelectedSheetName} onClose={() => setPending(null)} onConfirm={() => void confirmImport()}/>}
     {editing && <LeadEditor lead={editing} onClose={() => setEditing(null)} onSave={async lead => { await saveLead({ ...lead, updatedAt: new Date().toISOString() }); setEditing(null); }}/>}
   </>;

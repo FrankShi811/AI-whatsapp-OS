@@ -1,4 +1,4 @@
-# AI Sales OS PWA v5.5.1
+# AI Sales OS PWA v5.5.2
 
 AI Sales OS 的纯浏览器版本，面向 macOS、Windows、iPhone、Android 等现代浏览器。它与 Windows 原生正式版共用产品方向，但数据和运行环境完全独立。
 
@@ -6,8 +6,10 @@ AI Sales OS 的纯浏览器版本，面向 macOS、Windows、iPhone、Android �
 
 - Dashboard 今日行动简报
 - Excel / CSV 动态字段导入和本地 CRM
+- 客户列表每页 10 / 30 位切换与分页浏览
 - Buyer ID 优先、电话号码兜底的统一客户身份
 - Lead Intelligence 与 Customer Brain
+- 商机、Inbox 和客户分析工作台的独立客户滚动列表
 - 本地知识库检索
 - AI 商机分析及 WhatsApp / 邮件草稿
 - WhatsApp、邮件外部应用跳转与人工确认发送记录
