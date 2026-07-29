@@ -1356,7 +1356,11 @@ Check(
         .ModelCapabilities.Single().ReasoningEfforts.Contains("ultra"),
     "global and per-module AI model, reasoning, theme and UI scale preferences persist additively");
 
-var routingHandler = new QueueHandler([Envelope("""{"value":"ok"}""")]);
+var routingHandler = new QueueHandler(
+[
+    Envelope("""{"value":"whatsapp-route"}"""),
+    Envelope("""{"value":"lead-route"}""")
+]);
 var routingProvider = new DeepSeekService(
     repository,
     new FakeSecretStore("sk-global"),
@@ -1379,7 +1383,13 @@ await repository.SaveAppSettingsAsync(new AppSettings
         new AiProviderProfile
         {
             ProviderId="openai", DisplayName="OpenAI", BaseUrl="https://api.openai.com/v1",
-            Model="gpt-5-mini", AvailableModels=["gpt-5-mini", "gpt-4.1-mini"], IsConfigured=true,
+            Model="gpt-5-mini",
+            AvailableModels=
+            [
+                "gpt-5-mini", "gpt-5-nano", "gpt-4.1-mini",
+                "customer-brain-model", "campaign-model", "vision-model", "analytics-model"
+            ],
+            IsConfigured=true,
             ModelCapabilities=
             [
                 new AiModelCapability
@@ -1395,26 +1405,59 @@ await repository.SaveAppSettingsAsync(new AppSettings
     AiModulePreferences=new Dictionary<string, AiModuleModelPreference>(StringComparer.OrdinalIgnoreCase)
     {
         [AiModuleKeys.LeadIntelligence]=new() { ProviderId="openai", Model="gpt-5-mini", ReasoningEffort="high" },
-        [AiModuleKeys.WhatsAppInbox]=new() { ProviderId="openai", Model="gpt-5-mini", ReasoningEffort="ultra" },
+        [AiModuleKeys.Customers]=new() { ProviderId="openai", Model="customer-brain-model", ReasoningEffort="auto" },
+        [AiModuleKeys.WhatsAppInbox]=new() { ProviderId="openai", Model="gpt-5-nano", ReasoningEffort="auto" },
         [AiModuleKeys.EmailInbox]=new() { ProviderId="openai", Model="gpt-4.1-mini", ReasoningEffort="ultra" },
-        [AiModuleKeys.KnowledgeBase]=new() { ProviderId="openai", Model="removed-model", ReasoningEffort="high" }
+        [AiModuleKeys.Campaigns]=new() { ProviderId="openai", Model="campaign-model", ReasoningEffort="auto" },
+        [AiModuleKeys.KnowledgeBase]=new() { ProviderId="openai", Model="vision-model", ReasoningEffort="auto" },
+        [AiModuleKeys.CustomerAnalytics]=new() { ProviderId="openai", Model="analytics-model", ReasoningEffort="auto" }
     }
 });
-var routedResult = await routingProvider.CompleteStructuredAsync<RoutingProbe>(
+var whatsAppRoutedResult = await routingProvider.CompleteStructuredAsync<RoutingProbe>(
     AiModuleKeys.WhatsAppInbox,
     "Return JSON.",
     new { input="hello" },
     _ => null);
+var leadRoutedResult = await routingProvider.CompleteStructuredAsync<RoutingProbe>(
+    AiModuleKeys.LeadIntelligence,
+    "Return JSON.",
+    new { input="lead" },
+    _ => null);
 var unsupportedReasoningRoute = await routingProvider.ResolveExecutionProfileAsync(AiModuleKeys.EmailInbox);
-var invalidModelFallbackRoute = await routingProvider.ResolveExecutionProfileAsync(AiModuleKeys.KnowledgeBase);
 var leadIntelligenceRoute = await routingProvider.ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence);
+var expectedModuleModels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+{
+    [AiModuleKeys.LeadIntelligence]="gpt-5-mini",
+    [AiModuleKeys.Customers]="customer-brain-model",
+    [AiModuleKeys.WhatsAppInbox]="gpt-5-nano",
+    [AiModuleKeys.EmailInbox]="gpt-4.1-mini",
+    [AiModuleKeys.Campaigns]="campaign-model",
+    [AiModuleKeys.KnowledgeBase]="vision-model",
+    [AiModuleKeys.CustomerAnalytics]="analytics-model"
+};
+var resolvedModuleModels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+foreach (var moduleKey in AiModuleKeys.Configurable)
+    resolvedModuleModels[moduleKey] = (await routingProvider.ResolveExecutionProfileAsync(moduleKey)).Model;
 Check(
-    routedResult.Value == "ok"
-    && routingHandler.Requests.Single().Uri == "https://api.openai.com/v1/chat/completions"
-    && routingHandler.Requests.Single().Authorization == "Bearer sk-openai"
-    && routingHandler.RequestBodies.Single().Contains("\"model\":\"gpt-5-mini\"")
-    && routingHandler.RequestBodies.Single().Contains("\"reasoning_effort\":\"ultra\""),
-    "WhatsApp AI calls use their independent provider, model, credential and declared reasoning depth");
+    whatsAppRoutedResult.Value == "whatsapp-route"
+    && leadRoutedResult.Value == "lead-route"
+    && routingHandler.Requests.Count == 2
+    && routingHandler.Requests.All(request => request.Uri == "https://api.openai.com/v1/chat/completions")
+    && routingHandler.Requests.All(request => request.Authorization == "Bearer sk-openai")
+    && routingHandler.RequestBodies[0].Contains("\"model\":\"gpt-5-nano\"")
+    && !routingHandler.RequestBodies[0].Contains("\"reasoning_effort\"")
+    && routingHandler.RequestBodies[1].Contains("\"model\":\"gpt-5-mini\"")
+    && routingHandler.RequestBodies[1].Contains("\"reasoning_effort\":\"high\""),
+    "Lead Intelligence and WhatsApp calls send their independently saved provider, model and reasoning route");
+Check(
+    AiModuleKeys.Configurable.All(moduleKey => resolvedModuleModels[moduleKey] == expectedModuleModels[moduleKey])
+    && resolvedModuleModels.Values.Distinct(StringComparer.OrdinalIgnoreCase).Count() == AiModuleKeys.Configurable.Count,
+    "every configurable module resolves its own persisted model without leaking the global or another module route");
+var invalidModuleSettings = await repository.GetAppSettingsAsync();
+invalidModuleSettings.AiModulePreferences[AiModuleKeys.KnowledgeBase] =
+    new AiModuleModelPreference { ProviderId="openai", Model="removed-model", ReasoningEffort="high" };
+await repository.SaveAppSettingsAsync(invalidModuleSettings);
+var invalidModelFallbackRoute = await routingProvider.ResolveExecutionProfileAsync(AiModuleKeys.KnowledgeBase);
 Check(
     unsupportedReasoningRoute.Model == "gpt-4.1-mini"
     && unsupportedReasoningRoute.ReasoningEffort == AiReasoningEfforts.Auto
@@ -2427,12 +2470,13 @@ Check(pausedRun.Decision is null && !pausedRun.AutoReplyAllowed
 var todayBrief = await new TodayBriefService(customerSuccessRepository).GetAsync();
 Check(todayBrief.HumanHandoffCount == 1
     && todayBrief.SourcingCompleteCount >= 2
-    && todayBrief.CrossAccountFollowUpCount >= 2
+    && todayBrief.CrossAccountFollowUpCount == 0
     && todayBrief.Items.Any(item => item.Category == "handoff")
     && todayBrief.Items.Any(item => item.Category == "sourcing_complete")
+    && todayBrief.Items.All(item => item.Category != "cross_account")
     && todayBrief.Items.All(item => item.Category != "identity"),
-    "Today Brief surfaces known-customer handoff, completed sourcing and cross-account work without identity-confirmation tasks");
-var specialBriefItems = todayBrief.Items.Where(item => item.Category is "handoff" or "sourcing_complete" or "cross_account").ToList();
+    "Today Brief surfaces known-customer handoff and completed sourcing without identity or normal cross-account tasks");
+var specialBriefItems = todayBrief.Items.Where(item => item.Category is "handoff" or "sourcing_complete").ToList();
 Check(specialBriefItems.Count > 0
     && specialBriefItems.All(item => !string.IsNullOrWhiteSpace(item.CustomerName)
         && !item.CustomerName.Equals(item.CustomerId, StringComparison.OrdinalIgnoreCase)

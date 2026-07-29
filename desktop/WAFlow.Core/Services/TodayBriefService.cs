@@ -25,13 +25,11 @@ public sealed class TodayBriefService
             .OrderByDescending(item => PriorityRank(item.Priority))
             .ThenBy(item => item.DueAt)
             .ToList();
-        var states = await _repository.GetAgentStatesAsync(cancellationToken: cancellationToken);
         var handoffs = await _repository.GetOpenHumanHandoffsAsync(cancellationToken);
         var sourcingRequests = await _repository.GetLatestSourcingRequestsAsync(cancellationToken);
         var knowledgeDocuments = await _repository.GetKnowledgeDocumentsAsync(false, cancellationToken);
         var knowledgeCandidates = await _repository.GetKnowledgeCandidatesAsync(KnowledgeCandidateStatus.Proposed, cancellationToken);
-        var sourceAccountIds = states.Select(item => item.AccountId)
-            .Concat(handoffs.Select(item => item.AccountId))
+        var sourceAccountIds = handoffs.Select(item => item.AccountId)
             .Concat(sourcingRequests.SelectMany(item => item.Fields.Values.Select(field => field.SourceAccountId)))
             .Where(item => !string.IsNullOrWhiteSpace(item))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -107,12 +105,6 @@ public sealed class TodayBriefService
         var sourcingComplete = sourcingRequests
             .Where(item => item.Status == SourcingRequestStatus.Complete)
             .ToList();
-        var crossAccount = states
-            .Where(item => !string.IsNullOrWhiteSpace(item.CustomerId))
-            .GroupBy(item => item.CustomerId, StringComparer.Ordinal)
-            .Where(group => group.Select(item => item.AccountId).Distinct(StringComparer.Ordinal).Count() > 1)
-            .Select(group => group.OrderByDescending(item => item.UpdatedAt).First()).ToList();
-
         foreach (var handoff in handoffs.Take(8))
             items.Insert(0, BuildSpecialItem(handoff.CustomerId, await ResolveCustomerNameAsync(handoff.CustomerId, handoff.ConversationId),
                 "handoff", "打开对应 WhatsApp 会话，完成人工处理并记录结果",
@@ -125,11 +117,6 @@ public sealed class TodayBriefService
                 "图片、数量、目标价、目的地和运输偏好已收齐。", FollowUpPriority.High,
                 source?.SourceAccountId ?? "", source?.SourceConversationId ?? "", now));
         }
-        foreach (var state in crossAccount.Take(8))
-            items.Add(BuildSpecialItem(state.CustomerId, await ResolveCustomerNameAsync(state.CustomerId, state.ConversationId),
-                "cross_account", "指定本轮主跟进账号，并检查其他账号是否存在重复触达",
-                "该客户出现在多个 WhatsApp 账号中，需要统一本轮跟进责任。", FollowUpPriority.High,
-                state.AccountId, state.ConversationId, now));
         foreach (var document in knowledgeDocuments
                      .Where(item => item.Status is KnowledgeDocumentStatus.ReadyForReview
                          or KnowledgeDocumentStatus.Outdated
@@ -179,7 +166,7 @@ public sealed class TodayBriefService
             InProgressCount = activeTasks.Count(item => item.Status == FollowUpTaskStatus.InProgress),
             HumanHandoffCount = handoffs.Count,
             SourcingCompleteCount = sourcingComplete.Count,
-            CrossAccountFollowUpCount = crossAccount.Count,
+            CrossAccountFollowUpCount = 0,
             KnowledgeReviewCount = knowledgeDocuments.Count(item => item.Status is KnowledgeDocumentStatus.ReadyForReview or KnowledgeDocumentStatus.Outdated),
             KnowledgeConflictCount = knowledgeDocuments.Count(item => item.Status == KnowledgeDocumentStatus.Conflicted),
             KnowledgeCandidateCount = knowledgeCandidates.Count,

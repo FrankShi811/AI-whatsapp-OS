@@ -270,7 +270,8 @@ public partial class MainWindow : Window
             ApplyUiScale(settings.UiScalePercentage);
             await UpdateProviderStateAsync();
             await UpdateThemeStateAsync();
-            await RefreshAllAsync();
+            await _intelligence.RefreshAiRouteAsync();
+            await UpdateUnreadBadgesAsync();
         }
     }
 

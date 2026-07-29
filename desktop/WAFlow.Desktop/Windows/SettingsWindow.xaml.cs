@@ -26,6 +26,7 @@ public partial class SettingsWindow : Window
     private string _currentProviderId = "deepseek";
     private bool _loaded;
     private bool _updatingRoutingUi;
+    private bool _hadConfiguredProviderAtLoad;
     private OnboardingState _onboardingState = new();
 
     public SettingsWindow(AppServices services)
@@ -52,6 +53,7 @@ public partial class SettingsWindow : Window
 
     private async void SettingsWindow_Loaded(object sender, RoutedEventArgs e)
     {
+        _hadConfiguredProviderAtLoad = _services.DeepSeek.HasApiKey();
         _settings = await _services.Repository.GetAppSettingsAsync();
         _settings.AiModulePreferences ??= new Dictionary<string, AiModuleModelPreference>(StringComparer.OrdinalIgnoreCase);
         ThemeModeBox.ItemsSource = new[]
@@ -497,14 +499,27 @@ public partial class SettingsWindow : Window
                 (UiScaleBox.SelectedItem as UiScaleOption)?.Value ?? 100);
             await _services.Repository.SaveAppSettingsAsync(_settings);
             ThemeManager.Apply(_settings.ThemeMode);
-            if (!string.IsNullOrWhiteSpace(activeKey))
-                await _services.LeadAutomation.NotifyProviderConfiguredAsync();
+            if (!_hadConfiguredProviderAtLoad && !string.IsNullOrWhiteSpace(activeKey))
+                _ = ResumeQueuedLeadAnalysisAsync();
             DialogResult = true;
         }
         catch (Exception error)
         {
             MessageBox.Show(error.Message, "保存失败", MessageBoxButton.OK, MessageBoxImage.Error);
             SaveButton.IsEnabled = true;
+        }
+    }
+
+    private async Task ResumeQueuedLeadAnalysisAsync()
+    {
+        try
+        {
+            await _services.LeadAutomation.NotifyProviderConfiguredAsync();
+        }
+        catch
+        {
+            // Queued work is durable and will be retried by the normal analysis
+            // workflow. A background resume failure must never block settings.
         }
     }
 

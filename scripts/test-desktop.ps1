@@ -664,6 +664,24 @@ if (-not $conversationAssistantSource.Contains('AiModuleKeys.WhatsAppInbox') -or
 }
 Write-Host 'PASS  global/per-module AI model, token-cost and declared reasoning-depth routing contract'
 
+if (-not $leadIntelligenceSource.Contains('ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence') -or
+    -not $leadIntelligenceSource.Contains('execution.Model') -or
+    $leadIntelligenceSource.Contains('settings.DeepSeekModel') -or
+    $settingsSource -match 'if \(!string\.IsNullOrWhiteSpace\(activeKey\)\)\s*await _services\.LeadAutomation\.NotifyProviderConfiguredAsync\(\);' -or
+    -not $settingsSource.Contains('_ = ResumeQueuedLeadAnalysisAsync()') -or
+    $mainWindowSource -notmatch [regex]::Escape('await _intelligence.RefreshAiRouteAsync();') -or
+    $mainWindowSource -match 'await UpdateThemeStateAsync\(\);\s*await RefreshAllAsync\(\);') {
+  throw 'Saving module AI routes must be non-blocking, and Lead Intelligence must display the same resolved route used by its real requests.'
+}
+Write-Host 'PASS  non-blocking module-route save and actual Lead Intelligence route display contract'
+
+if ($todayBriefSource.Contains('"cross_account"') -or
+    $todayBriefSource.Contains('GetAgentStatesAsync') -or
+    -not $todayBriefSource.Contains('CrossAccountFollowUpCount = 0')) {
+  throw 'Today Brief must treat one customer appearing in multiple WhatsApp accounts as normal unified customer context, not a follow-up task.'
+}
+Write-Host 'PASS  unified cross-account customer context without duplicate-responsibility reminders'
+
 & $dotnet build (Join-Path $root 'desktop\WAFlow.sln') -c Release
 if ($LASTEXITCODE -ne 0) { throw 'WAFlow desktop build failed.' }
 & $dotnet run --project (Join-Path $root 'desktop\WAFlow.SmokeTests\WAFlow.SmokeTests.csproj') -c Release --no-build

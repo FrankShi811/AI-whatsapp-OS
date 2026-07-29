@@ -28,11 +28,7 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     {
         var selectedId = (LeadGrid.SelectedItem as Lead)?.Id;
         _leads = await _services.Repository.GetLeadsAsync(SearchBox.Text, GradeFilter.SelectedItem as string);
-        var allLeads = await _services.Repository.GetLeadsAsync();
-        var settings = await _services.Repository.GetAppSettingsAsync();
-        UpdateBulkAnalyzeButtonIdleContent(
-            settings.DeepSeekModel,
-            allLeads.Count(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed));
+        await RefreshAiRouteAsync();
         LeadGrid.ItemsSource = _leads;
         LeadGrid.SelectedItem = _leads.FirstOrDefault(x => x.Id == selectedId) ?? _leads.FirstOrDefault();
         var selectedLead = LeadGrid.SelectedItem as Lead;
@@ -40,11 +36,28 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         await UpdateCustomerBrainAsync(selectedLead);
     }
 
-    private void UpdateBulkAnalyzeButtonIdleContent(string model, int retryableCount)
+    public async Task RefreshAiRouteAsync()
+    {
+        var allLeads = await _services.Repository.GetLeadsAsync();
+        var execution = await _services.DeepSeek.ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence);
+        UpdateBulkAnalyzeButtonIdleContent(
+            execution.ProviderId,
+            execution.Model,
+            execution.ReasoningEffort,
+            allLeads.Count(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed));
+    }
+
+    private void UpdateBulkAnalyzeButtonIdleContent(
+        string providerId,
+        string model,
+        string reasoningEffort,
+        int retryableCount)
     {
         BulkAnalyzeButton.Content = retryableCount > 0
             ? $"使用 {model} 重试失败 {retryableCount}"
             : $"使用 {model} 分析全部";
+        BulkAnalyzeButton.ToolTip =
+            $"商机智能实际路由：{providerId} · {model} · 推理深度 {reasoningEffort}";
     }
 
     private void UpdateBulkAnalyzeButtonRunningContent(int completed, int total)
