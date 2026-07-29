@@ -1,6 +1,9 @@
 name: Build AI Sales OS macOS DMG
 
 on:
+  push:
+    branches:
+      - codex/macos-5.10.0-full
   workflow_dispatch:
     inputs:
       version:
