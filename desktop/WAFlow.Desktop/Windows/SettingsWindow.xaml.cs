@@ -8,12 +8,14 @@ using WAFlow.Core;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Infrastructure;
 using WAFlow.Core.Services;
+using WAFlow.Desktop.Updates;
 
 namespace WAFlow.Desktop.Windows;
 
 public partial class SettingsWindow : Window
 {
     private readonly AppServices _services;
+    private readonly IApplicationUpdateService _updates;
     private readonly DispatcherTimer _modelFetchTimer;
     private readonly Dictionary<string, AiProviderProfile> _profiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _pendingKeys = new(StringComparer.OrdinalIgnoreCase);
@@ -29,10 +31,11 @@ public partial class SettingsWindow : Window
     private bool _hadConfiguredProviderAtLoad;
     private OnboardingState _onboardingState = new();
 
-    public SettingsWindow(AppServices services)
+    public SettingsWindow(AppServices services, IApplicationUpdateService updates)
     {
         InitializeComponent();
         _services = services;
+        _updates = updates;
         _modelFetchTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
         _modelFetchTimer.Tick += async (_, _) =>
         {
@@ -524,6 +527,9 @@ public partial class SettingsWindow : Window
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => DialogResult = false;
+
+    private void VersionHistory_Click(object sender, RoutedEventArgs e) =>
+        new VersionHistoryWindow(_updates) { Owner = this }.ShowDialog();
     private async void ReloadModels_Click(object sender, RoutedEventArgs e) => await FetchModelsAsync(true);
 
     private void UiScaleBox_SelectionChanged(object sender, SelectionChangedEventArgs e)

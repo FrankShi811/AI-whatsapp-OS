@@ -12,13 +12,28 @@
     <controls:UiScaleHost x:Name="MainScaleHost">
     <Grid Background="{DynamicResource Canvas}">
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="244"/>
+            <ColumnDefinition Width="60"/>
             <ColumnDefinition Width="*"/>
         </Grid.ColumnDefinitions>
 
-        <!-- Stable product navigation -->
-        <Border Grid.Column="0" Background="{DynamicResource Sidebar}">
-            <Grid Margin="16,18,16,16">
+        <!-- Hover-to-expand overlay navigation: the product canvas always starts at x=60. -->
+        <Border x:Name="SidebarHost"
+                Grid.Column="0"
+                Grid.ColumnSpan="2"
+                Panel.ZIndex="40"
+                Width="60"
+                HorizontalAlignment="Left"
+                Background="{DynamicResource Sidebar}"
+                BorderBrush="{DynamicResource Line}"
+                BorderThickness="0,0,1,0"
+                ClipToBounds="True"
+                MouseEnter="SidebarHost_MouseEnter"
+                MouseLeave="SidebarHost_MouseLeave"
+                PreviewMouseDown="SidebarHost_PreviewMouseDown"
+                PreviewMouseUp="SidebarHost_PreviewMouseUp"
+                GotKeyboardFocus="SidebarHost_GotKeyboardFocus"
+                LostKeyboardFocus="SidebarHost_LostKeyboardFocus">
+            <Grid Width="240" HorizontalAlignment="Left" Margin="8,14,8,12">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="24"/>
@@ -28,19 +43,27 @@
 
                 <Grid>
                     <Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <Border Width="42" Height="42" Background="{DynamicResource Surface}" CornerRadius="12" Padding="5">
+                    <Border Width="42" Height="42"
+                            Background="{DynamicResource LogoSurface}"
+                            BorderBrush="{DynamicResource LogoBorder}"
+                            BorderThickness="1"
+                            CornerRadius="12"
+                            Padding="5">
                         <Image Source="/AISalesOS;component/Assets/AI-Sales-OS.png" Stretch="Uniform"/>
                     </Border>
-                    <StackPanel Grid.Column="1" Margin="11,1,0,0" VerticalAlignment="Center">
-                            <TextBlock Text="AI Sales OS" Foreground="{DynamicResource SidebarText}" FontWeight="Bold" FontSize="16"/>
+                    <StackPanel Grid.Column="1" Margin="11,1,0,0" VerticalAlignment="Center"
+                                Tag="SidebarReveal" Opacity="0">
+                        <StackPanel.RenderTransform><TranslateTransform X="-6"/></StackPanel.RenderTransform>
+                        <TextBlock Text="AI Sales OS" Foreground="{DynamicResource SidebarText}" FontWeight="Bold" FontSize="16" TextWrapping="NoWrap"/>
                         <TextBlock Text="SALES INTELLIGENCE" Foreground="{DynamicResource SidebarMuted}" FontSize="8.5" FontWeight="SemiBold"/>
                     </StackPanel>
                 </Grid>
 
                 <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel>
-                        <TextBlock Text="COMMAND CENTER" Foreground="{DynamicResource SidebarMuted}" FontSize="9" FontWeight="SemiBold" Margin="13,3,0,7"/>
-                        <Button x:Name="DashboardButton" Tag="dashboard" Click="Navigate_Click" Style="{StaticResource NavButton}">
+                        <TextBlock Text="COMMAND CENTER" Style="{StaticResource SidebarSectionLabel}" Margin="13,3,0,7"/>
+                        <Button x:Name="DashboardButton" Tag="dashboard" Click="Navigate_Click" Style="{StaticResource NavButton}"
+                                ToolTip="销售指挥中心" AutomationProperties.Name="销售指挥中心">
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Viewbox Style="{StaticResource NavIconFrame}">
@@ -54,7 +77,8 @@
                                 <TextBlock Grid.Column="1" Text="Dashboard" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
                             </Grid>
                         </Button>
-                        <Button x:Name="IntelligenceButton" Tag="intelligence" Click="Navigate_Click" Style="{StaticResource NavButton}">
+                        <Button x:Name="IntelligenceButton" Tag="intelligence" Click="Navigate_Click" Style="{StaticResource NavButton}"
+                                ToolTip="商机智能" AutomationProperties.Name="商机智能">
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Viewbox Style="{StaticResource NavIconFrame}">
@@ -70,8 +94,9 @@
                             </Grid>
                         </Button>
 
-                        <TextBlock Text="CUSTOMER OPERATIONS" Foreground="{DynamicResource SidebarMuted}" FontSize="9" FontWeight="SemiBold" Margin="13,20,0,7"/>
-                        <Button x:Name="CustomersButton" Tag="customers" Click="Navigate_Click" Style="{StaticResource NavButton}">
+                        <TextBlock Text="CUSTOMER OPERATIONS" Style="{StaticResource SidebarSectionLabel}" Margin="13,20,0,7"/>
+                        <Button x:Name="CustomersButton" Tag="customers" Click="Navigate_Click" Style="{StaticResource NavButton}"
+                                ToolTip="客户列表" AutomationProperties.Name="客户列表">
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Viewbox Style="{StaticResource NavIconFrame}">
@@ -84,7 +109,8 @@
                                 <TextBlock Grid.Column="1" Text="客户列表" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
                             </Grid>
                         </Button>
-                        <Button x:Name="InboxButton" Tag="inbox" Click="Navigate_Click" Style="{StaticResource NavButton}" HorizontalContentAlignment="Stretch">
+                        <Button x:Name="InboxButton" Tag="inbox" Click="Navigate_Click" Style="{StaticResource NavButton}" HorizontalContentAlignment="Stretch"
+                                ToolTip="WhatsApp Inbox" AutomationProperties.Name="WhatsApp Inbox">
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                 <Viewbox Style="{StaticResource NavIconFrame}">
@@ -95,13 +121,16 @@
                                 </Viewbox>
                                 <TextBlock Grid.Column="1" Text="WhatsApp Inbox" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
                                 <Border x:Name="WhatsAppUnreadBadge" Grid.Column="2" MinWidth="22" Height="20" Margin="8,0,0,0" Padding="6,0"
-                                        CornerRadius="10" Background="{DynamicResource UnreadBadgeBackground}" Visibility="Collapsed">
+                                        CornerRadius="10" Background="{DynamicResource UnreadBadgeBackground}" Visibility="Collapsed"
+                                        Tag="SidebarReveal" Opacity="0">
+                                    <Border.RenderTransform><TranslateTransform X="-6"/></Border.RenderTransform>
                                     <TextBlock x:Name="WhatsAppUnreadText" Foreground="{DynamicResource UnreadBadgeText}" FontSize="10" FontWeight="Bold"
                                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
                         </Button>
-                        <Button x:Name="EmailButton" Tag="email" Click="Navigate_Click" Style="{StaticResource NavButton}" HorizontalContentAlignment="Stretch">
+                        <Button x:Name="EmailButton" Tag="email" Click="Navigate_Click" Style="{StaticResource NavButton}" HorizontalContentAlignment="Stretch"
+                                ToolTip="邮件 Inbox" AutomationProperties.Name="邮件 Inbox">
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                 <Viewbox Style="{StaticResource NavIconFrame}">
@@ -112,13 +141,16 @@
                                 </Viewbox>
                                 <TextBlock Grid.Column="1" Text="邮件 Inbox" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
                                 <Border x:Name="EmailUnreadBadge" Grid.Column="2" MinWidth="22" Height="20" Margin="8,0,0,0" Padding="6,0"
-                                        CornerRadius="10" Background="{DynamicResource UnreadBadgeBackground}" Visibility="Collapsed">
+                                        CornerRadius="10" Background="{DynamicResource UnreadBadgeBackground}" Visibility="Collapsed"
+                                        Tag="SidebarReveal" Opacity="0">
+                                    <Border.RenderTransform><TranslateTransform X="-6"/></Border.RenderTransform>
                                     <TextBlock x:Name="EmailUnreadText" Foreground="{DynamicResource UnreadBadgeText}" FontSize="10" FontWeight="Bold"
                                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                             </Grid>
                         </Button>
-                        <Button x:Name="BroadcastButton" Tag="broadcast" Click="Navigate_Click" Style="{StaticResource NavButton}">
+                        <Button x:Name="BroadcastButton" Tag="broadcast" Click="Navigate_Click" Style="{StaticResource NavButton}"
+                                ToolTip="多渠道自动化触达" AutomationProperties.Name="多渠道自动化触达">
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Viewbox Style="{StaticResource NavIconFrame}">
@@ -130,8 +162,9 @@
                             </Grid>
                         </Button>
 
-                        <TextBlock Text="INSIGHTS" Foreground="{DynamicResource SidebarMuted}" FontSize="9" FontWeight="SemiBold" Margin="13,20,0,7"/>
-                        <Button x:Name="KnowledgeButton" Tag="knowledge" Click="Navigate_Click" Style="{StaticResource NavButton}">
+                        <TextBlock Text="INSIGHTS" Style="{StaticResource SidebarSectionLabel}" Margin="13,20,0,7"/>
+                        <Button x:Name="KnowledgeButton" Tag="knowledge" Click="Navigate_Click" Style="{StaticResource NavButton}"
+                                ToolTip="知识库" AutomationProperties.Name="知识库">
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Viewbox Style="{StaticResource NavIconFrame}">
@@ -142,7 +175,8 @@
                                 <TextBlock Grid.Column="1" Text="知识库" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
                             </Grid>
                         </Button>
-                        <Button x:Name="AnalyticsButton" Tag="analytics" Click="Navigate_Click" Style="{StaticResource NavButton}">
+                        <Button x:Name="AnalyticsButton" Tag="analytics" Click="Navigate_Click" Style="{StaticResource NavButton}"
+                                ToolTip="客户智能分析" AutomationProperties.Name="客户智能分析">
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Viewbox Style="{StaticResource NavIconFrame}">
@@ -157,7 +191,8 @@
                 </ScrollViewer>
 
                 <StackPanel Grid.Row="3">
-                    <Button x:Name="SettingsButton" Click="Settings_Click" Style="{StaticResource NavButton}" Margin="0,0,0,9" ToolTip="设置 AI 模型、界面缩放、主题与本地体验">
+                    <Button x:Name="SettingsButton" Click="Settings_Click" Style="{StaticResource NavButton}" Margin="0,0,0,9"
+                            ToolTip="设置 AI 模型、界面缩放、主题与本地体验" AutomationProperties.Name="设置">
                         <Grid>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                             <Viewbox Style="{StaticResource NavIconFrame}">
@@ -168,19 +203,22 @@
                             <TextBlock Grid.Column="1" Text="设置" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
                         </Grid>
                     </Button>
-                    <Button x:Name="VersionButton" Click="VersionHistory_Click" Style="{StaticResource NavButton}" Background="{DynamicResource SidebarElevated}" Margin="0,0,0,9" ToolTip="查看版本与更新">
+                    <Button x:Name="VersionButton" Click="VersionHistory_Click" Style="{StaticResource NavButton}" Background="{DynamicResource SidebarElevated}" Margin="0,0,0,9"
+                            Visibility="Collapsed"
+                            ToolTip="查看版本与更新" AutomationProperties.Name="版本与更新">
                         <Grid>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <TextBlock x:Name="SidebarUpdateIcon" Text="↻" Foreground="{DynamicResource Success}" FontSize="16" VerticalAlignment="Center"/>
-                            <StackPanel Grid.Column="1">
+                            <StackPanel Grid.Column="1" Tag="SidebarReveal" Opacity="0">
+                                <StackPanel.RenderTransform><TranslateTransform X="-6"/></StackPanel.RenderTransform>
                                 <TextBlock x:Name="SidebarVersionText" Text="AI Sales OS" Foreground="{DynamicResource SidebarText}" FontSize="11" FontWeight="SemiBold"/>
                                 <TextBlock x:Name="SidebarUpdateText" Text="启动后持续监控更新" Foreground="{DynamicResource SidebarMuted}" FontSize="9.5" Margin="0,3,0,0"/>
                             </StackPanel>
-                            <TextBlock Grid.Column="2" Text="›" Foreground="{DynamicResource SidebarMuted}" FontSize="18" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="2" Text="›" Foreground="{DynamicResource SidebarMuted}" FontSize="18" VerticalAlignment="Center"
+                                       Tag="SidebarReveal" Opacity="0">
+                                <TextBlock.RenderTransform><TranslateTransform X="-6"/></TextBlock.RenderTransform>
+                            </TextBlock>
                         </Grid>
-                    </Button>
-                    <Button Style="{StaticResource NavButton}" Click="CommandButton_Click">
-                        <TextBlock Text="⌘  快捷操作   Ctrl + K" Style="{StaticResource NavText}"/>
                     </Button>
                 </StackPanel>
             </Grid>
@@ -197,30 +235,39 @@
                         <TextBlock x:Name="TopSubtitle" Text="今天最值得推进的商机与动作" Foreground="{DynamicResource Muted}" FontSize="10.5" Margin="0,2,0,0"/>
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Border x:Name="ProviderBadge" Background="{DynamicResource WarningSoft}" CornerRadius="13" Padding="11,6" Margin="0,0,9,0">
+                        <Border x:Name="ProviderBadge" Background="{DynamicResource WarningSoft}" CornerRadius="13" Padding="11,6" Margin="0,0,9,0" RenderTransformOrigin="0.5,0.5">
+                            <Border.RenderTransform>
+                                <TransformGroup>
+                                    <ScaleTransform x:Name="ProviderBadgeScale" ScaleX="1" ScaleY="1"/>
+                                    <TranslateTransform x:Name="ProviderBadgeTranslate"/>
+                                </TransformGroup>
+                            </Border.RenderTransform>
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="✦" Foreground="{DynamicResource AiAccent}" Margin="0,0,6,0"/>
                                 <TextBlock x:Name="ProviderText" Text="AI API 未配置" Foreground="{DynamicResource Warning}" FontSize="10.5" FontWeight="SemiBold"/>
                             </StackPanel>
                         </Border>
-                        <Button Style="{StaticResource SecondaryButton}" Click="CommandButton_Click" Margin="0,0,8,0" Padding="13,8" ToolTip="快速操作 (Ctrl+K)">
-                            <StackPanel Orientation="Horizontal"><TextBlock Text="快速操作"/><Border Background="{DynamicResource CanvasDeep}" CornerRadius="4" Padding="5,1" Margin="9,0,0,0"><TextBlock Text="Ctrl K" FontSize="9" Foreground="{DynamicResource Muted}"/></Border></StackPanel>
-                        </Button>
-                        <Button x:Name="ThemeButton" Style="{StaticResource IconButton}" Click="Theme_Click" Margin="0,0,8,0" ToolTip="切换主题"><TextBlock x:Name="ThemeText" Text="◐"/></Button>
-                        <Button x:Name="PageGuideButton" Content="本页使用手册" ToolTip="查看当前模块的功能介绍和操作步骤" Style="{StaticResource SecondaryButton}" Click="ShowGuide_Click" Margin="0,0,8,0"/>
-                        <Button Content="设置" ToolTip="AI 模型、界面缩放、主题与本地体验" Style="{StaticResource PrimaryButton}" Click="Settings_Click"/>
+                        <Button x:Name="PageGuideButton" Content="本页使用手册" ToolTip="查看当前模块的功能介绍和操作步骤" Style="{StaticResource SecondaryButton}" Click="ShowGuide_Click"/>
                     </StackPanel>
                 </Grid>
             </Border>
-            <ContentControl x:Name="ContentHost" Grid.Row="1"/>
+            <ContentControl x:Name="ContentHost" Grid.Row="1" RenderTransformOrigin="0.5,0.5">
+                <ContentControl.RenderTransform><TranslateTransform x:Name="ContentHostTranslate"/></ContentControl.RenderTransform>
+            </ContentControl>
         </Grid>
 
         <!-- Global and page-specific walkthroughs -->
         <controls:GuideOverlay x:Name="OnboardingGuide" Grid.ColumnSpan="2" Panel.ZIndex="100"/>
 
         <!-- Keyboard-first command surface -->
-        <Grid x:Name="CommandOverlay" Grid.ColumnSpan="2" Panel.ZIndex="120" Background="{DynamicResource Overlay}" Visibility="Collapsed" MouseDown="CommandOverlay_MouseDown">
-            <Border Width="600" VerticalAlignment="Top" Margin="0,105,0,0" Style="{StaticResource ElevatedCard}" Padding="0" MouseDown="CommandPanel_MouseDown">
+        <Grid x:Name="CommandOverlay" Grid.ColumnSpan="2" Panel.ZIndex="120" Background="{DynamicResource Overlay}" Visibility="Collapsed" Opacity="0" MouseDown="CommandOverlay_MouseDown">
+            <Border x:Name="CommandPanel" Width="600" VerticalAlignment="Top" Margin="0,105,0,0" Style="{StaticResource ElevatedCard}" Padding="0" Opacity="0" RenderTransformOrigin="0.5,0" MouseDown="CommandPanel_MouseDown">
+                <Border.RenderTransform>
+                    <TransformGroup>
+                        <ScaleTransform x:Name="CommandPanelScale" ScaleX="0.97" ScaleY="0.97"/>
+                        <TranslateTransform x:Name="CommandPanelTranslate" Y="-10"/>
+                    </TransformGroup>
+                </Border.RenderTransform>
                 <Grid>
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="20,17">
@@ -233,7 +280,7 @@
                     </Border>
                     <StackPanel Grid.Row="1" Margin="10,10,10,4">
                         <TextBlock Text="建议操作" Style="{StaticResource PageEyebrow}" Margin="12,4,0,7"/>
-                        <Button Tag="import" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="＋" FontSize="18" Foreground="{DynamicResource Primary}"/><StackPanel Grid.Column="1"><TextBlock Text="导入客户数据" FontWeight="SemiBold"/><TextBlock Text="保留 Excel / CSV 原始字段" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel><TextBlock Grid.Column="2" Text="Enter" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/></Grid></Button>
+                        <Button x:Name="FirstQuickActionButton" Tag="import" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="＋" FontSize="18" Foreground="{DynamicResource Primary}"/><StackPanel Grid.Column="1"><TextBlock Text="导入客户数据" FontWeight="SemiBold"/><TextBlock Text="保留 Excel / CSV 原始字段" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel><TextBlock Grid.Column="2" Text="Enter" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/></Grid></Button>
                         <Button Tag="intelligence" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="✦" FontSize="15" Foreground="{DynamicResource AiAccent}"/><StackPanel Grid.Column="1"><TextBlock Text="打开商机智能" FontWeight="SemiBold"/><TextBlock Text="查看 AI 评分证据与下一步" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid></Button>
                         <Button Tag="inbox" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="◉" FontSize="15" Foreground="{DynamicResource Primary}"/><StackPanel Grid.Column="1"><TextBlock Text="打开 WhatsApp Inbox" FontWeight="SemiBold"/><TextBlock Text="处理最新客户回复" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid></Button>
                         <Button Tag="broadcast" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="◌" FontSize="15" Foreground="{DynamicResource Warning}"/><StackPanel Grid.Column="1"><TextBlock Text="建立自动化群发任务" FontWeight="SemiBold"/><TextBlock Text="模板、受众、节奏与人工批准" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid></Button>

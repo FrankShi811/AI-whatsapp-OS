@@ -124,7 +124,16 @@
         </ScrollViewer>
 
         <Border Grid.Row="2" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="28,15">
-            <Grid><TextBlock Text="更改保存后立即生效" Foreground="{DynamicResource Muted}" FontSize="9.5" VerticalAlignment="Center"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button Content="取消" IsCancel="True" Style="{StaticResource SecondaryButton}" Click="Cancel_Click" Margin="0,0,8,0"/><Button x:Name="SaveButton" Content="保存并应用" Style="{StaticResource PrimaryButton}" Click="Save_Click"/></StackPanel></Grid>
+            <Grid>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="版本与更新" Style="{StaticResource SecondaryButton}" Click="VersionHistory_Click" Padding="12,7" MinHeight="34" Margin="0,0,12,0"/>
+                    <TextBlock Text="更改保存后立即生效" Foreground="{DynamicResource Muted}" FontSize="9.5" VerticalAlignment="Center"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="取消" IsCancel="True" Style="{StaticResource SecondaryButton}" Click="Cancel_Click" Margin="0,0,8,0"/>
+                    <Button x:Name="SaveButton" Content="保存并应用" Style="{StaticResource PrimaryButton}" Click="Save_Click"/>
+                </StackPanel>
+            </Grid>
         </Border>
 
         <controls:GuideOverlay x:Name="SettingsGuide" Grid.RowSpan="3" Panel.ZIndex="100"/>

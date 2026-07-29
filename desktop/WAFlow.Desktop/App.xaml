@@ -6,34 +6,38 @@
     <Application.Resources>
         <local:ComboSelectionTextConverter x:Key="ComboSelectionTextConverter"/>
         <!-- AI Sales OS 2.x semantic design tokens. ThemeManager mutates these shared brushes in-place. -->
-        <SolidColorBrush x:Key="Ink" Color="#08130F"/>
-        <SolidColorBrush x:Key="InkSecondary" Color="#4A5D56"/>
-        <SolidColorBrush x:Key="Muted" Color="#687B74"/>
+        <SolidColorBrush x:Key="Ink" Color="#15251E"/>
+        <SolidColorBrush x:Key="InkSecondary" Color="#43564D"/>
+        <SolidColorBrush x:Key="Muted" Color="#586B64"/>
         <SolidColorBrush x:Key="MutedSubtle" Color="#96A8A1"/>
-        <SolidColorBrush x:Key="Primary" Color="#0C9A70"/>
-        <SolidColorBrush x:Key="PrimaryDark" Color="#087A59"/>
-        <SolidColorBrush x:Key="PrimaryHover" Color="#087A59"/>
+        <SolidColorBrush x:Key="Primary" Color="#087A59"/>
+        <SolidColorBrush x:Key="PrimaryDark" Color="#066A4D"/>
+        <SolidColorBrush x:Key="PrimaryHover" Color="#066A4D"/>
+        <SolidColorBrush x:Key="OnPrimary" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="PrimarySoft" Color="#D9F5EB"/>
         <SolidColorBrush x:Key="PrimarySurface" Color="#ECFAF5"/>
-        <SolidColorBrush x:Key="AiAccent" Color="#7868FF"/>
-        <SolidColorBrush x:Key="AiAccentDeep" Color="#5040D8"/>
+        <SolidColorBrush x:Key="AiAccent" Color="#6659B8"/>
+        <SolidColorBrush x:Key="AiAccentDeep" Color="#51459F"/>
+        <SolidColorBrush x:Key="OnAi" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="AiProcessing" Color="#31C8E5"/>
         <SolidColorBrush x:Key="AiSoft" Color="#E8E3FF"/>
         <SolidColorBrush x:Key="AiSurface" Color="#F4F1FF"/>
         <SolidColorBrush x:Key="Surface" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="SurfaceElevated" Color="#FFFFFF"/>
-        <SolidColorBrush x:Key="SurfaceMuted" Color="#F7FAF9"/>
+        <SolidColorBrush x:Key="SurfaceMuted" Color="#F4F7F5"/>
         <SolidColorBrush x:Key="SurfaceInput" Color="#FFFFFF"/>
-        <SolidColorBrush x:Key="Canvas" Color="#EFF4F2"/>
-        <SolidColorBrush x:Key="CanvasDeep" Color="#E3EBE7"/>
-        <SolidColorBrush x:Key="Line" Color="#D5E0DC"/>
+        <SolidColorBrush x:Key="Canvas" Color="#F4F7F5"/>
+        <SolidColorBrush x:Key="CanvasDeep" Color="#E8EEEB"/>
+        <SolidColorBrush x:Key="Line" Color="#DDE5E1"/>
         <SolidColorBrush x:Key="LineStrong" Color="#B9C9C3"/>
-        <SolidColorBrush x:Key="Sidebar" Color="#081B15"/>
-        <SolidColorBrush x:Key="SidebarElevated" Color="#102A22"/>
-        <SolidColorBrush x:Key="SidebarHover" Color="#173B30"/>
-        <SolidColorBrush x:Key="SidebarActive" Color="#1B4A3B"/>
-        <SolidColorBrush x:Key="SidebarText" Color="#D2E1DC"/>
-        <SolidColorBrush x:Key="SidebarMuted" Color="#82A095"/>
+        <SolidColorBrush x:Key="Sidebar" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="SidebarElevated" Color="#F1F6F3"/>
+        <SolidColorBrush x:Key="SidebarHover" Color="#EAF4EF"/>
+        <SolidColorBrush x:Key="SidebarActive" Color="#E1F1EA"/>
+        <SolidColorBrush x:Key="SidebarText" Color="#24362F"/>
+        <SolidColorBrush x:Key="SidebarMuted" Color="#586B64"/>
+        <SolidColorBrush x:Key="LogoSurface" Color="#EEF2F0"/>
+        <SolidColorBrush x:Key="LogoBorder" Color="#D6DEDA"/>
         <SolidColorBrush x:Key="UnreadBadgeBackground" Color="#C43131"/>
         <SolidColorBrush x:Key="UnreadBadgeText" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="Success" Color="#16B889"/>
@@ -42,6 +46,7 @@
         <SolidColorBrush x:Key="WarningSoft" Color="#FFF2D6"/>
         <SolidColorBrush x:Key="Danger" Color="#E35D5D"/>
         <SolidColorBrush x:Key="DangerSoft" Color="#FDE7E7"/>
+        <SolidColorBrush x:Key="OnDanger" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="Info" Color="#4E8CF7"/>
         <SolidColorBrush x:Key="InfoSoft" Color="#E9F1FF"/>
         <SolidColorBrush x:Key="GradeA" Color="#16B889"/>
@@ -71,6 +76,7 @@
         <DropShadowEffect x:Key="CardShadow" Color="#18342B" BlurRadius="22" ShadowDepth="3" Opacity="0.09"/>
         <DropShadowEffect x:Key="FloatingShadow" Color="#102A21" BlurRadius="34" ShadowDepth="9" Opacity="0.16"/>
         <DropShadowEffect x:Key="AiGlow" Color="#7868FF" BlurRadius="26" ShadowDepth="0" Opacity="0.18"/>
+        <DropShadowEffect x:Key="SidebarOverlayShadow" Color="#07100D" BlurRadius="28" ShadowDepth="8" Direction="0" Opacity="0.18"/>
 
         <Style TargetType="Window">
             <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI, Microsoft YaHei UI"/>
@@ -101,7 +107,7 @@
             <Setter Property="Background" Value="{DynamicResource Surface}"/>
             <Setter Property="BorderBrush" Value="{DynamicResource Line}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="16"/>
+            <Setter Property="CornerRadius" Value="12"/>
             <Setter Property="Padding" Value="20"/>
         </Style>
         <Style x:Key="ElevatedCard" TargetType="Border" BasedOn="{StaticResource Card}">
@@ -117,16 +123,16 @@
         <Style x:Key="AmbientHeroCard" TargetType="Border" BasedOn="{StaticResource GlassCard}">
             <Setter Property="Background" Value="{DynamicResource AuroraAmbient}"/>
             <Setter Property="BorderBrush" Value="{DynamicResource AuroraBorder}"/>
-            <Setter Property="CornerRadius" Value="22"/>
+            <Setter Property="CornerRadius" Value="14"/>
             <Setter Property="Padding" Value="24,21"/>
         </Style>
         <Style x:Key="MetricCard" TargetType="Border" BasedOn="{StaticResource Card}">
             <Setter Property="Padding" Value="18,16"/>
-            <Setter Property="CornerRadius" Value="14"/>
+            <Setter Property="CornerRadius" Value="11"/>
         </Style>
         <Style x:Key="ElevatedMetricCard" TargetType="Border" BasedOn="{StaticResource GlassCard}">
             <Setter Property="Padding" Value="19,17"/>
-            <Setter Property="CornerRadius" Value="17"/>
+            <Setter Property="CornerRadius" Value="12"/>
         </Style>
         <Style x:Key="AiCard" TargetType="Border" BasedOn="{StaticResource Card}">
             <Setter Property="Background" Value="{DynamicResource AiSurface}"/>
@@ -136,13 +142,13 @@
         <Style x:Key="IntelligenceGlassCard" TargetType="Border" BasedOn="{StaticResource AiCard}">
             <Setter Property="Background" Value="{DynamicResource AuroraAmbient}"/>
             <Setter Property="BorderBrush" Value="{DynamicResource AuroraBorder}"/>
-            <Setter Property="CornerRadius" Value="20"/>
+            <Setter Property="CornerRadius" Value="14"/>
             <Setter Property="Effect" Value="{StaticResource AiGlow}"/>
         </Style>
         <Style x:Key="HolographicCard" TargetType="Border" BasedOn="{StaticResource AiCard}">
             <Setter Property="BorderBrush" Value="{DynamicResource AiAccent}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="18"/>
+            <Setter Property="CornerRadius" Value="13"/>
             <Setter Property="Padding" Value="22"/>
         </Style>
         <Style x:Key="ReasoningStepCard" TargetType="Border" BasedOn="{StaticResource Card}">
@@ -154,7 +160,7 @@
         <Style x:Key="PriorityCard" TargetType="Border" BasedOn="{StaticResource ElevatedCard}">
             <Setter Property="BorderBrush" Value="{DynamicResource PrimarySoft}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="16"/>
+            <Setter Property="CornerRadius" Value="12"/>
         </Style>
         <Style x:Key="WorkflowNodeCard" TargetType="Border" BasedOn="{StaticResource Card}">
             <Setter Property="CornerRadius" Value="14"/>
@@ -184,16 +190,29 @@
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="local:MotionAssist.IsEnabled" Value="True"/>
+            <Setter Property="local:MotionAssist.HoverScale" Value="1.012"/>
+            <Setter Property="local:MotionAssist.PressedScale" Value="0.975"/>
+            <Setter Property="local:MotionAssist.HoverOffsetY" Value="-1"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="12" Padding="{TemplateBinding Padding}" RenderTransformOrigin="0.5,0.5">
-                            <Border.RenderTransform><ScaleTransform x:Name="Scale" ScaleX="1" ScaleY="1"/></Border.RenderTransform>
-                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+                        <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="12" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True"
+                                              TextElement.Foreground="{Binding Foreground, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="{x:Type TextBlock}">
+                                        <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"/>
+                                    </Style>
+                                    <Style TargetType="{x:Type AccessText}">
+                                        <Setter Property="TextElement.Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"/>
+                                    </Style>
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
                         </Border>
                         <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.92"/><Setter TargetName="Root" Property="BorderBrush" Value="{DynamicResource Primary}"/></Trigger>
-                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.82"/></Trigger>
                             <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Root" Property="BorderBrush" Value="{DynamicResource AiAccent}"/><Setter TargetName="Root" Property="BorderThickness" Value="2"/></Trigger>
                             <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Root" Property="Opacity" Value="0.40"/><Setter Property="Cursor" Value="Arrow"/></Trigger>
                         </ControlTemplate.Triggers>
@@ -203,12 +222,12 @@
         </Style>
         <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource ButtonBase}">
             <Setter Property="Background" Value="{DynamicResource Primary}"/>
-            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Foreground" Value="{DynamicResource OnPrimary}"/>
             <Setter Property="BorderBrush" Value="{DynamicResource Primary}"/>
         </Style>
         <Style x:Key="AiButton" TargetType="Button" BasedOn="{StaticResource ButtonBase}">
             <Setter Property="Background" Value="{DynamicResource AiAccent}"/>
-            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Foreground" Value="{DynamicResource OnAi}"/>
             <Setter Property="BorderBrush" Value="{DynamicResource AiAccent}"/>
         </Style>
         <Style x:Key="SecondaryButton" TargetType="Button" BasedOn="{StaticResource ButtonBase}">
@@ -223,7 +242,7 @@
         </Style>
         <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource ButtonBase}">
             <Setter Property="Background" Value="{DynamicResource Danger}"/>
-            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Foreground" Value="{DynamicResource OnDanger}"/>
             <Setter Property="BorderBrush" Value="{DynamicResource Danger}"/>
         </Style>
         <Style x:Key="IconButton" TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
@@ -437,14 +456,113 @@
         </Style>
         <Style x:Key="NavText" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"/>
+            <Setter Property="TextWrapping" Value="NoWrap"/>
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Setter Property="Opacity" Value="0"/>
+            <Setter Property="Tag" Value="SidebarReveal"/>
+            <Setter Property="RenderTransform">
+                <Setter.Value><TranslateTransform X="-6"/></Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="SidebarSectionLabel" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource SidebarMuted}"/>
+            <Setter Property="FontSize" Value="9"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="TextWrapping" Value="NoWrap"/>
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Setter Property="Opacity" Value="0"/>
+            <Setter Property="Tag" Value="SidebarReveal"/>
+            <Setter Property="RenderTransform">
+                <Setter.Value><TranslateTransform X="-6"/></Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="NavButton" TargetType="Button">
             <Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="{DynamicResource SidebarText}"/><Setter Property="BorderBrush" Value="Transparent"/>
-            <Setter Property="BorderThickness" Value="0"/><Setter Property="HorizontalContentAlignment" Value="Left"/><Setter Property="Padding" Value="15,12"/><Setter Property="Margin" Value="0,2"/><Setter Property="FontSize" Value="12.5"/><Setter Property="FontWeight" Value="Medium"/><Setter Property="Cursor" Value="Hand"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="BorderThickness" Value="0"/><Setter Property="HorizontalContentAlignment" Value="Left"/><Setter Property="Padding" Value="13,12"/><Setter Property="Margin" Value="0,2"/><Setter Property="FontSize" Value="12.5"/><Setter Property="FontWeight" Value="Medium"/><Setter Property="Cursor" Value="Hand"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="local:MotionAssist.IsEnabled" Value="True"/>
+            <Setter Property="local:MotionAssist.HoverScale" Value="1"/>
+            <Setter Property="local:MotionAssist.PressedScale" Value="0.985"/>
+            <Setter Property="local:MotionAssist.HoverOffsetX" Value="2"/>
+            <Setter Property="local:MotionAssist.HoverOffsetY" Value="0"/>
             <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-                <Grid><Border x:Name="NavRoot" Background="{TemplateBinding Background}" CornerRadius="10" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/></Border><Border x:Name="ActiveRail" Width="3" Height="22" CornerRadius="2" Background="{TemplateBinding BorderBrush}" HorizontalAlignment="Left" VerticalAlignment="Center"/></Grid>
-                <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="NavRoot" Property="Background" Value="{DynamicResource SidebarHover}"/><Setter Property="Foreground" Value="White"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.42"/><Setter Property="Cursor" Value="Arrow"/></Trigger></ControlTemplate.Triggers>
+                <Grid ClipToBounds="True">
+                    <Border x:Name="HoverSurface" Background="{DynamicResource SidebarHover}" CornerRadius="10" Opacity="0"/>
+                    <Border x:Name="ActiveSurface" Background="{DynamicResource SidebarActive}" CornerRadius="10" Opacity="0"/>
+                    <Border x:Name="NavRoot" Background="Transparent" CornerRadius="10" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                    </Border>
+                    <Border x:Name="ActiveRail" Width="3" Height="22" CornerRadius="2" Background="{DynamicResource Primary}" HorizontalAlignment="Left" VerticalAlignment="Center" Opacity="0" RenderTransformOrigin="0.5,0.5">
+                        <Border.RenderTransform><ScaleTransform ScaleY="0.35"/></Border.RenderTransform>
+                    </Border>
+                    <!-- A short focus dash preserves keyboard orientation without drawing a perimeter around the item. -->
+                    <Border x:Name="FocusDash" Width="18" Height="2" CornerRadius="1" Background="{DynamicResource AiAccent}" HorizontalAlignment="Center" VerticalAlignment="Bottom" Opacity="0"/>
+                </Grid>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter Property="Foreground" Value="{DynamicResource SidebarText}"/>
+                        <Trigger.EnterActions>
+                            <BeginStoryboard HandoffBehavior="SnapshotAndReplace">
+                                <Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="HoverSurface" Storyboard.TargetProperty="Opacity" To="0.82" Duration="0:0:0.16">
+                                        <DoubleAnimation.EasingFunction><SineEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                                    </DoubleAnimation>
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </Trigger.EnterActions>
+                        <Trigger.ExitActions>
+                            <BeginStoryboard HandoffBehavior="SnapshotAndReplace">
+                                <Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="HoverSurface" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.20">
+                                        <DoubleAnimation.EasingFunction><SineEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                                    </DoubleAnimation>
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </Trigger.ExitActions>
+                    </Trigger>
+                    <Trigger Property="local:MotionAssist.IsSelected" Value="True">
+                        <Setter Property="FontWeight" Value="SemiBold"/>
+                        <Trigger.EnterActions>
+                            <BeginStoryboard HandoffBehavior="SnapshotAndReplace">
+                                <Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="ActiveSurface" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.22">
+                                        <DoubleAnimation.EasingFunction><SineEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                                    </DoubleAnimation>
+                                    <DoubleAnimation Storyboard.TargetName="ActiveRail" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.18"/>
+                                    <DoubleAnimation Storyboard.TargetName="ActiveRail" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)" To="1" Duration="0:0:0.22">
+                                        <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                                    </DoubleAnimation>
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </Trigger.EnterActions>
+                        <Trigger.ExitActions>
+                            <BeginStoryboard HandoffBehavior="SnapshotAndReplace">
+                                <Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="ActiveSurface" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.14"/>
+                                    <DoubleAnimation Storyboard.TargetName="ActiveRail" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
+                                    <DoubleAnimation Storyboard.TargetName="ActiveRail" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)" To="0.35" Duration="0:0:0.14"/>
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </Trigger.ExitActions>
+                    </Trigger>
+                    <Trigger Property="IsKeyboardFocused" Value="True">
+                        <Trigger.EnterActions>
+                            <BeginStoryboard HandoffBehavior="SnapshotAndReplace">
+                                <Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="FocusDash" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </Trigger.EnterActions>
+                        <Trigger.ExitActions>
+                            <BeginStoryboard HandoffBehavior="SnapshotAndReplace">
+                                <Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="FocusDash" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </Trigger.ExitActions>
+                    </Trigger>
+                    <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.42"/><Setter Property="Cursor" Value="Arrow"/></Trigger>
+                </ControlTemplate.Triggers>
             </ControlTemplate></Setter.Value></Setter>
         </Style>
     </Application.Resources>

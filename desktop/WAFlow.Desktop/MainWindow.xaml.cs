@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
 using System.Windows.Threading;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
@@ -16,6 +17,10 @@ namespace WAFlow.Desktop;
 
 public partial class MainWindow : Window
 {
+    private const double SidebarCollapsedWidth = 60;
+    private const double SidebarExpandedWidth = 240;
+    private static readonly TimeSpan SidebarExpandDuration = TimeSpan.FromMilliseconds(240);
+    private static readonly TimeSpan SidebarCollapseDuration = TimeSpan.FromMilliseconds(220);
     private readonly AppServices _services;
     private readonly IApplicationUpdateService _updates;
     private readonly DashboardView _dashboard;
@@ -33,10 +38,24 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _unreadBadgeTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private bool _unreadBadgeRefreshRunning;
     private bool _unreadBadgeRefreshPending;
+    private IReadOnlyList<FrameworkElement> _sidebarRevealElements = [];
+    private bool _sidebarExpanded;
+    private bool _sidebarPointerInside;
+    private bool _sidebarFocusFromPointer;
+    private bool _sidebarKeyboardExpanded;
+    private bool _sidebarKeyboardNavigationPending;
+    private DropShadowEffect _sidebarShadow = null!;
+    private long _sidebarMotionVersion;
+    private CancellationTokenSource? _navigationMotionCancellation;
+    private long _commandMotionVersion;
+    private IInputElement? _focusBeforeCommandOverlay;
 
     public MainWindow(AppServices services, IApplicationUpdateService updates, int uiScalePercentage = 100)
     {
         InitializeComponent();
+        if (string.Equals(Environment.GetEnvironmentVariable("WAFLOW_UI_REVIEW"), "1", StringComparison.Ordinal))
+            Title += " · UI 沙盒";
+        InitializeSidebarMotionState();
         ApplyUiScale(uiScalePercentage);
         GuideCatalog.ValidateCoverage();
         SidebarVersionText.Text = $"当前版本  v{ReleaseCatalog.CurrentVersion}";
@@ -75,6 +94,239 @@ public partial class MainWindow : Window
         Loaded += MainWindow_Loaded;
     }
 
+    private void InitializeSidebarMotionState()
+    {
+        _sidebarRevealElements = FindSidebarRevealElements(SidebarHost).ToArray();
+        _sidebarExpanded = false;
+        _sidebarPointerInside = SidebarHost.IsMouseOver;
+        _sidebarKeyboardExpanded = SidebarHost.IsKeyboardFocusWithin && !_sidebarFocusFromPointer;
+        _sidebarMotionVersion++;
+        SidebarHost.Width = SidebarCollapsedWidth;
+        SidebarHost.Effect = null;
+        _sidebarShadow = ((DropShadowEffect)FindResource("SidebarOverlayShadow")).CloneCurrentValue();
+        _sidebarShadow.Opacity = 0;
+        foreach (var element in _sidebarRevealElements)
+        {
+            element.BeginAnimation(OpacityProperty, null);
+            element.Opacity = 0;
+            EnsureSidebarTranslateTransform(element).X = -10;
+        }
+        UpdateSidebarExpansionState();
+    }
+
+    private static IEnumerable<FrameworkElement> FindSidebarRevealElements(DependencyObject root)
+    {
+        var childCount = VisualTreeHelper.GetChildrenCount(root);
+        for (var index = 0; index < childCount; index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is FrameworkElement { Tag: "SidebarReveal" } element)
+                yield return element;
+            foreach (var descendant in FindSidebarRevealElements(child))
+                yield return descendant;
+        }
+    }
+
+    private static TranslateTransform EnsureSidebarTranslateTransform(FrameworkElement element)
+    {
+        if (element.RenderTransform is TranslateTransform { IsFrozen: false } writableTranslate)
+            return writableTranslate;
+        var initialX = element.RenderTransform is TranslateTransform currentTranslate ? currentTranslate.X : 0;
+        var translate = new TranslateTransform(initialX, 0);
+        element.RenderTransform = translate;
+        return translate;
+    }
+
+    private void SidebarHost_MouseEnter(object sender, MouseEventArgs e)
+    {
+        _sidebarPointerInside = true;
+        UpdateSidebarExpansionState();
+    }
+
+    private void SidebarHost_MouseLeave(object sender, MouseEventArgs e)
+    {
+        _sidebarPointerInside = false;
+        UpdateSidebarExpansionState();
+    }
+
+    private void SidebarHost_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        _sidebarFocusFromPointer = true;
+        _sidebarKeyboardNavigationPending = false;
+        _sidebarKeyboardExpanded = false;
+    }
+
+    private void SidebarHost_PreviewMouseUp(object sender, MouseButtonEventArgs e) =>
+        _sidebarFocusFromPointer = false;
+
+    private void SidebarHost_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (!_sidebarFocusFromPointer && _sidebarKeyboardNavigationPending)
+            _sidebarKeyboardExpanded = true;
+        _sidebarKeyboardNavigationPending = false;
+        UpdateSidebarExpansionState();
+    }
+
+    private void SidebarHost_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        _ = Dispatcher.BeginInvoke(() =>
+        {
+            if (!SidebarHost.IsKeyboardFocusWithin)
+                _sidebarKeyboardExpanded = false;
+            UpdateSidebarExpansionState();
+        });
+    }
+
+    private void UpdateSidebarExpansionState() =>
+        SetSidebarExpanded(_sidebarPointerInside || _sidebarKeyboardExpanded);
+
+    private void SetSidebarExpanded(bool expanded)
+    {
+        if (_sidebarExpanded == expanded) return;
+        _sidebarExpanded = expanded;
+        var version = ++_sidebarMotionVersion;
+        if (expanded && SidebarHost.Effect is null)
+        {
+            _sidebarShadow.Opacity = 0;
+            SidebarHost.Effect = _sidebarShadow;
+        }
+
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            SidebarHost.BeginAnimation(WidthProperty, null);
+            SidebarHost.Width = expanded ? SidebarExpandedWidth : SidebarCollapsedWidth;
+            _sidebarShadow.BeginAnimation(DropShadowEffect.OpacityProperty, null);
+            _sidebarShadow.Opacity = expanded ? 0.18 : 0;
+            if (!expanded) SidebarHost.Effect = null;
+            foreach (var element in _sidebarRevealElements)
+            {
+                element.BeginAnimation(OpacityProperty, null);
+                element.Opacity = expanded ? 1 : 0;
+                var translate = EnsureSidebarTranslateTransform(element);
+                translate.BeginAnimation(TranslateTransform.XProperty, null);
+                translate.X = expanded ? 0 : -10;
+            }
+            return;
+        }
+
+        var duration = expanded ? SidebarExpandDuration : SidebarCollapseDuration;
+        var shellEase = new SineEase { EasingMode = EasingMode.EaseInOut };
+        AnimateAndCommit(
+            SidebarHost,
+            WidthProperty,
+            expanded ? SidebarExpandedWidth : SidebarCollapsedWidth,
+            duration,
+            shellEase,
+            TimeSpan.Zero,
+            () => version == _sidebarMotionVersion);
+        AnimateAndCommit(
+            _sidebarShadow,
+            DropShadowEffect.OpacityProperty,
+            expanded ? 0.18 : 0,
+            TimeSpan.FromMilliseconds(expanded ? 210 : 165),
+            new SineEase { EasingMode = EasingMode.EaseOut },
+            TimeSpan.Zero,
+            () => version == _sidebarMotionVersion,
+            () =>
+            {
+                if (!expanded && version == _sidebarMotionVersion)
+                    SidebarHost.Effect = null;
+            });
+
+        var revealDelay = expanded ? TimeSpan.FromMilliseconds(48) : TimeSpan.Zero;
+        var revealDuration = TimeSpan.FromMilliseconds(expanded ? 178 : 128);
+        var revealEase = new SineEase { EasingMode = EasingMode.EaseOut };
+        foreach (var element in _sidebarRevealElements)
+        {
+            AnimateAndCommit(
+                element,
+                OpacityProperty,
+                expanded ? 1 : 0,
+                revealDuration,
+                revealEase,
+                revealDelay,
+                () => version == _sidebarMotionVersion);
+            AnimateAndCommit(
+                EnsureSidebarTranslateTransform(element),
+                TranslateTransform.XProperty,
+                expanded ? 0 : -10,
+                revealDuration,
+                revealEase,
+                revealDelay,
+                () => version == _sidebarMotionVersion);
+        }
+    }
+
+    private static void AnimateAndCommit(
+        DependencyObject target,
+        DependencyProperty property,
+        double destination,
+        TimeSpan duration,
+        IEasingFunction easing,
+        TimeSpan beginTime,
+        Func<bool>? isCurrent = null,
+        Action? completed = null)
+    {
+        if (target is not IAnimatable animatable)
+        {
+            target.SetValue(property, destination);
+            completed?.Invoke();
+            return;
+        }
+
+        var current = (double)target.GetValue(property);
+        animatable.BeginAnimation(property, null);
+        target.SetValue(property, current);
+        var animation = new DoubleAnimation(current, destination, new Duration(duration))
+        {
+            BeginTime = beginTime,
+            EasingFunction = easing,
+            FillBehavior = FillBehavior.HoldEnd
+        };
+        animation.Completed += (_, _) =>
+        {
+            if (isCurrent is not null && !isCurrent()) return;
+            target.SetValue(property, destination);
+            animatable.BeginAnimation(property, null);
+            completed?.Invoke();
+        };
+        animatable.BeginAnimation(property, animation, HandoffBehavior.SnapshotAndReplace);
+    }
+
+    private static Task AnimateAndCommitAsync(
+        DependencyObject target,
+        DependencyProperty property,
+        double destination,
+        TimeSpan duration,
+        IEasingFunction easing,
+        CancellationToken cancellationToken)
+    {
+        if (!SystemParameters.ClientAreaAnimation || duration == TimeSpan.Zero)
+        {
+            if (target is IAnimatable immediateAnimatable)
+                immediateAnimatable.BeginAnimation(property, null);
+            target.SetValue(property, destination);
+            return Task.CompletedTask;
+        }
+
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
+        AnimateAndCommit(
+            target,
+            property,
+            destination,
+            duration,
+            easing,
+            TimeSpan.Zero,
+            () => !cancellationToken.IsCancellationRequested,
+            () =>
+            {
+                registration.Dispose();
+                completion.TrySetResult();
+            });
+        return completion.Task;
+    }
+
     private void VersionHistory_Click(object sender, RoutedEventArgs e)
     {
         if (_updates.State is { Stage: ApplicationUpdateStage.ReadyToInstall, CanInstall: true })
@@ -101,6 +353,10 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        _navigationMotionCancellation?.Cancel();
+        _navigationMotionCancellation?.Dispose();
+        _sidebarMotionVersion++;
+        _commandMotionVersion++;
         WindowsTaskbarIdentity.ReleaseWindowIcon();
         _services.Campaigns.SafetyStopped -= Campaigns_SafetyStopped;
         _services.LeadAutomation.AnalysisChanged -= LeadAutomation_AnalysisChanged;
@@ -119,8 +375,9 @@ public partial class MainWindow : Window
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
+        // Control templates inside the ScrollViewer join the visual tree only after the window loads.
+        InitializeSidebarMotionState();
         await UpdateProviderStateAsync();
-        await UpdateThemeStateAsync();
         await UpdateUnreadBadgesAsync();
         _unreadBadgeTimer.Start();
         await NavigateAsync("dashboard", DashboardButton);
@@ -140,8 +397,8 @@ public partial class MainWindow : Window
 
     private void ApplyUpdateState(ApplicationUpdateState state)
     {
-        SidebarUpdateIcon.Foreground = (Brush)FindResource("Success");
-        SidebarUpdateText.Foreground = (Brush)FindResource("SidebarMuted");
+        SidebarUpdateIcon.SetResourceReference(TextBlock.ForegroundProperty, "Success");
+        SidebarUpdateText.SetResourceReference(TextBlock.ForegroundProperty, "SidebarMuted");
         VersionButton.BorderBrush = Brushes.Transparent;
         VersionButton.BorderThickness = new Thickness(0);
         VersionButton.ToolTip = "查看版本与更新";
@@ -159,20 +416,20 @@ public partial class MainWindow : Window
                 break;
             case ApplicationUpdateStage.ReadyToInstall:
                 SidebarUpdateIcon.Text = "●";
-                SidebarUpdateIcon.Foreground = (Brush)FindResource("Warning");
+                SidebarUpdateIcon.SetResourceReference(TextBlock.ForegroundProperty, "Warning");
                 SidebarVersionText.Text = $"新版本  v{state.LatestVersion}";
                 SidebarUpdateText.Text = "已下载 · 点击更新并重启";
-                SidebarUpdateText.Foreground = (Brush)FindResource("SidebarText");
-                VersionButton.BorderBrush = (Brush)FindResource("Warning");
+                SidebarUpdateText.SetResourceReference(TextBlock.ForegroundProperty, "SidebarText");
+                VersionButton.SetResourceReference(Button.BorderBrushProperty, "Warning");
                 VersionButton.BorderThickness = new Thickness(2);
                 VersionButton.ToolTip = "更新已下载，点击安装并重启";
                 break;
             case ApplicationUpdateStage.Failed:
                 SidebarUpdateIcon.Text = "!";
-                SidebarUpdateIcon.Foreground = (Brush)FindResource("Danger");
+                SidebarUpdateIcon.SetResourceReference(TextBlock.ForegroundProperty, "Danger");
                 SidebarVersionText.Text = $"当前版本  v{state.CurrentVersion}";
                 SidebarUpdateText.Text = "检查失败 · 点击查看详情";
-                SidebarUpdateText.Foreground = (Brush)FindResource("SidebarText");
+                SidebarUpdateText.SetResourceReference(TextBlock.ForegroundProperty, "SidebarText");
                 break;
             case ApplicationUpdateStage.Disabled:
                 SidebarUpdateIcon.Text = "↻";
@@ -210,19 +467,17 @@ public partial class MainWindow : Window
 
     private async Task NavigateAsync(string page, Button button)
     {
+        _navigationMotionCancellation?.Cancel();
+        _navigationMotionCancellation?.Dispose();
+        var motionCancellation = new CancellationTokenSource();
+        _navigationMotionCancellation = motionCancellation;
+        var cancellationToken = motionCancellation.Token;
+
         _currentPage = page;
         if (_activeButton is not null)
-        {
-            _activeButton.Background = Brushes.Transparent;
-            _activeButton.Foreground = (Brush)FindResource("SidebarText");
-            _activeButton.BorderBrush = Brushes.Transparent;
-            _activeButton.FontWeight = FontWeights.Medium;
-        }
+            ApplyNavigationButtonState(_activeButton, false);
         _activeButton = button;
-        button.Background = (Brush)FindResource("SidebarActive");
-        button.Foreground = (Brush)FindResource("SidebarText");
-        button.BorderBrush = (Brush)FindResource("Primary");
-        button.FontWeight = FontWeights.SemiBold;
+        ApplyNavigationButtonState(button, true);
         (object Content, string Title, string Subtitle) target = page switch
         {
             "intelligence" => ((object)_intelligence, "商机智能", "AI 评分证据、客户画像与下一步决策"),
@@ -234,17 +489,55 @@ public partial class MainWindow : Window
             "analytics" => ((object)_analytics, "客户智能分析", "全量客户数据、AI 商业判断、报告版本与管理层导出"),
             _ => ((object)_dashboard, "Dashboard", "今天最值得推进的商机与动作")
         };
-        ContentHost.Opacity = 0;
-        ContentHost.RenderTransform = new TranslateTransform(0, 8);
-        ContentHost.Content = target.Content;
-        TopTitle.Text = target.Title;
-        TopSubtitle.Text = target.Subtitle;
-        PageGuideButton.ToolTip = $"查看“{target.Title}”的功能介绍和操作步骤";
-        if (ContentHost.Content is IRefreshableView view) await view.RefreshAsync();
-        var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
-        ContentHost.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180)) { EasingFunction = easing });
-        ((TranslateTransform)ContentHost.RenderTransform).BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(8, 0, TimeSpan.FromMilliseconds(220)) { EasingFunction = easing });
-        if (_onboardingReady && !OnboardingGuide.IsOpen) await ShowModuleGuideIfNeededAsync(page);
+
+        try
+        {
+            var contentChanged = !ReferenceEquals(ContentHost.Content, target.Content);
+            if (contentChanged && ContentHost.Content is not null && SystemParameters.ClientAreaAnimation)
+            {
+                var exitEase = new SineEase { EasingMode = EasingMode.EaseIn };
+                await Task.WhenAll(
+                    AnimateAndCommitAsync(ContentHost, OpacityProperty, 0, TimeSpan.FromMilliseconds(95), exitEase, cancellationToken),
+                    AnimateAndCommitAsync(ContentHostTranslate, TranslateTransform.YProperty, -4, TimeSpan.FromMilliseconds(110), exitEase, cancellationToken));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            ContentHost.BeginAnimation(OpacityProperty, null);
+            ContentHostTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+            ContentHost.Opacity = contentChanged ? 0 : 1;
+            ContentHostTranslate.Y = contentChanged ? 10 : 0;
+            ContentHost.Content = target.Content;
+            TopTitle.Text = target.Title;
+            TopSubtitle.Text = target.Subtitle;
+            PageGuideButton.ToolTip = $"查看“{target.Title}”的功能介绍和操作步骤";
+            if (ContentHost.Content is IRefreshableView view)
+                await view.RefreshAsync();
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (contentChanged)
+            {
+                var enterEase = new CubicEase { EasingMode = EasingMode.EaseOut };
+                await Task.WhenAll(
+                    AnimateAndCommitAsync(ContentHost, OpacityProperty, 1, TimeSpan.FromMilliseconds(235), enterEase, cancellationToken),
+                    AnimateAndCommitAsync(ContentHostTranslate, TranslateTransform.YProperty, 0, TimeSpan.FromMilliseconds(255), enterEase, cancellationToken));
+            }
+
+            if (_onboardingReady && !OnboardingGuide.IsOpen)
+                await ShowModuleGuideIfNeededAsync(page);
+        }
+        catch (OperationCanceledException)
+        {
+            // A newer navigation owns the presentation state and continues from
+            // the current rendered values without flashing the superseded page.
+        }
+        finally
+        {
+            if (ReferenceEquals(_navigationMotionCancellation, motionCancellation))
+            {
+                _navigationMotionCancellation = null;
+                motionCancellation.Dispose();
+            }
+        }
     }
 
     private async void Settings_Click(object sender, RoutedEventArgs e)
@@ -254,15 +547,25 @@ public partial class MainWindow : Window
 
     private async Task OpenSettingsAsync()
     {
-        var window = new SettingsWindow(_services) { Owner = this };
+        var window = new SettingsWindow(_services, _updates) { Owner = this };
         var saved = window.ShowDialog() == true;
+        // Closing an owned window restores focus to the invoking button. That is
+        // programmatic focus restoration, not keyboard navigation, so it must
+        // not pin the hover overlay open after the pointer has already left.
+        _sidebarFocusFromPointer = false;
+        _sidebarKeyboardNavigationPending = false;
+        _sidebarKeyboardExpanded = false;
+        _sidebarPointerInside = SidebarHost.IsMouseOver;
+        UpdateSidebarExpansionState();
         _onboardingState = await _services.Repository.GetOnboardingStateAsync();
         if (saved)
         {
             var settings = await _services.Repository.GetAppSettingsAsync();
             ApplyUiScale(settings.UiScalePercentage);
+            RefreshShellThemeState();
             await UpdateProviderStateAsync();
-            await UpdateThemeStateAsync();
+            if (ContentHost.Content is IRefreshableView currentView)
+                await currentView.RefreshAsync();
             await _intelligence.RefreshAiRouteAsync();
             await UpdateUnreadBadgesAsync();
         }
@@ -350,34 +653,139 @@ public partial class MainWindow : Window
                 ? $"AI 已配置 · {settings.DeepSeekModel}"
                 : $"AI 已配置 · 分板块模型（默认 {settings.DeepSeekModel}）"
             : "AI API 未配置";
-        ProviderBadge.Background = (System.Windows.Media.Brush)FindResource(configured ? "SuccessSoft" : "WarningSoft");
-        ProviderText.Foreground = (Brush)FindResource(configured ? "Success" : "Warning");
+        ProviderBadge.SetResourceReference(Border.BackgroundProperty, configured ? "SuccessSoft" : "WarningSoft");
+        ProviderText.SetResourceReference(TextBlock.ForegroundProperty, configured ? "Success" : "Warning");
+        AnimateProviderBadgeFeedback();
     }
 
-    private async Task UpdateThemeStateAsync()
+    private void AnimateProviderBadgeFeedback()
     {
-        var settings = await _services.Repository.GetAppSettingsAsync();
-        ThemeText.Text = ThemeManager.Glyph(settings.ThemeMode);
-        ThemeButton.ToolTip = $"当前：{ThemeManager.Label(settings.ThemeMode)}；点击切换";
+        ProviderBadge.BeginAnimation(OpacityProperty, null);
+        ProviderBadgeScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        ProviderBadgeScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        ProviderBadgeTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+        ProviderBadge.Opacity = SystemParameters.ClientAreaAnimation ? 0.72 : 1;
+        ProviderBadgeScale.ScaleX = SystemParameters.ClientAreaAnimation ? 0.97 : 1;
+        ProviderBadgeScale.ScaleY = SystemParameters.ClientAreaAnimation ? 0.97 : 1;
+        ProviderBadgeTranslate.Y = SystemParameters.ClientAreaAnimation ? -3 : 0;
+        if (!SystemParameters.ClientAreaAnimation) return;
+
+        var easing = new SineEase { EasingMode = EasingMode.EaseOut };
+        AnimateAndCommit(ProviderBadge, OpacityProperty, 1, TimeSpan.FromMilliseconds(180), easing, TimeSpan.Zero);
+        AnimateAndCommit(ProviderBadgeScale, ScaleTransform.ScaleXProperty, 1, TimeSpan.FromMilliseconds(210), easing, TimeSpan.Zero);
+        AnimateAndCommit(ProviderBadgeScale, ScaleTransform.ScaleYProperty, 1, TimeSpan.FromMilliseconds(210), easing, TimeSpan.Zero);
+        AnimateAndCommit(ProviderBadgeTranslate, TranslateTransform.YProperty, 0, TimeSpan.FromMilliseconds(220), easing, TimeSpan.Zero);
     }
 
-    private async void Theme_Click(object sender, RoutedEventArgs e)
+    private void RefreshShellThemeState()
     {
-        var settings = await _services.Repository.GetAppSettingsAsync();
-        settings.ThemeMode = ThemeManager.Next(settings.ThemeMode);
-        await _services.Repository.SaveAppSettingsAsync(settings);
-        ThemeManager.Apply(settings.ThemeMode);
-        await UpdateThemeStateAsync();
+        ApplyUpdateState(_updates.State);
+        foreach (var button in new[]
+                 {
+                     DashboardButton, IntelligenceButton, CustomersButton, InboxButton,
+                     EmailButton, BroadcastButton, KnowledgeButton, AnalyticsButton
+                 })
+            ApplyNavigationButtonState(button, ReferenceEquals(button, _activeButton));
+        SettingsButton.SetResourceReference(Button.ForegroundProperty, "SidebarText");
+    }
+
+    private void ApplyNavigationButtonState(Button button, bool active)
+    {
+        button.SetResourceReference(Button.ForegroundProperty, "SidebarText");
+        MotionAssist.SetIsSelected(button, active);
+        button.Background = Brushes.Transparent;
+        button.BorderBrush = Brushes.Transparent;
+        button.FontWeight = active ? FontWeights.SemiBold : FontWeights.Medium;
     }
 
     private void CommandButton_Click(object sender, RoutedEventArgs e) => ToggleCommandOverlay(true);
 
     private void ToggleCommandOverlay(bool show)
     {
-        CommandOverlay.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-        if (!show) return;
-        CommandOverlay.Opacity = 0;
-        CommandOverlay.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(130)));
+        var version = ++_commandMotionVersion;
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            CommandOverlay.BeginAnimation(OpacityProperty, null);
+            CommandPanel.BeginAnimation(OpacityProperty, null);
+            CommandPanelScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            CommandPanelScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            CommandPanelTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+            CommandOverlay.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            CommandOverlay.Opacity = show ? 1 : 0;
+            CommandPanel.Opacity = show ? 1 : 0;
+            CommandPanelScale.ScaleX = show ? 1 : 0.97;
+            CommandPanelScale.ScaleY = show ? 1 : 0.97;
+            CommandPanelTranslate.Y = show ? 0 : -10;
+            if (show)
+            {
+                _focusBeforeCommandOverlay = Keyboard.FocusedElement;
+                FirstQuickActionButton.Focus();
+            }
+            else
+            {
+                RestoreCommandOverlayFocus();
+            }
+            return;
+        }
+
+        var wasCollapsed = CommandOverlay.Visibility != Visibility.Visible;
+        if (show)
+        {
+            _focusBeforeCommandOverlay ??= Keyboard.FocusedElement;
+            CommandOverlay.Visibility = Visibility.Visible;
+            if (wasCollapsed)
+            {
+                CommandOverlay.Opacity = 0;
+                CommandPanel.Opacity = 0;
+                CommandPanelScale.ScaleX = 0.97;
+                CommandPanelScale.ScaleY = 0.97;
+                CommandPanelTranslate.Y = -10;
+            }
+
+            var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
+            AnimateAndCommit(CommandOverlay, OpacityProperty, 1, TimeSpan.FromMilliseconds(180), easing, TimeSpan.Zero, () => version == _commandMotionVersion);
+            AnimateAndCommit(CommandPanel, OpacityProperty, 1, TimeSpan.FromMilliseconds(205), easing, TimeSpan.FromMilliseconds(20), () => version == _commandMotionVersion);
+            AnimateAndCommit(CommandPanelScale, ScaleTransform.ScaleXProperty, 1, TimeSpan.FromMilliseconds(245), easing, TimeSpan.Zero, () => version == _commandMotionVersion);
+            AnimateAndCommit(CommandPanelScale, ScaleTransform.ScaleYProperty, 1, TimeSpan.FromMilliseconds(245), easing, TimeSpan.Zero, () => version == _commandMotionVersion);
+            AnimateAndCommit(
+                CommandPanelTranslate,
+                TranslateTransform.YProperty,
+                0,
+                TimeSpan.FromMilliseconds(245),
+                easing,
+                TimeSpan.Zero,
+                () => version == _commandMotionVersion,
+                () => FirstQuickActionButton.Focus());
+            return;
+        }
+
+        if (wasCollapsed) return;
+        var exitEase = new SineEase { EasingMode = EasingMode.EaseIn };
+        AnimateAndCommit(CommandOverlay, OpacityProperty, 0, TimeSpan.FromMilliseconds(145), exitEase, TimeSpan.Zero, () => version == _commandMotionVersion);
+        AnimateAndCommit(CommandPanel, OpacityProperty, 0, TimeSpan.FromMilliseconds(130), exitEase, TimeSpan.Zero, () => version == _commandMotionVersion);
+        AnimateAndCommit(CommandPanelScale, ScaleTransform.ScaleXProperty, 0.985, TimeSpan.FromMilliseconds(160), exitEase, TimeSpan.Zero, () => version == _commandMotionVersion);
+        AnimateAndCommit(CommandPanelScale, ScaleTransform.ScaleYProperty, 0.985, TimeSpan.FromMilliseconds(160), exitEase, TimeSpan.Zero, () => version == _commandMotionVersion);
+        AnimateAndCommit(
+            CommandPanelTranslate,
+            TranslateTransform.YProperty,
+            -6,
+            TimeSpan.FromMilliseconds(165),
+            exitEase,
+            TimeSpan.Zero,
+            () => version == _commandMotionVersion,
+            () =>
+            {
+                if (version != _commandMotionVersion) return;
+                CommandOverlay.Visibility = Visibility.Collapsed;
+                RestoreCommandOverlayFocus();
+            });
+    }
+
+    private void RestoreCommandOverlayFocus()
+    {
+        if (_focusBeforeCommandOverlay is UIElement previous && previous.IsVisible && previous.IsEnabled)
+            previous.Focus();
+        _focusBeforeCommandOverlay = null;
     }
 
     private void CommandOverlay_MouseDown(object sender, MouseButtonEventArgs e) => ToggleCommandOverlay(false);
@@ -402,6 +810,13 @@ public partial class MainWindow : Window
 
     private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key is Key.Tab or Key.Left or Key.Right or Key.Up or Key.Down)
+        {
+            _sidebarKeyboardNavigationPending = true;
+            _ = Dispatcher.BeginInvoke(
+                DispatcherPriority.ContextIdle,
+                () => _sidebarKeyboardNavigationPending = false);
+        }
         if (e.Key == Key.Escape && OnboardingGuide.IsOpen)
         {
             await CloseGuideAsync();
