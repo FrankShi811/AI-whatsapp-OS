@@ -115,9 +115,33 @@
                 </Border>
 
                 <Border Style="{StaticResource Card}" Margin="0,15,0,0">
-                    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="42"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                        <Border Width="36" Height="36" Background="{DynamicResource PrimarySoft}" CornerRadius="10"><TextBlock Text="▣" Foreground="{DynamicResource Primary}" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="15"/></Border>
-                        <StackPanel Grid.Column="1"><TextBlock Text="本地数据工作区" Style="{StaticResource SectionTitle}"/><TextBlock x:Name="DatabasePathText" Foreground="{DynamicResource Muted}" FontSize="10" Margin="0,5,0,0" TextWrapping="Wrap"/><TextBlock Text="客户、AI 结果、会话索引和自动化审计均保存在本机。" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,4,0,0"/></StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="42"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="36" Height="36" Background="{DynamicResource PrimarySoft}" CornerRadius="10" VerticalAlignment="Top">
+                            <TextBlock Text="▣" Foreground="{DynamicResource Primary}" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="15"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" Margin="0,0,18,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="本地数据工作区" Style="{StaticResource SectionTitle}"/>
+                                <Border Background="{DynamicResource SuccessSoft}" CornerRadius="9" Padding="8,3" Margin="9,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock Text="当前工作区" Foreground="{DynamicResource Success}" FontSize="9" FontWeight="SemiBold"/>
+                                </Border>
+                            </StackPanel>
+                            <TextBlock x:Name="DatabasePathText" Foreground="{DynamicResource Ink}" FontSize="10.5" FontWeight="SemiBold" Margin="0,7,0,0" TextWrapping="Wrap"/>
+                            <TextBlock x:Name="WorkspaceUsageText" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,5,0,0" TextWrapping="Wrap" Text="正在统计工作区占用和磁盘空间…"/>
+                            <TextBlock Text="迁移范围包括客户与 AI 结果、WhatsApp 加密会话与媒体、邮件索引、知识库原件、自动化和报告。API Key 与邮箱密码仍由 Windows 凭据管理器保护。" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                            <Border Background="{DynamicResource WarningSoft}" CornerRadius="8" Padding="9,7" Margin="0,9,0,0">
+                                <TextBlock x:Name="WorkspaceStatusText" Text="迁移会先复制并校验，重启成功后才切换；校验失败会继续使用原位置。" Foreground="{DynamicResource Warning}" FontSize="9.5" TextWrapping="Wrap"/>
+                            </Border>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Top">
+                            <Button x:Name="OpenWorkspaceButton" Content="打开位置" Style="{StaticResource SecondaryButton}" Padding="12,7" Click="OpenWorkspace_Click" Margin="0,0,8,0"/>
+                            <Button x:Name="MoveWorkspaceButton" Content="迁移工作区" Style="{StaticResource PrimaryButton}" Padding="12,7" Click="MoveWorkspace_Click"/>
+                        </StackPanel>
                     </Grid>
                 </Border>
             </StackPanel>

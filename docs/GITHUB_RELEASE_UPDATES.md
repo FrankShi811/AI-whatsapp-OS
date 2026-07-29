@@ -22,10 +22,11 @@ macOS 构建目前暂停：缺少 Developer ID、签名和公证条件时，安�
 
 | 数据 | 固定位置 | 更新行为 |
 |---|---|---|
-| SQLite 客户与业务数据 | `%LOCALAPPDATA%\WAFlow\waflow.db` | 保留 |
-| WhatsApp 多设备会话 | `%LOCALAPPDATA%\WAFlow\whatsapp-sessions` | 保留 |
-| WhatsApp 媒体 | `%LOCALAPPDATA%\WAFlow\whatsapp-media` | 保留 |
-| 本地 Bridge 运行时 | `%LOCALAPPDATA%\WAFlow\runtime` | 需要时由程序重新提取，不影响账号数据 |
+| SQLite 客户与业务数据 | 默认 `%LOCALAPPDATA%\WAFlow\waflow.db`；可在设置中迁移 | 保留 |
+| WhatsApp 多设备会话 | 当前工作区的 `whatsapp-sessions` | 保留 |
+| WhatsApp 媒体 | 当前工作区的 `whatsapp-media` | 保留 |
+| 本地 Bridge 运行时 | 当前工作区的 `runtime` | 需要时由程序重新提取，不影响账号数据 |
+| 工作区位置索引 | `%LOCALAPPDATA%\AI Sales OS\data-workspace.json` | 保留；仅记录当前本机路径 |
 | API Key | Windows Credential Manager 的 `WAFlow/...` 条目 | 保留 |
 
 ## 首次启用

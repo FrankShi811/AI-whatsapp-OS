@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using WAFlow.Core.Infrastructure;
 
 namespace WAFlow.Core.Services;
 
 public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLookup, IAsyncDisposable
 {
+    private readonly string _dataRoot;
     private readonly ConcurrentDictionary<string, WhatsAppBridgeClient> _clients = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _connectionGates = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _autoReconnectSuppressed = new(StringComparer.OrdinalIgnoreCase);
@@ -14,6 +16,12 @@ public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLooku
     public bool IsConnected => IsConnectedFor(ActiveAccountId);
     public string ConnectionState => ConnectionStateFor(ActiveAccountId);
 
+    public WhatsAppConnectionManager(string? dataRoot = null)
+    {
+        _dataRoot = Path.GetFullPath(dataRoot
+            ?? new DataWorkspaceManager().Resolve().RootDirectory);
+    }
+
     public void SetActiveAccount(string accountId) => ActiveAccountId = Normalize(accountId);
     public bool IsConnectedFor(string accountId) => _clients.TryGetValue(Normalize(accountId), out var client) && client.IsConnected;
     public string ConnectionStateFor(string accountId) => _clients.TryGetValue(Normalize(accountId), out var client) ? client.ConnectionState : "disconnected";
@@ -21,11 +29,7 @@ public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLooku
     public bool HasStoredSession(string accountId)
     {
         accountId = Normalize(accountId);
-        var directory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "WAFlow",
-            "whatsapp-sessions",
-            accountId);
+        var directory = Path.Combine(_dataRoot, "whatsapp-sessions", accountId);
         return File.Exists(Path.Combine(directory, "creds.json.enc"));
     }
 
@@ -124,7 +128,7 @@ public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLooku
         accountId = Normalize(accountId);
         return _clients.GetOrAdd(accountId, id =>
         {
-            var client = new WhatsAppBridgeClient();
+            var client = new WhatsAppBridgeClient(_dataRoot);
             client.EventReceived += (_, e) => EventReceived?.Invoke(this, string.IsNullOrWhiteSpace(e.AccountId) ? e with { AccountId = id } : e);
             return client;
         });

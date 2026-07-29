@@ -1,11 +1,14 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Infrastructure;
@@ -90,7 +93,8 @@ public partial class SettingsWindow : Window
         BuildModuleRoutingRows();
         UpdateRoutingModeUi();
 
-        DatabasePathText.Text = _services.Repository.DatabasePath;
+        DatabasePathText.Text = _services.DataWorkspace.RootDirectory;
+        await RefreshWorkspaceSummaryAsync();
         _onboardingState = await _services.Repository.GetOnboardingStateAsync();
         if (GuideCatalog.MigrateLegacyState(_onboardingState))
             await _services.Repository.SaveOnboardingStateAsync(_onboardingState);
@@ -558,6 +562,128 @@ public partial class SettingsWindow : Window
 
     private void VersionHistory_Click(object sender, RoutedEventArgs e) =>
         new VersionHistoryWindow(_updates) { Owner = this }.ShowDialog();
+
+    private async Task RefreshWorkspaceSummaryAsync()
+    {
+        try
+        {
+            var usage = await _services.DataWorkspaceManager.GetUsageAsync(
+                _services.DataWorkspace);
+            DatabasePathText.Text = usage.RootDirectory;
+            WorkspaceUsageText.Text =
+                $"工作区占用 {DataWorkspaceManager.FormatBytes(usage.UsedBytes)} · " +
+                $"{usage.DriveName} 可用 {DataWorkspaceManager.FormatBytes(usage.AvailableBytes)}";
+            MoveWorkspaceButton.IsEnabled = !usage.IsEnvironmentOverride;
+            if (usage.IsEnvironmentOverride)
+            {
+                WorkspaceStatusText.Text =
+                    "当前由测试环境变量指定数据库路径，正式工作区迁移已停用。";
+            }
+        }
+        catch (Exception error)
+        {
+            WorkspaceUsageText.Text = $"无法读取工作区占用：{error.Message}";
+            MoveWorkspaceButton.IsEnabled = false;
+        }
+    }
+
+    private void OpenWorkspace_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = _services.DataWorkspace.RootDirectory,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(
+                $"无法打开工作区：\n{error.Message}",
+                "AI Sales OS",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+    }
+
+    private async void MoveWorkspace_Click(object sender, RoutedEventArgs e)
+    {
+        var picker = new OpenFolderDialog
+        {
+            Title = "选择本地数据工作区要迁移到的磁盘或文件夹",
+            Multiselect = false
+        };
+        if (picker.ShowDialog(this) != true) return;
+
+        MoveWorkspaceButton.IsEnabled = false;
+        try
+        {
+            var targetRoot = _services.DataWorkspaceManager.BuildSuggestedTargetRoot(
+                picker.FolderName);
+            var preview = await _services.DataWorkspaceManager.PreviewMigrationAsync(
+                targetRoot);
+            var confirmed = MessageBox.Show(
+                $"准备把完整本地数据工作区迁移到：\n{preview.TargetRoot}\n\n" +
+                $"需要复制：{DataWorkspaceManager.FormatBytes(preview.SourceBytes)}\n" +
+                $"目标磁盘可用：{DataWorkspaceManager.FormatBytes(preview.TargetAvailableBytes)}\n\n" +
+                "程序将重启，依次完成复制、文件哈希和 SQLite 完整性校验。只有新工作区成功启动后才会清理原位置；任何失败都会继续使用原位置。",
+                "确认迁移本地数据工作区",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Information);
+            if (confirmed != MessageBoxResult.Yes) return;
+
+            WorkspaceStatusText.Text = "迁移计划已保存，正在安全重启…";
+            await _services.DataWorkspaceManager.ScheduleMigrationAsync(preview);
+            try
+            {
+                var restart = BuildWorkspaceMigrationRestart();
+                if (Process.Start(restart) is null)
+                    throw new InvalidOperationException("未能启动迁移重启进程。");
+                Application.Current.Shutdown();
+            }
+            catch
+            {
+                await _services.DataWorkspaceManager.CancelScheduledMigrationAsync();
+                throw;
+            }
+        }
+        catch (Exception error)
+        {
+            WorkspaceStatusText.Text =
+                "迁移未开始，程序仍在使用原工作区。请检查目标磁盘后重试。";
+            MessageBox.Show(
+                $"无法迁移本地数据工作区：\n{error.Message}",
+                "迁移未开始",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+        finally
+        {
+            if (!Application.Current.Dispatcher.HasShutdownStarted)
+                MoveWorkspaceButton.IsEnabled = true;
+        }
+    }
+
+    private static ProcessStartInfo BuildWorkspaceMigrationRestart()
+    {
+        var processPath = Environment.ProcessPath
+            ?? throw new InvalidOperationException("无法定位当前程序入口。");
+        var start = new ProcessStartInfo
+        {
+            FileName = processPath,
+            WorkingDirectory = AppContext.BaseDirectory,
+            UseShellExecute = false
+        };
+        if (Path.GetFileNameWithoutExtension(processPath)
+            .Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("请在正式安装版中迁移本地数据工作区。");
+        start.ArgumentList.Add("--apply-workspace-migration");
+        start.ArgumentList.Add("--wait-for-pid");
+        start.ArgumentList.Add(Environment.ProcessId.ToString());
+        return start;
+    }
+
     private async void ReloadModels_Click(object sender, RoutedEventArgs e) => await FetchModelsAsync(true);
 
     private void UiScaleBox_SelectionChanged(object sender, SelectionChangedEventArgs e)

@@ -6,6 +6,8 @@ namespace WAFlow.Core;
 
 public sealed class AppServices
 {
+    public DataWorkspaceManager DataWorkspaceManager { get; }
+    public DataWorkspaceLocation DataWorkspace { get; }
     public LocalRepository Repository { get; }
     public LeadScoringService Scoring { get; }
     public ImportService Imports { get; }
@@ -35,9 +37,15 @@ public sealed class AppServices
     public KnowledgeRetrievalService KnowledgeRetrieval { get; }
     public KnowledgeLearningService KnowledgeLearning { get; }
 
-    public AppServices(LocalRepository? repository = null)
+    public AppServices(
+        LocalRepository? repository = null,
+        DataWorkspaceManager? dataWorkspaceManager = null)
     {
-        Repository = repository ?? CreateDefaultRepository();
+        DataWorkspaceManager = dataWorkspaceManager ?? new DataWorkspaceManager();
+        DataWorkspace = repository is null
+            ? DataWorkspaceManager.Resolve()
+            : DataWorkspaceManager.FromDatabasePath(repository.DatabasePath);
+        Repository = repository ?? new LocalRepository(DataWorkspace.DatabasePath);
         Scoring = new LeadScoringService();
         Secrets = new WindowsCredentialStore();
         KnowledgeRetrieval = new KnowledgeRetrievalService(Repository);
@@ -50,7 +58,7 @@ public sealed class AppServices
             Repository,
             new CompositeKnowledgeDocumentParser(new AiProviderImageTextExtractor(DeepSeek)));
         Imports = new ImportService(Repository);
-        WhatsApp = new WhatsAppConnectionManager();
+        WhatsApp = new WhatsAppConnectionManager(DataWorkspace.RootDirectory);
         WhatsAppNumberValidation = new WhatsAppNumberValidationService(Repository, WhatsApp);
         WhatsAppSync = new WhatsAppSyncService(Repository, WhatsApp);
         Email = new EmailService(Repository);
@@ -82,11 +90,5 @@ public sealed class AppServices
     {
         await Repository.InitializeAsync(cancellationToken);
         await CustomerIdentity.RepairOwnedAccountBindingsAsync(cancellationToken);
-    }
-
-    private static LocalRepository CreateDefaultRepository()
-    {
-        var overridePath = Environment.GetEnvironmentVariable("WAFLOW_DATABASE_PATH");
-        return new LocalRepository(string.IsNullOrWhiteSpace(overridePath) ? null : overridePath);
     }
 }

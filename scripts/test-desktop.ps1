@@ -73,6 +73,9 @@ $updateStateSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $ro
 $updateServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Updates\VelopackUpdateService.cs')
 $settingsXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\SettingsWindow.xaml')
 $settingsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\SettingsWindow.xaml.cs')
+$dataWorkspaceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Infrastructure\DataWorkspaceManager.cs')
+$whatsAppBridgeClientSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppBridgeClient.cs')
+$bridgeBootstrapSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\scripts\sea-bootstrap.cjs')
 $modulePreferencePersistenceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\AiModulePreferencePersistence.cs')
 $domainModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Domain\Models.cs')
 $deepSeekSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\DeepSeekService.cs')
@@ -709,10 +712,54 @@ if ($emailInboxXaml -notmatch 'x:Name="NewEmailButton"' -or
     $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 6') -or
     $guideCatalogSource -notmatch [regex]::Escape('["broadcast"] = ModuleGuideVersion + 2') -or
     $guideCatalogSource -notmatch [regex]::Escape('["analytics"] = ModuleGuideVersion + 1') -or
-    $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 6')) {
+    $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 7')) {
   throw 'Email Inbox must support new-message composition, CRM/Customer Brain-aware AI drafting, manual-send safety and current module guidance.'
 }
 Write-Host 'PASS  Email Inbox new-message, Customer Intelligence, AI draft and all-module guide audit contract'
+
+$workspaceMigrationFailures = @()
+if ($settingsXaml -notmatch 'x:Name="WorkspaceUsageText"' -or
+    $settingsXaml -notmatch 'x:Name="WorkspaceStatusText"' -or
+    $settingsXaml -notmatch 'x:Name="MoveWorkspaceButton"' -or
+    $settingsXaml -notmatch 'Content="打开位置"') {
+  $workspaceMigrationFailures += 'settings_controls'
+}
+if ($settingsSource -notmatch [regex]::Escape('PreviewMigrationAsync') -or
+    $settingsSource -notmatch [regex]::Escape('ScheduleMigrationAsync') -or
+    $settingsSource -notmatch [regex]::Escape('--wait-for-pid') -or
+    $settingsSource -notmatch [regex]::Escape('Application.Current.Shutdown()')) {
+  $workspaceMigrationFailures += 'settings_restart_flow'
+}
+if ($dataWorkspaceSource -notmatch [regex]::Escape('WAFLOW_DATABASE_PATH') -or
+    $dataWorkspaceSource -notmatch [regex]::Escape('SHA256.HashDataAsync') -or
+    $dataWorkspaceSource -notmatch [regex]::Escape('PRAGMA integrity_check') -or
+    $dataWorkspaceSource -notmatch [regex]::Escape('PRAGMA foreign_key_check') -or
+    $dataWorkspaceSource -notmatch [regex]::Escape('RewriteInternalWorkspacePathsAsync') -or
+    $dataWorkspaceSource -notmatch [regex]::Escape('EnsureWorkspaceDatabaseNotInUse') -or
+    $dataWorkspaceSource -notmatch [regex]::Escape('SourceFingerprint') -or
+    $dataWorkspaceSource -notmatch [regex]::Escape('DeleteVerifiedSourceWorkspace') -or
+    $dataWorkspaceSource -notmatch [regex]::Escape('RollbackAfterStartupFailureAsync')) {
+  $workspaceMigrationFailures += 'copy_verify_rollback'
+}
+if ($appStartupSource -notmatch [regex]::Escape('ApplyPendingMigrationAsync') -or
+    $appStartupSource -notmatch [regex]::Escape('AcquireLease') -or
+    $appStartupSource -notmatch [regex]::Escape('CompletePendingMigrationAsync') -or
+    $appStartupSource -notmatch [regex]::Escape('RollbackAfterStartupFailureAsync')) {
+  $workspaceMigrationFailures += 'startup_switch'
+}
+if ($bridgeSource -notmatch [regex]::Escape('WAFLOW_DATA_ROOT') -or
+    $bridgeBootstrapSource -notmatch [regex]::Escape('WAFLOW_DATA_ROOT') -or
+    $whatsAppBridgeClientSource -notmatch [regex]::Escape('start.Environment["WAFLOW_DATA_ROOT"]')) {
+  $workspaceMigrationFailures += 'whatsapp_root'
+}
+if ($guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 7') -or
+    $guideCatalogSource -notmatch [regex]::Escape('迁移本地数据工作区')) {
+  $workspaceMigrationFailures += 'settings_guide'
+}
+if ($workspaceMigrationFailures.Count -gt 0) {
+  throw "Local data workspace migration must expose a recoverable copy, verify, restart, switch and rollback flow. missing=$($workspaceMigrationFailures -join ',')"
+}
+Write-Host 'PASS  recoverable local data workspace migration and WhatsApp root contract'
 
 $syncInboxBlock = [regex]::Match(
   $emailServiceSource,

@@ -3,6 +3,7 @@ using System.Windows.Threading;
 using System.IO;
 using Velopack;
 using WAFlow.Core;
+using WAFlow.Core.Infrastructure;
 using WAFlow.Desktop.Updates;
 
 namespace WAFlow.Desktop;
@@ -11,6 +12,9 @@ public partial class App : Application
 {
     public AppServices Services { get; private set; } = null!;
     public IApplicationUpdateService Updates { get; private set; } = null!;
+    public DataWorkspaceManager DataWorkspaceManager { get; private set; } = null!;
+    private DataWorkspaceMigrationResult _startupMigration = new(false, true, "");
+    private DataWorkspaceLease? _workspaceLease;
 
     [STAThread]
     public static void Main(string[] args)
@@ -20,7 +24,30 @@ public partial class App : Application
             .SetAutoApplyOnStartup(false)
             .Run();
 
-        var app = new App();
+        var workspaceManager = new DataWorkspaceManager();
+        DataWorkspaceMigrationResult startupMigration;
+        try
+        {
+            startupMigration = workspaceManager
+                .ApplyPendingMigrationAsync(ParseWaitForProcessId(args))
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (Exception error)
+        {
+            LogException("workspace-migration-startup", error);
+            MessageBox.Show(
+                $"无法读取本地数据工作区迁移计划：\n{error.Message}\n\n程序尚未修改任何客户数据。",
+                "AI Sales OS",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            return;
+        }
+        var app = new App
+        {
+            DataWorkspaceManager = workspaceManager,
+            _startupMigration = startupMigration
+        };
         app.InitializeComponent();
         app.Run();
     }
@@ -31,9 +58,12 @@ public partial class App : Application
         DesktopShortcutService.EnsureForInstalledApp();
         base.OnStartup(e);
         DispatcherUnhandledException += OnUnhandledException;
+        DataWorkspaceLocation? location = null;
         try
         {
-            Services = new AppServices();
+            location = DataWorkspaceManager.Resolve();
+            _workspaceLease = DataWorkspaceManager.AcquireLease(location.RootDirectory);
+            Services = new AppServices(dataWorkspaceManager: DataWorkspaceManager);
             await Services.InitializeAsync();
             Updates = new VelopackUpdateService();
             var settings = await Services.Repository.GetAppSettingsAsync();
@@ -55,13 +85,59 @@ public partial class App : Application
             await Services.Campaigns.StartAsync();
             await Services.MessagingSync.StartAsync();
             await Services.WhatsAppNumberValidation.StartAsync();
+
+            var completion = await DataWorkspaceManager.CompletePendingMigrationAsync(
+                Services.DataWorkspace.RootDirectory);
+            if (!string.IsNullOrWhiteSpace(completion.Message))
+            {
+                MessageBox.Show(
+                    completion.Message,
+                    completion.SourceRetained ? "工作区已切换，原位置已保留" : "工作区迁移完成",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+            else if (_startupMigration.Attempted && !_startupMigration.Succeeded)
+            {
+                MessageBox.Show(
+                    _startupMigration.Message,
+                    "工作区迁移未完成",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
         }
         catch (Exception error)
         {
             LogException("startup", error);
+            if (location is not null)
+            {
+                try
+                {
+                    await DataWorkspaceManager.RollbackAfterStartupFailureAsync(
+                        location.RootDirectory,
+                        error);
+                }
+                catch (Exception rollbackError)
+                {
+                    LogException("workspace-rollback", rollbackError);
+                }
+            }
+            _workspaceLease?.Dispose();
+            _workspaceLease = null;
             MessageBox.Show($"AI Sales OS 初始化失败：\n{error.Message}", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }
+    }
+
+    private static int? ParseWaitForProcessId(string[] args)
+    {
+        for (var index = 0; index < args.Length - 1; index++)
+        {
+            if (!args[index].Equals("--wait-for-pid", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (int.TryParse(args[index + 1], out var processId) && processId > 0)
+                return processId;
+        }
+        return null;
     }
 
     private static void OnUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
@@ -99,6 +175,8 @@ public partial class App : Application
             Services.Email.DisposeAsync().AsTask().GetAwaiter().GetResult();
             Services.WhatsApp.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
+        _workspaceLease?.Dispose();
+        _workspaceLease = null;
         base.OnExit(e);
     }
 }

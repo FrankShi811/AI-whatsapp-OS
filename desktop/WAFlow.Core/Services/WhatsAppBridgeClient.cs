@@ -23,6 +23,7 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     private StreamWriter? _input;
     private TaskCompletionSource _ready = NewSignal();
     private CancellationTokenSource? _lifetime;
+    private readonly string _dataRoot;
 
     public event EventHandler<WhatsAppBridgeEvent>? EventReceived;
     public bool IsRunning => _process is { HasExited: false };
@@ -31,11 +32,17 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     public string CurrentAccountId { get; private set; } = "primary";
     public string LastBridgeError { get; private set; } = "";
 
+    public WhatsAppBridgeClient(string? dataRoot = null)
+    {
+        _dataRoot = Path.GetFullPath(dataRoot
+            ?? new DataWorkspaceManager().Resolve().RootDirectory);
+    }
+
     public async Task StartAsync(string accountId = "primary", CancellationToken cancellationToken = default)
     {
         if (IsRunning) return;
         CurrentAccountId = string.IsNullOrWhiteSpace(accountId) ? "primary" : accountId;
-        var launch = BridgeLaunch.Resolve();
+        var launch = BridgeLaunch.Resolve(_dataRoot);
         _ready = NewSignal();
         _lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var start = new ProcessStartInfo
@@ -51,6 +58,7 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
             StandardErrorEncoding = Utf8NoBom,
             WorkingDirectory = launch.WorkingDirectory
         };
+        start.Environment["WAFLOW_DATA_ROOT"] = _dataRoot;
         foreach (var argument in launch.Arguments) start.ArgumentList.Add(argument);
         _process = Process.Start(start) ?? throw new WhatsAppBridgeException("bridge_start_failed", "无法启动 WhatsApp 桥接进程。");
         _input = _process.StandardInput;
@@ -225,7 +233,7 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
 
     private sealed record BridgeLaunch(string Executable, string WorkingDirectory, IReadOnlyList<string> Arguments)
     {
-        public static BridgeLaunch Resolve()
+        public static BridgeLaunch Resolve(string dataRoot)
         {
             var explicitExe = Environment.GetEnvironmentVariable("WAFLOW_BRIDGE_EXE");
             if (!string.IsNullOrWhiteSpace(explicitExe) && File.Exists(explicitExe))
@@ -235,7 +243,7 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
             var packaged = Path.Combine(processDirectory, "WAFlow.WhatsApp.Bridge.exe");
             if (File.Exists(packaged)) return new(packaged, processDirectory, []);
 
-            var embedded = ExtractEmbeddedBridge();
+            var embedded = ExtractEmbeddedBridge(dataRoot);
             if (!string.IsNullOrWhiteSpace(embedded) && File.Exists(embedded))
                 return new(embedded, Path.GetDirectoryName(embedded)!, []);
 
@@ -249,13 +257,13 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
             throw new WhatsAppBridgeException("bridge_runtime_missing", "未找到 WAFlow.WhatsApp.Bridge.exe。开发环境可设置 WAFLOW_NODE_PATH 和 WAFLOW_BRIDGE_SCRIPT。");
         }
 
-        private static string? ExtractEmbeddedBridge()
+        private static string? ExtractEmbeddedBridge(string dataRoot)
         {
             var assembly = typeof(WhatsAppBridgeClient).Assembly;
             using var resource = assembly.GetManifestResourceStream("WAFlow.WhatsApp.Bridge.exe");
             if (resource is null) return null;
             var version = assembly.GetName().Version?.ToString() ?? "1.0.0";
-            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WAFlow", "runtime", version);
+            var directory = Path.Combine(dataRoot, "runtime", version);
             Directory.CreateDirectory(directory);
             var temporary = Path.Combine(directory, $"WAFlow.WhatsApp.Bridge.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
             string hash;

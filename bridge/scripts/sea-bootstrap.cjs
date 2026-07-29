@@ -11,9 +11,11 @@ function fail(error) {
 
 async function main() {
   const manifest = JSON.parse(getAsset('manifest.json', 'utf8'))
+  const configuredRoot = String(process.env.WAFLOW_DATA_ROOT || '').trim()
   const localAppData = process.env.LOCALAPPDATA
-  if (!localAppData) throw new Error('LOCALAPPDATA_not_available')
-  const runtimeRoot = path.join(localAppData, 'WAFlow', 'bridge-runtime', manifest.hash)
+  if (!configuredRoot && !localAppData) throw new Error('LOCALAPPDATA_not_available')
+  const dataRoot = configuredRoot ? path.resolve(configuredRoot) : path.join(localAppData, 'WAFlow')
+  const runtimeRoot = path.join(dataRoot, 'bridge-runtime', manifest.hash)
   fs.mkdirSync(runtimeRoot, { recursive: true, mode: 0o700 })
 
   for (const file of manifest.files) {

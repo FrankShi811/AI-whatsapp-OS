@@ -149,6 +149,133 @@ await using (var recoveredConnection = new SqliteConnection(new SqliteConnection
     Check(string.Equals(Convert.ToString(await integrityCommand.ExecuteScalarAsync()), "ok", StringComparison.OrdinalIgnoreCase), "recovered SQLite database passes integrity check");
 }
 
+var workspaceTestRoot = Path.Combine(root, "data-workspace-migration");
+var workspaceSource = Path.Combine(workspaceTestRoot, "source");
+var workspaceLocator = Path.Combine(workspaceTestRoot, "locator");
+var workspaceTargetParent = Path.Combine(workspaceTestRoot, "destination");
+Directory.CreateDirectory(workspaceSource);
+Directory.CreateDirectory(workspaceTargetParent);
+var workspaceRepository = new LocalRepository(Path.Combine(workspaceSource, "waflow.db"));
+await workspaceRepository.InitializeAsync();
+var workspaceLead = new Lead
+{
+    Id = "workspace-customer",
+    Name = "Workspace Customer",
+    PhoneE164 = "+14155550199",
+    PhoneValid = true
+};
+await workspaceRepository.UpsertLeadAsync(workspaceLead);
+Directory.CreateDirectory(Path.Combine(workspaceSource, "whatsapp-sessions", "primary"));
+await File.WriteAllTextAsync(
+    Path.Combine(workspaceSource, "whatsapp-sessions", "primary", "creds.json.enc"),
+    "encrypted-session");
+Directory.CreateDirectory(Path.Combine(workspaceSource, "whatsapp-media"));
+await File.WriteAllBytesAsync(
+    Path.Combine(workspaceSource, "whatsapp-media", "photo.bin"),
+    [1, 2, 3, 4, 5]);
+Directory.CreateDirectory(Path.Combine(workspaceSource, "knowledge-originals"));
+await File.WriteAllTextAsync(
+    Path.Combine(workspaceSource, "knowledge-originals", "catalog.txt"),
+    "local knowledge source");
+await using (var pathProbe = new SqliteConnection(new SqliteConnectionStringBuilder
+{
+    DataSource = Path.Combine(workspaceSource, "waflow.db"),
+    Pooling = false
+}.ToString()))
+{
+    await pathProbe.OpenAsync();
+    await using var createProbe = pathProbe.CreateCommand();
+    createProbe.CommandText =
+        "CREATE TABLE workspace_path_probe(raw_path TEXT NOT NULL, json_path TEXT NOT NULL);";
+    await createProbe.ExecuteNonQueryAsync();
+    await using var insertProbe = pathProbe.CreateCommand();
+    insertProbe.CommandText =
+        "INSERT INTO workspace_path_probe(raw_path,json_path) VALUES($raw,$json);";
+    insertProbe.Parameters.AddWithValue(
+        "$raw",
+        Path.Combine(workspaceSource, "knowledge-originals", "catalog.txt"));
+    insertProbe.Parameters.AddWithValue(
+        "$json",
+        Json.Serialize(new
+        {
+            mediaPath = Path.Combine(workspaceSource, "whatsapp-media", "photo.bin")
+        }));
+    await insertProbe.ExecuteNonQueryAsync();
+}
+SqliteConnection.ClearAllPools();
+
+var workspaceManager = new DataWorkspaceManager(workspaceLocator, workspaceSource);
+var workspaceLocation = workspaceManager.Resolve();
+var workspaceUsage = await workspaceManager.GetUsageAsync(workspaceLocation);
+var workspaceTarget = workspaceManager.BuildSuggestedTargetRoot(workspaceTargetParent);
+var workspacePreview = await workspaceManager.PreviewMigrationAsync(workspaceTarget);
+Check(
+    workspaceLocation.RootDirectory == Path.GetFullPath(workspaceSource)
+    && workspaceUsage.UsedBytes > 0
+    && workspacePreview.SourceBytes == workspaceUsage.UsedBytes
+    && workspacePreview.TargetRoot.EndsWith("AI Sales OS Data", StringComparison.Ordinal),
+    "data workspace preview reports the complete source and a safe target");
+
+await workspaceManager.ScheduleMigrationAsync(workspacePreview);
+DataWorkspaceMigrationResult occupiedWorkspaceResult;
+using (workspaceManager.AcquireLease(workspaceSource))
+    occupiedWorkspaceResult = await workspaceManager.ApplyPendingMigrationAsync();
+Check(
+    occupiedWorkspaceResult.Attempted
+    && !occupiedWorkspaceResult.Succeeded
+    && occupiedWorkspaceResult.SourceRetained
+    && File.Exists(Path.Combine(workspaceSource, "waflow.db")),
+    "data workspace migration refuses an active source and preserves original data");
+
+workspacePreview = await workspaceManager.PreviewMigrationAsync(workspaceTarget);
+await workspaceManager.ScheduleMigrationAsync(workspacePreview);
+var workspaceMigration = await workspaceManager.ApplyPendingMigrationAsync();
+Check(
+    workspaceMigration.Succeeded
+    && workspaceManager.Resolve().RootDirectory == Path.GetFullPath(workspaceTarget)
+    && File.Exists(Path.Combine(workspaceTarget, "whatsapp-sessions", "primary", "creds.json.enc"))
+    && File.Exists(Path.Combine(workspaceTarget, "whatsapp-media", "photo.bin"))
+    && File.Exists(Path.Combine(workspaceTarget, "knowledge-originals", "catalog.txt")),
+    "data workspace migration copies, verifies and switches every local data family");
+var migratedWorkspaceRepository = new LocalRepository(Path.Combine(workspaceTarget, "waflow.db"));
+await migratedWorkspaceRepository.InitializeAsync();
+Check(
+    (await migratedWorkspaceRepository.GetLeadAsync(workspaceLead.Id))?.Name == workspaceLead.Name,
+    "data workspace migration preserves SQLite customer data");
+SqliteConnection.ClearAllPools();
+await using (var pathProbe = new SqliteConnection(new SqliteConnectionStringBuilder
+{
+    DataSource = Path.Combine(workspaceTarget, "waflow.db"),
+    Mode = SqliteOpenMode.ReadOnly,
+    Pooling = false
+}.ToString()))
+{
+    await pathProbe.OpenAsync();
+    await using var readProbe = pathProbe.CreateCommand();
+    readProbe.CommandText = "SELECT raw_path,json_path FROM workspace_path_probe LIMIT 1;";
+    await using var probeReader = await readProbe.ExecuteReaderAsync();
+    Check(
+        await probeReader.ReadAsync()
+        && probeReader.GetString(0).StartsWith(
+            Path.GetFullPath(workspaceTarget),
+            StringComparison.OrdinalIgnoreCase)
+        && probeReader.GetString(1).Contains(
+            Path.GetFullPath(workspaceTarget).Replace(@"\", @"\\", StringComparison.Ordinal),
+            StringComparison.OrdinalIgnoreCase)
+        && !probeReader.GetString(1).Contains(
+            Path.GetFullPath(workspaceSource).Replace(@"\", @"\\", StringComparison.Ordinal),
+            StringComparison.OrdinalIgnoreCase),
+        "data workspace migration rewrites internal raw and JSON file paths to the verified target");
+}
+SqliteConnection.ClearAllPools();
+var workspaceCompletion = await workspaceManager.CompletePendingMigrationAsync(workspaceTarget);
+Check(
+    workspaceCompletion.Succeeded
+    && !workspaceCompletion.SourceRetained
+    && !Directory.Exists(workspaceSource)
+    && File.Exists(Path.Combine(workspaceTarget, "waflow.db")),
+    "verified target startup completes migration before removing the unchanged source");
+
 var csvPath = Path.Combine(root, "sample.csv");
 await File.WriteAllTextAsync(csvPath, "客户姓名,公司名称,国家,WhatsApp号码,意向产品,预计订单额,阶段,备注,门店数量,采购周期\r\nNew Buyer,North Star,United Kingdom,07700900999,Oak chair,12000,new,=HYPERLINK(\"bad\"),12,Quarterly\r\nElena Duplicate,Nordline Living,Italy,+393491234567,DC-18,26000,won,Needs quote,28,Monthly", new UTF8Encoding(true));
 var parsed = imports.Parse(csvPath);
@@ -1523,7 +1650,8 @@ Check(
     && leadIntelligenceRoute.ReasoningParameter == "reasoning_effort",
     "Lead Intelligence has an independent provider, model and declared reasoning-depth route");
 
-await using (var embeddedBridge = new WhatsAppConnectionManager())
+await using (var embeddedBridge = new WhatsAppConnectionManager(
+                 Path.Combine(root, "embedded-bridge-workspace")))
 {
     await embeddedBridge.StartAsync("embedded_smoke");
     var bridgePing = await embeddedBridge.PingAsync();

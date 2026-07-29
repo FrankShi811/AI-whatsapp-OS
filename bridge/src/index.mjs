@@ -210,9 +210,15 @@ function validateAccountId(value) {
 }
 
 function resolveSessionDir(accountId) {
+  return path.join(resolveDataRoot(), 'whatsapp-sessions', accountId)
+}
+
+function resolveDataRoot() {
+  const configured = String(process.env.WAFLOW_DATA_ROOT ?? '').trim()
+  if (configured) return path.resolve(configured)
   const localAppData = process.env.LOCALAPPDATA
   if (!localAppData) throw new Error('LOCALAPPDATA_not_available')
-  return path.join(localAppData, 'WAFlow', 'whatsapp-sessions', accountId)
+  return path.join(localAppData, 'WAFlow')
 }
 
 function jidFromPhone(phone) {
@@ -514,7 +520,7 @@ async function downloadMessageMedia(message, kind, fileName, mimeType) {
   const messageId = safeMediaFileName(message?.key?.id ?? crypto.randomUUID())
   const extension = path.extname(fileName || '') || fallbackMediaExtension(kind, mimeType)
   const displayName = safeMediaFileName(fileName || `${kind}${extension}`)
-  const directory = path.join(process.env.LOCALAPPDATA || process.cwd(), 'WAFlow', 'whatsapp-media', safeMediaFileName(state.accountId))
+  const directory = path.join(resolveDataRoot(), 'whatsapp-media', safeMediaFileName(state.accountId))
   const destination = path.join(directory, `${messageId}-${displayName}`)
   const downloadKey = `${state.accountId}:${messageId}`
 

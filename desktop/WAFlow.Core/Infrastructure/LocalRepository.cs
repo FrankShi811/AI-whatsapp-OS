@@ -18,7 +18,7 @@ public sealed class LocalRepository
 
     public LocalRepository(string? databasePath = null)
     {
-        DatabasePath = databasePath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WAFlow", "waflow.db");
+        DatabasePath = databasePath ?? new DataWorkspaceManager().Resolve().DatabasePath;
         Directory.CreateDirectory(Path.GetDirectoryName(DatabasePath)!);
         _connectionString = new SqliteConnectionStringBuilder { DataSource = DatabasePath, ForeignKeys = true, Pooling = true }.ToString();
         _conversationWriteGate = ConversationWriteGates.GetOrAdd(Path.GetFullPath(DatabasePath), _ => new SemaphoreSlim(1, 1));
