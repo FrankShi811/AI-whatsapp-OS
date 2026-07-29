@@ -43,7 +43,7 @@
                                 <TextBlock x:Name="LatestVersionValue" Text="检查后显示" FontSize="20" FontWeight="Bold" Margin="0,3,0,0"/>
                             </StackPanel>
                         </Grid>
-                        <TextBlock x:Name="UpdateStatusText" Text="程序运行期间会持续监控 GitHub Release；发现新版本后自动下载并等待你确认重启。" Foreground="{DynamicResource InkSecondary}" Margin="0,15,0,0" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="UpdateStatusText" Text="程序运行期间会持续监控 GitHub Release；发现新版本后自动下载，点击更新并重启即可立即安装。" Foreground="{DynamicResource InkSecondary}" Margin="0,15,0,0" TextWrapping="Wrap"/>
                         <ProgressBar x:Name="UpdateProgress" Height="6" Minimum="0" Maximum="100" Margin="0,12,0,0" Visibility="Collapsed"/>
                         <Border x:Name="ReleaseNotesPanel" Background="{DynamicResource Surface}" CornerRadius="10" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="13" Margin="0,13,0,0" Visibility="Collapsed">
                             <StackPanel>

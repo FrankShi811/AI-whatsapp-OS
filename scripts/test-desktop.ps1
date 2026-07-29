@@ -279,6 +279,8 @@ Write-Host 'PASS  Buyer ID incremental spreadsheet-merge contract'
 if ($mainWindowSource -notmatch [regex]::Escape('_updates.StartMonitoring();') -or
     $mainWindowSource -notmatch [regex]::Escape('ApplyAndRestart();') -or
     $mainWindowSource -notmatch [regex]::Escape('已下载 · 点击更新并重启') -or
+    $mainWindowSource -match [regex]::Escape('现在关闭 AI Sales OS、安装更新并自动重启吗？') -or
+    $mainWindowSource -match [regex]::Escape('MessageBoxButton.YesNo') -or
     $updateStateSource -notmatch 'IAsyncDisposable' -or
     $updateStateSource -notmatch [regex]::Escape('void StartMonitoring();') -or
     $updateServiceSource -notmatch [regex]::Escape('TimeSpan.FromMinutes(2)') -or
@@ -288,7 +290,7 @@ if ($mainWindowSource -notmatch [regex]::Escape('_updates.StartMonitoring();') -
     $appStartupSource -notmatch [regex]::Escape('Updates.DisposeAsync().AsTask().GetAwaiter().GetResult();')) {
   throw 'The app must continuously monitor GitHub Releases, download only newer versions, expose a direct update-and-restart action and stop the monitor cleanly.'
 }
-Write-Host 'PASS  continuous GitHub update monitoring, automatic download and user-confirmed restart contract'
+Write-Host 'PASS  continuous GitHub update monitoring, automatic download and one-click restart contract'
 
 if ($customerDimensionSource -notmatch [regex]::Escape('PrimaryCategoryPreferenceLabel = "一级品类偏好"') -or
     $customerDimensionSource -notmatch [regex]::Escape('ResolvePrimaryCategoryPreference') -or

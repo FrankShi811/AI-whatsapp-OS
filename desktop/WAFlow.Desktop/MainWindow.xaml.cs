@@ -77,15 +77,8 @@ public partial class MainWindow : Window
 
     private void VersionHistory_Click(object sender, RoutedEventArgs e)
     {
-        if (_updates.State is { Stage: ApplicationUpdateStage.ReadyToInstall, CanInstall: true } ready)
+        if (_updates.State is { Stage: ApplicationUpdateStage.ReadyToInstall, CanInstall: true })
         {
-            var version = string.IsNullOrWhiteSpace(ready.LatestVersion) ? "新版本" : $"v{ready.LatestVersion}";
-            if (MessageBox.Show(
-                    $"{version} 已在后台下载并校验完成。\n\n现在关闭 AI Sales OS、安装更新并自动重启吗？",
-                    "更新已准备完成",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Information) != MessageBoxResult.Yes)
-                return;
             try
             {
                 _updates.ApplyAndRestart();
