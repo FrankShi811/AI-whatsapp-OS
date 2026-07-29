@@ -14,6 +14,7 @@ using Microsoft.Win32;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Services;
+using WAFlow.Desktop.Collections;
 using WAFlow.Desktop.Windows;
 
 namespace WAFlow.Desktop.Pages;
@@ -21,8 +22,8 @@ namespace WAFlow.Desktop.Pages;
 public partial class WhatsAppInboxView : UserControl, IRefreshableView
 {
     private readonly AppServices _services;
-    private readonly ObservableCollection<ConversationItem> _conversations = [];
-    private readonly ObservableCollection<WhatsAppAccount> _accounts = [];
+    private readonly BatchObservableCollection<ConversationItem> _conversations = [];
+    private readonly BatchObservableCollection<WhatsAppAccount> _accounts = [];
     private readonly List<Lead> _leads = [];
     private Lead? _currentLead;
     private CustomerIdentityResolution? _currentIdentityResolution;
@@ -48,6 +49,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private readonly DispatcherTimer _ipTimer = new() { Interval = TimeSpan.FromSeconds(60) };
     private bool _checkingIp;
     private bool _leadDrawerExpanded = true;
+    private readonly object _refreshLock = new();
+    private Task _activeRefresh = Task.CompletedTask;
+    private bool _refreshRequestedAgain;
 
     private string CurrentAccountId => (AccountCombo.SelectedItem as WhatsAppAccount)?.Id ?? "primary";
 
@@ -76,74 +80,140 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         Unloaded += (_, _) => _ipTimer.Stop();
     }
 
-    public async Task RefreshAsync()
+    public Task RefreshAsync()
     {
-        var selectedAccountId = (AccountCombo.SelectedItem as WhatsAppAccount)?.Id ?? _services.WhatsApp.ActiveAccountId;
-        var accounts = await _services.Repository.GetWhatsAppAccountsAsync();
+        lock (_refreshLock)
+        {
+            if (!_activeRefresh.IsCompleted)
+            {
+                _refreshRequestedAgain = true;
+                return _activeRefresh;
+            }
+
+            _activeRefresh = RefreshLoopAsync();
+            return _activeRefresh;
+        }
+    }
+
+    private async Task RefreshLoopAsync()
+    {
+        do
+        {
+            lock (_refreshLock) _refreshRequestedAgain = false;
+            await RefreshCoreAsync();
+        }
+        while (IsVisible && ReadRefreshRequestedAgain());
+    }
+
+    private bool ReadRefreshRequestedAgain()
+    {
+        lock (_refreshLock) return _refreshRequestedAgain;
+    }
+
+    private async Task RefreshCoreAsync()
+    {
+        var selectedAccountId = (AccountCombo.SelectedItem as WhatsAppAccount)?.Id
+            ?? _services.WhatsApp.ActiveAccountId;
+        var selectedConversationId = (ConversationList.SelectedItem as ConversationItem)?.Id;
+        var runLeadLink = !_initialLeadLinkCompleted;
+        var snapshot = await Task.Run(async () =>
+        {
+            var accounts = await _services.Repository.GetWhatsAppAccountsAsync();
+            var selectedAccount = accounts.FirstOrDefault(item =>
+                item.Id.Equals(selectedAccountId, StringComparison.OrdinalIgnoreCase))
+                ?? accounts.FirstOrDefault();
+            var accountId = selectedAccount?.Id ?? "primary";
+            var leads = await _services.Repository.GetLeadsAsync();
+            if (runLeadLink)
+            {
+                await _services.Repository.SynchronizeLeadConnectionsFromInboxAsync(leads);
+                leads = await _services.Repository.GetLeadsAsync();
+            }
+
+            var persisted = await _services.Repository.GetWhatsAppConversationsAsync(accountId);
+            var contacts = await _services.Repository.GetWhatsAppContactsAsync(accountId);
+            var refreshed = new Dictionary<string, ConversationItem>(StringComparer.OrdinalIgnoreCase);
+            foreach (var saved in persisted)
+            {
+                var linkedLead = saved.IsGroup ? null : FindLead(leads, accounts, saved.AccountId, saved.Phone);
+                var preferredName = saved.IsGroup
+                    ? saved.DisplayName
+                    : WhatsAppConversationNaming.Resolve(linkedLead, saved.Phone, saved.DisplayName);
+                var conversation = new ConversationItem(saved.AccountId, saved.Phone, preferredName, saved.Jid)
+                {
+                    IsGroup = saved.IsGroup,
+                    LeadId = !saved.IsGroup && FindOwnedPeerAccount(accounts, saved.AccountId, saved.Phone) is not null
+                        ? ""
+                        : linkedLead?.Id ?? saved.LeadId,
+                    LastMessage = saved.LastMessage,
+                    LastAt = saved.LastMessageAt,
+                    Unread = saved.UnreadCount,
+                    LastReadAt = saved.LastReadAt,
+                    IsPinned = saved.IsPinned,
+                    PinnedAt = saved.PinnedAt
+                };
+                refreshed[conversation.Id] = conversation;
+            }
+
+            foreach (var contact in contacts)
+            {
+                var itemId = string.IsNullOrWhiteSpace(contact.Phone)
+                    ? contact.Id
+                    : $"{contact.AccountId}:{contact.Phone}";
+                var linkedLead = string.IsNullOrWhiteSpace(contact.Phone)
+                    ? null
+                    : FindLead(leads, accounts, contact.AccountId, contact.Phone);
+                var contactName = WhatsAppConversationNaming.Resolve(
+                    linkedLead,
+                    contact.Phone,
+                    BestContactName(contact));
+                if (!refreshed.TryGetValue(itemId, out var conversation))
+                {
+                    conversation = new ConversationItem(contact.AccountId, contact.Phone, contactName, contact.Jid)
+                    {
+                        LastMessage = "WhatsApp 联系人",
+                        LeadId = linkedLead?.Id ?? ""
+                    };
+                    refreshed[itemId] = conversation;
+                }
+                else
+                {
+                    conversation.Jid = contact.Jid;
+                    if (linkedLead is not null) conversation.LeadId = linkedLead.Id;
+                    conversation.DisplayName = WhatsAppConversationNaming.Resolve(
+                        linkedLead,
+                        contact.Phone,
+                        contactName,
+                        conversation.DisplayName);
+                }
+            }
+
+            return new WhatsAppInboxSnapshot(
+                accounts,
+                leads,
+                accountId,
+                OrderConversations(refreshed.Values).ToList(),
+                persisted.Count,
+                contacts.Count,
+                runLeadLink);
+        });
+
         _switchingAccount = true;
-        _accounts.Clear(); foreach (var account in accounts) _accounts.Add(account);
-        AccountCombo.SelectedItem = _accounts.FirstOrDefault(x => x.Id == selectedAccountId) ?? _accounts.First();
+        _accounts.ReplaceAll(snapshot.Accounts);
+        AccountCombo.SelectedItem = _accounts.FirstOrDefault(item =>
+            item.Id.Equals(snapshot.SelectedAccountId, StringComparison.OrdinalIgnoreCase));
         _switchingAccount = false;
         _services.WhatsApp.SetActiveAccount(CurrentAccountId);
         _connected = _services.WhatsApp.IsConnectedFor(CurrentAccountId);
         _leads.Clear();
-        _leads.AddRange(await _services.Repository.GetLeadsAsync());
-        if (!_initialLeadLinkCompleted)
-        {
-            await _services.Repository.SynchronizeLeadConnectionsFromInboxAsync(_leads);
-            _leads.Clear();
-            _leads.AddRange(await _services.Repository.GetLeadsAsync());
-            _initialLeadLinkCompleted = true;
-        }
-        var persisted = await _services.Repository.GetWhatsAppConversationsAsync(CurrentAccountId);
-        var contacts = await _services.Repository.GetWhatsAppContactsAsync(CurrentAccountId);
-        var selectedId = (ConversationList.SelectedItem as ConversationItem)?.Id;
-        var refreshed = new Dictionary<string, ConversationItem>(StringComparer.OrdinalIgnoreCase);
-        foreach (var saved in persisted)
-        {
-            var linkedLead = saved.IsGroup ? null : FindLead(saved.Phone);
-            var preferredName = saved.IsGroup
-                ? saved.DisplayName
-                : WhatsAppConversationNaming.Resolve(linkedLead, saved.Phone, saved.DisplayName);
-            var conversation = new ConversationItem(saved.AccountId, saved.Phone, preferredName, saved.Jid) { IsGroup = saved.IsGroup };
-            conversation.LeadId = !saved.IsGroup && FindOwnedPeerAccount(saved.AccountId, saved.Phone) is not null
-                ? ""
-                : linkedLead?.Id ?? saved.LeadId;
-            conversation.LastMessage = saved.LastMessage; conversation.LastAt = saved.LastMessageAt; conversation.Unread = saved.UnreadCount; conversation.LastReadAt = saved.LastReadAt;
-            conversation.IsPinned = saved.IsPinned; conversation.PinnedAt = saved.PinnedAt;
-            refreshed[conversation.Id] = conversation;
-        }
-        foreach (var contact in contacts)
-        {
-            var itemId = string.IsNullOrWhiteSpace(contact.Phone) ? contact.Id : $"{contact.AccountId}:{contact.Phone}";
-            var linkedLead = string.IsNullOrWhiteSpace(contact.Phone) ? null : FindLead(contact.Phone);
-            var contactName = WhatsAppConversationNaming.Resolve(
-                linkedLead,
-                contact.Phone,
-                BestContactName(contact));
-            if (!refreshed.TryGetValue(itemId, out var conversation))
-            {
-                conversation = new ConversationItem(contact.AccountId, contact.Phone, contactName, contact.Jid) { LastMessage = "WhatsApp 联系人", LeadId = linkedLead?.Id ?? "" };
-                refreshed[itemId] = conversation;
-            }
-            else
-            {
-                conversation.Jid = contact.Jid;
-                if (linkedLead is not null) conversation.LeadId = linkedLead.Id;
-                conversation.DisplayName = WhatsAppConversationNaming.Resolve(
-                    linkedLead,
-                    contact.Phone,
-                    contactName,
-                    conversation.DisplayName);
-            }
-        }
-        var ordered = OrderConversations(refreshed.Values).ToList();
-        _conversations.Clear(); foreach (var item in ordered) _conversations.Add(item);
-        _persistedConversationCount = persisted.Count;
-        _contactCount = contacts.Count;
+        _leads.AddRange(snapshot.Leads);
+        if (snapshot.CompletedLeadLink) _initialLeadLinkCompleted = true;
+        _conversations.ReplaceAll(snapshot.Conversations);
+        _persistedConversationCount = snapshot.PersistedConversationCount;
+        _contactCount = snapshot.ContactCount;
         ConversationCountText.Text = $"{_persistedConversationCount} 会话 · {_contactCount} 联系人";
         ApplyConversationFilter();
-        ConversationList.SelectedItem = _conversations.FirstOrDefault(item => item.Id == selectedId);
+        ConversationList.SelectedItem = _conversations.FirstOrDefault(item => item.Id == selectedConversationId);
         UpdateConnectionControls();
     }
 
@@ -256,10 +326,18 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         catch (Exception error) { MessageBox.Show(error.Message, "WhatsApp", MessageBoxButton.OK, MessageBoxImage.Warning); }
     }
 
-    private void WhatsApp_EventReceived(object? sender, WhatsAppBridgeEvent e) => Dispatcher.InvokeAsync(() => HandleBridgeEvent(e));
+    private void WhatsApp_EventReceived(object? sender, WhatsAppBridgeEvent e)
+    {
+        if (!IsVisible) return;
+        _ = Dispatcher.InvokeAsync(() =>
+        {
+            if (IsVisible) HandleBridgeEvent(e);
+        });
+    }
 
     private void WhatsAppSync_SynchronizationChanged(object? sender, WhatsAppSyncProgress progress) => Dispatcher.InvokeAsync(() =>
     {
+        if (!IsVisible) return;
         if (!progress.AccountId.Equals(CurrentAccountId, StringComparison.OrdinalIgnoreCase)) return;
         if (progress.State == "data")
         {
@@ -281,9 +359,12 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
     private void CustomerSuccessCoordinator_RunCompleted(
         object? sender,
-        CustomerSuccessAgentRunCompletedEvent e) =>
-        Dispatcher.InvokeAsync(async () =>
+        CustomerSuccessAgentRunCompletedEvent e)
+    {
+        if (!IsVisible) return;
+        _ = Dispatcher.InvokeAsync(async () =>
         {
+            if (!IsVisible) return;
             if (ConversationList.SelectedItem is not ConversationItem conversation ||
                 !conversation.AccountId.Equals(e.AccountId, StringComparison.OrdinalIgnoreCase) ||
                 !conversation.Id.Equals(e.ConversationId, StringComparison.OrdinalIgnoreCase))
@@ -291,6 +372,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             await LoadLeadAsync(conversation);
             DataChanged?.Invoke(this, EventArgs.Empty);
         });
+    }
 
     private async void ScheduleRefresh()
     {
@@ -1128,16 +1210,28 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         finally { SyncButton.IsEnabled = _connected; }
     }
 
-    private Lead? FindLead(string phone) =>
-        FindOwnedPeerAccount(CurrentAccountId, phone) is null
-            ? PhoneIdentity.FindUniqueLead(_leads, phone)
+    private Lead? FindLead(string phone) => FindLead(_leads, _accounts, CurrentAccountId, phone);
+
+    private static Lead? FindLead(
+        IReadOnlyList<Lead> leads,
+        IReadOnlyList<WhatsAppAccount> accounts,
+        string accountId,
+        string phone) =>
+        FindOwnedPeerAccount(accounts, accountId, phone) is null
+            ? PhoneIdentity.FindUniqueLead(leads, phone)
             : null;
 
     private WhatsAppAccount? FindOwnedPeerAccount(string accountId, string phone)
+        => FindOwnedPeerAccount(_accounts, accountId, phone);
+
+    private static WhatsAppAccount? FindOwnedPeerAccount(
+        IReadOnlyList<WhatsAppAccount> accounts,
+        string accountId,
+        string phone)
     {
         var digits = PhoneIdentity.Digits(phone);
         if (digits.Length == 0) return null;
-        return _accounts.FirstOrDefault(account =>
+        return accounts.FirstOrDefault(account =>
             !account.Id.Equals(accountId, StringComparison.OrdinalIgnoreCase)
             && PhoneIdentity.Digits(account.LinkedPhone).Equals(digits, StringComparison.Ordinal));
     }
@@ -1704,6 +1798,14 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private sealed record StageOption(string Label, LeadStage Value);
     private sealed record AgentModeOption(string Label, ConversationAgentMode Value);
     private sealed record KnowledgeReferenceRow(string Citation, string Preview, KnowledgeRetrievalHit Hit);
+    private sealed record WhatsAppInboxSnapshot(
+        IReadOnlyList<WhatsAppAccount> Accounts,
+        IReadOnlyList<Lead> Leads,
+        string SelectedAccountId,
+        IReadOnlyList<ConversationItem> Conversations,
+        int PersistedConversationCount,
+        int ContactCount,
+        bool CompletedLeadLink);
 
     private sealed class ConversationItem(string accountId, string phone, string displayName, string jid) : INotifyPropertyChanged
     {

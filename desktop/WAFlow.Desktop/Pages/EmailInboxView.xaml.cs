@@ -7,6 +7,7 @@ using System.Windows.Data;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Services;
+using WAFlow.Desktop.Collections;
 using WAFlow.Desktop.Windows;
 
 namespace WAFlow.Desktop.Pages;
@@ -14,9 +15,9 @@ namespace WAFlow.Desktop.Pages;
 public partial class EmailInboxView : UserControl, IRefreshableView
 {
     private readonly AppServices _services;
-    private readonly ObservableCollection<EmailAccount> _accounts = [];
-    private readonly ObservableCollection<EmailConversationItem> _conversations = [];
-    private readonly ObservableCollection<EmailMessage> _messages = [];
+    private readonly BatchObservableCollection<EmailAccount> _accounts = [];
+    private readonly BatchObservableCollection<EmailConversationItem> _conversations = [];
+    private readonly BatchObservableCollection<EmailMessage> _messages = [];
     private EmailConversation? _conversation;
     private Lead? _lead;
     private EmailAssistantResult? _emailDraft;
@@ -26,6 +27,10 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     private bool _suppressSelectionChanged;
     private bool _customerDrawerExpanded = true;
     private int _customerBrainRefreshGeneration;
+    private readonly object _refreshLock = new();
+    private Task _activeRefresh = Task.CompletedTask;
+    private bool _refreshRequestedAgain;
+    private CancellationTokenSource? _synchronizationRefreshDebounce;
 
     public event EventHandler? DataChanged;
 
@@ -46,20 +51,71 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         CustomerDrawerCollapsedRail.Visibility = _customerDrawerExpanded ? Visibility.Collapsed : Visibility.Visible;
     }
 
-    public async Task RefreshAsync()
+    public Task RefreshAsync()
+    {
+        lock (_refreshLock)
+        {
+            if (!_activeRefresh.IsCompleted)
+            {
+                _refreshRequestedAgain = true;
+                return _activeRefresh;
+            }
+
+            _activeRefresh = RefreshLoopAsync();
+            return _activeRefresh;
+        }
+    }
+
+    private async Task RefreshLoopAsync()
+    {
+        do
+        {
+            lock (_refreshLock) _refreshRequestedAgain = false;
+            await RefreshCoreAsync();
+        }
+        while (IsVisible && ReadRefreshRequestedAgain());
+    }
+
+    private bool ReadRefreshRequestedAgain()
+    {
+        lock (_refreshLock) return _refreshRequestedAgain;
+    }
+
+    private async Task RefreshCoreAsync()
     {
         var accountId = (AccountBox.SelectedItem as EmailAccount)?.Id;
-        _loading = true;
-        try
+        var selectedConversationId = _conversation?.Id;
+        var snapshot = await Task.Run(async () =>
         {
             var accounts = await _services.Repository.GetEmailAccountsAsync();
-            _accounts.Clear(); foreach (var account in accounts) _accounts.Add(account);
-            AccountBox.SelectedItem = _accounts.FirstOrDefault(item => item.Id == accountId) ?? _accounts.FirstOrDefault();
-            await RefreshConversationsAsync();
+            var selectedAccount = accounts.FirstOrDefault(item => item.Id == accountId)
+                ?? accounts.FirstOrDefault();
+            var conversations = selectedAccount is null
+                ? []
+                : (await _services.Repository.GetEmailConversationsAsync(selectedAccount.Id))
+                    .Select(item => new EmailConversationItem(item))
+                    .ToList();
+            return new EmailInboxSnapshot(accounts, selectedAccount?.Id, conversations);
+        });
+
+        _loading = true;
+        _suppressSelectionChanged = true;
+        try
+        {
+            _accounts.ReplaceAll(snapshot.Accounts);
+            AccountBox.SelectedItem = _accounts.FirstOrDefault(item => item.Id == snapshot.SelectedAccountId);
+            _conversations.ReplaceAll(snapshot.Conversations);
+            if (!_isNewEmail)
+                ConversationList.SelectedItem = _conversations.FirstOrDefault(item => item.Id == selectedConversationId);
+            ApplySearch();
             await UpdateEmailAssistantModelAsync();
             UpdateComposerState();
         }
-        finally { _loading = false; }
+        finally
+        {
+            _suppressSelectionChanged = false;
+            _loading = false;
+        }
     }
 
     private async Task RefreshConversationsAsync()
@@ -69,14 +125,17 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         _suppressSelectionChanged = true;
         try
         {
-            _conversations.Clear();
             if (AccountBox.SelectedItem is not EmailAccount account)
             {
+                _conversations.ReplaceAll([]);
                 if (!preserveNewEmail) ClearConversation();
                 return;
             }
-            foreach (var conversation in await _services.Repository.GetEmailConversationsAsync(account.Id))
-                _conversations.Add(new EmailConversationItem(conversation));
+            var conversations = await Task.Run(async () =>
+                (await _services.Repository.GetEmailConversationsAsync(account.Id))
+                    .Select(item => new EmailConversationItem(item))
+                    .ToList());
+            _conversations.ReplaceAll(conversations);
             if (!preserveNewEmail)
                 ConversationList.SelectedItem = _conversations.FirstOrDefault(item => item.Id == selectedId);
         }
@@ -136,9 +195,17 @@ public partial class EmailInboxView : UserControl, IRefreshableView
             SyncButton.IsEnabled = false; SyncButton.Content = "正在同步…";
             var count = await _services.Email.SyncInboxAsync(account.Id, 500);
             await RefreshAsync(); DataChanged?.Invoke(this, EventArgs.Empty);
-            MessageBox.Show($"邮件同步完成，已处理 {count} 封收件箱邮件。", "同步完成", MessageBoxButton.OK, MessageBoxImage.Information);
+            SyncButton.Content = $"已同步 {count} 封";
+            await Task.Delay(900);
         }
-        catch (Exception error) { MessageBox.Show(error.Message, "同步失败", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        catch (Exception error)
+        {
+            MessageBox.Show(
+                $"{error.Message}\n\n程序会继续在后台重连；无需删除或重新添加邮箱账号。",
+                "邮件暂时无法同步",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
         finally { SyncButton.IsEnabled = true; SyncButton.Content = "同步收件箱"; }
     }
 
@@ -167,7 +234,9 @@ public partial class EmailInboxView : UserControl, IRefreshableView
             DataChanged?.Invoke(this, EventArgs.Empty);
         }
         ConversationTitle.Text = conversation.DisplayName; ConversationSubtitle.Text = $"{conversation.PeerEmail} · {conversation.Subject}";
-        _messages.Clear(); foreach (var message in await _services.Repository.GetEmailMessagesAsync(conversation.Id)) _messages.Add(message);
+        var messages = await Task.Run(async () =>
+            await _services.Repository.GetEmailMessagesAsync(conversation.Id));
+        _messages.ReplaceAll(messages);
         RecipientBox.Text = conversation.PeerEmail;
         RecipientBox.IsReadOnly = true;
         SubjectBox.Text = string.IsNullOrWhiteSpace(conversation.Subject) ? "" : conversation.Subject.StartsWith("Re:", StringComparison.OrdinalIgnoreCase) ? conversation.Subject : $"Re: {conversation.Subject}";
@@ -474,9 +543,31 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     private void Email_SynchronizationChanged(object? sender, EmailSynchronizationState state)
     {
         if (state.Imported <= 0 || !IsVisible) return;
-        _ = Dispatcher.InvokeAsync(async () =>
+        var debounce = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(ref _synchronizationRefreshDebounce, debounce);
+        previous?.Cancel();
+        previous?.Dispose();
+        _ = Task.Run(async () =>
         {
-            if (IsVisible) await RefreshAsync();
+            try
+            {
+                await Task.Delay(250, debounce.Token);
+                await Dispatcher
+                    .InvokeAsync(() => IsVisible ? RefreshAsync() : Task.CompletedTask)
+                    .Task
+                    .Unwrap();
+            }
+            catch (OperationCanceledException) when (debounce.IsCancellationRequested)
+            {
+                // A newer synchronization event owns the pending refresh.
+            }
+            finally
+            {
+                if (ReferenceEquals(
+                        Interlocked.CompareExchange(ref _synchronizationRefreshDebounce, null, debounce),
+                        debounce))
+                    debounce.Dispose();
+            }
         });
     }
 
@@ -488,6 +579,10 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     }
 
     private sealed record StageChoice(string Label, LeadStage Value);
+    private sealed record EmailInboxSnapshot(
+        IReadOnlyList<EmailAccount> Accounts,
+        string? SelectedAccountId,
+        IReadOnlyList<EmailConversationItem> Conversations);
 
     private sealed class EmailConversationItem(EmailConversation conversation) : INotifyPropertyChanged
     {

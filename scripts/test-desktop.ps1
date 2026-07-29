@@ -50,6 +50,7 @@ $bridgeOutboundRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Joi
 $bridgeConversationRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\conversation-routing.mjs')
 $whatsAppInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml.cs')
 $emailInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\EmailInboxView.xaml.cs')
+$batchCollectionSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Collections\BatchObservableCollection.cs')
 $whatsAppSyncSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppSyncService.cs')
 $whatsAppNamingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppConversationNaming.cs')
 $whatsAppManagerSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppConnectionManager.cs')
@@ -443,7 +444,7 @@ foreach ($paletteEntry in @(@('Light', $lightPalette), @('Dark', $darkPalette)))
 }
 if ($mainWindowSource -notmatch [regex]::Escape('RefreshShellThemeState();') -or
     $mainWindowSource -notmatch [regex]::Escape('await UpdateProviderStateAsync();') -or
-    $mainWindowSource -notmatch [regex]::Escape('if (ContentHost.Content is IRefreshableView view)')) {
+    $mainWindowSource -notmatch 'if \(ContentHost\.Content is IRefreshableView (?:view|currentView)\)') {
   throw 'Theme switching must refresh code-assigned shell badges, active navigation and the current page in addition to DynamicResource values.'
 }
 if ($appXaml -notmatch 'ContentPresenter[\s\S]*?TextElement\.Foreground="\{Binding Foreground,\s*RelativeSource=\{RelativeSource TemplatedParent\}\}"' -or
@@ -712,6 +713,35 @@ if ($emailInboxXaml -notmatch 'x:Name="NewEmailButton"' -or
   throw 'Email Inbox must support new-message composition, CRM/Customer Brain-aware AI drafting, manual-send safety and current module guidance.'
 }
 Write-Host 'PASS  Email Inbox new-message, Customer Intelligence, AI draft and all-module guide audit contract'
+
+$syncInboxBlock = [regex]::Match(
+  $emailServiceSource,
+  'public async Task<int> SyncInboxAsync.*?public Task StartBackgroundSyncAsync',
+  [System.Text.RegularExpressions.RegexOptions]::Singleline).Value
+if ([string]::IsNullOrWhiteSpace($syncInboxBlock) -or
+    $syncInboxBlock -match 'new ImapClient' -or
+    -not $syncInboxBlock.Contains('monitor.RequestSyncAsync(maxMessages') -or
+    -not $emailServiceSource.Contains('monitor.AttachWake(idleDone)') -or
+    -not $emailServiceSource.Contains('monitor.AttachWake(pollDone)') -or
+    -not $emailServiceSource.Contains('monitor.Requeue(requests)')) {
+  throw 'Manual Email Inbox sync must reuse and wake the account background IMAP session instead of opening a competing connection.'
+}
+Write-Host 'PASS  serialized manual/background IMAP synchronization contract'
+
+if ($mainWindowSource.Contains('RefreshAllAsync') -or
+    -not $mainWindowSource.Contains('QueueUnreadBadgeRefresh();') -or
+    -not $mainWindowSource.Contains('Task.WhenAll(enterTask, refreshTask)') -or
+    -not $whatsAppInboxSource.Contains('if (!IsVisible) return;') -or
+    -not $whatsAppInboxSource.Contains('await Task.Run(async () =>') -or
+    -not $whatsAppInboxSource.Contains('_conversations.ReplaceAll(snapshot.Conversations)') -or
+    -not $emailInboxSource.Contains('await Task.Run(async () =>') -or
+    -not $emailInboxSource.Contains('_conversations.ReplaceAll(snapshot.Conversations)') -or
+    -not $emailInboxSource.Contains('_messages.ReplaceAll(messages)') -or
+    -not $emailInboxSource.Contains('Task.Delay(250, debounce.Token)') -or
+    -not $batchCollectionSource.Contains('NotifyCollectionChangedAction.Reset')) {
+  throw 'Inbox refreshes must remain hidden-page aware, background-loaded, event-coalesced and batch-applied without rebuilding every module.'
+}
+Write-Host 'PASS  non-blocking hidden-page Inbox refresh, coalescing and batch-update contract'
 
 $aiRoutingUiTokens = @(
   'x:Name="ReasoningEffortBox"',

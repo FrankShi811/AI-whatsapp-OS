@@ -204,31 +204,23 @@ public sealed class EmailService : IAsyncDisposable
     public async Task<int> SyncInboxAsync(string accountId, int maxMessages = 500, CancellationToken cancellationToken = default)
     {
         var account = await RequireAccountAsync(accountId, cancellationToken);
-        var password = RequirePassword(account);
+        _ = RequirePassword(account);
+        await StartBackgroundSyncAsync();
+        var monitor = EnsureBackgroundMonitor(account.Id)
+            ?? throw new InvalidOperationException("邮件后台同步尚未启动，请稍后重试。");
         try
         {
-            using var client = new ImapClient();
-            await client.ConnectAsync(account.ImapHost, account.ImapPort, SocketOptions(account.ImapPort, account.ImapUseSsl), cancellationToken);
-            await client.AuthenticateAsync(account.UserName, password, cancellationToken);
-            var inbox = client.Inbox;
-            await inbox.OpenAsync(FolderAccess.ReadOnly, cancellationToken);
-            var imported = await ImportInboxAsync(account, inbox, maxMessages, cancellationToken);
-            await client.DisconnectAsync(true, cancellationToken);
-            account.Status = EmailConnectionStatus.Connected;
-            account.LastSyncAt = DateTimeOffset.Now;
-            account.LastError = "";
-            await _repository.SaveEmailAccountAsync(account, cancellationToken);
+            var imported = await monitor.RequestSyncAsync(maxMessages, cancellationToken);
             await _repository.LogEventAsync("email_inbox_synced", null, null, $"account_id={account.Id};messages={imported}", cancellationToken);
-            SynchronizationChanged?.Invoke(this, new EmailSynchronizationState(account.Id, "connected", imported));
             return imported;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception error)
         {
-            account.Status = EmailConnectionStatus.Error;
-            account.LastError = Safe(error.Message);
-            await _repository.SaveEmailAccountAsync(account, cancellationToken);
-            SynchronizationChanged?.Invoke(this, new EmailSynchronizationState(account.Id, "error", Error: account.LastError));
-            throw new InvalidOperationException($"邮件同步失败：{account.LastError}", error);
+            throw new InvalidOperationException($"邮件同步暂时不可用：{Safe(error.Message)}", error);
         }
     }
 
@@ -255,7 +247,7 @@ public sealed class EmailService : IAsyncDisposable
                     .Where(IsBackgroundEligible)
                     .Select(account => account.Id)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                foreach (var accountId in eligibleIds) EnsureBackgroundMonitor(accountId);
+                foreach (var accountId in eligibleIds) _ = EnsureBackgroundMonitor(accountId);
                 foreach (var accountId in _backgroundMonitors.Keys.Where(id => !eligibleIds.Contains(id)).ToArray())
                     StopBackgroundMonitor(accountId);
             }
@@ -285,29 +277,42 @@ public sealed class EmailService : IAsyncDisposable
         && !string.IsNullOrWhiteSpace(account.UserName)
         && !string.IsNullOrWhiteSpace(PasswordStore(account.Id).Read());
 
-    private void EnsureBackgroundMonitor(string accountId)
+    private BackgroundAccountMonitor? EnsureBackgroundMonitor(string accountId)
     {
-        var parent = _backgroundLifetime;
-        if (parent is null || parent.IsCancellationRequested) return;
-        _backgroundMonitors.GetOrAdd(accountId, id =>
+        lock (_backgroundLock)
         {
+            var parent = _backgroundLifetime;
+            if (parent is null || parent.IsCancellationRequested) return null;
+            if (_backgroundMonitors.TryGetValue(accountId, out var existing)) return existing;
+
             var lifetime = CancellationTokenSource.CreateLinkedTokenSource(parent.Token);
-            return new BackgroundAccountMonitor(lifetime, MonitorAccountAsync(id, lifetime.Token));
-        });
+            var monitor = new BackgroundAccountMonitor(lifetime);
+            _backgroundMonitors[accountId] = monitor;
+            monitor.Worker = MonitorAccountAsync(accountId, monitor, lifetime.Token);
+            return monitor;
+        }
     }
 
     private void StopBackgroundMonitor(string accountId)
     {
-        if (!_backgroundMonitors.TryRemove(accountId, out var monitor)) return;
+        BackgroundAccountMonitor? monitor;
+        lock (_backgroundLock)
+        {
+            if (!_backgroundMonitors.TryRemove(accountId, out monitor)) return;
+        }
         monitor.Lifetime.Cancel();
+        monitor.CancelPending();
         _ = monitor.Worker.ContinueWith(
-            _ => monitor.Lifetime.Dispose(),
+            _ => monitor.Dispose(),
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
     }
 
-    private async Task MonitorAccountAsync(string accountId, CancellationToken cancellationToken)
+    private async Task MonitorAccountAsync(
+        string accountId,
+        BackgroundAccountMonitor monitor,
+        CancellationToken cancellationToken)
     {
         var retryDelay = TimeSpan.FromSeconds(5);
         while (!cancellationToken.IsCancellationRequested)
@@ -316,7 +321,7 @@ public sealed class EmailService : IAsyncDisposable
             {
                 var account = await RequireAccountAsync(accountId, cancellationToken);
                 if (!IsBackgroundEligible(account)) return;
-                await RunConnectedAccountSessionAsync(account, cancellationToken);
+                await RunConnectedAccountSessionAsync(account, monitor, cancellationToken);
                 retryDelay = TimeSpan.FromSeconds(5);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -359,7 +364,10 @@ public sealed class EmailService : IAsyncDisposable
         }
     }
 
-    private async Task RunConnectedAccountSessionAsync(EmailAccount account, CancellationToken cancellationToken)
+    private async Task RunConnectedAccountSessionAsync(
+        EmailAccount account,
+        BackgroundAccountMonitor monitor,
+        CancellationToken cancellationToken)
     {
         var password = RequirePassword(account);
         using var client = new ImapClient();
@@ -374,14 +382,16 @@ public sealed class EmailService : IAsyncDisposable
         account.LastError = "";
         await _repository.SaveEmailAccountAsync(account, cancellationToken);
         SynchronizationChanged?.Invoke(this, new EmailSynchronizationState(account.Id, "connected", imported));
+        monitor.CompletePending(imported);
 
         while (!cancellationToken.IsCancellationRequested && client.IsConnected)
         {
-            if ((client.Capabilities & ImapCapabilities.Idle) != 0)
+            if (!monitor.HasPending && (client.Capabilities & ImapCapabilities.Idle) != 0)
             {
                 using var idleDone = new CancellationTokenSource(TimeSpan.FromMinutes(5));
                 void InboxChanged(object? _, EventArgs __) => idleDone.Cancel();
                 inbox.CountChanged += InboxChanged;
+                monitor.AttachWake(idleDone);
                 try
                 {
                     await client.IdleAsync(idleDone.Token, cancellationToken);
@@ -392,20 +402,48 @@ public sealed class EmailService : IAsyncDisposable
                 }
                 finally
                 {
+                    monitor.DetachWake(idleDone);
                     inbox.CountChanged -= InboxChanged;
                 }
             }
-            else
+            else if (!monitor.HasPending)
             {
-                await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+                using var pollDone = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                monitor.AttachWake(pollDone);
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, pollDone.Token);
+                }
+                catch (OperationCanceledException) when (pollDone.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    // Manual refresh request or the polling interval ended.
+                }
+                finally
+                {
+                    monitor.DetachWake(pollDone);
+                }
                 await client.NoOpAsync(cancellationToken);
             }
 
-            var newMessages = await ImportInboxAsync(account, inbox, 150, cancellationToken);
+            var requests = monitor.DrainPending();
+            var fetchCount = requests.Count == 0
+                ? 150
+                : Math.Max(150, requests.Max(request => request.MaxMessages));
+            int newMessages;
+            try
+            {
+                newMessages = await ImportInboxAsync(account, inbox, fetchCount, cancellationToken);
+            }
+            catch
+            {
+                monitor.Requeue(requests);
+                throw;
+            }
             account.Status = EmailConnectionStatus.Connected;
             account.LastSyncAt = DateTimeOffset.Now;
             account.LastError = "";
             await _repository.SaveEmailAccountAsync(account, cancellationToken);
+            monitor.Complete(requests, newMessages);
             if (newMessages > 0)
                 SynchronizationChanged?.Invoke(this, new EmailSynchronizationState(account.Id, "messages", newMessages));
         }
@@ -699,11 +737,105 @@ public sealed class EmailService : IAsyncDisposable
             try { await Task.WhenAll(monitors.Select(item => item.Worker)); }
             catch (OperationCanceledException) { }
         }
-        foreach (var monitor in monitors) monitor.Lifetime.Dispose();
+        foreach (var monitor in monitors)
+        {
+            monitor.CancelPending();
+            monitor.Dispose();
+        }
         supervisorLifetime?.Dispose();
         foreach (var gate in _syncGates.Values) gate.Dispose();
         _syncGates.Clear();
     }
 
-    private sealed record BackgroundAccountMonitor(CancellationTokenSource Lifetime, Task Worker);
+    private sealed record ManualSyncRequest(int MaxMessages, TaskCompletionSource<int> Completion);
+
+    private sealed class BackgroundAccountMonitor : IDisposable
+    {
+        private readonly ConcurrentQueue<ManualSyncRequest> _pending = new();
+        private readonly object _wakeLock = new();
+        private CancellationTokenSource? _wake;
+
+        public BackgroundAccountMonitor(CancellationTokenSource lifetime) => Lifetime = lifetime;
+
+        public CancellationTokenSource Lifetime { get; }
+        public Task Worker { get; set; } = Task.CompletedTask;
+        public bool HasPending => !_pending.IsEmpty;
+
+        public async Task<int> RequestSyncAsync(int maxMessages, CancellationToken cancellationToken)
+        {
+            var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var request = new ManualSyncRequest(Math.Clamp(maxMessages, 1, 2_000), completion);
+            _pending.Enqueue(request);
+            lock (_wakeLock) _wake?.Cancel();
+
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(60));
+            try
+            {
+                return await completion.Task.WaitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                completion.TrySetException(new TimeoutException("后台 IMAP 会话正在重连，请稍后再试。"));
+                throw new TimeoutException("后台 IMAP 会话正在重连，请稍后再试。");
+            }
+        }
+
+        public void AttachWake(CancellationTokenSource wake)
+        {
+            lock (_wakeLock)
+            {
+                _wake = wake;
+                if (HasPending) wake.Cancel();
+            }
+        }
+
+        public void DetachWake(CancellationTokenSource wake)
+        {
+            lock (_wakeLock)
+            {
+                if (ReferenceEquals(_wake, wake)) _wake = null;
+            }
+        }
+
+        public List<ManualSyncRequest> DrainPending()
+        {
+            var requests = new List<ManualSyncRequest>();
+            while (_pending.TryDequeue(out var request))
+            {
+                if (!request.Completion.Task.IsCompleted)
+                    requests.Add(request);
+            }
+            return requests;
+        }
+
+        public void Requeue(IEnumerable<ManualSyncRequest> requests)
+        {
+            foreach (var request in requests)
+            {
+                if (!request.Completion.Task.IsCompleted)
+                    _pending.Enqueue(request);
+            }
+        }
+
+        public void Complete(IEnumerable<ManualSyncRequest> requests, int imported)
+        {
+            foreach (var request in requests)
+                request.Completion.TrySetResult(imported);
+        }
+
+        public void CompletePending(int imported) => Complete(DrainPending(), imported);
+
+        public void CancelPending()
+        {
+            while (_pending.TryDequeue(out var request))
+                request.Completion.TrySetCanceled(Lifetime.Token);
+        }
+
+        public void Dispose()
+        {
+            lock (_wakeLock) _wake = null;
+            Lifetime.Dispose();
+        }
+    }
 }

@@ -71,14 +71,14 @@ public partial class MainWindow : Window
         _analytics = new AnalyticsView(services);
         _dashboard.NavigateRequested += Dashboard_NavigateRequested;
         _intelligence.ImportRequested += OpenImport;
-        _intelligence.DataChanged += async (_, _) => await RefreshAllAsync();
+        _intelligence.DataChanged += View_DataChanged;
         _customers.ImportRequested += OpenImport;
-        _customers.DataChanged += async (_, _) => await RefreshAllAsync();
-        _inbox.DataChanged += async (_, _) => await RefreshAllAsync();
-        _email.DataChanged += async (_, _) => await RefreshAllAsync();
-        _campaigns.DataChanged += async (_, _) => await RefreshAllAsync();
-        _knowledge.DataChanged += async (_, _) => await RefreshAllAsync();
-        _analytics.DataChanged += async (_, _) => await RefreshAllAsync();
+        _customers.DataChanged += View_DataChanged;
+        _inbox.DataChanged += View_DataChanged;
+        _email.DataChanged += View_DataChanged;
+        _campaigns.DataChanged += View_DataChanged;
+        _knowledge.DataChanged += View_DataChanged;
+        _analytics.DataChanged += View_DataChanged;
         _services.Campaigns.SafetyStopped += Campaigns_SafetyStopped;
         _services.LeadAutomation.AnalysisChanged += LeadAutomation_AnalysisChanged;
         _services.WhatsAppSync.MessageSynchronized += MessagingUnreadChanged;
@@ -510,18 +510,20 @@ public partial class MainWindow : Window
             TopTitle.Text = target.Title;
             TopSubtitle.Text = target.Subtitle;
             PageGuideButton.ToolTip = $"查看“{target.Title}”的功能介绍和操作步骤";
-            if (ContentHost.Content is IRefreshableView view)
-                await view.RefreshAsync();
-
-            cancellationToken.ThrowIfCancellationRequested();
+            var refreshTask = ContentHost.Content is IRefreshableView view
+                ? view.RefreshAsync()
+                : Task.CompletedTask;
+            var enterTask = Task.CompletedTask;
             if (contentChanged)
             {
                 var enterEase = new CubicEase { EasingMode = EasingMode.EaseOut };
-                await Task.WhenAll(
+                enterTask = Task.WhenAll(
                     AnimateAndCommitAsync(ContentHost, OpacityProperty, 1, TimeSpan.FromMilliseconds(235), enterEase, cancellationToken),
                     AnimateAndCommitAsync(ContentHostTranslate, TranslateTransform.YProperty, 0, TimeSpan.FromMilliseconds(255), enterEase, cancellationToken));
             }
+            await Task.WhenAll(enterTask, refreshTask);
 
+            cancellationToken.ThrowIfCancellationRequested();
             if (_onboardingReady && !OnboardingGuide.IsOpen)
                 await ShowModuleGuideIfNeededAsync(page);
         }
@@ -641,7 +643,10 @@ public partial class MainWindow : Window
     private async void OpenImport(object? sender, EventArgs e)
     {
         var window = new ImportWindow(_services) { Owner = this };
-        if (window.ShowDialog() == true) await RefreshAllAsync();
+        if (window.ShowDialog() != true) return;
+        if (ContentHost.Content is IRefreshableView currentView)
+            await currentView.RefreshAsync();
+        await UpdateUnreadBadgesAsync();
     }
 
     private async Task UpdateProviderStateAsync()
@@ -855,11 +860,12 @@ public partial class MainWindow : Window
 
     private void LeadAutomation_AnalysisChanged(object? sender, LeadAnalysisAutomationEventArgs e)
     {
-        _ = Dispatcher.InvokeAsync(async () =>
-        {
-            await _dashboard.RefreshAsync();
-            await _intelligence.RefreshAsync();
-        });
+        QueueCurrentViewRefresh(_dashboard, _intelligence);
+    }
+
+    private void View_DataChanged(object? sender, EventArgs e)
+    {
+        QueueUnreadBadgeRefresh();
     }
 
     private void MessagingUnreadChanged(object? sender, WhatsAppMessage e) => QueueUnreadBadgeRefresh();
@@ -900,6 +906,44 @@ public partial class MainWindow : Window
         });
     }
 
+    private bool _currentViewRefreshRunning;
+    private bool _currentViewRefreshPending;
+
+    private void QueueCurrentViewRefresh(params IRefreshableView[] eligibleViews)
+    {
+        _ = Dispatcher.InvokeAsync(async () =>
+        {
+            if (ContentHost.Content is not IRefreshableView currentView) return;
+            if (eligibleViews.Length > 0 && !eligibleViews.Contains(currentView)) return;
+            if (_currentViewRefreshRunning)
+            {
+                _currentViewRefreshPending = true;
+                return;
+            }
+
+            _currentViewRefreshRunning = true;
+            try
+            {
+                do
+                {
+                    _currentViewRefreshPending = false;
+                    await Task.Delay(150);
+                    if (ReferenceEquals(ContentHost.Content, currentView))
+                        await currentView.RefreshAsync();
+                }
+                while (_currentViewRefreshPending && ReferenceEquals(ContentHost.Content, currentView));
+            }
+            catch
+            {
+                // A later navigation or data event will retry the current page.
+            }
+            finally
+            {
+                _currentViewRefreshRunning = false;
+            }
+        });
+    }
+
     private async Task UpdateUnreadBadgesAsync()
     {
         var totals = await _services.Repository.GetInboxUnreadTotalsAsync();
@@ -912,12 +956,6 @@ public partial class MainWindow : Window
         badge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
         text.Text = count > 99 ? "99+" : count.ToString();
         button.ToolTip = count > 0 ? $"{channel} Inbox：{count} 条未读消息" : $"{channel} Inbox：暂无未读消息";
-    }
-
-    private async Task RefreshAllAsync()
-    {
-        await _dashboard.RefreshAsync(); await _intelligence.RefreshAsync(); await _customers.RefreshAsync(); await _inbox.RefreshAsync(); await _email.RefreshAsync(); await _campaigns.RefreshAsync(); await _knowledge.RefreshAsync(); await _analytics.RefreshAsync();
-        await UpdateUnreadBadgesAsync();
     }
 
     private void Campaigns_SafetyStopped(object? sender, CampaignSafetyStoppedEventArgs e)
