@@ -41,6 +41,7 @@ $messaging = Read-Utf8 'desktop\WAFlow.Mac\MainWindow.Messaging.cs'
 $operations = Read-Utf8 'desktop\WAFlow.Mac\MainWindow.Operations.cs'
 $settings = Read-Utf8 'desktop\WAFlow.Mac\MainWindow.Settings.cs'
 $project = Read-Utf8 'desktop\WAFlow.Mac\WAFlow.Mac.csproj'
+$emailService = Read-Utf8 'desktop\WAFlow.Core\Services\EmailService.cs'
 
 Require-Text $shell @(
   'Width="1440" Height="900" MinWidth="1120" MinHeight="700"',
@@ -81,10 +82,17 @@ Require-Text $shellCode @(
   'Task.Delay(110, motion.Token)',
   'RunUiSmokeAsync',
   'PrefersReducedMotion',
+  'RefreshCurrentPageCoalescedAsync',
   'MacThemeManager.Apply("Dark")',
   'ApplyUiScale(settings.UiScalePercentage)'
 ) 'interaction'
 Require-Text $shell @('Duration="0:0:0.235"') 'page-transition'
+Require-Text $emailService @(
+  'StartBackgroundSyncAsync',
+  'RequestSyncAsync',
+  'BackgroundAccountMonitor',
+  'RunConnectedAccountSessionAsync'
+) 'v5.10.2-inbox-performance'
 
 $semanticKeys = [regex]::Matches($theme, '\["([^"]+)"\]\s*=') |
   ForEach-Object { $_.Groups[1].Value } |

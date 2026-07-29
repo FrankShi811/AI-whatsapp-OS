@@ -60,6 +60,8 @@ public sealed partial class MainWindow : Window
     private bool _sidebarPointerInside;
     private bool _sidebarKeyboardExpanded;
     private bool _commandVisible;
+    private bool _pageRefreshScheduled;
+    private bool _pageRefreshAgain;
     private readonly bool _reduceMotion;
     private readonly TaskCompletionSource<bool> _openedReady =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -306,6 +308,29 @@ public sealed partial class MainWindow : Window
                 error.Message,
                 "请稍后重试；现有客户数据不会被改动。",
                 Danger);
+        }
+    }
+
+    private async Task RefreshCurrentPageCoalescedAsync()
+    {
+        if (_pageRefreshScheduled)
+        {
+            _pageRefreshAgain = true;
+            return;
+        }
+        _pageRefreshScheduled = true;
+        try
+        {
+            do
+            {
+                _pageRefreshAgain = false;
+                await RenderCurrentPageAsync();
+            }
+            while (_pageRefreshAgain && !_lifetime.IsCancellationRequested);
+        }
+        finally
+        {
+            _pageRefreshScheduled = false;
         }
     }
 
@@ -870,7 +895,7 @@ public sealed partial class MainWindow : Window
                 }
             }
             _operationStatus = $"WhatsApp：{WhatsAppStateLabel(_whatsAppState)}";
-            if (_currentPage == "inbox") await RenderCurrentPageAsync();
+            if (_currentPage == "inbox") await RefreshCurrentPageCoalescedAsync();
         });
 
     private void WhatsAppSync_SynchronizationChanged(object? sender, WhatsAppSyncProgress progress) =>
@@ -885,7 +910,7 @@ public sealed partial class MainWindow : Window
                 _ => _operationStatus
             };
             if (_currentPage == "inbox" && progress.State is "complete" or "data" or "failed")
-                await RenderCurrentPageAsync();
+                await RefreshCurrentPageCoalescedAsync();
         });
 
     private void Email_SynchronizationChanged(object? sender, EmailSynchronizationState state) =>
@@ -894,7 +919,7 @@ public sealed partial class MainWindow : Window
             _operationStatus = state.State == "error"
                 ? $"邮件同步失败：{state.Error}"
                 : $"邮件已同步 {state.Imported:N0} 封";
-            if (_currentPage == "email") await RenderCurrentPageAsync();
+            if (_currentPage == "email") await RefreshCurrentPageCoalescedAsync();
         });
 
     private void Campaigns_SafetyStopped(object? sender, CampaignSafetyStoppedEventArgs e) =>
@@ -904,14 +929,14 @@ public sealed partial class MainWindow : Window
             await ShowMessageAsync(
                 "自动化已安全停止",
                 "检测到网络环境或任务风险，活动 Campaign 已暂停。请检查 IP、账号连接和审计记录后再恢复。");
-            if (_currentPage == "broadcast") await RenderCurrentPageAsync();
+            if (_currentPage == "broadcast") await RefreshCurrentPageCoalescedAsync();
         });
 
     private void LeadAutomation_AnalysisChanged(object? sender, LeadAnalysisAutomationEventArgs e) =>
         Dispatcher.UIThread.Post(async () =>
         {
             _operationStatus = e.Message;
-            if (_currentPage == "intelligence") await RenderCurrentPageAsync();
+            if (_currentPage == "intelligence") await RefreshCurrentPageCoalescedAsync();
         });
 
     private async Task SaveLinkedWhatsAppAccountAsync(WhatsAppBridgeEvent e)

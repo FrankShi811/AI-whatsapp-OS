@@ -1,7 +1,7 @@
-# macOS and Windows v5.10.1 parity contract
+# macOS and Windows v5.10.2 parity contract
 
 This document is a release gate for the native Avalonia macOS build. The current
-Windows WPF v5.10.1 implementation remains the product and behavior source of
+Windows WPF v5.10.2 implementation remains the product and behavior source of
 truth. macOS uses the same `WAFlow.Core` services and local data model; it does
 not depend on, publish to, or exchange data with the PWA.
 
@@ -15,7 +15,7 @@ not depend on, publish to, or exchange data with the PWA.
 | Opportunity intelligence | `LeadIntelligenceView` | Search/grade queue, detail evidence, risk, single/bulk analysis and cancellation | Static + Core tests |
 | Customers | `CustomersView` | Import/export, search and filters, dynamic dimensions, full columns, select/bulk delete, 10/30 pagination, editor and Customer Brain | Static + workbook regression |
 | WhatsApp Inbox | `WhatsAppInboxView` | Multi-account QR login, sync, search, groups, pin, text/media, reply/revoke, CRM, sourcing, agent modes, handoff and knowledge citations | Static + Bridge/Core + UI smoke |
-| Email Inbox | `EmailInboxView`, `EmailAccountWindow` | Provider guides and setup links, Keychain password, editable IMAP/SMTP TLS, test/save, sync, compose/reply and CRM/AI context | Static + Core + UI smoke |
+| Email Inbox | `EmailInboxView`, `EmailAccountWindow` | Provider guides and setup links, Keychain password, editable IMAP/SMTP TLS, test/save, v5.10.2 background IMAP sync, compose/reply and CRM/AI context | Static + Core + UI smoke |
 | Automation | `CampaignsView` | WhatsApp/email accounts, saved templates, dynamic fields, Beijing schedule, interval/unit/limit, audience filters, previews, approval, pause/resume/cancel and history | Static + Core tests |
 | Knowledge base | `KnowledgeBaseView` | Upload/version, metadata, original, chunks, activation, conflicts, real retrieval and candidate approval/publish | Static + Core tests |
 | Customer analytics | `AnalyticsView` | Scrollable/searchable customer list, generation, full report sections, evidence, knowledge citations, history, comparison and Word/PDF export | Static + Core tests |
