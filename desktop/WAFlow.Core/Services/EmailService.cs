@@ -44,13 +44,20 @@ public sealed record EmailSynchronizationState(
 public sealed class EmailService : IAsyncDisposable
 {
     private readonly LocalRepository _repository;
+    private readonly Func<string, ISecretStore> _secretStoreFactory;
     private readonly ConcurrentDictionary<string, BackgroundAccountMonitor> _backgroundMonitors = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _syncGates = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _backgroundLock = new();
     private CancellationTokenSource? _backgroundLifetime;
     private Task? _backgroundSupervisor;
 
-    public EmailService(LocalRepository repository) => _repository = repository;
+    public EmailService(
+        LocalRepository repository,
+        Func<string, ISecretStore>? secretStoreFactory = null)
+    {
+        _repository = repository;
+        _secretStoreFactory = secretStoreFactory ?? (target => new WindowsCredentialStore(target));
+    }
 
     public event EventHandler<EmailSynchronizationState>? SynchronizationChanged;
 
@@ -662,10 +669,11 @@ public sealed class EmailService : IAsyncDisposable
         return account ?? throw new InvalidOperationException("邮件账号不存在，请先连接邮箱。");
     }
 
-    private static string RequirePassword(EmailAccount account) =>
+    private string RequirePassword(EmailAccount account) =>
         PasswordStore(account.Id).Read() ?? throw new InvalidOperationException("邮箱凭据不存在，请重新连接邮箱。");
 
-    private static WindowsCredentialStore PasswordStore(string accountId) => new($"WAFlow/EmailPassword/{accountId}");
+    private ISecretStore PasswordStore(string accountId) =>
+        _secretStoreFactory($"WAFlow/EmailPassword/{accountId}");
 
     private static SecureSocketOptions SocketOptions(int port, bool useSsl) =>
         !useSsl ? SecureSocketOptions.Auto : port == 465 || port == 993 ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls;

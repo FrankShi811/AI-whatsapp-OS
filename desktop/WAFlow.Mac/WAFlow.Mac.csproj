@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>AISalesOS.Mac</AssemblyName>
     <RootNamespace>WAFlow.Mac</RootNamespace>
-    <Version>2.1.0</Version>
+    <Version>5.10.0</Version>
     <Product>AI Sales OS</Product>
     <Description>AI Sales OS 原生 macOS 中文客户端</Description>
     <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
@@ -37,5 +37,6 @@
   </ItemGroup>
   <ItemGroup>
     <AvaloniaResource Include="..\WAFlow.Desktop\Assets\AI-Sales-OS.png" Link="Assets\AI-Sales-OS.png" />
+    <AvaloniaResource Include="..\WAFlow.Desktop\Assets\AI-Sales-OS-chroma.png" Link="Assets\AI-Sales-OS-chroma.png" />
   </ItemGroup>
 </Project>

@@ -8,6 +8,7 @@ public interface ISecretStore
 {
     void Save(string secret);
     string? Read();
+    void Delete();
 }
 
 public sealed class WindowsCredentialStore : ISecretStore

@@ -24,6 +24,7 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     private TaskCompletionSource _ready = NewSignal();
     private CancellationTokenSource? _lifetime;
     private readonly string _dataRoot;
+    private readonly Func<string, ISecretStore> _secretStoreFactory;
 
     public event EventHandler<WhatsAppBridgeEvent>? EventReceived;
     public bool IsRunning => _process is { HasExited: false };
@@ -32,10 +33,14 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     public string CurrentAccountId { get; private set; } = "primary";
     public string LastBridgeError { get; private set; } = "";
 
-    public WhatsAppBridgeClient(string? dataRoot = null)
+    public WhatsAppBridgeClient(
+        string? dataRoot = null,
+        Func<string, ISecretStore>? secretStoreFactory = null)
     {
         _dataRoot = Path.GetFullPath(dataRoot
             ?? new DataWorkspaceManager().Resolve().RootDirectory);
+        _secretStoreFactory = secretStoreFactory
+            ?? (target => new WindowsCredentialStore(target));
     }
 
     public async Task StartAsync(string accountId = "primary", CancellationToken cancellationToken = default)
@@ -67,7 +72,7 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
         _ = ObserveExitAsync(_process, _lifetime.Token);
 
         await _ready.Task.WaitAsync(TimeSpan.FromSeconds(15), cancellationToken);
-        var sessionSecrets = new WindowsCredentialStore($"WAFlow/WhatsAppSessionKey/{CurrentAccountId}");
+        var sessionSecrets = _secretStoreFactory($"WAFlow/WhatsAppSessionKey/{CurrentAccountId}");
         var encryptionKey = sessionSecrets.Read();
         if (string.IsNullOrWhiteSpace(encryptionKey))
         {
@@ -93,7 +98,7 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     {
         var result = await SendCommandAsync("logout", null, cancellationToken);
         ConnectionState = "logged_out";
-        new WindowsCredentialStore($"WAFlow/WhatsAppSessionKey/{CurrentAccountId}").Delete();
+        _secretStoreFactory($"WAFlow/WhatsAppSessionKey/{CurrentAccountId}").Delete();
         return result;
     }
     public Task<JsonElement> SendTextAsync(string phone, string text, CancellationToken cancellationToken = default) =>
@@ -240,10 +245,12 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
                 return new(explicitExe, Path.GetDirectoryName(explicitExe)!, []);
 
             var processDirectory = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
-            var packaged = Path.Combine(processDirectory, "WAFlow.WhatsApp.Bridge.exe");
-            if (File.Exists(packaged)) return new(packaged, processDirectory, []);
+            foreach (var packaged in PackagedBridgeCandidates(processDirectory))
+                if (File.Exists(packaged)) return new(packaged, Path.GetDirectoryName(packaged)!, []);
 
-            var embedded = ExtractEmbeddedBridge(dataRoot);
+            var embedded = OperatingSystem.IsWindows()
+                ? ExtractEmbeddedBridge(dataRoot)
+                : null;
             if (!string.IsNullOrWhiteSpace(embedded) && File.Exists(embedded))
                 return new(embedded, Path.GetDirectoryName(embedded)!, []);
 
@@ -254,7 +261,25 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(script) && File.Exists(script) && !string.IsNullOrWhiteSpace(node) && File.Exists(node))
                 return new(node, Path.GetDirectoryName(Path.GetDirectoryName(script))!, [script]);
 
-            throw new WhatsAppBridgeException("bridge_runtime_missing", "未找到 WAFlow.WhatsApp.Bridge.exe。开发环境可设置 WAFLOW_NODE_PATH 和 WAFLOW_BRIDGE_SCRIPT。");
+            throw new WhatsAppBridgeException(
+                "bridge_runtime_missing",
+                "未找到当前平台的 WhatsApp Bridge。开发环境可设置 WAFLOW_BRIDGE_EXE，或同时设置 WAFLOW_NODE_PATH 和 WAFLOW_BRIDGE_SCRIPT。");
+        }
+
+        private static IEnumerable<string> PackagedBridgeCandidates(string processDirectory)
+        {
+            yield return Path.Combine(
+                processDirectory,
+                OperatingSystem.IsWindows()
+                    ? "WAFlow.WhatsApp.Bridge.exe"
+                    : "WAFlow.WhatsApp.Bridge");
+            if (OperatingSystem.IsMacOS())
+                yield return Path.GetFullPath(Path.Combine(
+                    processDirectory,
+                    "..",
+                    "Resources",
+                    "Bridge",
+                    "WAFlow.WhatsApp.Bridge"));
         }
 
         private static string? ExtractEmbeddedBridge(string dataRoot)
@@ -306,8 +331,13 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
         {
             foreach (var segment in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
             {
-                var candidate = Path.Combine(segment.Trim('"'), "node.exe");
+                var candidate = Path.Combine(segment.Trim('"'), OperatingSystem.IsWindows() ? "node.exe" : "node");
                 if (File.Exists(candidate)) return candidate;
+            }
+            if (OperatingSystem.IsMacOS())
+            {
+                foreach (var candidate in new[] { "/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node" })
+                    if (File.Exists(candidate)) return candidate;
             }
             var codexRuntime = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "node", "bin", "node.exe");
             return File.Exists(codexRuntime) ? codexRuntime : null;

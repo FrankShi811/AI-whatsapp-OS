@@ -18,6 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--arch", choices=("arm64", "x64"), required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--icon", required=True)
+    parser.add_argument("--bridge")
     parser.add_argument("--bundle-output")
     return parser.parse_args()
 
@@ -80,6 +81,14 @@ def main() -> int:
         else:
             shutil.copy2(item, target)
 
+    if args.bridge:
+        bridge = Path(args.bridge).resolve()
+        if not bridge.is_file():
+            raise FileNotFoundError(f"macOS WhatsApp Bridge 不存在: {bridge}")
+        bridge_target = macos / "WAFlow.WhatsApp.Bridge"
+        shutil.copy2(bridge, bridge_target)
+        bridge_target.chmod(0o755)
+
     create_icon(icon, resources / "AI-Sales-OS.icns")
     plist = {
         "CFBundleDevelopmentRegion": "zh_CN",
@@ -88,12 +97,14 @@ def main() -> int:
         "CFBundleIconFile": "AI-Sales-OS.icns",
         "CFBundleIdentifier": "com.aisalesos.desktop",
         "CFBundleInfoDictionaryVersion": "6.0",
+        "CFBundleSupportedPlatforms": ["MacOSX"],
         "CFBundleLocalizations": ["zh_CN"],
         "CFBundleName": "AI Sales OS",
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": args.version,
         "CFBundleVersion": args.version,
         "LSMinimumSystemVersion": "11.0",
+        "LSApplicationCategoryType": "public.app-category.business",
         "NSHighResolutionCapable": True,
         "NSPrincipalClass": "NSApplication",
         "NSSupportsAutomaticGraphicsSwitching": True,
@@ -117,10 +128,15 @@ def main() -> int:
 - API Key 写入 macOS 钥匙串
 - 各模块导航与空状态
 
-当前限制
-- 本包尚未使用 Apple Developer ID 签名和公证。
-- WhatsApp 扫码、实时收发、建群及群发依赖原生 macOS Bridge，本测试包默认不执行真实发送。
-- Windows 数据不会跨电脑自动同步。macOS 数据库位置：
+功能说明
+- 包含原生 macOS WhatsApp Bridge，可扫码、同步、实时收发、发送媒体和建立群组。
+- 包含 IMAP / SMTP 邮箱连接、知识库、客户分析、报告与多渠道自动化。
+- 所有数据只保存在当前 Mac，不与其他用户共享，也不会自动同步 Windows 数据。
+
+当前分发状态
+- 本包尚未使用 Apple Developer ID 签名和公证，属于内部验收版。
+- WhatsApp 与邮件真实操作会直接触达外部账号，请先核对账号、客户、内容与自动化任务。
+- macOS 数据库位置：
   ~/Library/Application Support/WAFlow/waflow.db
 """
     (package_root / "安装说明.txt").write_text(guide, encoding="utf-8-sig")

@@ -19,6 +19,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--version", required=True)
     parser.add_argument("--installers", default="dist/installers")
+    parser.add_argument(
+        "--architectures",
+        nargs="+",
+        choices=("arm64", "x64"),
+        default=("arm64", "x64"),
+    )
     return parser.parse_args()
 
 
@@ -38,6 +44,9 @@ def validate_archive(path: Path, version: str, architecture: str) -> None:
         plist_name = find_one(names, "AI Sales OS.app/Contents/Info.plist")
         executable_name = find_one(
             names, "AI Sales OS.app/Contents/MacOS/AISalesOS.Mac"
+        )
+        bridge_name = find_one(
+            names, "AI Sales OS.app/Contents/MacOS/WAFlow.WhatsApp.Bridge"
         )
         guide_name = find_one(names, "安装说明.txt")
 
@@ -71,6 +80,22 @@ def validate_archive(path: Path, version: str, architecture: str) -> None:
         unix_mode = archive.getinfo(executable_name).external_attr >> 16
         if not unix_mode & stat.S_IXUSR:
             raise RuntimeError(f"{path.name} 主程序缺少 Unix 执行权限")
+        bridge_mode = archive.getinfo(bridge_name).external_attr >> 16
+        if not bridge_mode & stat.S_IXUSR:
+            raise RuntimeError(f"{path.name} WhatsApp Bridge 缺少 Unix 执行权限")
+        with archive.open(bridge_name) as bridge_stream:
+            bridge_header = bridge_stream.read(8)
+        if bridge_header[:4] not in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf"):
+            raise RuntimeError(f"{path.name} WhatsApp Bridge 不是 64 位 Mach-O")
+        bridge_byte_order = (
+            "little" if bridge_header[:4] == b"\xcf\xfa\xed\xfe" else "big"
+        )
+        bridge_cpu_type = int.from_bytes(bridge_header[4:8], bridge_byte_order)
+        if bridge_cpu_type != MACHO_CPU_TYPES[architecture]:
+            raise RuntimeError(
+                f"{path.name} WhatsApp Bridge 架构错误: expected={architecture} "
+                f"cpu=0x{bridge_cpu_type:08X}"
+            )
 
         if not any(name.endswith("libhostfxr.dylib") for name in names):
             raise RuntimeError(f"{path.name} 缺少自包含 .NET hostfxr")
@@ -78,7 +103,7 @@ def validate_archive(path: Path, version: str, architecture: str) -> None:
             raise RuntimeError(f"{path.name} 缺少自包含 .NET CoreCLR")
 
         guide = archive.read(guide_name).decode("utf-8-sig")
-        for required_text in ("安装步骤", "首次启动", "中文测试版"):
+        for required_text in ("安装步骤", "首次启动", "中文测试版", "原生 macOS WhatsApp Bridge"):
             if required_text not in guide:
                 raise RuntimeError(f"{path.name} 中文安装说明缺少: {required_text}")
 
@@ -91,16 +116,18 @@ def validate_archive(path: Path, version: str, architecture: str) -> None:
 def main() -> int:
     args = parse_args()
     installers = Path(args.installers).resolve()
-    validate_archive(
-        installers / "AI Sales OS macOS Apple-Silicon Chinese Preview.zip",
-        args.version,
-        "arm64",
-    )
-    validate_archive(
-        installers / "AI Sales OS macOS Intel Chinese Preview.zip",
-        args.version,
-        "x64",
-    )
+    if "arm64" in args.architectures:
+        validate_archive(
+            installers / "AI Sales OS macOS Apple-Silicon Chinese Preview.zip",
+            args.version,
+            "arm64",
+        )
+    if "x64" in args.architectures:
+        validate_archive(
+            installers / "AI Sales OS macOS Intel Chinese Preview.zip",
+            args.version,
+            "x64",
+        )
     return 0
 
 

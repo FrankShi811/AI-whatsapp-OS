@@ -7,6 +7,7 @@ namespace WAFlow.Core.Services;
 public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLookup, IAsyncDisposable
 {
     private readonly string _dataRoot;
+    private readonly Func<string, ISecretStore> _secretStoreFactory;
     private readonly ConcurrentDictionary<string, WhatsAppBridgeClient> _clients = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _connectionGates = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _autoReconnectSuppressed = new(StringComparer.OrdinalIgnoreCase);
@@ -16,10 +17,14 @@ public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLooku
     public bool IsConnected => IsConnectedFor(ActiveAccountId);
     public string ConnectionState => ConnectionStateFor(ActiveAccountId);
 
-    public WhatsAppConnectionManager(string? dataRoot = null)
+    public WhatsAppConnectionManager(
+        string? dataRoot = null,
+        Func<string, ISecretStore>? secretStoreFactory = null)
     {
         _dataRoot = Path.GetFullPath(dataRoot
             ?? new DataWorkspaceManager().Resolve().RootDirectory);
+        _secretStoreFactory = secretStoreFactory
+            ?? (target => new WindowsCredentialStore(target));
     }
 
     public void SetActiveAccount(string accountId) => ActiveAccountId = Normalize(accountId);
@@ -128,7 +133,9 @@ public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLooku
         accountId = Normalize(accountId);
         return _clients.GetOrAdd(accountId, id =>
         {
-            var client = new WhatsAppBridgeClient(_dataRoot);
+            var client = new WhatsAppBridgeClient(
+                _dataRoot,
+                _secretStoreFactory);
             client.EventReceived += (_, e) => EventReceived?.Invoke(this, string.IsNullOrWhiteSpace(e.AccountId) ? e with { AccountId = id } : e);
             return client;
         });

@@ -3,19 +3,24 @@ using WAFlow.Core.Infrastructure;
 
 namespace WAFlow.Mac;
 
-public sealed class MacKeychainSecretStore(string service = "AI Sales OS", string account = "AIProviderApiKey") : ISecretStore
+public sealed class MacKeychainSecretStore(string target = "WAFlow/DeepSeekApiKey") : ISecretStore
 {
+    private const string Service = "AI Sales OS";
+
     public void Save(string secret)
     {
         if (string.IsNullOrWhiteSpace(secret)) return;
-        Run(false, "add-generic-password", "-U", "-s", service, "-a", account, "-w", secret.Trim());
+        Run(false, "add-generic-password", "-U", "-s", Service, "-a", target, "-w", secret.Trim());
     }
 
     public string? Read()
     {
-        var result = Run(true, "find-generic-password", "-s", service, "-a", account, "-w");
+        var result = Run(true, "find-generic-password", "-s", Service, "-a", target, "-w");
         return result.ExitCode == 0 ? result.Output.Trim() : null;
     }
+
+    public void Delete() =>
+        Run(true, "delete-generic-password", "-s", Service, "-a", target);
 
     private static ProcessResult Run(bool allowFailure, params string[] arguments)
     {

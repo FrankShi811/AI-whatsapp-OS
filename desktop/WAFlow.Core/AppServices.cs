@@ -11,7 +11,7 @@ public sealed class AppServices
     public LocalRepository Repository { get; }
     public LeadScoringService Scoring { get; }
     public ImportService Imports { get; }
-    public WindowsCredentialStore Secrets { get; }
+    public ISecretStore Secrets { get; }
     public DeepSeekService DeepSeek { get; }
     public WhatsAppConnectionManager WhatsApp { get; }
     public WhatsAppNumberValidationService WhatsAppNumberValidation { get; }
@@ -39,29 +39,33 @@ public sealed class AppServices
 
     public AppServices(
         LocalRepository? repository = null,
-        DataWorkspaceManager? dataWorkspaceManager = null)
+        DataWorkspaceManager? dataWorkspaceManager = null,
+        Func<string, ISecretStore>? secretStoreFactory = null)
     {
         DataWorkspaceManager = dataWorkspaceManager ?? new DataWorkspaceManager();
         DataWorkspace = repository is null
             ? DataWorkspaceManager.Resolve()
             : DataWorkspaceManager.FromDatabasePath(repository.DatabasePath);
         Repository = repository ?? new LocalRepository(DataWorkspace.DatabasePath);
+        secretStoreFactory ??= target => new WindowsCredentialStore(target);
         Scoring = new LeadScoringService();
-        Secrets = new WindowsCredentialStore();
+        Secrets = secretStoreFactory("WAFlow/DeepSeekApiKey");
         KnowledgeRetrieval = new KnowledgeRetrievalService(Repository);
         DeepSeek = new DeepSeekService(
             Repository,
             Secrets,
             knowledgeRetrieval: KnowledgeRetrieval,
-            providerSecretResolver: providerId => new WindowsCredentialStore($"WAFlow/AiProvider/{providerId}"));
+            providerSecretResolver: providerId => secretStoreFactory($"WAFlow/AiProvider/{providerId}"));
         KnowledgeBase = new KnowledgeBaseService(
             Repository,
             new CompositeKnowledgeDocumentParser(new AiProviderImageTextExtractor(DeepSeek)));
         Imports = new ImportService(Repository);
-        WhatsApp = new WhatsAppConnectionManager(DataWorkspace.RootDirectory);
+        WhatsApp = new WhatsAppConnectionManager(
+            DataWorkspace.RootDirectory,
+            secretStoreFactory);
         WhatsAppNumberValidation = new WhatsAppNumberValidationService(Repository, WhatsApp);
         WhatsAppSync = new WhatsAppSyncService(Repository, WhatsApp);
-        Email = new EmailService(Repository);
+        Email = new EmailService(Repository, secretStoreFactory);
         EmailAssistant = new EmailAssistantService(Repository, DeepSeek, KnowledgeRetrieval);
         MessagingSync = new MessagingSyncService(Repository, WhatsApp, Email);
         LeadAutomation = new LeadIntelligenceAutomationService(Repository, DeepSeek, WhatsAppSync);

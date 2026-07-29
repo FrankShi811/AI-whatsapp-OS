@@ -1,0 +1,92 @@
+name: Build AI Sales OS macOS DMG
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semantic version without v prefix; defaults to WAFlow.Mac.csproj'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  apple-silicon-dmg:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+      AVALONIA_TELEMETRY_OPTOUT: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: |
+          npm install --global pnpm@10.14.0
+          python -m pip install --disable-pip-version-check Pillow
+
+      - name: Resolve version
+        shell: pwsh
+        run: |
+          $version = '${{ inputs.version }}'
+          if (-not $version) {
+            $version = ([xml](Get-Content -Raw -Encoding utf8 desktop/WAFlow.Mac/WAFlow.Mac.csproj)).Project.PropertyGroup.Version | Select-Object -First 1
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw "Invalid version: $version" }
+          "MAC_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build native Apple Silicon app, Bridge and DMG
+        shell: pwsh
+        run: |
+          ./scripts/build-macos-preview.ps1 `
+            -Version $env:MAC_VERSION `
+            -Architecture AppleSilicon `
+            -RepositoryUrl "https://github.com/${{ github.repository }}"
+
+      - name: Validate ZIP bundle
+        run: |
+          python scripts/test-macos-packages.py \
+            --version "$MAC_VERSION" \
+            --architectures arm64
+
+      - name: Mount DMG and run native smoke test
+        run: |
+          python scripts/test-macos-dmg.py \
+            --path "dist/installers/AI Sales OS macOS Apple-Silicon Chinese v${MAC_VERSION}.dmg" \
+            --version "$MAC_VERSION" \
+            --architecture arm64
+
+      - name: Record checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem dist/installers -File |
+            Where-Object { $_.Name -match 'Apple-Silicon.*\.(dmg|zip)$' } |
+            ForEach-Object {
+              $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+              "$($hash.Hash)  $($_.Name)"
+            } | Set-Content -LiteralPath dist/installers/SHA256SUMS-macOS.txt -Encoding utf8
+
+      - name: Upload DMG and build evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Sales-OS-${{ env.MAC_VERSION }}-macOS-Apple-Silicon-DMG
+          path: |
+            dist/installers/AI Sales OS macOS Apple-Silicon Chinese v${{ env.MAC_VERSION }}.dmg
+            dist/installers/AI Sales OS macOS Apple-Silicon Chinese Preview.zip
+            dist/installers/SHA256SUMS-macOS.txt
+          if-no-files-found: error
+          retention-days: 30

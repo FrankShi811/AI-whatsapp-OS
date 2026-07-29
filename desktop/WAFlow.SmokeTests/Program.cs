@@ -3225,6 +3225,7 @@ sealed class FakeSecretStore(string value) : ISecretStore
 {
     public void Save(string secret) { }
     public string? Read() => value;
+    public void Delete() { }
 }
 
 sealed class RoutingProbe

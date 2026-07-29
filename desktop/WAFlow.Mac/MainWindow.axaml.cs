@@ -1,12 +1,17 @@
+using System.Diagnostics;
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
-using Avalonia.Controls.Primitives;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using WAFlow.Core;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Infrastructure;
+using WAFlow.Core.Services;
 using WAFlow.Desktop;
 using WAFlow.Desktop.Updates;
 
@@ -14,431 +19,708 @@ namespace WAFlow.Mac;
 
 public sealed partial class MainWindow : Window
 {
-    private readonly LocalRepository _repository;
-    private readonly MacKeychainSecretStore _secrets = new();
+    private static readonly IBrush Ink = Brush.Parse("#062C24");
+    private static readonly IBrush Muted = Brush.Parse("#5D746D");
+    private static readonly IBrush Primary = Brush.Parse("#0B9B75");
+    private static readonly IBrush PrimarySoft = Brush.Parse("#E4F7F0");
+    private static readonly IBrush Border = Brush.Parse("#D8E4DF");
+    private static readonly IBrush Surface = Brushes.White;
+    private static readonly IBrush SurfaceMuted = Brush.Parse("#F4F8F6");
+    private static readonly IBrush Danger = Brush.Parse("#B42318");
+    private static readonly IBrush Warning = Brush.Parse("#9A6700");
+    private readonly AppServices _services;
     private readonly IApplicationUpdateService _updates = new VelopackUpdateService();
+    private readonly CancellationTokenSource _lifetime = new();
     private List<Lead> _leads = [];
     private DashboardSnapshot _dashboard = new();
+    private string _currentPage = "dashboard";
+    private string _activeWhatsAppAccountId = "primary";
+    private string _selectedWhatsAppConversationId = "";
+    private string _activeEmailAccountId = "";
+    private string _selectedEmailConversationId = "";
+    private int _customerPage = 1;
+    private int _customerPageSize = 30;
+    private string _customerSearch = "";
+    private string _whatsAppQrDataUrl = "";
+    private string _whatsAppState = "disconnected";
+    private string _operationStatus = "就绪";
 
     public MainWindow()
     {
         InitializeComponent();
-        var dataDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            "Library", "Application Support", "WAFlow");
-        _repository = new LocalRepository(Path.Combine(dataDirectory, "waflow.db"));
+        var repository = new LocalRepository(PlatformDataPaths.DatabasePath);
+        _services = new AppServices(
+            repository,
+            target => new MacKeychainSecretStore(target));
         VersionText.Text = $"版本 {ReleaseCatalog.CurrentVersion} · 本地数据";
         _updates.StateChanged += Updates_StateChanged;
-        Opened += async (_, _) => await InitializeAsync();
+        _services.WhatsApp.EventReceived += WhatsApp_EventReceived;
+        _services.WhatsAppSync.SynchronizationChanged += WhatsAppSync_SynchronizationChanged;
+        _services.Email.SynchronizationChanged += Email_SynchronizationChanged;
+        _services.Campaigns.SafetyStopped += Campaigns_SafetyStopped;
+        _services.LeadAutomation.AnalysisChanged += LeadAutomation_AnalysisChanged;
+        Opened += MainWindow_Opened;
+        Closing += MainWindow_Closing;
     }
 
-    private async Task InitializeAsync()
+    private async void MainWindow_Opened(object? sender, EventArgs e)
     {
         try
         {
-            await _repository.InitializeAsync();
+            await _services.InitializeAsync(_lifetime.Token);
+            await _services.Campaigns.StartAsync(_lifetime.Token);
+            await _services.LeadAutomation.StartAsync(_lifetime.Token);
+            await _services.MessagingSync.StartAsync(_lifetime.Token);
             await ReloadAsync();
-            ContentHost.Content = BuildDashboard();
-            var configured = !string.IsNullOrWhiteSpace(_secrets.Read());
-            AiStateText.Text = configured ? "● AI 已配置" : "● AI 待配置";
+            await RenderCurrentPageAsync();
+            AiStateText.Text = _services.DeepSeek.HasApiKey() ? "● AI 已配置" : "● AI 待配置";
             _ = _updates.CheckAndDownloadAsync();
         }
         catch (Exception error)
         {
-            ContentHost.Content = BuildMessagePage("初始化失败", error.Message, "请保留此提示并反馈；程序没有删除或覆盖原始数据库。", "#B42318");
+            ContentHost.Content = MessagePanel(
+                "初始化失败",
+                error.Message,
+                "程序没有删除或覆盖数据库。请保留此提示用于排查。",
+                Danger);
         }
     }
 
-    private void Updates_StateChanged(object? sender, ApplicationUpdateState state) =>
-        Dispatcher.UIThread.Post(() => RenderUpdateState(state));
-
-    private void RenderUpdateState(ApplicationUpdateState state)
+    private async void MainWindow_Closing(object? sender, WindowClosingEventArgs e)
     {
-        VersionText.Text = state.Stage switch
-        {
-            ApplicationUpdateStage.Downloading => $"版本 {state.CurrentVersion} · 下载 {state.DownloadProgress}%",
-            ApplicationUpdateStage.ReadyToInstall => $"新版本 {state.LatestVersion} 已下载",
-            _ => $"版本 {state.CurrentVersion} · {state.Message}"
-        };
-        UpdateHeadlineText.Text = state.Stage == ApplicationUpdateStage.ReadyToInstall ? "有更新可安装" : "macOS 原生测试版";
+        _lifetime.Cancel();
+        _updates.StateChanged -= Updates_StateChanged;
+        _services.WhatsApp.EventReceived -= WhatsApp_EventReceived;
+        _services.WhatsAppSync.SynchronizationChanged -= WhatsAppSync_SynchronizationChanged;
+        _services.Email.SynchronizationChanged -= Email_SynchronizationChanged;
+        _services.Campaigns.SafetyStopped -= Campaigns_SafetyStopped;
+        _services.LeadAutomation.AnalysisChanged -= LeadAutomation_AnalysisChanged;
+        try { await _services.MessagingSync.DisposeAsync(); } catch { }
+        try { await _services.LeadAutomation.DisposeAsync(); } catch { }
+        try { await _services.Campaigns.DisposeAsync(); } catch { }
+        try { await _services.Email.DisposeAsync(); } catch { }
+        try { await _services.WhatsApp.DisposeAsync(); } catch { }
+        _services.CustomerSuccessCoordinator.Dispose();
+        _lifetime.Dispose();
     }
+
+    private async Task ReloadAsync()
+    {
+        _leads = await _services.Repository.GetLeadsAsync(cancellationToken: _lifetime.Token);
+        _dashboard = await _services.Repository.GetDashboardAsync(_lifetime.Token);
+    }
+
+    private async void Navigate_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string target }) return;
+        _currentPage = target;
+        await RenderCurrentPageAsync();
+    }
+
+    private async Task NavigateAsync(string target)
+    {
+        _currentPage = target;
+        await RenderCurrentPageAsync();
+    }
+
+    private async Task RenderCurrentPageAsync()
+    {
+        try
+        {
+            SetNavigationState(_currentPage);
+            await ReloadAsync();
+            var (title, subtitle, content) = _currentPage switch
+            {
+                "intelligence" => ("商机智能", "AI 评分、证据、风险和下一步动作", await BuildLeadIntelligenceAsync()),
+                "customers" => ("客户列表", "统一客户身份、动态维度、导入和批量运营", await BuildCustomersAsync()),
+                "inbox" => ("WhatsApp Inbox", "原生 Bridge 扫码登录、实时收发、群组与 AI 辅助", await BuildWhatsAppAsync()),
+                "email" => ("邮件 Inbox", "IMAP / SMTP 登录、同步、收发与 AI 邮件草稿", await BuildEmailAsync()),
+                "campaigns" => ("自动化群发", "WhatsApp / 邮件任务、动态字段、审批和安全阀门", await BuildCampaignsAsync()),
+                "knowledge" => ("知识库", "本地资料解析、审核、启用、冲突和检索", await BuildKnowledgeAsync()),
+                "analytics" => ("客户智能分析", "完整客户报告、版本历史与 Word / PDF 导出", await BuildAnalyticsAsync()),
+                "settings" => ("API 与数据设置", "模型路由、macOS 钥匙串、本地目录和版本更新", await BuildSettingsAsync()),
+                _ => ("Dashboard", "今天最值得优先处理的销售动作", await BuildDashboardAsync())
+            };
+            PageTitle.Text = title;
+            PageSubtitle.Text = subtitle;
+            ContentHost.Content = content;
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception error)
+        {
+            ContentHost.Content = MessagePanel(
+                "读取失败",
+                error.Message,
+                "请稍后重试；现有客户数据不会被改动。",
+                Danger);
+        }
+    }
+
+    private void SetNavigationState(string target)
+    {
+        foreach (var button in new[]
+        {
+            DashboardNav, IntelligenceNav, CustomersNav, WhatsAppNav, EmailNav,
+            CampaignsNav, KnowledgeNav, AnalyticsNav, SettingsNav
+        })
+            button.Classes.Set("selected", string.Equals(button.Tag as string, target, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void PageScroll_SizeChanged(object? sender, SizeChangedEventArgs e)
+    {
+        // Avalonia ScrollViewer measures descendants with an unbounded width. Constraining the
+        // page canvas to the viewport keeps star-sized dashboards and inbox panes responsive.
+        ContentHost.Width = Math.Max(640, e.NewSize.Width - 64);
+    }
+
+    private async Task<Control> BuildDashboardAsync()
+    {
+        var page = PageStack();
+        page.Children.Add(PageLead(
+            "销售脉搏",
+            "从优先商机、待办、渠道未读和自动化执行状态开始，所有资料只保存在这台 Mac。"));
+
+        var unread = await _services.Repository.GetInboxUnreadTotalsAsync(_lifetime.Token);
+        page.Children.Add(MetricGrid(
+            ("客户总数", _dashboard.TotalLeads.ToString("N0"), $"{_dashboard.AnalyzedLeads:N0} 位已完成 AI 分析", "#087A5E"),
+            ("待跟进", _dashboard.PendingFollowUps.ToString("N0"), "下一跟进时间已到", "#9A6700"),
+            ("WhatsApp 未读", unread.WhatsApp.ToString("N0"), "进入 Inbox 处理", "#0B74C8"),
+            ("邮件未读", unread.Email.ToString("N0"), $"{_dashboard.ActiveCampaigns:N0} 个自动化任务", "#7A5AF8")));
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        actions.Children.Add(ActionButton("导入客户", async () => await ImportCustomersAsync()));
+        actions.Children.Add(ActionButton("连接 WhatsApp", async () => await NavigateAsync("inbox"), primary: true));
+        actions.Children.Add(ActionButton("连接邮箱", async () => await NavigateAsync("email")));
+        actions.Children.Add(ActionButton("运行 AI 分析", async () => await NavigateAsync("intelligence")));
+        page.Children.Add(actions);
+
+        var priority = new StackPanel { Spacing = 0 };
+        priority.Children.Add(TableHeader(
+            ["客户", "公司 / 产品", "等级", "阶段", "下一步动作"],
+            [1.5, 1.6, .55, .8, 2.2]));
+        foreach (var lead in _dashboard.PriorityLeads.Take(10))
+        {
+            var row = TableRow(
+                [
+                    TextCell(lead.DisplayName, true, lead.PhoneE164),
+                    TextCell(Fallback(lead.Company, "—"), false, lead.ProductInterest),
+                    BadgeCell($"{lead.Grade} · {lead.Score}", GradeBrush(lead.Grade)),
+                    TextCell(lead.StageLabel),
+                    TextCell(Fallback(lead.NextAction, "等待补充信息"))
+                ],
+                [1.5, 1.6, .55, .8, 2.2]);
+            row.PointerPressed += async (_, _) =>
+            {
+                _customerSearch = lead.DisplayName;
+                _customerPage = 1;
+                await NavigateAsync("customers");
+            };
+            priority.Children.Add(row);
+        }
+        if (_dashboard.PriorityLeads.Count == 0)
+            priority.Children.Add(EmptyState("暂无优先商机", "导入客户并运行 AI 分析后，这里会显示最值得推进的客户。"));
+        page.Children.Add(SectionCard("今日优先商机", $"{_dashboard.PriorityLeads.Count:N0} 位", priority));
+        return page;
+    }
+
+    private void Updates_StateChanged(object? sender, ApplicationUpdateState state) =>
+        Dispatcher.UIThread.Post(() =>
+        {
+            VersionText.Text = state.Stage switch
+            {
+                ApplicationUpdateStage.Downloading => $"版本 {state.CurrentVersion} · 下载 {state.DownloadProgress}%",
+                ApplicationUpdateStage.ReadyToInstall => $"新版本 {state.LatestVersion} 已下载",
+                _ => $"版本 {state.CurrentVersion} · 本地数据"
+            };
+            UpdateHeadlineText.Text = state.Stage == ApplicationUpdateStage.ReadyToInstall
+                ? "有更新可安装"
+                : "macOS 原生桌面版";
+        });
 
     private async void UpdateButton_Click(object? sender, RoutedEventArgs e)
     {
         var state = _updates.State;
-        var dialog = new Window
-        {
-            Title = "AI Sales OS · 版本与更新",
-            Width = 620,
-            Height = 520,
-            CanResize = false,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = Brushes.White
-        };
-        var status = new TextBlock { Text = state.Message, TextWrapping = TextWrapping.Wrap, Foreground = Avalonia.Media.Brush.Parse("#526B63") };
-        var notes = new TextBox
+        var panel = new StackPanel { Spacing = 14, Margin = new Thickness(26) };
+        panel.Children.Add(TitleText("版本中心"));
+        var status = BodyText(state.Message);
+        panel.Children.Add(status);
+        panel.Children.Add(BodyText($"当前版本 {state.CurrentVersion} · 通道 {UpdateConfiguration.Load().Channel}"));
+        panel.Children.Add(Accessible(new TextBox
         {
             Text = string.IsNullOrWhiteSpace(state.ReleaseNotes) ? "暂无远程更新日志。" : state.ReleaseNotes,
             IsReadOnly = true,
             AcceptsReturn = true,
             TextWrapping = TextWrapping.Wrap,
-            MinHeight = 230
-        };
-        var check = new Button { Content = "重新检查", Padding = new Thickness(18, 10) };
-        var install = new Button { Content = "安装更新并重启", Padding = new Thickness(18, 10), IsEnabled = state.CanInstall, Background = Avalonia.Media.Brush.Parse("#0A9A75"), Foreground = Brushes.White };
-        check.Click += async (_, _) =>
+            MinHeight = 240
+        }, "版本更新日志"));
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Right };
+        var check = ActionButton("重新检查", async () =>
         {
-            check.IsEnabled = false;
             status.Text = "正在检查 GitHub Release…";
             await _updates.CheckAndDownloadAsync(force: true);
-            var latest = _updates.State;
-            status.Text = latest.Message;
-            notes.Text = string.IsNullOrWhiteSpace(latest.ReleaseNotes) ? "暂无远程更新日志。" : latest.ReleaseNotes;
-            install.IsEnabled = latest.CanInstall;
-            check.IsEnabled = latest.CanCheck;
-        };
-        install.Click += (_, _) =>
+            status.Text = _updates.State.Message;
+        });
+        var install = ActionButton("安装更新并重启", () =>
         {
-            try { _updates.ApplyAndRestart(); }
-            catch (Exception error) { status.Text = $"安装失败：{error.Message}"; }
-        };
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Right };
+            _updates.ApplyAndRestart();
+            return Task.CompletedTask;
+        }, primary: true);
+        install.IsEnabled = state.CanInstall;
         buttons.Children.Add(check);
         buttons.Children.Add(install);
-        var content = new StackPanel { Margin = new Thickness(28), Spacing = 14 };
-        content.Children.Add(new TextBlock { Text = "版本中心", FontSize = 26, FontWeight = FontWeight.Bold, Foreground = Avalonia.Media.Brush.Parse("#062C24") });
-        content.Children.Add(new TextBlock { Text = $"当前版本 {state.CurrentVersion}  ·  更新通道 {UpdateConfiguration.Load().Channel}", Foreground = Avalonia.Media.Brush.Parse("#526B63") });
-        content.Children.Add(status);
-        content.Children.Add(new TextBlock { Text = "更新日志", FontWeight = FontWeight.SemiBold, Foreground = Avalonia.Media.Brush.Parse("#062C24") });
-        content.Children.Add(notes);
-        content.Children.Add(buttons);
-        dialog.Content = content;
+        panel.Children.Add(buttons);
+        await ShowPanelDialogAsync("AI Sales OS · 版本与更新", panel, 700, 590);
+    }
+
+    private void WhatsApp_EventReceived(object? sender, WhatsAppBridgeEvent e) =>
+        Dispatcher.UIThread.Post(async () =>
+        {
+            if (!string.IsNullOrWhiteSpace(e.AccountId) &&
+                !e.AccountId.Equals(_activeWhatsAppAccountId, StringComparison.OrdinalIgnoreCase))
+                return;
+            if (e.Name == "qr" && e.Data.TryGetProperty("dataUrl", out var qr))
+            {
+                _whatsAppQrDataUrl = qr.GetString() ?? "";
+                _whatsAppState = "waiting_qr";
+            }
+            else if (e.Name == "connection")
+            {
+                _whatsAppState = e.Data.TryGetProperty("state", out var state)
+                    ? state.GetString() ?? "disconnected"
+                    : "disconnected";
+                if (_whatsAppState == "connected")
+                {
+                    _whatsAppQrDataUrl = "";
+                    await SaveLinkedWhatsAppAccountAsync(e);
+                }
+            }
+            _operationStatus = $"WhatsApp：{WhatsAppStateLabel(_whatsAppState)}";
+            if (_currentPage == "inbox") await RenderCurrentPageAsync();
+        });
+
+    private void WhatsAppSync_SynchronizationChanged(object? sender, WhatsAppSyncProgress progress) =>
+        Dispatcher.UIThread.Post(async () =>
+        {
+            if (!progress.AccountId.Equals(_activeWhatsAppAccountId, StringComparison.OrdinalIgnoreCase)) return;
+            _operationStatus = progress.State switch
+            {
+                "syncing" => $"WhatsApp 正在同步 {progress.Phase}{(progress.Progress is null ? "" : $" {progress.Progress}%")}",
+                "complete" => $"已同步 {progress.Chats} 会话 / {progress.Contacts} 联系人 / {progress.Messages} 消息",
+                "failed" => $"WhatsApp 同步失败：{progress.Error}",
+                _ => _operationStatus
+            };
+            if (_currentPage == "inbox" && progress.State is "complete" or "data" or "failed")
+                await RenderCurrentPageAsync();
+        });
+
+    private void Email_SynchronizationChanged(object? sender, EmailSynchronizationState state) =>
+        Dispatcher.UIThread.Post(async () =>
+        {
+            _operationStatus = state.State == "error"
+                ? $"邮件同步失败：{state.Error}"
+                : $"邮件已同步 {state.Imported:N0} 封";
+            if (_currentPage == "email") await RenderCurrentPageAsync();
+        });
+
+    private void Campaigns_SafetyStopped(object? sender, CampaignSafetyStoppedEventArgs e) =>
+        Dispatcher.UIThread.Post(async () =>
+        {
+            _operationStatus = "自动化安全阀门已触发，活动任务已暂停";
+            await ShowMessageAsync(
+                "自动化已安全停止",
+                "检测到网络环境或任务风险，活动 Campaign 已暂停。请检查 IP、账号连接和审计记录后再恢复。");
+            if (_currentPage == "campaigns") await RenderCurrentPageAsync();
+        });
+
+    private void LeadAutomation_AnalysisChanged(object? sender, LeadAnalysisAutomationEventArgs e) =>
+        Dispatcher.UIThread.Post(async () =>
+        {
+            _operationStatus = e.Message;
+            if (_currentPage == "intelligence") await RenderCurrentPageAsync();
+        });
+
+    private async Task SaveLinkedWhatsAppAccountAsync(WhatsAppBridgeEvent e)
+    {
+        try
+        {
+            var accounts = await _services.Repository.GetWhatsAppAccountsAsync(_lifetime.Token);
+            var account = accounts.FirstOrDefault(item =>
+                item.Id.Equals(_activeWhatsAppAccountId, StringComparison.OrdinalIgnoreCase));
+            if (account is null) return;
+            var user = JsonText(e.Data, "user");
+            var name = JsonText(e.Data, "name");
+            var phone = new string(user.Split(':')[0].Where(char.IsDigit).ToArray());
+            if (phone.Length > 0) account.LinkedPhone = "+" + phone;
+            if (!string.IsNullOrWhiteSpace(name) && account.Name.StartsWith("个人号 ", StringComparison.Ordinal))
+                account.Name = name;
+            await _services.Repository.SaveWhatsAppAccountsAsync(accounts, _lifetime.Token);
+        }
+        catch
+        {
+            // A display-name persistence failure must not interrupt the live bridge.
+        }
+    }
+
+    private static StackPanel PageStack() =>
+        new() { Spacing = 18, HorizontalAlignment = HorizontalAlignment.Stretch };
+
+    private static Control PageLead(string title, string subtitle)
+    {
+        var panel = new StackPanel { Spacing = 5 };
+        panel.Children.Add(TitleText(title));
+        panel.Children.Add(BodyText(subtitle));
+        return panel;
+    }
+
+    private static TextBlock TitleText(string text, double size = 28) =>
+        new()
+        {
+            Text = text,
+            FontSize = size,
+            FontWeight = FontWeight.Bold,
+            Foreground = Ink,
+            TextWrapping = TextWrapping.Wrap
+        };
+
+    private static TextBlock BodyText(string text, IBrush? foreground = null, double size = 13) =>
+        new()
+        {
+            Text = text,
+            Foreground = foreground ?? Muted,
+            FontSize = size,
+            TextWrapping = TextWrapping.Wrap
+        };
+
+    private static Border Card(Control content, Thickness? padding = null, IBrush? background = null) =>
+        new()
+        {
+            Background = background ?? Surface,
+            BorderBrush = Border,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            Padding = padding ?? new Thickness(18),
+            Child = content
+        };
+
+    private static Border SectionCard(string title, string badge, Control content)
+    {
+        var panel = new StackPanel { Spacing = 14 };
+        var heading = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        heading.Children.Add(TitleText(title, 18));
+        var badgeText = BodyText(badge, Primary, 12);
+        badgeText.FontWeight = FontWeight.SemiBold;
+        Grid.SetColumn(badgeText, 1);
+        heading.Children.Add(badgeText);
+        panel.Children.Add(heading);
+        panel.Children.Add(content);
+        return Card(panel);
+    }
+
+    private static Grid MetricGrid(params (string Label, string Value, string Detail, string Accent)[] metrics)
+    {
+        var grid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions(string.Join(',', Enumerable.Repeat("*", metrics.Length))),
+            ColumnSpacing = 12
+        };
+        for (var index = 0; index < metrics.Length; index++)
+        {
+            var metric = metrics[index];
+            var panel = new StackPanel { Spacing = 7 };
+            panel.Children.Add(BodyText(metric.Label, Muted, 12));
+            panel.Children.Add(new TextBlock
+            {
+                Text = metric.Value,
+                FontSize = 28,
+                FontWeight = FontWeight.Bold,
+                Foreground = Brush.Parse(metric.Accent)
+            });
+            panel.Children.Add(BodyText(metric.Detail, Muted, 11));
+            var card = Card(panel);
+            Grid.SetColumn(card, index);
+            grid.Children.Add(card);
+        }
+        return grid;
+    }
+
+    private static Button ActionButton(
+        string text,
+        Func<Task> action,
+        bool primary = false,
+        bool danger = false,
+        double minWidth = 96)
+    {
+        var button = new Button { Content = text, MinWidth = minWidth };
+        if (primary) button.Classes.Add("primary");
+        if (danger) button.Classes.Add("danger");
+        button.Click += async (_, _) =>
+        {
+            button.IsEnabled = false;
+            try { await action(); }
+            finally { button.IsEnabled = true; }
+        };
+        return button;
+    }
+
+    private static Grid TableHeader(IReadOnlyList<string> labels, IReadOnlyList<double> widths)
+    {
+        var grid = TableGrid(widths, Brush.Parse("#EEF4F1"));
+        for (var index = 0; index < labels.Count; index++)
+        {
+            var text = BodyText(labels[index], Ink, 11);
+            text.FontWeight = FontWeight.SemiBold;
+            Grid.SetColumn(text, index);
+            grid.Children.Add(text);
+        }
+        return grid;
+    }
+
+    private static Grid TableRow(IReadOnlyList<Control> cells, IReadOnlyList<double> widths)
+    {
+        var grid = TableGrid(widths, Surface);
+        for (var index = 0; index < cells.Count; index++)
+        {
+            Grid.SetColumn(cells[index], index);
+            grid.Children.Add(cells[index]);
+        }
+        return grid;
+    }
+
+    private static Grid TableGrid(IReadOnlyList<double> widths, IBrush background)
+    {
+        var columns = new ColumnDefinitions();
+        foreach (var width in widths) columns.Add(new ColumnDefinition(width, GridUnitType.Star));
+        return new Grid
+        {
+            ColumnDefinitions = columns,
+            ColumnSpacing = 14,
+            Background = background,
+            MinHeight = 54,
+            Margin = new Thickness(0, 0, 0, 1)
+        }.WithPadding(new Thickness(14, 10));
+    }
+
+    private static Control TextCell(string text, bool strong = false, string detail = "")
+    {
+        var panel = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+        panel.Children.Add(new TextBlock
+        {
+            Text = Fallback(text, "—"),
+            Foreground = Ink,
+            FontSize = 13,
+            FontWeight = strong ? FontWeight.SemiBold : FontWeight.Normal,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        });
+        if (!string.IsNullOrWhiteSpace(detail))
+            panel.Children.Add(new TextBlock
+            {
+                Text = detail,
+                Foreground = Muted,
+                FontSize = 10,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            });
+        return panel;
+    }
+
+    private static Control BadgeCell(string text, IBrush background)
+    {
+        var label = BodyText(text, Ink, 11);
+        label.FontWeight = FontWeight.SemiBold;
+        return new Border
+        {
+            Background = background,
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(9, 5),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = label
+        };
+    }
+
+    private static Border EmptyState(string title, string detail)
+    {
+        var panel = new StackPanel { Spacing = 6, HorizontalAlignment = HorizontalAlignment.Center };
+        panel.Children.Add(TitleText(title, 17));
+        panel.Children.Add(BodyText(detail));
+        return new Border
+        {
+            Background = SurfaceMuted,
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(24, 34),
+            Child = panel
+        };
+    }
+
+    private static Control MessagePanel(string title, string message, string detail, IBrush accent)
+    {
+        var panel = new StackPanel { Spacing = 10 };
+        panel.Children.Add(TitleText(title, 22));
+        panel.Children.Add(BodyText(message, accent, 14));
+        panel.Children.Add(BodyText(detail));
+        return Card(panel, new Thickness(24));
+    }
+
+    private async Task ShowMessageAsync(string title, string message)
+    {
+        var panel = new StackPanel { Spacing = 16, Margin = new Thickness(24) };
+        panel.Children.Add(TitleText(title, 22));
+        panel.Children.Add(BodyText(message, Ink, 13));
+        var close = new Button { Content = "知道了", HorizontalAlignment = HorizontalAlignment.Right };
+        close.Classes.Add("primary");
+        var dialog = DialogWindow(title, panel, 560, 330);
+        close.Click += (_, _) => dialog.Close();
+        panel.Children.Add(close);
         await dialog.ShowDialog(this);
     }
 
-    private async Task ReloadAsync()
+    private async Task<bool> ConfirmAsync(string title, string message, string confirmText = "确认")
     {
-        _leads = await _repository.GetLeadsAsync();
-        _dashboard = await _repository.GetDashboardAsync();
+        var panel = new StackPanel { Spacing = 16, Margin = new Thickness(24) };
+        panel.Children.Add(TitleText(title, 22));
+        panel.Children.Add(BodyText(message, Ink, 13));
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 10,
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+        var dialog = DialogWindow(title, panel, 560, 340);
+        var cancel = new Button { Content = "取消" };
+        var confirm = new Button { Content = confirmText };
+        confirm.Classes.Add("primary");
+        cancel.Click += (_, _) => dialog.Close(false);
+        confirm.Click += (_, _) => dialog.Close(true);
+        row.Children.Add(cancel);
+        row.Children.Add(confirm);
+        panel.Children.Add(row);
+        return await dialog.ShowDialog<bool>(this);
     }
 
-    private async void Navigate_Click(object? sender, RoutedEventArgs e)
+    private async Task ShowPanelDialogAsync(string title, Control content, double width, double height)
     {
-        if (sender is not Button button || button.Tag is not string target) return;
+        var dialog = DialogWindow(title, content, width, height);
+        await dialog.ShowDialog(this);
+    }
+
+    private static Window DialogWindow(string title, Control content, double width, double height) =>
+        new()
+        {
+            Title = title,
+            Width = width,
+            Height = height,
+            MinWidth = Math.Min(width, 520),
+            MinHeight = Math.Min(height, 300),
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = Brush.Parse("#F4F8F6"),
+            Content = content
+        };
+
+    private static StackPanel Field(string label, Control input, string hint = "")
+    {
+        var panel = new StackPanel { Spacing = 5 };
+        var title = BodyText(label, Ink, 12);
+        title.FontWeight = FontWeight.SemiBold;
+        AutomationProperties.SetName(input, label);
+        AutomationProperties.SetLabeledBy(input, title);
+        if (!string.IsNullOrWhiteSpace(hint)) AutomationProperties.SetHelpText(input, hint);
+        panel.Children.Add(title);
+        panel.Children.Add(input);
+        if (!string.IsNullOrWhiteSpace(hint)) panel.Children.Add(BodyText(hint, Muted, 10));
+        return panel;
+    }
+
+    private static T Accessible<T>(T control, string name, string helpText = "") where T : StyledElement
+    {
+        AutomationProperties.SetName(control, name);
+        if (!string.IsNullOrWhiteSpace(helpText)) AutomationProperties.SetHelpText(control, helpText);
+        return control;
+    }
+
+    private async Task<string?> PickOpenFileAsync(string title, params string[] patterns)
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = title,
+            AllowMultiple = false,
+            FileTypeFilter =
+            [
+                new FilePickerFileType(title) { Patterns = patterns }
+            ]
+        });
+        return files.Count == 0 ? null : files[0].TryGetLocalPath();
+    }
+
+    private async Task<string?> PickSaveFileAsync(string title, string suggestedName, string extension)
+    {
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = title,
+            SuggestedFileName = suggestedName,
+            DefaultExtension = extension.TrimStart('.'),
+            FileTypeChoices =
+            [
+                new FilePickerFileType(extension.Equals(".pdf", StringComparison.OrdinalIgnoreCase) ? "PDF" : "Word")
+                {
+                    Patterns = ["*" + extension]
+                }
+            ]
+        });
+        return file?.TryGetLocalPath();
+    }
+
+    private static Bitmap? DecodeDataUrl(string value)
+    {
         try
         {
-            await ReloadAsync();
-            (PageTitle.Text, PageSubtitle.Text, ContentHost.Content) = target switch
-            {
-                "intelligence" => ("商机智能", "AI 评分、客户价值依据和下一步动作", BuildLeadIntelligence()),
-                "customers" => ("客户列表", "统一客户数据、动态字段和批量运营", BuildCustomerList()),
-                "inbox" => ("WhatsApp Inbox", "历史会话与客户资料联动", await BuildInboxAsync()),
-                "campaigns" => ("自动化群发", "话术模板、发送任务和质量记录", await BuildCampaignsAsync()),
-                "analytics" => ("客户智能分析", "生成可供管理层使用的中文客户情报报告", BuildAnalytics()),
-                "settings" => ("API 对接", "配置兼容 DeepSeek / OpenAI 的模型接口", await BuildSettingsAsync()),
-                _ => ("Dashboard", "今天最值得优先处理的销售动作", BuildDashboard())
-            };
+            var comma = value.IndexOf(',');
+            if (comma < 0) return null;
+            using var stream = new MemoryStream(Convert.FromBase64String(value[(comma + 1)..]));
+            return new Bitmap(stream);
         }
-        catch (Exception error)
-        {
-            ContentHost.Content = BuildMessagePage("读取失败", error.Message, "请稍后重试，现有客户数据不会被改动。", "#B42318");
-        }
+        catch { return null; }
     }
 
-    private Control BuildDashboard()
+    private static string JsonText(System.Text.Json.JsonElement data, string name) =>
+        data.ValueKind == System.Text.Json.JsonValueKind.Object &&
+        data.TryGetProperty(name, out var value)
+            ? value.GetString() ?? ""
+            : "";
+
+    private static string Fallback(string? value, string fallback) =>
+        string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+
+    private static string SafeFileName(string value)
     {
-        var page = PageStack("销售脉搏", "先看优先商机、待办和自动化执行状态，再决定今天先跟进谁。");
-        var metrics = new UniformGrid { Columns = 4 };
-        metrics.Children.Add(MetricCard("商机总数", _dashboard.TotalLeads.ToString("N0"), "本地客户资产", "#087A5E"));
-        metrics.Children.Add(MetricCard("A / B 级商机", (_dashboard.Grades.GetValueOrDefault("A") + _dashboard.Grades.GetValueOrDefault("B")).ToString("N0"), "优先人工跟进", "#6556D8"));
-        metrics.Children.Add(MetricCard("24 小时内待办", _dashboard.PendingFollowUps.ToString("N0"), "需要销售动作", "#C07A00"));
-        metrics.Children.Add(MetricCard("自动化任务", _dashboard.ActiveCampaigns.ToString("N0"), "运行 / 排期 / 暂停", "#0B74C8"));
-        page.Children.Add(metrics);
-
-        var split = new Grid { ColumnDefinitions = new ColumnDefinitions("1.15*,0.85*"), ColumnSpacing = 16 };
-        var priorities = Card("今日优先商机");
-        var priorityStack = new StackPanel { Spacing = 0 };
-        foreach (var lead in _dashboard.PriorityLeads.Take(8))
-            priorityStack.Children.Add(LeadRow(lead, true));
-        if (priorityStack.Children.Count == 0)
-            priorityStack.Children.Add(EmptyText("暂无 A/B 级商机。完成 AI 分析后，优先客户会自动出现在这里。"));
-        priorities.Child = priorityStack;
-        split.Children.Add(priorities);
-
-        var grades = Card("客户等级分布");
-        var gradeStack = new StackPanel { Spacing = 13 };
-        foreach (var grade in new[] { "A", "B", "C", "D" })
-            gradeStack.Children.Add(GradeBar(grade, _dashboard.Grades.GetValueOrDefault(grade), Math.Max(1, _dashboard.TotalLeads)));
-        grades.Child = gradeStack;
-        Grid.SetColumn(grades, 1);
-        split.Children.Add(grades);
-        page.Children.Add(split);
-        return page;
+        var invalid = Path.GetInvalidFileNameChars().ToHashSet();
+        var safe = new string(value.Select(character => invalid.Contains(character) ? '_' : character).ToArray()).Trim();
+        return string.IsNullOrWhiteSpace(safe) ? "客户" : safe;
     }
 
-    private Control BuildLeadIntelligence()
+    private static IBrush GradeBrush(string grade) => grade.ToUpperInvariant() switch
     {
-        var page = PageStack("AI 商机优先级", "新客户默认 D / 0 分；只有 AI 分析成功后才更新等级和评分。");
-        var summary = new UniformGrid { Columns = 4 };
-        summary.Children.Add(MetricCard("待分析", _leads.Count(x => x.AnalysisStatus == AnalysisStatus.NotRun).ToString("N0"), "保持 D / 0 分", "#637A73"));
-        summary.Children.Add(MetricCard("分析完成", _leads.Count(x => x.HasCurrentAiScore).ToString("N0"), "已有评分证据", "#087A5E"));
-        summary.Children.Add(MetricCard("可重试", _leads.Count(x => x.AnalysisStatus == AnalysisStatus.RetryableFailed).ToString("N0"), "原始数据已保留", "#B42318"));
-        summary.Children.Add(MetricCard("分析队列", _leads.Count(x => x.AnalysisStatus is AnalysisStatus.Queued or AnalysisStatus.Running).ToString("N0"), "正在处理", "#6556D8"));
-        page.Children.Add(summary);
-        var table = Card("客户评分列表");
-        var rows = new StackPanel();
-        rows.Children.Add(TableHeader(["客户", "国家", "等级", "AI 评分", "阶段", "分析状态"], [2.2, 1.2, 0.7, 0.8, 1, 1.2]));
-        foreach (var lead in _leads.Take(250)) rows.Children.Add(LeadRow(lead, false));
-        if (_leads.Count == 0) rows.Children.Add(EmptyText("暂无客户。请先在 Windows 客户端导入数据，或将数据库复制到此 Mac 的 WAFlow 数据目录。"));
-        table.Child = rows;
-        page.Children.Add(table);
-        return page;
-    }
-
-    private Control BuildCustomerList()
-    {
-        var page = PageStack("客户数据资产", $"当前 {_leads.Count:N0} 位客户。macOS 测试版读取与 Windows 相同结构的 SQLite 数据库。");
-        var path = Card("本机数据位置");
-        path.Child = new TextBlock { Text = _repository.DatabasePath, Foreground = Brush("#405A52"), TextWrapping = TextWrapping.Wrap };
-        page.Children.Add(path);
-        var table = Card("客户列表");
-        var rows = new StackPanel();
-        rows.Children.Add(TableHeader(["客户", "国家", "WhatsApp", "负责人", "等级", "阶段"], [2.1, 1.2, 1.5, 1.1, 0.7, 1]));
-        foreach (var lead in _leads.Take(500)) rows.Children.Add(CustomerRow(lead));
-        if (_leads.Count == 0) rows.Children.Add(EmptyText("客户列表为空。安装验证阶段可先确认程序启动、导航、中文界面和 API 钥匙串保存是否正常。"));
-        table.Child = rows;
-        page.Children.Add(table);
-        return page;
-    }
-
-    private async Task<Control> BuildInboxAsync()
-    {
-        var conversations = await _repository.GetWhatsAppConversationsAsync();
-        var page = PageStack("会话与客户联动", "历史消息仍存放在本机数据库；当前 macOS 测试包不启动 Windows 版 WhatsApp Bridge。");
-        page.Children.Add(Notice("人工测试范围", "可验证会话历史读取、中文界面和客户关联展示；扫码登录、收发与群发需要后续在 Mac 上构建并签名原生 Bridge。", "#FFF4D9", "#8A5A00"));
-        var table = Card($"历史会话 · {conversations.Count:N0}");
-        var rows = new StackPanel();
-        rows.Children.Add(TableHeader(["联系人", "号码", "最近消息", "时间", "未读"], [1.4, 1.2, 2.8, 1, 0.6]));
-        foreach (var item in conversations.Take(250)) rows.Children.Add(ConversationRow(item));
-        if (conversations.Count == 0) rows.Children.Add(EmptyText("本机暂无 WhatsApp 历史。Windows 数据不会自动跨电脑同步。"));
-        table.Child = rows;
-        page.Children.Add(table);
-        return page;
-    }
-
-    private async Task<Control> BuildCampaignsAsync()
-    {
-        var campaigns = await _repository.GetCampaignsAsync(null);
-        var page = PageStack("自动化触达任务", "查看任务排期、状态和执行质量。未连接原生 Mac Bridge 时不会发送消息。");
-        page.Children.Add(Notice("安全保护已开启", "macOS 测试版默认禁用真实 WhatsApp 发送，避免在 Bridge 尚未完成签名验证时误触达客户。", "#E8F7F2", "#087A5E"));
-        var table = Card($"任务历史 · {campaigns.Count:N0}");
-        var rows = new StackPanel();
-        rows.Children.Add(TableHeader(["任务", "状态", "触发方式", "间隔", "客户数", "最近更新"], [2, 1, 1.2, 1, 0.8, 1.2]));
-        foreach (var item in campaigns.Take(250)) rows.Children.Add(CampaignRow(item));
-        if (campaigns.Count == 0) rows.Children.Add(EmptyText("暂无群发任务。"));
-        table.Child = rows;
-        page.Children.Add(table);
-        return page;
-    }
-
-    private Control BuildAnalytics()
-    {
-        var page = PageStack("客户情报中心", "整合 CRM、WhatsApp、Lead Intelligence 和历史轨迹，输出中文专业报告。");
-        page.Children.Add(Notice("报告生成条件", "需要先完成 API 对接，并为客户保留足够的资料或历史会话。报告不会覆盖 CRM 原始数据。", "#EEEAFE", "#5546C7"));
-        var workflow = new UniformGrid { Columns = 5 };
-        foreach (var (step, detail) in new[]
-        {
-            ("01 数据整理", "汇总全部来源"), ("02 事实提取", "区分事实与推断"), ("03 商业分析", "识别需求和风险"),
-            ("04 销售策略", "制定推进动作"), ("05 报告生成", "Word / PDF 输出")
-        }) workflow.Children.Add(MiniCard(step, detail));
-        page.Children.Add(workflow);
-        var leads = Card("可生成报告的客户");
-        var stack = new StackPanel();
-        foreach (var lead in _leads.Where(x => x.HasCurrentAiScore || !string.IsNullOrWhiteSpace(x.LatestMessage)).Take(40))
-            stack.Children.Add(LeadRow(lead, true));
-        if (stack.Children.Count == 0) stack.Children.Add(EmptyText("暂无具备完整分析上下文的客户。"));
-        leads.Child = stack;
-        page.Children.Add(leads);
-        return page;
-    }
-
-    private async Task<Control> BuildSettingsAsync()
-    {
-        var settings = await _repository.GetAppSettingsAsync();
-        var page = PageStack("AI Provider", "API Key 只写入 macOS 钥匙串，不进入数据库、日志或安装包。");
-        var card = Card("兼容 DeepSeek / OpenAI 的 API 设置");
-        var form = new StackPanel { Spacing = 12, MaxWidth = 760, HorizontalAlignment = HorizontalAlignment.Left };
-        form.Children.Add(Label("Base URL"));
-        var baseUrl = new TextBox { Text = settings.DeepSeekBaseUrl, Watermark = "https://api.deepseek.com", MinWidth = 650 };
-        form.Children.Add(baseUrl);
-        form.Children.Add(Label("API Key"));
-        var apiKey = new TextBox { PasswordChar = '●', Watermark = _secrets.Read() is null ? "请输入 API Key" : "已安全保存在 macOS 钥匙串；留空则不修改" };
-        form.Children.Add(apiKey);
-        form.Children.Add(Label("模型"));
-        var model = new TextBox { Text = settings.DeepSeekModel, Watermark = "deepseek-chat" };
-        form.Children.Add(model);
-        var state = new TextBlock { Foreground = Brush("#637A73") };
-        var save = new Button { Content = "保存 API 设置", Classes = { "primary" }, HorizontalAlignment = HorizontalAlignment.Left };
-        save.Click += async (_, _) =>
-        {
-            try
-            {
-                if (!string.IsNullOrWhiteSpace(apiKey.Text)) _secrets.Save(apiKey.Text);
-                settings.DeepSeekBaseUrl = (baseUrl.Text ?? "").Trim();
-                settings.DeepSeekModel = (model.Text ?? "").Trim();
-                await _repository.SaveAppSettingsAsync(settings);
-                state.Text = "✓ 已保存。API Key 位于 macOS 钥匙串。";
-                state.Foreground = Brush("#087A5E");
-                AiStateText.Text = "● AI 已配置";
-                apiKey.Text = "";
-            }
-            catch (Exception error)
-            {
-                state.Text = "保存失败：" + error.Message;
-                state.Foreground = Brush("#B42318");
-            }
-        };
-        form.Children.Add(save);
-        form.Children.Add(state);
-        card.Child = form;
-        page.Children.Add(card);
-        page.Children.Add(Notice("隐私说明", "客户分析数据会按所选 Provider 的接口传输。请根据所在地区和 Provider 条款确认数据处理边界。", "#FFF4D9", "#8A5A00"));
-        return page;
-    }
-
-    private static StackPanel PageStack(string title, string subtitle) => new()
-    {
-        Spacing = 18,
-        Children =
-        {
-            new TextBlock { Text = title, FontSize = 30, FontWeight = FontWeight.Bold, Foreground = Brush("#062C24") },
-            new TextBlock { Text = subtitle, FontSize = 14, Foreground = Brush("#637A73"), Margin = new Thickness(0, -12, 0, 4) }
-        }
+        "A" => Brush.Parse("#DDF6EB"),
+        "B" => Brush.Parse("#E7F0FF"),
+        "C" => Brush.Parse("#FFF4D6"),
+        _ => Brush.Parse("#EDF1EF")
     };
 
-    private static Border MetricCard(string title, string value, string detail, string accent)
+    private static string WhatsAppStateLabel(string state) => state switch
     {
-        var panel = new StackPanel { Spacing = 7 };
-        panel.Children.Add(new TextBlock { Text = title, Foreground = Brush("#637A73"), FontSize = 13 });
-        panel.Children.Add(new TextBlock { Text = value, Foreground = Brush(accent), FontSize = 30, FontWeight = FontWeight.Bold });
-        panel.Children.Add(new TextBlock { Text = detail, Foreground = Brush("#405A52"), FontSize = 12 });
-        return new Border { Background = Brushes.White, BorderBrush = Brush("#DCE7E2"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(14), Padding = new Thickness(20), Child = panel };
-    }
-
-    private static Border MiniCard(string title, string detail) => new()
-    {
-        Background = Brushes.White, BorderBrush = Brush("#DCE7E2"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(12), Padding = new Thickness(16),
-        Child = new StackPanel { Spacing = 7, Children = { new TextBlock { Text = title, FontWeight = FontWeight.SemiBold, Foreground = Brush("#087A5E") }, new TextBlock { Text = detail, Foreground = Brush("#637A73"), FontSize = 12, TextWrapping = TextWrapping.Wrap } } }
+        "connected" => "已连接",
+        "connecting" => "连接中",
+        "waiting_qr" => "等待扫码",
+        "logged_out" => "登录已失效",
+        _ => "已断开"
     };
+}
 
-    private static CardBorder Card(string title) => new(title);
-
-    private sealed class CardBorder : Border
+internal static class AvaloniaGridExtensions
+{
+    public static Grid WithPadding(this Grid grid, Thickness padding)
     {
-        private readonly ContentControl _content;
-        public CardBorder(string title)
-        {
-            _content = new ContentControl();
-            var panel = new StackPanel { Spacing = 14 };
-            panel.Children.Add(new TextBlock { Text = title, FontSize = 18, FontWeight = FontWeight.Bold, Foreground = Brush("#062C24") });
-            panel.Children.Add(_content);
-            Background = Brushes.White;
-            BorderBrush = Brush("#DCE7E2");
-            BorderThickness = new Thickness(1);
-            CornerRadius = new CornerRadius(14);
-            Padding = new Thickness(20);
-            base.Child = panel;
-        }
-        public new Control? Child { get => _content.Content as Control; set => _content.Content = value; }
-    }
-
-    private static Control BuildMessagePage(string title, string message, string detail, string color)
-    {
-        var page = PageStack(title, detail);
-        page.Children.Add(Notice(title, message, "#FFF0F0", color));
-        return page;
-    }
-
-    private static Border Notice(string title, string detail, string background, string foreground) => new()
-    {
-        Background = Brush(background), CornerRadius = new CornerRadius(12), Padding = new Thickness(18),
-        Child = new StackPanel { Spacing = 5, Children = { new TextBlock { Text = title, FontWeight = FontWeight.Bold, Foreground = Brush(foreground) }, new TextBlock { Text = detail, Foreground = Brush(foreground), Opacity = .88, TextWrapping = TextWrapping.Wrap } } }
-    };
-
-    private static TextBlock Label(string text) => new() { Text = text, FontWeight = FontWeight.SemiBold, Foreground = Brush("#405A52") };
-    private static TextBlock EmptyText(string text) => new() { Text = text, Foreground = Brush("#637A73"), Padding = new Thickness(12, 20), TextWrapping = TextWrapping.Wrap };
-
-    private static Grid TableHeader(string[] values, double[] widths)
-    {
-        var grid = RowGrid(widths, "#F1F6F4");
-        for (var i = 0; i < values.Length; i++) AddCell(grid, i, values[i], true, "#405A52");
+        grid.Margin = padding;
         return grid;
     }
-
-    private static Grid CustomerRow(Lead lead)
-    {
-        var grid = RowGrid([2.1, 1.2, 1.5, 1.1, .7, 1], "#FFFFFF");
-        AddCell(grid, 0, lead.DisplayName); AddCell(grid, 1, lead.Country); AddCell(grid, 2, lead.PhoneE164);
-        AddCell(grid, 3, lead.Owner); AddCell(grid, 4, lead.HasCurrentAiScore ? lead.Grade : "D", true, GradeColor(lead.HasCurrentAiScore ? lead.Grade : "D"));
-        AddCell(grid, 5, StageText(lead.Stage));
-        return grid;
-    }
-
-    private static Grid LeadRow(Lead lead, bool compact)
-    {
-        var grid = RowGrid(compact ? [2.2, 1.2, .7, .8, 1, 1.2] : [2.2, 1.2, .7, .8, 1, 1.2], "#FFFFFF");
-        AddCell(grid, 0, lead.DisplayName, true); AddCell(grid, 1, lead.Country);
-        var grade = lead.HasCurrentAiScore ? lead.Grade : "D";
-        AddCell(grid, 2, grade, true, GradeColor(grade)); AddCell(grid, 3, (lead.HasCurrentAiScore ? lead.Score : 0).ToString());
-        AddCell(grid, 4, StageText(lead.Stage)); AddCell(grid, 5, AnalysisText(lead.AnalysisStatus));
-        return grid;
-    }
-
-    private static Grid ConversationRow(WhatsAppConversation item)
-    {
-        var grid = RowGrid([1.4, 1.2, 2.8, 1, .6], "#FFFFFF");
-        AddCell(grid, 0, string.IsNullOrWhiteSpace(item.DisplayName) ? item.Phone : item.DisplayName, true); AddCell(grid, 1, item.Phone);
-        AddCell(grid, 2, item.LastMessage); AddCell(grid, 3, item.LastTimeLabel); AddCell(grid, 4, item.UnreadCount.ToString());
-        return grid;
-    }
-
-    private static Grid CampaignRow(WhatsAppCampaign item)
-    {
-        var grid = RowGrid([2, 1, 1.2, 1, .8, 1.2], "#FFFFFF");
-        AddCell(grid, 0, item.Name, true); AddCell(grid, 1, CampaignStatusText(item.Status)); AddCell(grid, 2, item.ScheduleMode == CampaignScheduleMode.Immediate ? "即时任务" : "定时任务");
-        AddCell(grid, 3, $"{item.EffectiveIntervalValue} {(item.IntervalUnit == CampaignIntervalUnit.Seconds ? "秒" : "分钟")}"); AddCell(grid, 4, item.SelectedLeadIds.Count.ToString());
-        AddCell(grid, 5, item.UpdatedAt.LocalDateTime.ToString("MM-dd HH:mm"));
-        return grid;
-    }
-
-    private static Grid RowGrid(double[] widths, string background)
-    {
-        var grid = new Grid { Background = Brush(background), MinHeight = 48 };
-        foreach (var width in widths) grid.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(width, GridUnitType.Star)));
-        return grid;
-    }
-
-    private static void AddCell(Grid grid, int column, string? text, bool strong = false, string color = "#18362E")
-    {
-        var block = new TextBlock { Text = string.IsNullOrWhiteSpace(text) ? "—" : text, Margin = new Thickness(10, 12), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = Brush(color), FontWeight = strong ? FontWeight.SemiBold : FontWeight.Normal };
-        Grid.SetColumn(block, column); grid.Children.Add(block);
-    }
-
-    private static Grid GradeBar(string grade, int value, int total)
-    {
-        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("34,*,52"), Height = 28 };
-        var label = new TextBlock { Text = grade, FontWeight = FontWeight.Bold, Foreground = Brush(GradeColor(grade)), VerticalAlignment = VerticalAlignment.Center };
-        var track = new Border { Background = Brush("#E8EFEC"), CornerRadius = new CornerRadius(4), Height = 8, VerticalAlignment = VerticalAlignment.Center };
-        var fill = new Border { Background = Brush(GradeColor(grade)), CornerRadius = new CornerRadius(4), Height = 8, HorizontalAlignment = HorizontalAlignment.Left, Width = Math.Max(4, 260d * value / total) };
-        var overlay = new Grid(); overlay.Children.Add(track); overlay.Children.Add(fill);
-        Grid.SetColumn(overlay, 1);
-        var count = new TextBlock { Text = value.ToString("N0"), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush("#405A52") }; Grid.SetColumn(count, 2);
-        grid.Children.Add(label); grid.Children.Add(overlay); grid.Children.Add(count); return grid;
-    }
-
-    private static IBrush Brush(string hex) => SolidColorBrush.Parse(hex);
-    private static string GradeColor(string grade) => grade switch { "A" => "#087A5E", "B" => "#0B74C8", "C" => "#C07A00", _ => "#B45B62" };
-    private static string StageText(LeadStage stage) => stage switch { LeadStage.New => "新商机", LeadStage.Contacted => "已联系", LeadStage.Interested => "有兴趣", LeadStage.Negotiation => "谈判中", LeadStage.Waiting => "等待中", LeadStage.Customer => "已成交", LeadStage.Lost => "已流失", _ => stage.ToString() };
-    private static string AnalysisText(AnalysisStatus status) => status switch { AnalysisStatus.Queued => "等待 AI", AnalysisStatus.Running => "分析中", AnalysisStatus.Succeeded => "已完成", AnalysisStatus.RetryableFailed => "可重试", _ => "未分析" };
-    private static string CampaignStatusText(CampaignStatus status) => status switch { CampaignStatus.Scheduled => "已排期", CampaignStatus.Running => "发送中", CampaignStatus.Paused => "已暂停", CampaignStatus.SafetyStopped => "安全停止", CampaignStatus.Completed => "已完成", CampaignStatus.Cancelled => "已取消", _ => "草稿" };
 }

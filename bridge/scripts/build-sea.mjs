@@ -9,8 +9,12 @@ const root = path.resolve(here, '..')
 const dist = path.join(root, 'dist')
 const nccOutput = path.join(dist, 'ncc')
 const blob = path.join(dist, 'waflow-bridge.blob')
-const executable = path.join(dist, 'WAFlow.WhatsApp.Bridge.exe')
+const executableName = process.platform === 'win32'
+  ? 'WAFlow.WhatsApp.Bridge.exe'
+  : 'WAFlow.WhatsApp.Bridge'
+const executable = path.join(dist, executableName)
 const node = process.execPath
+const targetNode = process.env.WAFLOW_SEA_TARGET_NODE || node
 const skipNcc = process.argv.includes('--skip-ncc')
 
 async function run(file, args, options = {}) {
@@ -65,9 +69,20 @@ const seaConfig = {
 const seaConfigPath = path.join(dist, 'sea-config.json')
 await fs.writeFile(seaConfigPath, JSON.stringify(seaConfig, null, 2))
 await run(node, ['--experimental-sea-config', seaConfigPath])
-await fs.copyFile(node, executable)
-await run(node, [
+await fs.copyFile(targetNode, executable)
+if (process.platform === 'darwin') {
+  await run('/usr/bin/codesign', ['--remove-signature', executable])
+}
+const injectArguments = [
   path.join(root, 'node_modules', 'postject', 'dist', 'cli.js'), executable, 'NODE_SEA_BLOB', blob,
   '--sentinel-fuse', 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2'
-])
+]
+if (process.platform === 'darwin') {
+  injectArguments.push('--macho-segment-name', 'NODE_SEA')
+}
+await run(node, injectArguments)
+await fs.chmod(executable, 0o755)
+if (process.platform === 'darwin') {
+  await run('/usr/bin/codesign', ['--force', '--sign', '-', executable])
+}
 console.log(`PASS built ${executable} (${manifestFiles.length} embedded files, runtime ${manifest.hash})`)
