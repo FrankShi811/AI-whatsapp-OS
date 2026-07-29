@@ -1356,6 +1356,53 @@ Check(
         .ModelCapabilities.Single().ReasoningEfforts.Contains("ultra"),
     "global and per-module AI model, reasoning, theme and UI scale preferences persist additively");
 
+var settingsWindowRouteSnapshot = AiModulePreferencePersistence.CreateSnapshot(
+    AiModuleKeys.Configurable.Select(moduleKey => new AiModulePreferenceSelection(
+        moduleKey,
+        "deepseek",
+        moduleKey is AiModuleKeys.KnowledgeBase or AiModuleKeys.CustomerAnalytics
+            ? "deepseek-v4-flash"
+            : "deepseek-v4-pro",
+        AiReasoningEfforts.Auto)));
+await repository.SaveAppSettingsAsync(new AppSettings
+{
+    ActiveProviderId="deepseek",
+    DeepSeekBaseUrl="https://api.deepseek.com",
+    DeepSeekModel="deepseek-v4-flash",
+    UseGlobalAiConfiguration=false,
+    ConfiguredAiProviders=
+    [
+        new AiProviderProfile
+        {
+            ProviderId="deepseek",
+            DisplayName="DeepSeek",
+            BaseUrl="https://api.deepseek.com",
+            Model="deepseek-v4-flash",
+            AvailableModels=["deepseek-v4-flash", "deepseek-v4-pro"],
+            IsConfigured=true
+        }
+    ],
+    AiModulePreferences=settingsWindowRouteSnapshot
+});
+var settingsWindowRouteRoundTrip = await repository.GetAppSettingsAsync();
+var settingsWindowRouteMismatches = AiModulePreferencePersistence.FindMismatches(
+    settingsWindowRouteSnapshot,
+    settingsWindowRouteRoundTrip.AiModulePreferences);
+Check(
+    settingsWindowRouteMismatches.Count == 0
+    && settingsWindowRouteRoundTrip.AiModulePreferences[AiModuleKeys.KnowledgeBase].Model == "deepseek-v4-flash"
+    && settingsWindowRouteRoundTrip.AiModulePreferences[AiModuleKeys.CustomerAnalytics].Model == "deepseek-v4-flash"
+    && settingsWindowRouteRoundTrip.AiModulePreferences[AiModuleKeys.LeadIntelligence].Model == "deepseek-v4-pro",
+    "all settings-window module rows, including the final Insights rows, survive an immediate database round trip");
+var incompleteSettingsWindowRoute = settingsWindowRouteRoundTrip.AiModulePreferences
+    .Where(item => item.Key != AiModuleKeys.CustomerAnalytics)
+    .ToDictionary(item => item.Key, item => item.Value, StringComparer.OrdinalIgnoreCase);
+Check(
+    AiModulePreferencePersistence.FindMismatches(
+        settingsWindowRouteSnapshot,
+        incompleteSettingsWindowRoute).SequenceEqual([AiModuleKeys.CustomerAnalytics]),
+    "settings-window save verification identifies a missing final module instead of silently closing");
+
 var routingHandler = new QueueHandler(
 [
     Envelope("""{"value":"whatsapp-route"}"""),

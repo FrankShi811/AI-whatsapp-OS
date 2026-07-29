@@ -3,6 +3,8 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
+using System.Windows.Media;
 using System.Windows.Threading;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
@@ -422,6 +424,7 @@ public partial class SettingsWindow : Window
 
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
+        CommitPendingModuleSelections(ModuleRoutingItems);
         CaptureCurrentProvider();
         if (!_profiles.TryGetValue(_currentProviderId, out var active)) return;
         var hasActiveKey = HasProviderKey(_currentProviderId);
@@ -485,15 +488,13 @@ public partial class SettingsWindow : Window
             _settings.DefaultReasoningEffort = AiReasoningEfforts.Normalize(
                 ReasoningEffortBox.SelectedValue as string);
             _settings.UseGlobalAiConfiguration = UseGlobalAiConfigurationBox.IsChecked != false;
-            _settings.AiModulePreferences = _moduleRows.ToDictionary(
-                row => row.ModuleKey,
-                row => new AiModuleModelPreference
-                {
-                    ProviderId = row.ProviderId,
-                    Model = row.Model,
-                    ReasoningEffort = AiReasoningEfforts.Normalize(row.ReasoningEffort)
-                },
-                StringComparer.OrdinalIgnoreCase);
+            var expectedModulePreferences = AiModulePreferencePersistence.CreateSnapshot(
+                _moduleRows.Select(row => new AiModulePreferenceSelection(
+                    row.ModuleKey,
+                    row.ProviderId,
+                    row.Model,
+                    row.ReasoningEffort)));
+            _settings.AiModulePreferences = expectedModulePreferences;
             _settings.AvailableModels = active.AvailableModels.ToList();
             _settings.ModelsBaseUrl = active.BaseUrl.TrimEnd('/');
             _settings.ModelsFetchedAt = active.ModelsFetchedAt;
@@ -501,6 +502,19 @@ public partial class SettingsWindow : Window
             _settings.UiScalePercentage = UiScaleManager.Normalize(
                 (UiScaleBox.SelectedItem as UiScaleOption)?.Value ?? 100);
             await _services.Repository.SaveAppSettingsAsync(_settings);
+            var persistedSettings = await _services.Repository.GetAppSettingsAsync();
+            var routeMismatches = AiModulePreferencePersistence.FindMismatches(
+                expectedModulePreferences,
+                persistedSettings.AiModulePreferences);
+            if (routeMismatches.Count > 0)
+            {
+                var affectedModules = routeMismatches
+                    .Select(key => _moduleRows.FirstOrDefault(row =>
+                        row.ModuleKey.Equals(key, StringComparison.OrdinalIgnoreCase))?.DisplayName ?? key);
+                throw new InvalidOperationException(
+                    $"板块模型保存校验失败：{string.Join("、", affectedModules)}。设置窗口已保持打开，请重试。");
+            }
+            _settings = persistedSettings;
             ThemeManager.Apply(_settings.ThemeMode);
             if (!_hadConfiguredProviderAtLoad && !string.IsNullOrWhiteSpace(activeKey))
                 _ = ResumeQueuedLeadAnalysisAsync();
@@ -510,6 +524,20 @@ public partial class SettingsWindow : Window
         {
             MessageBox.Show(error.Message, "保存失败", MessageBoxButton.OK, MessageBoxImage.Error);
             SaveButton.IsEnabled = true;
+        }
+    }
+
+    private static void CommitPendingModuleSelections(DependencyObject root)
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is ComboBox comboBox)
+            {
+                comboBox.GetBindingExpression(ComboBox.SelectedItemProperty)?.UpdateSource();
+                comboBox.GetBindingExpression(ComboBox.SelectedValueProperty)?.UpdateSource();
+            }
+            CommitPendingModuleSelections(child);
         }
     }
 

@@ -72,6 +72,7 @@ $updateStateSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $ro
 $updateServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Updates\VelopackUpdateService.cs')
 $settingsXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\SettingsWindow.xaml')
 $settingsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\SettingsWindow.xaml.cs')
+$modulePreferencePersistenceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\AiModulePreferencePersistence.cs')
 $domainModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Domain\Models.cs')
 $deepSeekSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\DeepSeekService.cs')
 $conversationAssistantSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\ConversationAssistantService.cs')
@@ -723,6 +724,14 @@ $missingAiRoutingUiTokens = @($aiRoutingUiTokens | Where-Object { -not $settings
 if ($missingAiRoutingUiTokens.Count -gt 0) {
   throw "AI settings must expose global/per-module model routing and fail-safe reasoning guidance. missing=$($missingAiRoutingUiTokens -join ', ')"
 }
+if (($settingsXaml.Split('UpdateSourceTrigger=PropertyChanged').Count - 1) -lt 3 -or
+    -not $settingsSource.Contains('CommitPendingModuleSelections(ModuleRoutingItems)') -or
+    -not $settingsSource.Contains('AiModulePreferencePersistence.FindMismatches') -or
+    -not $settingsSource.Contains('板块模型保存校验失败') -or
+    -not $modulePreferencePersistenceSource.Contains('AiModuleKeys.Configurable')) {
+  throw 'AI module selectors must commit every row immediately and verify all persisted routes before closing settings.'
+}
+Write-Host 'PASS  AI module selector commit and all-route persistence verification contract'
 $aiRoutingCoreTokens = @(
   'UseGlobalAiConfiguration',
   'DefaultReasoningEffort',

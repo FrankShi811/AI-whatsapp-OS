@@ -93,9 +93,9 @@
                                                     <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
                                                     <TextBlock Text="{Binding Description}" Foreground="{DynamicResource Muted}" FontSize="9" TextWrapping="Wrap" Margin="0,2,12,0"/>
                                                 </StackPanel>
-                                                <ComboBox Grid.Column="1" ItemsSource="{Binding ProviderOptions}" DisplayMemberPath="DisplayName" SelectedValuePath="Id" SelectedValue="{Binding ProviderId, Mode=TwoWay}" Margin="8,0,0,0" VerticalAlignment="Center" SelectionChanged="ModuleProviderBox_SelectionChanged"/>
-                                                <ComboBox Grid.Column="2" ItemsSource="{Binding ModelOptions}" SelectedItem="{Binding Model, Mode=TwoWay}" Margin="8,0,0,0" VerticalAlignment="Center" IsTextSearchEnabled="True" SelectionChanged="ModuleModelBox_SelectionChanged"/>
-                                                <ComboBox Grid.Column="3" ItemsSource="{Binding ReasoningOptions}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding ReasoningEffort, Mode=TwoWay}" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                                <ComboBox Grid.Column="1" ItemsSource="{Binding ProviderOptions}" DisplayMemberPath="DisplayName" SelectedValuePath="Id" SelectedValue="{Binding ProviderId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="8,0,0,0" VerticalAlignment="Center" SelectionChanged="ModuleProviderBox_SelectionChanged"/>
+                                                <ComboBox Grid.Column="2" ItemsSource="{Binding ModelOptions}" SelectedItem="{Binding Model, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="8,0,0,0" VerticalAlignment="Center" IsTextSearchEnabled="True" SelectionChanged="ModuleModelBox_SelectionChanged"/>
+                                                <ComboBox Grid.Column="3" ItemsSource="{Binding ReasoningOptions}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding ReasoningEffort, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="8,0,0,0" VerticalAlignment="Center"/>
                                             </Grid>
                                         </Border>
                                     </DataTemplate>
