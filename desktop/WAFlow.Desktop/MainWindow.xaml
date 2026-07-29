@@ -9,6 +9,7 @@
         WindowStyle="SingleBorderWindow" ResizeMode="CanResize"
         Background="{DynamicResource Canvas}"
         PreviewKeyDown="MainWindow_PreviewKeyDown">
+    <controls:UiScaleHost x:Name="MainScaleHost">
     <Grid Background="{DynamicResource Canvas}">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="244"/>
@@ -156,6 +157,17 @@
                 </ScrollViewer>
 
                 <StackPanel Grid.Row="3">
+                    <Button x:Name="SettingsButton" Click="Settings_Click" Style="{StaticResource NavButton}" Margin="0,0,0,9" ToolTip="设置 AI 模型、界面缩放、主题与本地体验">
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <Viewbox Style="{StaticResource NavIconFrame}">
+                                <Canvas Width="24" Height="24">
+                                    <Path Data="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.57V21h-4v-.08a1.7 1.7 0 0 0-1.03-1.57 1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.57-1.03H3v-4h.08A1.7 1.7 0 0 0 4.65 8.94a1.7 1.7 0 0 0-.34-1.88L4.25 7l2.83-2.83.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 10.05 3H10V3h4v.08a1.7 1.7 0 0 0 1.03 1.57 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.57 1.03H21v4h-.08A1.7 1.7 0 0 0 19.4 15z" Style="{StaticResource NavIconPath}"/>
+                                </Canvas>
+                            </Viewbox>
+                            <TextBlock Grid.Column="1" Text="设置" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Button>
                     <Button x:Name="VersionButton" Click="VersionHistory_Click" Style="{StaticResource NavButton}" Background="{DynamicResource SidebarElevated}" Margin="0,0,0,9" ToolTip="查看版本与更新">
                         <Grid>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -196,7 +208,7 @@
                         </Button>
                         <Button x:Name="ThemeButton" Style="{StaticResource IconButton}" Click="Theme_Click" Margin="0,0,8,0" ToolTip="切换主题"><TextBlock x:Name="ThemeText" Text="◐"/></Button>
                         <Button x:Name="PageGuideButton" Content="本页使用手册" ToolTip="查看当前模块的功能介绍和操作步骤" Style="{StaticResource SecondaryButton}" Click="ShowGuide_Click" Margin="0,0,8,0"/>
-                        <Button Content="API 对接" Style="{StaticResource PrimaryButton}" Click="Settings_Click"/>
+                        <Button Content="设置" ToolTip="AI 模型、界面缩放、主题与本地体验" Style="{StaticResource PrimaryButton}" Click="Settings_Click"/>
                     </StackPanel>
                 </Grid>
             </Border>
@@ -233,4 +245,5 @@
             </Border>
         </Grid>
     </Grid>
+    </controls:UiScaleHost>
 </Window>

@@ -36,8 +36,9 @@ public partial class App : Application
             Services = new AppServices();
             await Services.InitializeAsync();
             Updates = new VelopackUpdateService();
-            ThemeManager.Apply((await Services.Repository.GetAppSettingsAsync()).ThemeMode);
-            var main = new MainWindow(Services, Updates);
+            var settings = await Services.Repository.GetAppSettingsAsync();
+            ThemeManager.Apply(settings.ThemeMode);
+            var main = new MainWindow(Services, Updates, settings.UiScalePercentage);
             MainWindow = main;
             main.Show();
             if (Services.Repository.LastRecoveryNotice is { } recovery)

@@ -34,9 +34,10 @@ public partial class MainWindow : Window
     private bool _unreadBadgeRefreshRunning;
     private bool _unreadBadgeRefreshPending;
 
-    public MainWindow(AppServices services, IApplicationUpdateService updates)
+    public MainWindow(AppServices services, IApplicationUpdateService updates, int uiScalePercentage = 100)
     {
         InitializeComponent();
+        ApplyUiScale(uiScalePercentage);
         GuideCatalog.ValidateCoverage();
         SidebarVersionText.Text = $"当前版本  v{ReleaseCatalog.CurrentVersion}";
         _services = services;
@@ -263,8 +264,18 @@ public partial class MainWindow : Window
         var window = new SettingsWindow(_services) { Owner = this };
         var saved = window.ShowDialog() == true;
         _onboardingState = await _services.Repository.GetOnboardingStateAsync();
-        if (saved) { await UpdateProviderStateAsync(); await RefreshAllAsync(); }
+        if (saved)
+        {
+            var settings = await _services.Repository.GetAppSettingsAsync();
+            ApplyUiScale(settings.UiScalePercentage);
+            await UpdateProviderStateAsync();
+            await UpdateThemeStateAsync();
+            await RefreshAllAsync();
+        }
     }
+
+    private void ApplyUiScale(int percentage) =>
+        MainScaleHost.Scale = UiScaleManager.ToScale(percentage);
 
     private void ShowGuide_Click(object sender, RoutedEventArgs e) => OnboardingGuide.ShowGuide(GuideCatalog.ForModule(_currentPage));
 

@@ -47,58 +47,96 @@ function Get-HashWithRetry([string]$Path) {
   }
 }
 $beforeHash = Get-HashWithRetry $database
-$arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$QaDirectory`"")
-$installer = Start-Process -FilePath $InstallerPath -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
-if ($installer.ExitCode -ne 0) { throw "Installer exited with code $($installer.ExitCode)." }
-
-$appPath = Join-Path $QaDirectory 'current\AISalesOS.exe'
-if (-not (Test-Path -LiteralPath $appPath)) { throw "Installed application is missing: $appPath" }
-$previousDatabaseOverride = $env:WAFLOW_DATABASE_PATH
-try {
-  $env:WAFLOW_DATABASE_PATH = $qaDatabase
-  $app = Start-Process -FilePath $appPath -PassThru
-  Start-Sleep -Seconds 8
-  if (-not $app.HasExited) {
-    $app.CloseMainWindow() | Out-Null
-    if (-not $app.WaitForExit(5000)) { Stop-Process -Id $app.Id -Force }
+$shortcutPaths = @(
+  (Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'AI Sales OS.lnk'),
+  (Join-Path ([Environment]::GetFolderPath('Programs')) 'AI Sales OS.lnk')
+)
+$shortcutBackups = @{}
+foreach ($shortcutPath in $shortcutPaths) {
+  if (Test-Path -LiteralPath $shortcutPath) {
+    $shortcutBackups[$shortcutPath] = [IO.File]::ReadAllBytes($shortcutPath)
   }
 }
+try {
+  $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$QaDirectory`"")
+  $installer = Start-Process -FilePath $InstallerPath -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+  if ($installer.ExitCode -ne 0) { throw "Installer exited with code $($installer.ExitCode)." }
+
+  $appPath = Join-Path $QaDirectory 'current\AISalesOS.exe'
+  if (-not (Test-Path -LiteralPath $appPath)) { throw "Installed application is missing: $appPath" }
+  $previousDatabaseOverride = $env:WAFLOW_DATABASE_PATH
+  try {
+    $env:WAFLOW_DATABASE_PATH = $qaDatabase
+    $app = Start-Process -FilePath $appPath -PassThru
+    Start-Sleep -Seconds 8
+    if (-not $app.HasExited) {
+      $app.CloseMainWindow() | Out-Null
+      if (-not $app.WaitForExit(5000)) { Stop-Process -Id $app.Id -Force }
+    }
+  }
+  finally {
+    $env:WAFLOW_DATABASE_PATH = $previousDatabaseOverride
+  }
+  $qaProcesses = Get-CimInstance Win32_Process | Where-Object {
+    $_.ExecutablePath -and $_.ExecutablePath.StartsWith($QaDirectory, [StringComparison]::OrdinalIgnoreCase)
+  }
+  foreach ($process in $qaProcesses) { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue }
+  Start-Sleep -Seconds 2
+
+  $shell = New-Object -ComObject WScript.Shell
+  $shortcutTargets = foreach ($shortcutPath in $shortcutPaths) {
+    if (-not (Test-Path -LiteralPath $shortcutPath)) {
+      throw "Installed application did not create the shortcut: $shortcutPath"
+    }
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    if (-not $shortcut.TargetPath.StartsWith($QaDirectory, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "Installed shortcut points outside the QA application: $shortcutPath -> $($shortcut.TargetPath)"
+    }
+    $shortcut.TargetPath
+  }
+
+  $afterHash = Get-HashWithRetry $database
+  $databasePreservationPassed = $beforeHash -eq 'MISSING' -or $beforeHash -eq $afterHash
+  $installedVersion = (Get-Item -LiteralPath $appPath).VersionInfo.FileVersion
+  $updatePath = Join-Path $QaDirectory 'Update.exe'
+  $uninstallExit = $null
+  if (Test-Path -LiteralPath $updatePath) {
+    $uninstall = Start-Process -FilePath $updatePath -ArgumentList @('--uninstall', '--silent') -Wait -PassThru -WindowStyle Hidden
+    $uninstallExit = $uninstall.ExitCode
+  }
+
+  $result = [pscustomobject]@{
+    InstallerExit = $installer.ExitCode
+    InstalledExeVersion = $installedVersion
+    ApplicationStarted = $true
+    ShortcutTargets = $shortcutTargets -join '; '
+    ShortcutsVerified = $shortcutTargets.Count -eq 2
+    DatabaseHashBefore = $beforeHash
+    DatabaseHashAfter = $afterHash
+    DatabaseUnchanged = $beforeHash -eq $afterHash
+    DatabasePreservationPassed = $databasePreservationPassed
+    UninstallExit = $uninstallExit
+    QaDirectoryStillExists = Test-Path -LiteralPath $QaDirectory
+  }
+  $result
+  if (-not $installedVersion.StartsWith($ExpectedVersion + '.', [StringComparison]::Ordinal) -and
+      $installedVersion -ne $ExpectedVersion) {
+    throw "Installed version mismatch. expected=$ExpectedVersion actual=$installedVersion"
+  }
+  if (-not $result.ShortcutsVerified) { throw 'Installer smoke test did not verify both Windows shortcuts.' }
+  if (-not $result.DatabasePreservationPassed) { throw 'Installer smoke test changed an existing user SQLite database.' }
+  if ($result.UninstallExit -ne 0) { throw "Installer smoke uninstall failed with exit code $($result.UninstallExit)." }
+  if ($result.QaDirectoryStillExists) { throw "Installer smoke uninstall left the QA directory behind: $QaDirectory" }
+  if (Test-Path -LiteralPath $qaDataDirectory) { [IO.Directory]::Delete($qaDataDirectory, $true) }
+}
 finally {
-  $env:WAFLOW_DATABASE_PATH = $previousDatabaseOverride
+  foreach ($shortcutPath in $shortcutPaths) {
+    if ($shortcutBackups.ContainsKey($shortcutPath)) {
+      [IO.Directory]::CreateDirectory((Split-Path -Parent $shortcutPath)) | Out-Null
+      [IO.File]::WriteAllBytes($shortcutPath, $shortcutBackups[$shortcutPath])
+    }
+    elseif (Test-Path -LiteralPath $shortcutPath) {
+      Remove-Item -LiteralPath $shortcutPath -Force
+    }
+  }
 }
-$qaProcesses = Get-CimInstance Win32_Process | Where-Object {
-  $_.ExecutablePath -and $_.ExecutablePath.StartsWith($QaDirectory, [StringComparison]::OrdinalIgnoreCase)
-}
-foreach ($process in $qaProcesses) { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue }
-Start-Sleep -Seconds 2
-
-$afterHash = Get-HashWithRetry $database
-$databasePreservationPassed = $beforeHash -eq 'MISSING' -or $beforeHash -eq $afterHash
-$installedVersion = (Get-Item -LiteralPath $appPath).VersionInfo.FileVersion
-$updatePath = Join-Path $QaDirectory 'Update.exe'
-$uninstallExit = $null
-if (Test-Path -LiteralPath $updatePath) {
-  $uninstall = Start-Process -FilePath $updatePath -ArgumentList @('--uninstall', '--silent') -Wait -PassThru -WindowStyle Hidden
-  $uninstallExit = $uninstall.ExitCode
-}
-
-$result = [pscustomobject]@{
-  InstallerExit = $installer.ExitCode
-  InstalledExeVersion = $installedVersion
-  ApplicationStarted = $true
-  DatabaseHashBefore = $beforeHash
-  DatabaseHashAfter = $afterHash
-  DatabaseUnchanged = $beforeHash -eq $afterHash
-  DatabasePreservationPassed = $databasePreservationPassed
-  UninstallExit = $uninstallExit
-  QaDirectoryStillExists = Test-Path -LiteralPath $QaDirectory
-}
-$result
-if (-not $installedVersion.StartsWith($ExpectedVersion + '.', [StringComparison]::Ordinal) -and
-    $installedVersion -ne $ExpectedVersion) {
-  throw "Installed version mismatch. expected=$ExpectedVersion actual=$installedVersion"
-}
-if (-not $result.DatabasePreservationPassed) { throw 'Installer smoke test changed an existing user SQLite database.' }
-if ($result.UninstallExit -ne 0) { throw "Installer smoke uninstall failed with exit code $($result.UninstallExit)." }
-if ($result.QaDirectoryStillExists) { throw "Installer smoke uninstall left the QA directory behind: $QaDirectory" }
-if (Test-Path -LiteralPath $qaDataDirectory) { [IO.Directory]::Delete($qaDataDirectory, $true) }

@@ -63,6 +63,13 @@ public partial class SettingsWindow : Window
         ThemeModeBox.DisplayMemberPath = nameof(ThemeOption.Label);
         ThemeModeBox.SelectedItem = ((IEnumerable<ThemeOption>)ThemeModeBox.ItemsSource)
             .First(item => item.Value == ThemeManager.Normalize(_settings.ThemeMode));
+        var normalizedScale = UiScaleManager.Normalize(_settings.UiScalePercentage);
+        UiScaleBox.ItemsSource = UiScaleManager.SupportedPercentages
+            .Select(value => new UiScaleOption($"{value}%", value))
+            .ToList();
+        UiScaleBox.SelectedItem = ((IEnumerable<UiScaleOption>)UiScaleBox.ItemsSource)
+            .First(item => item.Value == normalizedScale);
+        SettingsScaleHost.Scale = UiScaleManager.ToScale(normalizedScale);
 
         foreach (var profile in _settings.ConfiguredAiProviders)
             _profiles[profile.ProviderId] = Clone(profile);
@@ -412,25 +419,23 @@ public partial class SettingsWindow : Window
     {
         CaptureCurrentProvider();
         if (!_profiles.TryGetValue(_currentProviderId, out var active)) return;
-        if (!Uri.TryCreate(active.BaseUrl, UriKind.Absolute, out var baseUri) || baseUri.Scheme != Uri.UriSchemeHttps)
+        var hasActiveKey = HasProviderKey(_currentProviderId);
+        if (hasActiveKey
+            && (!Uri.TryCreate(active.BaseUrl, UriKind.Absolute, out var baseUri) || baseUri.Scheme != Uri.UriSchemeHttps))
         {
             MessageBox.Show("AI Base URL 必须是有效的 HTTPS 地址。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        if (!HasProviderKey(_currentProviderId))
-        {
-            MessageBox.Show("请填写 API Key，并点击“拉取”完成连接验证。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(active.Model)
+        if (hasActiveKey
+            && (string.IsNullOrWhiteSpace(active.Model)
             || !active.AvailableModels.Contains(active.Model, StringComparer.OrdinalIgnoreCase)
-            || !_modelsBaseUrl.Equals(active.BaseUrl, StringComparison.OrdinalIgnoreCase))
+            || !_modelsBaseUrl.Equals(active.BaseUrl, StringComparison.OrdinalIgnoreCase)))
         {
             if (!await FetchModelsAsync(true)) return;
             CaptureCurrentProvider();
             active = _profiles[_currentProviderId];
         }
-        if (UseGlobalAiConfigurationBox.IsChecked == false)
+        if (hasActiveKey && UseGlobalAiConfigurationBox.IsChecked == false)
         {
             foreach (var row in _moduleRows)
             {
@@ -456,13 +461,11 @@ public partial class SettingsWindow : Window
                 ProviderCredentialStore(pending.Key).Save(pending.Value);
 
             var activeKey = ReadProviderKey(_currentProviderId);
-            if (string.IsNullOrWhiteSpace(activeKey))
-                throw new InvalidOperationException("当前 Provider 的 API Key 未通过验证。");
-
             // The existing provider service remains OpenAI-compatible and reads
             // this stable credential target. Keep it synchronized to the active
             // profile without exposing the key to settings or logs.
-            _services.Secrets.Save(activeKey);
+            if (!string.IsNullOrWhiteSpace(activeKey))
+                _services.Secrets.Save(activeKey);
             foreach (var profile in _profiles.Values)
                 profile.IsConfigured = HasProviderKey(profile.ProviderId);
 
@@ -490,9 +493,12 @@ public partial class SettingsWindow : Window
             _settings.ModelsBaseUrl = active.BaseUrl.TrimEnd('/');
             _settings.ModelsFetchedAt = active.ModelsFetchedAt;
             _settings.ThemeMode = (ThemeModeBox.SelectedItem as ThemeOption)?.Value ?? "System";
+            _settings.UiScalePercentage = UiScaleManager.Normalize(
+                (UiScaleBox.SelectedItem as UiScaleOption)?.Value ?? 100);
             await _services.Repository.SaveAppSettingsAsync(_settings);
             ThemeManager.Apply(_settings.ThemeMode);
-            await _services.LeadAutomation.NotifyProviderConfiguredAsync();
+            if (!string.IsNullOrWhiteSpace(activeKey))
+                await _services.LeadAutomation.NotifyProviderConfiguredAsync();
             DialogResult = true;
         }
         catch (Exception error)
@@ -504,6 +510,12 @@ public partial class SettingsWindow : Window
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => DialogResult = false;
     private async void ReloadModels_Click(object sender, RoutedEventArgs e) => await FetchModelsAsync(true);
+
+    private void UiScaleBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (UiScaleBox.SelectedItem is UiScaleOption option)
+            SettingsScaleHost.Scale = UiScaleManager.ToScale(option.Value);
+    }
 
     private void ProviderInput_Changed(object sender, RoutedEventArgs e)
     {
@@ -632,6 +644,7 @@ public partial class SettingsWindow : Window
     };
 
     private sealed record ThemeOption(string Label, string Value);
+    private sealed record UiScaleOption(string Label, int Value);
     private sealed record ConfiguredProviderRow(string DisplayName, string ModelLabel, string StatusLabel);
     private sealed record ConfiguredProviderOption(string Id, string DisplayName);
     private sealed record ReasoningOption(string Label, string Value);

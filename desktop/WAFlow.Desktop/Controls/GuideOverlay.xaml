@@ -88,7 +88,7 @@
                                     <TextBlock x:Name="GuideTip" TextWrapping="Wrap" Foreground="{DynamicResource Warning}" FontSize="11" LineHeight="18"/>
                                 </StackPanel>
                             </Border>
-                            <Button x:Name="GuideSettingsButton" Content="现在配置 AI API" Style="{StaticResource AiButton}" Click="Settings_Click" HorizontalAlignment="Left" Margin="0,15,0,0" Visibility="Collapsed"/>
+                            <Button x:Name="GuideSettingsButton" Content="打开设置" Style="{StaticResource AiButton}" Click="Settings_Click" HorizontalAlignment="Left" Margin="0,15,0,0" Visibility="Collapsed"/>
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>

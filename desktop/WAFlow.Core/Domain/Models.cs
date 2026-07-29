@@ -542,6 +542,7 @@ public sealed class AppSettings
     public Dictionary<string, AiModuleModelPreference> AiModulePreferences { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
     public string ThemeMode { get; set; } = "System";
+    public int UiScalePercentage { get; set; } = 100;
     public List<string> AvailableModels { get; set; } = [];
     public string ModelsBaseUrl { get; set; } = "";
     public DateTimeOffset? ModelsFetchedAt { get; set; }

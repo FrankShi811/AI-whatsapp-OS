@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.IO;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using Velopack.Locators;
 using Velopack.Windows;
 
@@ -12,6 +15,8 @@ namespace WAFlow.Desktop;
 /// </summary>
 internal static class DesktopShortcutService
 {
+    private const string ShortcutFileName = "AI Sales OS.lnk";
+
     internal static void EnsureForInstalledApp()
     {
         if (!OperatingSystem.IsWindows() || !VelopackLocator.IsCurrentSet)
@@ -19,28 +24,114 @@ internal static class DesktopShortcutService
             return;
         }
 
+        var locator = VelopackLocator.Current;
+        if (locator.IsPortable || locator.CurrentlyInstalledVersion is null)
+        {
+            return;
+        }
+
+        // Ask Velopack to recreate (not merely update) both links first. An
+        // update can run while either link is missing, so updateOnly must remain
+        // false.
         try
         {
-            var locator = VelopackLocator.Current;
-            if (locator.IsPortable || locator.CurrentlyInstalledVersion is null)
-            {
-                return;
-            }
-
-            // Velopack installers create these automatically. We intentionally
-            // keep this compatibility API as a post-update self-healing guard
-            // because Windows can lose shortcut identity/cache across upgrades.
 #pragma warning disable CS0618
             var shortcuts = new Shortcuts(locator);
-            shortcuts.CreateShortcutForThisExe(ShortcutLocation.Desktop);
-            shortcuts.CreateShortcutForThisExe(ShortcutLocation.StartMenuRoot);
+            shortcuts.CreateShortcut(
+                locator.ThisExeRelativePath,
+                ShortcutLocation.Desktop | ShortcutLocation.StartMenuRoot,
+                updateOnly: false,
+                programArguments: null,
+                icon: null);
 #pragma warning restore CS0618
         }
         catch (Exception error)
         {
-            // A shortcut failure must not prevent the application or an update
-            // from starting. Keep a diagnostic breadcrumb for support.
-            Trace.TraceWarning($"Unable to repair AI Sales OS shortcuts: {error}");
+            Trace.TraceWarning($"Velopack shortcut repair failed; using Windows fallback: {error}");
+        }
+
+        // Velopack 1.2 can return without a link when Windows removed it during
+        // an in-place update. Rebuild and verify the actual .lnk files through
+        // Windows Script Host so a silent API failure cannot be mistaken for
+        // success.
+        var processPath = Environment.ProcessPath;
+        var contentDirectory = locator.AppContentDir
+            ?? (processPath is null ? null : Path.GetDirectoryName(processPath))
+            ?? locator.RootAppDir
+            ?? throw new InvalidOperationException("The installed application directory is unavailable.");
+        var relativeExePath = locator.ThisExeRelativePath
+            ?? (processPath is null ? null : Path.GetFileName(processPath))
+            ?? "AISalesOS.exe";
+        var targetPath = Path.Combine(contentDirectory, relativeExePath);
+        var desktopShortcut = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+            ShortcutFileName);
+        var startMenuShortcut = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.Programs),
+            ShortcutFileName);
+        foreach (var shortcutPath in new[] { desktopShortcut, startMenuShortcut })
+        {
+            try
+            {
+                CreateWindowsShortcut(shortcutPath, targetPath);
+                if (!File.Exists(shortcutPath))
+                    throw new IOException($"Windows did not create the shortcut: {shortcutPath}");
+            }
+            catch (Exception error)
+            {
+                // A shortcut failure must not prevent the application or an
+                // update from starting. Keep a diagnostic breadcrumb for support.
+                Trace.TraceWarning($"Unable to repair AI Sales OS shortcut '{shortcutPath}': {error}");
+            }
         }
     }
+
+    private static void CreateWindowsShortcut(string shortcutPath, string targetPath)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(shortcutPath)!);
+        var shellType = Type.GetTypeFromProgID("WScript.Shell")
+            ?? throw new PlatformNotSupportedException("Windows Script Host is unavailable.");
+        object? shell = null;
+        object? shortcut = null;
+        try
+        {
+            shell = Activator.CreateInstance(shellType)
+                ?? throw new InvalidOperationException("Unable to create the Windows shortcut service.");
+            shortcut = shellType.InvokeMember(
+                "CreateShortcut",
+                BindingFlags.InvokeMethod,
+                binder: null,
+                target: shell,
+                args: [shortcutPath]);
+            if (shortcut is null)
+                throw new InvalidOperationException("Windows returned an empty shortcut object.");
+
+            var shortcutType = shortcut.GetType();
+            SetShortcutProperty(shortcutType, shortcut, "TargetPath", targetPath);
+            SetShortcutProperty(shortcutType, shortcut, "WorkingDirectory", Path.GetDirectoryName(targetPath)!);
+            SetShortcutProperty(shortcutType, shortcut, "IconLocation", $"{targetPath},0");
+            SetShortcutProperty(shortcutType, shortcut, "Description", "AI Sales OS");
+            shortcutType.InvokeMember(
+                "Save",
+                BindingFlags.InvokeMethod,
+                binder: null,
+                target: shortcut,
+                args: null);
+        }
+        finally
+        {
+            if (shortcut is not null && Marshal.IsComObject(shortcut))
+                Marshal.FinalReleaseComObject(shortcut);
+            if (shell is not null && Marshal.IsComObject(shell))
+                Marshal.FinalReleaseComObject(shell);
+        }
+    }
+
+    private static void SetShortcutProperty(Type shortcutType, object shortcut, string name, string value) =>
+        shortcutType.InvokeMember(
+            name,
+            BindingFlags.SetProperty,
+            binder: null,
+            target: shortcut,
+            args: [value]);
 }

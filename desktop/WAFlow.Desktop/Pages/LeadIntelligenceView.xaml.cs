@@ -131,7 +131,7 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         }
         if (!_services.DeepSeek.HasApiKey())
         {
-            MessageBox.Show("请先在“API 对接”中配置 API Key 并选择模型。", "无法开始批量分析", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("请先在左侧“设置”中配置 API Key 并选择模型。", "无法开始批量分析", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         _bulkCancellation = new CancellationTokenSource();

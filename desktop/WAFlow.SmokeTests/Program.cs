@@ -1297,6 +1297,8 @@ await repository.SaveAppSettingsAsync(new AppSettings
     ActiveProviderId="openai",
     UseGlobalAiConfiguration=false,
     DefaultReasoningEffort="medium",
+    ThemeMode="Dark",
+    UiScalePercentage=80,
     AiModulePreferences=new Dictionary<string, AiModuleModelPreference>(StringComparer.OrdinalIgnoreCase)
     {
         [AiModuleKeys.WhatsAppInbox]=new()
@@ -1347,10 +1349,12 @@ Check(
 Check(
     !persistedProviderSettings.UseGlobalAiConfiguration
     && persistedProviderSettings.DefaultReasoningEffort == "medium"
+    && persistedProviderSettings.ThemeMode == "Dark"
+    && persistedProviderSettings.UiScalePercentage == 80
     && persistedProviderSettings.AiModulePreferences[AiModuleKeys.WhatsAppInbox].Model == "deepseek-reasoner"
     && persistedProviderSettings.ConfiguredAiProviders.Single(profile => profile.ProviderId == "deepseek")
         .ModelCapabilities.Single().ReasoningEfforts.Contains("ultra"),
-    "global and per-module AI model and reasoning preferences persist additively");
+    "global and per-module AI model, reasoning, theme and UI scale preferences persist additively");
 
 var routingHandler = new QueueHandler([Envelope("""{"value":"ok"}""")]);
 var routingProvider = new DeepSeekService(

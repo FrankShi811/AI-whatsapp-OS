@@ -740,7 +740,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         }
         if (!_services.DeepSeek.HasApiKey())
         {
-            MessageBox.Show("请先点击右上角“API 对接”，填写 API Key 并选择工作模型。", "AI 会话助理", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("请先打开左侧“设置”，填写 API Key 并选择工作模型。", "AI 会话助理", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 

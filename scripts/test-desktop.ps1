@@ -24,6 +24,9 @@ $macProject = Join-Path $root 'desktop\WAFlow.Mac\WAFlow.Mac.csproj'
 $appXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\App.xaml')
 $appStartupSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\App.xaml.cs')
 $desktopShortcutSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\DesktopShortcutService.cs')
+$uiScaleSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\UiScaleManager.cs')
+$uiScaleHostSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Controls\UiScaleHost.cs')
+$windowsInstallerTestSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'scripts\test-windows-installer.ps1')
 $themeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ThemeManager.cs')
 $mainWindowXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MainWindow.xaml')
 $mainWindowSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MainWindow.xaml.cs')
@@ -153,14 +156,14 @@ if ($appXaml -notmatch '<Style TargetType="\{x:Type TextBlock\}">[\s\S]*?<Setter
 }
 $navTextCount = ([regex]::Matches($mainWindowXaml, 'Style="\{StaticResource NavText\}"')).Count
 $navIconCount = ([regex]::Matches($mainWindowXaml, 'Style="\{StaticResource NavIconFrame\}"')).Count
-if ($navTextCount -ne 9 -or
-    $navIconCount -ne 8 -or
+if ($navTextCount -ne 10 -or
+    $navIconCount -ne 9 -or
     $appXaml -notmatch 'x:Key="NavText"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}' -or
     $appXaml -notmatch 'x:Key="NavIconFrame"[\s\S]*?<Setter Property="Width" Value="18"/>' -or
     $appXaml -notmatch 'x:Key="NavIconPath"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}[\s\S]*?<Setter Property="StrokeThickness" Value="2"/>' -or
     $appXaml -notmatch 'x:Key="NavIconRectangle"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}' -or
     $appXaml -notmatch 'x:Key="NavIconEllipse"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}') {
-  throw "Every sidebar module must use one aligned 18px vector icon and a semantic foreground. expected_text=9 actual_text=$navTextCount expected_icons=8 actual_icons=$navIconCount"
+  throw "Every sidebar module must use one aligned 18px vector icon and a semantic foreground. expected_text=10 actual_text=$navTextCount expected_icons=9 actual_icons=$navIconCount"
 }
 if ($mainWindowXaml -notmatch '<Button Style="\{StaticResource NavButton\}" Click="CommandButton_Click">\s*<TextBlock Text="[^"]*Ctrl \+ K" Style="\{StaticResource NavText\}"/>\s*</Button>' -or
     $mainWindowXaml -match 'Content="[^"]*Ctrl \+ K"') {
@@ -366,10 +369,32 @@ if ($appStartupSource -notmatch [regex]::Escape('DesktopShortcutService.EnsureFo
     $desktopShortcutSource -notmatch [regex]::Escape('ShortcutLocation.Desktop') -or
     $desktopShortcutSource -notmatch [regex]::Escape('ShortcutLocation.StartMenuRoot') -or
     $desktopShortcutSource -notmatch [regex]::Escape('VelopackLocator.IsCurrentSet') -or
+    $desktopShortcutSource -notmatch [regex]::Escape('updateOnly: false') -or
+    $desktopShortcutSource -notmatch [regex]::Escape('WScript.Shell') -or
+    $desktopShortcutSource -notmatch [regex]::Escape('Environment.SpecialFolder.DesktopDirectory') -or
+    $desktopShortcutSource -notmatch [regex]::Escape('Environment.SpecialFolder.Programs') -or
+    $desktopShortcutSource -notmatch [regex]::Escape('File.Exists(shortcutPath)') -or
+    $windowsInstallerTestSource -notmatch [regex]::Escape('$shortcutBackups[$shortcutPath] = [IO.File]::ReadAllBytes($shortcutPath)') -or
+    $windowsInstallerTestSource -notmatch [regex]::Escape('[IO.File]::WriteAllBytes($shortcutPath, $shortcutBackups[$shortcutPath])') -or
+    $windowsInstallerTestSource -notmatch [regex]::Escape('ShortcutsVerified = $shortcutTargets.Count -eq 2') -or
     $velopackBuildSource -notmatch [regex]::Escape("--shortcuts 'Desktop,StartMenuRoot'")) {
-  throw 'Windows install/update must create or repair both desktop and Start menu shortcuts.'
+  throw 'Windows install/update must recreate and verify shortcuts, while isolated QA restores the real user links.'
 }
-Write-Host 'PASS  Velopack install and post-update desktop shortcut repair contract'
+Write-Host 'PASS  Velopack plus verified Windows-native post-update shortcut repair contract'
+if ($domainModelsSource -notmatch [regex]::Escape('public int UiScalePercentage { get; set; } = 100;') -or
+    $uiScaleSource -notmatch [regex]::Escape('SupportedPercentages = [80, 90, 100, 110, 125]') -or
+    $uiScaleHostSource -notmatch 'class UiScaleHost : Decorator' -or
+    $mainWindowXaml -notmatch 'x:Name="MainScaleHost"' -or
+    $settingsXaml -notmatch 'x:Name="SettingsScaleHost"' -or
+    $settingsXaml -notmatch 'x:Name="UiScaleBox"' -or
+    $mainWindowXaml -notmatch '<TextBlock Grid.Column="1" Text="设置" Style="\{StaticResource NavText\}"' -or
+    $mainWindowXaml -notmatch '<Button Content="设置" ToolTip="AI 模型、界面缩放、主题与本地体验"' -or
+    $mainWindowSource -notmatch [regex]::Escape('ApplyUiScale(settings.UiScalePercentage);') -or
+    $settingsSource -notmatch [regex]::Escape('_settings.UiScalePercentage = UiScaleManager.Normalize(') -or
+    $settingsSource -match [regex]::Escape('throw new InvalidOperationException("当前 Provider 的 API Key 未通过验证。")')) {
+  throw 'Unified Settings must persist and apply 80-125% UI scaling without requiring an API key.'
+}
+Write-Host 'PASS  unified sidebar Settings and persisted responsive UI scaling contract'
 if ($velopackBuildSource -notmatch [regex]::Escape('[Text.UTF8Encoding]::new($true)') -or
     $velopackBuildSource -notmatch [regex]::Escape('NotesMarkdown.Contains([char]0xFFFD)')) {
   throw 'Velopack release notes must be BOM-marked UTF-8 and reject replacement characters before publishing.'
@@ -589,13 +614,13 @@ if ($emailInboxXaml -notmatch 'x:Name="NewEmailButton"' -or
     $emailAssistantSource -notmatch [regex]::Escape('CompleteStructuredAsync<EmailAssistantResult>') -or
     $settingsSource -notmatch [regex]::Escape('Email Sales Copilot') -or
     $guideCatalogSource -notmatch [regex]::Escape('Email Sales Copilot') -or
-    $guideCatalogSource -notmatch [regex]::Escape('GlobalGuideVersion = 8') -or
+    $guideCatalogSource -notmatch [regex]::Escape('GlobalGuideVersion = 9') -or
     $guideCatalogSource -notmatch 'Ctrl\+1 . Ctrl\+8' -or
     $guideCatalogSource -match 'Ctrl\+1 . Ctrl\+7' -or
     $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 6') -or
     $guideCatalogSource -notmatch [regex]::Escape('["broadcast"] = ModuleGuideVersion + 2') -or
     $guideCatalogSource -notmatch [regex]::Escape('["analytics"] = ModuleGuideVersion + 1') -or
-    $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 5')) {
+    $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 6')) {
   throw 'Email Inbox must support new-message composition, CRM/Customer Brain-aware AI drafting, manual-send safety and current module guidance.'
 }
 Write-Host 'PASS  Email Inbox new-message, Customer Intelligence, AI draft and all-module guide audit contract'
