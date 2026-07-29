@@ -222,7 +222,9 @@ if ($appXaml -match 'TargetName="NavRoot" Property="BorderBrush"' -or
     $appXaml -match 'TargetName="NavRoot" Property="BorderThickness"') { $motionFailures += 'nav_perimeter_border' }
 if ($appXaml -notmatch 'x:Name="ActiveSurface"[\s\S]*?Background="\{DynamicResource SidebarActive\}"' -or
     $appXaml -notmatch 'x:Name="ActiveRail"[\s\S]*?Background="\{DynamicResource Primary\}"' -or
-    $appXaml -notmatch 'x:Name="FocusDash"[\s\S]*?Width="18" Height="2"' -or
+    $appXaml -match 'x:Name="FocusDash"' -or
+    $appXaml -notmatch 'x:Name="FocusSurface"[\s\S]*?Background="\{DynamicResource SidebarHover\}"' -or
+    $appXaml -notmatch 'x:Name="FocusRail"[\s\S]*?Background="\{DynamicResource Primary\}"' -or
     $appXaml -notmatch 'Property="local:MotionAssist.IsSelected"') { $motionFailures += 'borderless_nav_states' }
 if ($appXaml -notmatch '<Setter Property="local:MotionAssist.IsEnabled" Value="True"/>' -or
     $motionAssistSource -notmatch [regex]::Escape('HandoffBehavior.SnapshotAndReplace') -or

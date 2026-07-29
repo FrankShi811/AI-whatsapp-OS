@@ -488,6 +488,7 @@
             <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
                 <Grid ClipToBounds="True">
                     <Border x:Name="HoverSurface" Background="{DynamicResource SidebarHover}" CornerRadius="10" Opacity="0"/>
+                    <Border x:Name="FocusSurface" Background="{DynamicResource SidebarHover}" CornerRadius="10" Opacity="0"/>
                     <Border x:Name="ActiveSurface" Background="{DynamicResource SidebarActive}" CornerRadius="10" Opacity="0"/>
                     <Border x:Name="NavRoot" Background="Transparent" CornerRadius="10" Padding="{TemplateBinding Padding}">
                         <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
@@ -495,8 +496,7 @@
                     <Border x:Name="ActiveRail" Width="3" Height="22" CornerRadius="2" Background="{DynamicResource Primary}" HorizontalAlignment="Left" VerticalAlignment="Center" Opacity="0" RenderTransformOrigin="0.5,0.5">
                         <Border.RenderTransform><ScaleTransform ScaleY="0.35"/></Border.RenderTransform>
                     </Border>
-                    <!-- A short focus dash preserves keyboard orientation without drawing a perimeter around the item. -->
-                    <Border x:Name="FocusDash" Width="18" Height="2" CornerRadius="1" Background="{DynamicResource AiAccent}" HorizontalAlignment="Center" VerticalAlignment="Bottom" Opacity="0"/>
+                    <Border x:Name="FocusRail" Width="3" Height="22" CornerRadius="2" Background="{DynamicResource Primary}" HorizontalAlignment="Left" VerticalAlignment="Center" Opacity="0"/>
                 </Grid>
                 <ControlTemplate.Triggers>
                     <Trigger Property="IsMouseOver" Value="True">
@@ -549,14 +549,16 @@
                         <Trigger.EnterActions>
                             <BeginStoryboard HandoffBehavior="SnapshotAndReplace">
                                 <Storyboard>
-                                    <DoubleAnimation Storyboard.TargetName="FocusDash" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
+                                    <DoubleAnimation Storyboard.TargetName="FocusSurface" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
+                                    <DoubleAnimation Storyboard.TargetName="FocusRail" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
                                 </Storyboard>
                             </BeginStoryboard>
                         </Trigger.EnterActions>
                         <Trigger.ExitActions>
                             <BeginStoryboard HandoffBehavior="SnapshotAndReplace">
                                 <Storyboard>
-                                    <DoubleAnimation Storyboard.TargetName="FocusDash" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
+                                    <DoubleAnimation Storyboard.TargetName="FocusSurface" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
+                                    <DoubleAnimation Storyboard.TargetName="FocusRail" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
                                 </Storyboard>
                             </BeginStoryboard>
                         </Trigger.ExitActions>
