@@ -42,6 +42,7 @@ $operations = Read-Utf8 'desktop\WAFlow.Mac\MainWindow.Operations.cs'
 $settings = Read-Utf8 'desktop\WAFlow.Mac\MainWindow.Settings.cs'
 $project = Read-Utf8 'desktop\WAFlow.Mac\WAFlow.Mac.csproj'
 $emailService = Read-Utf8 'desktop\WAFlow.Core\Services\EmailService.cs'
+$macPackager = Read-Utf8 'scripts\package-macos-app.py'
 
 Require-Text $shell @(
   'Width="1440" Height="900" MinWidth="1120" MinHeight="700"',
@@ -93,6 +94,10 @@ Require-Text $emailService @(
   'BackgroundAccountMonitor',
   'RunConnectedAccountSessionAsync'
 ) 'v5.10.2-inbox-performance'
+Require-Text $macPackager @(
+  'source_mode = path.stat().st_mode',
+  'stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH'
+) 'macos-zip-executable-permissions'
 
 $semanticKeys = [regex]::Matches($theme, '\["([^"]+)"\]\s*=') |
   ForEach-Object { $_.Groups[1].Value } |

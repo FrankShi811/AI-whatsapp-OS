@@ -43,7 +43,12 @@ def zip_tree(source: Path, destination: Path, executable_name: str) -> None:
                 info.external_attr = (stat.S_IFDIR | 0o755) << 16
                 archive.writestr(info, b"")
                 continue
-            executable = path.name == executable_name or path.suffix.lower() in {".dylib", ".so"}
+            source_mode = path.stat().st_mode
+            executable = (
+                path.name == executable_name
+                or path.suffix.lower() in {".dylib", ".so"}
+                or bool(source_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+            )
             info = zipfile.ZipInfo.from_file(path, relative)
             info.create_system = 3
             info.external_attr = (stat.S_IFREG | (0o755 if executable else 0o644)) << 16
