@@ -211,6 +211,9 @@ public partial class CustomersView : UserControl, IRefreshableView
         return key switch
         {
             nameof(CustomerRow.DisplayName) => row.DisplayName,
+            nameof(CustomerRow.BuyerId) => row.BuyerId,
+            nameof(CustomerRow.Company) => row.Company,
+            nameof(CustomerRow.Email) => row.Email,
             nameof(CustomerRow.Country) => row.Country,
             nameof(CustomerRow.PhoneE164) => row.PhoneE164,
             nameof(CustomerRow.PhoneState) => row.PhoneState,
@@ -401,6 +404,9 @@ public partial class CustomersView : UserControl, IRefreshableView
         public Lead Lead { get; }
         public string Id => Lead.Id;
         public string DisplayName => CustomerDisplayName(Lead);
+        public string BuyerId => Lead.BuyerId;
+        public string Company => Lead.Company;
+        public string Email => Lead.Email;
         public string Country => Lead.Country;
         public string PhoneE164 => Lead.PhoneE164;
         public string PhoneState => Lead.PhoneState;

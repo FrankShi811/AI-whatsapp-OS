@@ -30,6 +30,7 @@ $windowsInstallerTestSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join
 $themeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ThemeManager.cs')
 $mainWindowXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MainWindow.xaml')
 $mainWindowSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MainWindow.xaml.cs')
+$motionAssistSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MotionAssist.cs')
 $dashboardXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\DashboardView.xaml')
 $dashboardSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\DashboardView.xaml.cs')
 $customersXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CustomersView.xaml')
@@ -108,9 +109,10 @@ else {
 }
 
 $requiredBrushes = @(
-  'Ink', 'InkSecondary', 'Muted', 'Primary', 'AiAccent', 'AiProcessing',
+  'Ink', 'InkSecondary', 'Muted', 'Primary', 'OnPrimary', 'AiAccent', 'OnAi', 'AiProcessing',
   'Surface', 'Canvas', 'Line', 'Success', 'Warning', 'Danger', 'Info',
-  'UnreadBadgeBackground', 'UnreadBadgeText',
+  'OnDanger', 'UnreadBadgeBackground', 'UnreadBadgeText',
+  'LogoSurface', 'LogoBorder',
   'GradeA', 'GradeB', 'GradeC', 'GradeD', 'ChatOutbound', 'ChatInbound'
 )
 foreach ($key in $requiredBrushes) {
@@ -131,12 +133,12 @@ foreach ($key in $requiredStyles) {
 Write-Host 'PASS  AI Sales OS 2.x Figma/Stitch/WPF design-system contract'
 
 $allSemanticBrushes = @(
-  'Ink', 'InkSecondary', 'Muted', 'MutedSubtle', 'Primary', 'PrimaryDark', 'PrimaryHover',
-  'PrimarySoft', 'PrimarySurface', 'AiAccent', 'AiAccentDeep', 'AiProcessing', 'AiSoft',
+  'Ink', 'InkSecondary', 'Muted', 'MutedSubtle', 'Primary', 'PrimaryDark', 'PrimaryHover', 'OnPrimary',
+  'PrimarySoft', 'PrimarySurface', 'AiAccent', 'AiAccentDeep', 'OnAi', 'AiProcessing', 'AiSoft',
   'AiSurface', 'Surface', 'SurfaceElevated', 'SurfaceMuted', 'SurfaceInput', 'Canvas',
   'CanvasDeep', 'Line', 'LineStrong', 'Sidebar', 'SidebarElevated', 'SidebarHover',
-  'SidebarActive', 'SidebarText', 'SidebarMuted', 'UnreadBadgeBackground', 'UnreadBadgeText', 'Success', 'SuccessSoft', 'Warning',
-  'WarningSoft', 'Danger', 'DangerSoft', 'Info', 'InfoSoft', 'GradeA', 'GradeB', 'GradeC',
+  'SidebarActive', 'SidebarText', 'SidebarMuted', 'LogoSurface', 'LogoBorder', 'UnreadBadgeBackground', 'UnreadBadgeText', 'Success', 'SuccessSoft', 'Warning',
+  'WarningSoft', 'Danger', 'DangerSoft', 'OnDanger', 'Info', 'InfoSoft', 'GradeA', 'GradeB', 'GradeC',
   'GradeD', 'ChatOutbound', 'ChatInbound', 'Overlay', 'GlassSurface', 'GlassSurfaceStrong',
   'GlassLine', 'AuroraAmbient', 'AuroraBorder'
 )
@@ -156,19 +158,84 @@ if ($appXaml -notmatch '<Style TargetType="\{x:Type TextBlock\}">[\s\S]*?<Setter
 }
 $navTextCount = ([regex]::Matches($mainWindowXaml, 'Style="\{StaticResource NavText\}"')).Count
 $navIconCount = ([regex]::Matches($mainWindowXaml, 'Style="\{StaticResource NavIconFrame\}"')).Count
-if ($navTextCount -ne 10 -or
+if ($navTextCount -ne 9 -or
     $navIconCount -ne 9 -or
     $appXaml -notmatch 'x:Key="NavText"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}' -or
     $appXaml -notmatch 'x:Key="NavIconFrame"[\s\S]*?<Setter Property="Width" Value="18"/>' -or
     $appXaml -notmatch 'x:Key="NavIconPath"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}[\s\S]*?<Setter Property="StrokeThickness" Value="2"/>' -or
     $appXaml -notmatch 'x:Key="NavIconRectangle"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}' -or
     $appXaml -notmatch 'x:Key="NavIconEllipse"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}') {
-  throw "Every sidebar module must use one aligned 18px vector icon and a semantic foreground. expected_text=10 actual_text=$navTextCount expected_icons=9 actual_icons=$navIconCount"
+  throw "Every sidebar module and the single settings entry must use one aligned 18px vector icon and a semantic foreground. expected_text=9 actual_text=$navTextCount expected_icons=9 actual_icons=$navIconCount"
 }
-if ($mainWindowXaml -notmatch '<Button Style="\{StaticResource NavButton\}" Click="CommandButton_Click">\s*<TextBlock Text="[^"]*Ctrl \+ K" Style="\{StaticResource NavText\}"/>\s*</Button>' -or
-    $mainWindowXaml -match 'Content="[^"]*Ctrl \+ K"') {
-  throw 'The sidebar shortcut footer must use NavText instead of implicit Ink text on the dark sidebar.'
+if ($mainWindowXaml -match 'x:Name="ThemeButton"' -or
+    $mainWindowXaml -match 'Click="CommandButton_Click"' -or
+    $mainWindowXaml -match '<Button Content="设置"' -or
+    $mainWindowXaml -notmatch 'x:Name="ProviderBadge"' -or
+    $mainWindowXaml -notmatch 'x:Name="PageGuideButton"' -or
+    $mainWindowXaml -notmatch 'x:Name="VersionButton"[\s\S]*?Visibility="Collapsed"' -or
+    $settingsXaml -notmatch 'Content="版本与更新"[\s\S]*?Click="VersionHistory_Click"') {
+  throw 'The shell must show only Settings at the sidebar footer and only AI status plus the page guide at top-right; version/update remains inside Settings.'
 }
+if ($mainWindowSource -match 'Foreground\s*=\s*\(Brush\)FindResource\("SidebarText"\)' -or
+    $mainWindowSource -notmatch [regex]::Escape('SetResourceReference(Button.ForegroundProperty, "SidebarText")') -or
+    $mainWindowSource -notmatch [regex]::Escape('ProviderText.SetResourceReference(TextBlock.ForegroundProperty')) {
+  throw 'Theme-sensitive shell foregrounds must keep dynamic resource references instead of caching a light or dark brush instance.'
+}
+$overlaySidebarFailures = @()
+if ($mainWindowXaml -notmatch '<ColumnDefinition Width="60"/>\s*<ColumnDefinition Width="\*"/>') { $overlaySidebarFailures += 'stable_60px_content_offset' }
+if ($mainWindowXaml -notmatch 'x:Name="SidebarHost"[\s\S]*?Grid\.ColumnSpan="2"[\s\S]*?Panel\.ZIndex="40"[\s\S]*?Width="60"') { $overlaySidebarFailures += 'overlay_host' }
+if ($mainWindowXaml -notmatch 'MouseEnter="SidebarHost_MouseEnter"' -or
+    $mainWindowXaml -notmatch 'MouseLeave="SidebarHost_MouseLeave"' -or
+    $mainWindowXaml -notmatch 'PreviewMouseDown="SidebarHost_PreviewMouseDown"' -or
+    $mainWindowXaml -notmatch 'PreviewMouseUp="SidebarHost_PreviewMouseUp"') { $overlaySidebarFailures += 'hover_hit_area' }
+if ($mainWindowXaml -notmatch 'GotKeyboardFocus="SidebarHost_GotKeyboardFocus"' -or $mainWindowXaml -notmatch 'LostKeyboardFocus="SidebarHost_LostKeyboardFocus"') { $overlaySidebarFailures += 'keyboard_expansion' }
+if ($appXaml -notmatch 'x:Key="SidebarSectionLabel"[\s\S]*?TextWrapping" Value="NoWrap"' -or
+    $appXaml -notmatch 'x:Key="NavText"[\s\S]*?TextWrapping" Value="NoWrap"') { $overlaySidebarFailures += 'no_wrap_reveal_text' }
+if ($mainWindowSource -notmatch [regex]::Escape('SidebarCollapsedWidth = 60') -or
+    $mainWindowSource -notmatch [regex]::Escape('SidebarExpandedWidth = 240') -or
+    $mainWindowSource -notmatch [regex]::Escape('SidebarExpandDuration = TimeSpan.FromMilliseconds(240)') -or
+    $mainWindowSource -notmatch [regex]::Escape('SidebarCollapseDuration = TimeSpan.FromMilliseconds(220)') -or
+    $mainWindowSource -notmatch [regex]::Escape('TimeSpan.FromMilliseconds(48)') -or
+    $mainWindowSource -notmatch [regex]::Escape('SystemParameters.ClientAreaAnimation') -or
+    $mainWindowSource -notmatch [regex]::Escape('new SineEase { EasingMode = EasingMode.EaseInOut }') -or
+    $mainWindowSource -notmatch [regex]::Escape('HandoffBehavior.SnapshotAndReplace') -or
+    $mainWindowSource -notmatch [regex]::Escape('animatable.BeginAnimation(property, null)') -or
+    $mainWindowSource -notmatch [regex]::Escape('DropShadowEffect.OpacityProperty') -or
+    $mainWindowSource -notmatch [regex]::Escape('_sidebarFocusFromPointer') -or
+    $mainWindowSource -notmatch [regex]::Escape('_sidebarKeyboardExpanded') -or
+    $mainWindowSource -notmatch [regex]::Escape('_sidebarKeyboardNavigationPending') -or
+    $mainWindowSource -notmatch [regex]::Escape('programmatic focus restoration, not keyboard navigation') -or
+    $mainWindowSource -notmatch [regex]::Escape('UpdateSidebarExpansionState()')) { $overlaySidebarFailures += 'motion_contract' }
+if ($mainWindowSource -match 'ColumnDefinition.*Width\s*=' -or $mainWindowSource -match 'GridLength\(') { $overlaySidebarFailures += 'content_reflow' }
+if ($overlaySidebarFailures.Count -gt 0) {
+  throw "Hover overlay sidebar must expand from 60px to 240px without changing the product canvas, with delayed text, keyboard support and reduced-motion fallback. missing=$($overlaySidebarFailures -join ',')"
+}
+Write-Host 'PASS  60px hover-to-expand overlay sidebar without product-canvas reflow'
+
+$motionFailures = @()
+if ($appXaml -match 'TargetName="NavRoot" Property="BorderBrush"' -or
+    $appXaml -match 'TargetName="NavRoot" Property="BorderThickness"') { $motionFailures += 'nav_perimeter_border' }
+if ($appXaml -notmatch 'x:Name="ActiveSurface"[\s\S]*?Background="\{DynamicResource SidebarActive\}"' -or
+    $appXaml -notmatch 'x:Name="ActiveRail"[\s\S]*?Background="\{DynamicResource Primary\}"' -or
+    $appXaml -notmatch 'x:Name="FocusDash"[\s\S]*?Width="18" Height="2"' -or
+    $appXaml -notmatch 'Property="local:MotionAssist.IsSelected"') { $motionFailures += 'borderless_nav_states' }
+if ($appXaml -notmatch '<Setter Property="local:MotionAssist.IsEnabled" Value="True"/>' -or
+    $motionAssistSource -notmatch [regex]::Escape('HandoffBehavior.SnapshotAndReplace') -or
+    $motionAssistSource -notmatch [regex]::Escape('SystemParameters.ClientAreaAnimation') -or
+    $motionAssistSource -notmatch [regex]::Escape('SineEase { EasingMode = EasingMode.EaseOut }') -or
+    $motionAssistSource -notmatch [regex]::Escape('target.BeginAnimation(property, null)')) { $motionFailures += 'interruptible_button_motion' }
+if ($mainWindowXaml -notmatch 'x:Name="ContentHostTranslate"' -or
+    $mainWindowSource -notmatch [regex]::Escape('TimeSpan.FromMilliseconds(95)') -or
+    $mainWindowSource -notmatch [regex]::Escape('TimeSpan.FromMilliseconds(255)') -or
+    $mainWindowSource -notmatch [regex]::Escape('_navigationMotionCancellation?.Cancel()')) { $motionFailures += 'page_transition' }
+if ($mainWindowXaml -notmatch 'x:Name="CommandPanelScale"' -or
+    $mainWindowXaml -notmatch 'x:Name="CommandPanelTranslate"' -or
+    $mainWindowSource -notmatch [regex]::Escape('RestoreCommandOverlayFocus()') -or
+    $mainWindowSource -notmatch [regex]::Escape('TimeSpan.FromMilliseconds(245)')) { $motionFailures += 'command_overlay_motion' }
+if ($motionFailures.Count -gt 0) {
+  throw "Shell motion must be smooth, interruptible, reduced-motion aware, and keep navigation selection borderless. missing=$($motionFailures -join ',')"
+}
+Write-Host 'PASS  borderless navigation selection and interruption-safe shell motion system'
 if ($domainModelsSource -notmatch 'enum WhatsAppRegistrationStatus' -or
     $domainModelsSource -notmatch 'WhatsAppRegistrationStatus\.Registered when WhatsAppRegistrationMatchesCurrentPhone => "有效"' -or
     $domainModelsSource -notmatch 'WhatsAppRegistrationStatus\.NotRegistered when WhatsAppRegistrationMatchesCurrentPhone => "无效"' -or
@@ -224,10 +291,17 @@ if ($customersXaml -match 'TagFilterBox|OwnerFilterBox|CustomValueFilterBox' -or
     $customersXaml -notmatch 'BasedOn="\{StaticResource CustomerScrollBar\}"' -or
     $customersSource -notmatch [regex]::Escape('CustomerDimensionCatalog.Build(leads)') -or
     $customerDimensionSource -notmatch [regex]::Escape('ImportService.IsCoreDimension(sourceKey)') -or
-    $customersSource -notmatch [regex]::Escape('ImportService.ResolveField(header) == ImportField.Name')) {
+    $customersSource -notmatch [regex]::Escape('ImportService.ResolveField(header) == ImportField.Name') -or
+    $customersXaml -notmatch 'Header="Buyer ID" Binding="\{Binding BuyerId\}"' -or
+    $customersXaml -notmatch 'Header="公司" Binding="\{Binding Company\}"' -or
+    $customersXaml -notmatch 'Header="邮箱" Binding="\{Binding Email\}"' -or
+    $customersXaml -notmatch 'Header="WhatsApp 状态" Binding="\{Binding PhoneState\}"[^>]*Width="128"' -or
+    $customersSource -notmatch [regex]::Escape('nameof(CustomerRow.BuyerId) => row.BuyerId') -or
+    $customersSource -notmatch [regex]::Escape('nameof(CustomerRow.Company) => row.Company') -or
+    $customersSource -notmatch [regex]::Escape('nameof(CustomerRow.Email) => row.Email')) {
   throw 'Customer list must remove advanced text filters, merge canonical source aliases into system fields, and paginate by 10, 30 or 50 rows.'
 }
-Write-Host 'PASS  compact customer list, Buyer Nickname merge and 10/30/50 pagination contract'
+Write-Host 'PASS  complete customer identity dimensions, readable WhatsApp status, Buyer Nickname merge and 10/30/50 pagination contract'
 
 if ($leadIntelligenceXaml -match 'DataGridTextColumn Header="公司"' -or
     $leadIntelligenceXaml -notmatch 'DataGridTextColumn Header="客户"' -or
@@ -351,6 +425,7 @@ $contrastPairs = @(
   @('Ink', 'SurfaceMuted'), @('Ink', 'AiSurface'), @('InkSecondary', 'Surface'),
   @('InkSecondary', 'SurfaceElevated'), @('Muted', 'Canvas'), @('Muted', 'Surface'),
   @('Muted', 'SurfaceElevated'), @('Warning', 'WarningSoft'), @('Danger', 'DangerSoft'),
+  @('OnPrimary', 'Primary'), @('OnAi', 'AiAccent'), @('OnDanger', 'Danger'),
   @('SidebarText', 'Sidebar'), @('SidebarText', 'SidebarActive'),
   @('SidebarMuted', 'Sidebar'), @('SidebarMuted', 'SidebarElevated'),
   @('UnreadBadgeText', 'UnreadBadgeBackground')
@@ -364,6 +439,16 @@ foreach ($paletteEntry in @(@('Light', $lightPalette), @('Dark', $darkPalette)))
       throw "$mode theme contrast is below WCAG AA for $($pair[0]) on $($pair[1]): $([Math]::Round($ratio, 2)):1"
     }
   }
+}
+if ($mainWindowSource -notmatch [regex]::Escape('RefreshShellThemeState();') -or
+    $mainWindowSource -notmatch [regex]::Escape('await UpdateProviderStateAsync();') -or
+    $mainWindowSource -notmatch [regex]::Escape('if (ContentHost.Content is IRefreshableView view)')) {
+  throw 'Theme switching must refresh code-assigned shell badges, active navigation and the current page in addition to DynamicResource values.'
+}
+if ($appXaml -notmatch 'ContentPresenter[\s\S]*?TextElement\.Foreground="\{Binding Foreground,\s*RelativeSource=\{RelativeSource TemplatedParent\}\}"' -or
+    $appXaml -notmatch 'ContentPresenter\.Resources[\s\S]*?TargetType="\{x:Type TextBlock\}"[\s\S]*?AncestorType=\{x:Type Button\}' -or
+    $appXaml -notmatch 'ContentPresenter\.Resources[\s\S]*?TargetType="\{x:Type AccessText\}"[\s\S]*?AncestorType=\{x:Type Button\}') {
+  throw 'The shared button template must forward Button.Foreground so semantic on-color tokens reach string content in every theme.'
 }
 Write-Host 'PASS  light/dark-theme dynamic resources, aligned vector navigation icons and high-contrast text contract'
 
@@ -389,8 +474,8 @@ if ($domainModelsSource -notmatch [regex]::Escape('public int UiScalePercentage 
     $mainWindowXaml -notmatch 'x:Name="MainScaleHost"' -or
     $settingsXaml -notmatch 'x:Name="SettingsScaleHost"' -or
     $settingsXaml -notmatch 'x:Name="UiScaleBox"' -or
+    $mainWindowXaml -notmatch 'x:Name="SettingsButton"' -or
     $mainWindowXaml -notmatch '<TextBlock Grid.Column="1" Text="设置" Style="\{StaticResource NavText\}"' -or
-    $mainWindowXaml -notmatch '<Button Content="设置" ToolTip="AI 模型、界面缩放、主题与本地体验"' -or
     $mainWindowSource -notmatch [regex]::Escape('ApplyUiScale(settings.UiScalePercentage);') -or
     $settingsSource -notmatch [regex]::Escape('_settings.UiScalePercentage = UiScaleManager.Normalize(') -or
     $settingsSource -match [regex]::Escape('throw new InvalidOperationException("当前 Provider 的 API Key 未通过验证。")')) {
