@@ -1,4 +1,4 @@
-# AI Sales OS v5.10.0 原生 macOS 交付说明
+# AI Sales OS v5.10.1 原生 macOS 交付说明
 
 ## 产品与数据边界
 
@@ -16,9 +16,9 @@ Windows EXE、安装器、Velopack 通道或 PWA。
 API Key、邮箱密码和 WhatsApp 会话加密密钥保存在 macOS Keychain。项目没有共享客户数据库、
 跨用户可见性或自动上传。
 
-## v5.10.0 macOS 功能基线
+## v5.10.1 macOS 功能基线
 
-macOS 版以 GitHub `main` 的 Windows v5.10.0 为功能基线，包含 8 个主模块：
+macOS 版以 GitHub `main` 的 Windows v5.10.1 为功能基线，包含 8 个主模块：
 
 1. Dashboard：客户、待跟进、渠道未读、自动化状态和优先商机。
 2. 商机智能：单客户及断点续跑批量 AI 分析、评分、证据、风险和下一步动作。
@@ -53,13 +53,13 @@ AI Sales OS.app/Contents/MacOS/WAFlow.WhatsApp.Bridge
 Apple Silicon：
 
 ```powershell
-./scripts/build-macos-preview.ps1 -Version 5.10.0 -Architecture AppleSilicon
+./scripts/build-macos-preview.ps1 -Version 5.10.1 -Architecture AppleSilicon
 ```
 
 同时构建两种架构：
 
 ```powershell
-./scripts/build-macos-preview.ps1 -Version 5.10.0 -Architecture Both
+./scripts/build-macos-preview.ps1 -Version 5.10.1 -Architecture Both
 ```
 
 macOS 主机构建时会：
@@ -73,7 +73,7 @@ macOS 主机构建时会：
 Apple Silicon 产物：
 
 ```text
-dist/installers/AI Sales OS macOS Apple-Silicon Chinese v5.10.0.dmg
+dist/installers/AI Sales OS macOS Apple-Silicon Chinese v5.10.1.dmg
 dist/installers/AI Sales OS macOS Apple-Silicon Chinese Preview.zip
 ```
 

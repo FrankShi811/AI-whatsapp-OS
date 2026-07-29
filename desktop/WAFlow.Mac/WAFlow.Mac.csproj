@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>AISalesOS.Mac</AssemblyName>
     <RootNamespace>WAFlow.Mac</RootNamespace>
-    <Version>5.10.0</Version>
+    <Version>5.10.1</Version>
     <Product>AI Sales OS</Product>
     <Description>AI Sales OS 原生 macOS 中文客户端</Description>
     <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
@@ -27,6 +27,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\WAFlow.Desktop\ReleaseCatalog.cs" Link="Updates\ReleaseCatalog.cs" />
+    <Compile Include="..\WAFlow.Desktop\GuideCatalog.cs" Link="Shell\GuideCatalog.cs" />
     <Compile Include="..\WAFlow.Desktop\Updates\ApplicationUpdateState.cs" Link="Updates\ApplicationUpdateState.cs" />
     <Compile Include="..\WAFlow.Desktop\Updates\UpdateConfiguration.cs" Link="Updates\UpdateConfiguration.cs" />
     <Compile Include="..\WAFlow.Desktop\Updates\VelopackUpdateService.cs" Link="Updates\VelopackUpdateService.cs" />

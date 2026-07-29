@@ -49,6 +49,10 @@ jobs:
           if ($version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw "Invalid version: $version" }
           "MAC_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Enforce Windows v5.10.1 parity contract
+        shell: pwsh
+        run: ./scripts/test-macos-parity.ps1
+
       - name: Build native Apple Silicon app, Bridge and DMG
         shell: pwsh
         run: |

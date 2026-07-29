@@ -18,11 +18,22 @@ public sealed class App : Application
             if (Environment.GetEnvironmentVariable("WAFLOW_UI_SMOKE_TEST") == "1")
             {
                 mainWindow.Opened += (_, _) =>
-                    DispatcherTimer.RunOnce(() =>
+                    DispatcherTimer.RunOnce(async () =>
                     {
-                        Console.WriteLine("PASS macOS UI smoke window/resources/accessibility");
-                        desktop.Shutdown(0);
-                    }, TimeSpan.FromMilliseconds(1_500));
+                        try
+                        {
+                            var modules = await mainWindow.RunUiSmokeAsync();
+                            Console.WriteLine(
+                                $"PASS macOS UI smoke window/resources/accessibility/theme/scale/navigation " +
+                                $"modules={string.Join(',', modules)}");
+                            desktop.Shutdown(0);
+                        }
+                        catch (Exception error)
+                        {
+                            Console.Error.WriteLine($"FAIL macOS UI smoke: {error}");
+                            desktop.Shutdown(1);
+                        }
+                    }, TimeSpan.FromMilliseconds(250));
             }
         }
         base.OnFrameworkInitializationCompleted();

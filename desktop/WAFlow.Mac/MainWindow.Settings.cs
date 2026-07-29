@@ -29,8 +29,9 @@ public sealed partial class MainWindow
 
         var page = PageStack();
         page.Children.Add(PageLead(
-            "AI 路由与本地数据",
-            "API Key 只写入 macOS 钥匙串；客户、消息、知识和报告只保存在此 Mac，不与其他用户联通。"));
+            "设置",
+            "统一管理 AI Provider、板块模型、界面缩放、主题与本地数据体验。",
+            "SYSTEM CONFIGURATION"));
 
         var providerDefinitions = AiProviderCatalog.Supported.ToList();
         var activeIndex = Math.Max(0, providerDefinitions.FindIndex(item =>
@@ -229,13 +230,15 @@ public sealed partial class MainWindow
         };
         var scale = new ComboBox
         {
-            ItemsSource = new[] { 90, 100, 110, 125, 140 },
-            SelectedItem = settings.UiScalePercentage,
+            ItemsSource = new[] { 80, 90, 100, 110, 125 },
+            SelectedItem = new[] { 80, 90, 100, 110, 125 }
+                .OrderBy(value => Math.Abs(value - settings.UiScalePercentage))
+                .First(),
             MinWidth = 180
         };
         var appearance = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*"), ColumnSpacing = 12 };
-        appearance.Children.Add(Field("主题", theme, "重新启动后应用。"));
-        var scaleField = Field("界面缩放", scale, "重新启动后应用。");
+        appearance.Children.Add(Field("主题模式", theme, "跟随系统、浅色或深色。保存后立即应用。"));
+        var scaleField = Field("界面缩放", scale, "80% / 90% 适合低分辨率；110% / 125% 可提升可读性。");
         Grid.SetColumn(scaleField, 1);
         appearance.Children.Add(scaleField);
         var saveAppearance = ActionButton("保存外观设置", async () =>
@@ -243,12 +246,14 @@ public sealed partial class MainWindow
             settings.ThemeMode = theme.SelectedItem?.ToString() ?? "System";
             settings.UiScalePercentage = scale.SelectedItem is int value ? value : 100;
             await _services.Repository.SaveAppSettingsAsync(settings, _lifetime.Token);
-            await ShowMessageAsync("外观设置已保存", "重新启动 AI Sales OS 后应用主题与缩放。");
+            MacThemeManager.Apply(settings.ThemeMode);
+            ApplyUiScale(settings.UiScalePercentage);
+            await ShowMessageAsync("外观设置已保存", "主题与界面缩放已立即应用。");
         });
         var appearancePanel = new StackPanel { Spacing = 12 };
         appearancePanel.Children.Add(appearance);
         appearancePanel.Children.Add(saveAppearance);
-        page.Children.Add(SectionCard("外观", "系统级", appearancePanel));
+        page.Children.Add(SectionCard("外观与可读性", "立即生效", appearancePanel));
 
         var dataPanel = new StackPanel { Spacing = 10 };
         dataPanel.Children.Add(BodyText($"数据库：{_services.Repository.DatabasePath}", Ink, 12));

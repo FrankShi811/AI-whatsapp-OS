@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -13,8 +15,9 @@ public sealed partial class MainWindow
     {
         var page = PageStack();
         page.Children.Add(PageLead(
-            "WhatsApp 原生收件箱",
-            "当前 Mac 直接运行本机 Bridge：扫码、会话同步、文字/媒体发送、建群和 AI 回复建议均不经过共享服务器。"));
+            "WhatsApp Conversation Command Center",
+            "会话、客户上下文、AI 商机判断与销售动作在同一工作区完成。",
+            "LIVE SALES CONVERSATIONS"));
         var accounts = await _services.Repository.GetWhatsAppAccountsAsync(_lifetime.Token);
         if (accounts.Count == 0)
         {
@@ -51,7 +54,9 @@ public sealed partial class MainWindow
             await RenderCurrentPageAsync();
         };
         toolbar.Children.Add(accountBox);
+        var ip = await _services.PublicIp.CheckAsync(active.Id, _lifetime.Token);
         var stateText = BodyText(
+            $"公网 IP：{Fallback(ip.State.CurrentIp, ip.Error.Length > 0 ? ip.Error : "检测中…")} · {ip.State.LocationLabel} · " +
             $"{WhatsAppStateLabel(_whatsAppState)} · {Fallback(active.LinkedPhone, "尚未关联手机号")} · {_operationStatus}",
             _whatsAppState == "connected" ? Primary : Muted,
             12);
@@ -84,20 +89,38 @@ public sealed partial class MainWindow
             page.Children.Add(Card(qrPanel, new Thickness(24), Brush.Parse("#F8FBFA")));
         }
 
-        var conversations = await _services.Repository.GetWhatsAppConversationsAsync(active.Id, _lifetime.Token);
+        var allConversations = await _services.Repository.GetWhatsAppConversationsAsync(active.Id, _lifetime.Token);
+        var conversations = allConversations
+            .Where(item => string.IsNullOrWhiteSpace(_whatsAppSearch) ||
+                           string.Join(' ', item.DisplayName, item.Phone, item.LastMessage)
+                               .Contains(_whatsAppSearch, StringComparison.CurrentCultureIgnoreCase))
+            .ToList();
         var selected = conversations.FirstOrDefault(item =>
                            item.Id.Equals(_selectedWhatsAppConversationId, StringComparison.OrdinalIgnoreCase))
                        ?? conversations.FirstOrDefault();
         _selectedWhatsAppConversationId = selected?.Id ?? "";
-        var workspace = new Grid { ColumnDefinitions = new ColumnDefinitions("310,*"), ColumnSpacing = 14 };
+        var workspace = new Grid { ColumnDefinitions = new ColumnDefinitions("300,*,390"), ColumnSpacing = 14 };
         var conversationPanel = new StackPanel { Spacing = 7 };
         var conversationHeader = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        conversationHeader.Children.Add(TitleText($"会话 · {conversations.Count:N0}", 17));
+        conversationHeader.Children.Add(TitleText($"会话与联系人 · {allConversations.Count:N0}", 17));
         var group = ActionButton("新建群组", async () => await CreateWhatsAppGroupAsync(), primary: false);
         group.IsEnabled = _whatsAppState == "connected";
         Grid.SetColumn(group, 1);
         conversationHeader.Children.Add(group);
         conversationPanel.Children.Add(conversationHeader);
+        var search = Accessible(new TextBox
+        {
+            Text = _whatsAppSearch,
+            Watermark = "输入姓名、WhatsApp 名称或号码，实时搜索"
+        }, "搜索 WhatsApp 会话");
+        search.KeyUp += async (_, _) =>
+        {
+            var value = search.Text?.Trim() ?? "";
+            if (value == _whatsAppSearch) return;
+            _whatsAppSearch = value;
+            await RenderCurrentPageAsync();
+        };
+        conversationPanel.Children.Add(search);
         foreach (var conversation in conversations.Take(300))
         {
             var button = new Button
@@ -141,14 +164,27 @@ public sealed partial class MainWindow
         };
         workspace.Children.Add(Card(conversationScroll, new Thickness(12)));
 
-        var chat = await BuildWhatsAppConversationAsync(selected);
+        var composer = Accessible(new TextBox
+        {
+            Watermark = selected?.IsGroup == true
+                ? "当前群组暂只读；请在手机 WhatsApp 中发送。"
+                : "Enter 发送，⌘Enter 换行",
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 90,
+            IsEnabled = _whatsAppState == "connected" && selected is { IsGroup: false }
+        }, "WhatsApp 消息内容");
+        var chat = await BuildWhatsAppConversationAsync(selected, composer);
         Grid.SetColumn(chat, 1);
         workspace.Children.Add(chat);
+        var intelligence = await BuildWhatsAppIntelligenceAsync(selected, composer);
+        Grid.SetColumn(intelligence, 2);
+        workspace.Children.Add(intelligence);
         page.Children.Add(workspace);
         return page;
     }
 
-    private async Task<Control> BuildWhatsAppConversationAsync(WhatsAppConversation? conversation)
+    private async Task<Control> BuildWhatsAppConversationAsync(WhatsAppConversation? conversation, TextBox composer)
     {
         if (conversation is null)
             return Card(EmptyState("选择会话", "登录并同步后，在左侧选择客户或群组。"), new Thickness(14));
@@ -174,6 +210,19 @@ public sealed partial class MainWindow
 
         var messages = await _services.Repository.GetWhatsAppMessagesAsync(conversation.Id, 300, _lifetime.Token);
         var messagePanel = new StackPanel { Spacing = 8 };
+        WhatsAppMessage? replyTo = null;
+        var replyPreview = new Border
+        {
+            IsVisible = false,
+            Background = PrimarySoft,
+            BorderBrush = Primary,
+            BorderThickness = new Thickness(3, 0, 0, 0),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(10, 7)
+        };
+        var replyPreviewText = BodyText("", Ink, 11);
+        replyPreview.Child = replyPreviewText;
+        Button? cancelReply = null;
         foreach (var message in messages.TakeLast(200))
         {
             var outgoing = message.Direction == WhatsAppMessageDirection.Outgoing;
@@ -190,6 +239,44 @@ public sealed partial class MainWindow
                 $"{message.Timestamp.LocalDateTime:MM-dd HH:mm} · {message.Status}",
                 Muted,
                 9));
+            if (!message.IsRevoked && !conversation.IsGroup)
+            {
+                var messageActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
+                var reply = ActionButton("回复", () =>
+                {
+                    replyTo = message;
+                    replyPreviewText.Text = $"回复：{Fallback(message.Body, message.FileName)}";
+                    replyPreview.IsVisible = true;
+                    if (cancelReply is not null) cancelReply.IsVisible = true;
+                    composer.Focus();
+                    return Task.CompletedTask;
+                });
+                reply.IsEnabled = composer.IsEnabled;
+                messageActions.Children.Add(reply);
+                if (!string.IsNullOrWhiteSpace(message.MediaPath) && File.Exists(message.MediaPath))
+                    messageActions.Children.Add(ActionButton("打开媒体", () =>
+                    {
+                        Process.Start(new ProcessStartInfo { FileName = message.MediaPath, UseShellExecute = true });
+                        return Task.CompletedTask;
+                    }));
+                if (outgoing && !string.IsNullOrWhiteSpace(message.ProviderMessageId))
+                    messageActions.Children.Add(ActionButton("撤回", async () =>
+                    {
+                        if (!await ConfirmAsync("撤回 WhatsApp 消息", "WhatsApp 是否允许撤回取决于服务器时间限制；确认尝试撤回？", "确认撤回")) return;
+                        await _services.WhatsApp.RevokeMessageAsync(
+                            conversation.AccountId,
+                            conversation.Phone,
+                            message.ProviderMessageId,
+                            _lifetime.Token);
+                        await _services.Repository.MarkWhatsAppMessageRevokedAsync(
+                            conversation.AccountId,
+                            message.ProviderMessageId,
+                            DateTimeOffset.Now,
+                            _lifetime.Token);
+                        await RenderCurrentPageAsync();
+                    }, danger: true));
+                bubble.Children.Add(messageActions);
+            }
             messagePanel.Children.Add(new Border
             {
                 Background = outgoing ? Brush.Parse("#DCF7EE") : Surface,
@@ -211,16 +298,7 @@ public sealed partial class MainWindow
             VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto
         });
 
-        var composer = Accessible(new TextBox
-        {
-            Watermark = conversation.IsGroup
-                ? "当前群组暂只读；请在手机 WhatsApp 中发送。"
-                : "输入消息；发送前请核对客户与内容。",
-            AcceptsReturn = true,
-            TextWrapping = TextWrapping.Wrap,
-            MinHeight = 90,
-            IsEnabled = _whatsAppState == "connected" && !conversation.IsGroup
-        }, "WhatsApp 消息内容");
+        panel.Children.Add(replyPreview);
         panel.Children.Add(composer);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
         var ai = ActionButton("AI 回复建议", async () =>
@@ -243,38 +321,303 @@ public sealed partial class MainWindow
         {
             var path = await PickOpenFileAsync("选择要发送的文件", "*.*");
             if (string.IsNullOrWhiteSpace(path)) return;
-            await _services.WhatsApp.SendMediaAsync(
-                conversation.AccountId,
-                conversation.Phone,
-                path,
-                composer.Text ?? "",
-                _lifetime.Token);
+            if (replyTo is null)
+                await _services.WhatsApp.SendMediaAsync(
+                    conversation.AccountId,
+                    conversation.Phone,
+                    path,
+                    composer.Text ?? "",
+                    _lifetime.Token);
+            else
+                await _services.WhatsApp.SendReplyMediaAsync(
+                    conversation.AccountId,
+                    conversation.Phone,
+                    path,
+                    composer.Text ?? "",
+                    replyTo.ProviderMessageId,
+                    Fallback(replyTo.Body, replyTo.FileName),
+                    replyTo.Direction == WhatsAppMessageDirection.Outgoing,
+                    _lifetime.Token);
             composer.Text = "";
+            replyTo = null;
+            replyPreview.IsVisible = false;
+            if (cancelReply is not null) cancelReply.IsVisible = false;
         });
         media.IsEnabled = composer.IsEnabled;
-        var send = ActionButton("发送消息", async () =>
+        async Task SendCurrentAsync()
         {
             if (string.IsNullOrWhiteSpace(composer.Text))
             {
                 await ShowMessageAsync("无法发送", "请输入消息内容。");
                 return;
             }
-            await _services.WhatsApp.SendTextAsync(
-                conversation.AccountId,
-                conversation.Phone,
-                composer.Text.Trim(),
-                _lifetime.Token);
+            if (replyTo is null)
+                await _services.WhatsApp.SendTextAsync(
+                    conversation.AccountId,
+                    conversation.Phone,
+                    composer.Text.Trim(),
+                    _lifetime.Token);
+            else
+                await _services.WhatsApp.SendReplyTextAsync(
+                    conversation.AccountId,
+                    conversation.Phone,
+                    composer.Text.Trim(),
+                    replyTo.ProviderMessageId,
+                    Fallback(replyTo.Body, replyTo.FileName),
+                    replyTo.Direction == WhatsAppMessageDirection.Outgoing,
+                    _lifetime.Token);
             composer.Text = "";
+            replyTo = null;
+            replyPreview.IsVisible = false;
+            if (cancelReply is not null) cancelReply.IsVisible = false;
             await Task.Delay(300, _lifetime.Token);
             await RenderCurrentPageAsync();
-        }, primary: true);
+        }
+        composer.KeyDown += async (_, e) =>
+        {
+            if (e.Key != Avalonia.Input.Key.Enter || e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Meta) ||
+                e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Control)) return;
+            e.Handled = true;
+            await SendCurrentAsync();
+        };
+        cancelReply = ActionButton("取消回复", () =>
+        {
+            replyTo = null;
+            replyPreview.IsVisible = false;
+            if (cancelReply is not null) cancelReply.IsVisible = false;
+            return Task.CompletedTask;
+        });
+        cancelReply.IsVisible = false;
+        var send = ActionButton("发送消息", SendCurrentAsync, primary: true);
         send.IsEnabled = composer.IsEnabled;
         actions.Children.Add(ai);
+        actions.Children.Add(cancelReply);
         actions.Children.Add(media);
         actions.Children.Add(send);
         panel.Children.Add(actions);
         return Card(panel);
     }
+
+    private async Task<Control> BuildWhatsAppIntelligenceAsync(
+        WhatsAppConversation? conversation,
+        TextBox composer)
+    {
+        if (conversation is null)
+            return Card(EmptyState("Customer Intelligence", "选择会话后关联客户并显示 AI 销售上下文。"), new Thickness(14));
+
+        var context = await _services.CustomerSuccessAgent.GetContextAsync(
+            conversation.AccountId,
+            conversation.Id,
+            _lifetime.Token);
+        var lead = context?.Customer ??
+                   (!string.IsNullOrWhiteSpace(conversation.LeadId)
+                       ? await _services.Repository.GetLeadAsync(conversation.LeadId, _lifetime.Token)
+                       : null);
+        var panel = new StackPanel { Spacing = 12 };
+        panel.Children.Add(TitleText("Customer Intelligence", 18));
+        panel.Children.Add(BodyText(
+            lead is null ? "选择会话后关联客户" : $"已关联：{lead.DisplayName} · {lead.StageLabel}",
+            lead is null ? Muted : Primary,
+            11));
+
+        var state = context?.AgentState ?? new ConversationAgentState
+        {
+            CustomerId = lead?.Id ?? "",
+            AccountId = conversation.AccountId,
+            ConversationId = conversation.Id,
+            Mode = ConversationAgentMode.SuggestOnly
+        };
+        var agent = new StackPanel { Spacing = 9 };
+        agent.Children.Add(BodyText("DHgate Customer Success Agent", ResourceBrush("AiAccent", "#6659B8"), 11));
+        agent.Children.Add(BodyText(
+            lead is null ? "等待会话身份" : $"{lead.DisplayName} · {CustomerSuccessAgentLabels.Mode(state.Mode)}",
+            Ink,
+            12));
+        var allowedModes = new[]
+        {
+            ConversationAgentMode.AutoOff,
+            ConversationAgentMode.SuggestOnly,
+            ConversationAgentMode.CopilotActive,
+            ConversationAgentMode.AutoActive
+        };
+        var mode = Accessible(new ComboBox
+        {
+            ItemsSource = allowedModes.Select(CustomerSuccessAgentLabels.Mode).ToList(),
+            SelectedIndex = Math.Max(0, Array.IndexOf(allowedModes, state.Mode))
+        }, "客户成功 Agent 模式");
+        var apply = ActionButton("应用", async () =>
+        {
+            if (lead is null) throw new InvalidOperationException("当前会话尚未关联客户。");
+            var selectedMode = allowedModes[Math.Clamp(mode.SelectedIndex, 0, allowedModes.Length - 1)];
+            if (selectedMode == ConversationAgentMode.AutoActive &&
+                !await ConfirmAsync(
+                    "开启自动回复",
+                    "自动回复只会在身份、账号锁和安全校验全部通过时发送；高风险问题会转人工。确认开启当前客户的自动回复？",
+                    "确认开启"))
+                return;
+            await _services.CustomerSuccessAgent.SetModeAsync(
+                lead.Id,
+                conversation.AccountId,
+                conversation.Id,
+                selectedMode,
+                cancellationToken: _lifetime.Token);
+            await RenderCurrentPageAsync();
+        });
+        apply.IsEnabled = lead is not null;
+        var modeRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 8 };
+        modeRow.Children.Add(mode);
+        Grid.SetColumn(apply, 1);
+        modeRow.Children.Add(apply);
+        agent.Children.Add(modeRow);
+        agent.Children.Add(BodyText(CustomerSuccessAgentLabels.ModeHeadline(state.Mode), Ink, 11));
+        agent.Children.Add(BodyText(CustomerSuccessAgentLabels.ModeTrigger(state.Mode), Muted, 10));
+        agent.Children.Add(BodyText(CustomerSuccessAgentLabels.ModeOutput(state.Mode), Muted, 10));
+        agent.Children.Add(BodyText(CustomerSuccessAgentLabels.ModeSend(state.Mode), Muted, 10));
+        agent.Children.Add(BodyText(
+            Fallback(state.StateReason, CustomerSuccessAgentLabels.ModeStateReason(state.Mode)),
+            Muted,
+            10));
+
+        var lastRun = new StackPanel { Spacing = 6 };
+        lastRun.Children.Add(BodyText("最近一次 Agent 产出", Ink, 12));
+        lastRun.Children.Add(BodyText(
+            state.LastRunAt is null ? "尚无产出" : $"{state.LastRunStatus} · {state.LastRunAt:MM-dd HH:mm}",
+            state.LastRunError.Length > 0 ? Danger : Primary,
+            10));
+        lastRun.Children.Add(BodyText($"客户原话：{Fallback(state.LastSourcePreview, "等待生成")}", Ink, 10));
+        lastRun.Children.Add(BodyText(Fallback(state.LastGeneratedReply, "生成的建议回复会显示在这里。"), Ink, 11));
+        lastRun.Children.Add(BodyText($"分析摘要：{Fallback(state.LastRunSummary, "—")}", Muted, 10));
+        lastRun.Children.Add(BodyText($"下一步：{Fallback(state.LastRecommendedAction, "—")}", Muted, 10));
+        var agentActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7 };
+        var generate = ActionButton("立即生成建议", async () =>
+        {
+            var result = await _services.CustomerSuccessAgent.AnalyzeAsync(
+                conversation.AccountId,
+                conversation.Id,
+                conversation.Phone,
+                conversation.DisplayName,
+                conversation.Jid,
+                cancellationToken: _lifetime.Token);
+            if (result.Decision is null)
+                throw new InvalidOperationException(Fallback(result.BlockReason, "当前身份或安全状态不允许生成。"));
+            composer.Text = result.Decision.ReplyText;
+            await ShowMessageAsync(
+                "Agent 建议已填入输入框",
+                $"分析摘要：{result.Decision.ChineseSummary}\n下一步：{result.Decision.RecommendedNextAction}\n置信度：{result.Decision.Confidence:P0}\n\n请人工核对后发送。");
+            await RenderCurrentPageAsync();
+        }, primary: true);
+        generate.IsEnabled = lead is not null && state.Mode != ConversationAgentMode.AutoOff;
+        var use = ActionButton("填入输入框", () =>
+        {
+            composer.Text = state.LastGeneratedReply;
+            return Task.CompletedTask;
+        });
+        use.IsEnabled = !string.IsNullOrWhiteSpace(state.LastGeneratedReply) && composer.IsEnabled;
+        agentActions.Children.Add(generate);
+        agentActions.Children.Add(use);
+        lastRun.Children.Add(agentActions);
+        agent.Children.Add(Card(lastRun, new Thickness(12), ResourceBrush("AiSurface", "#F4F1FF")));
+        panel.Children.Add(SectionCard("AI 销售协作", CustomerSuccessAgentLabels.Mode(state.Mode), agent));
+
+        var sourcing = context?.SourcingRequest;
+        var sourcingPanel = new StackPanel { Spacing = 7 };
+        sourcingPanel.Children.Add(TitleText($"{sourcing?.Completeness ?? 0}%", 22));
+        sourcingPanel.Children.Add(new ProgressBar { Maximum = 100, Value = sourcing?.Completeness ?? 0 });
+        sourcingPanel.Children.Add(BodyText(
+            sourcing is null ? "尚未建立采购需求" : $"状态：{sourcing.Status} · V{sourcing.Version}",
+            Ink,
+            11));
+        sourcingPanel.Children.Add(BodyText(
+            sourcing is null || sourcing.MissingFields.Count > 0
+                ? $"缺失：{string.Join("、", (sourcing?.MissingFields ?? Enum.GetValues<SourcingFieldKey>()).Select(SourcingFieldLabel))}"
+                : "五项采购需求已完整",
+            sourcing?.Conflicts.Count > 0 ? Warning : Muted,
+            10));
+        if (sourcing?.Conflicts.Count > 0)
+            sourcingPanel.Children.Add(BodyText($"冲突：{string.Join("；", sourcing.Conflicts.Where(item => !item.IsResolved).Select(item => SourcingFieldLabel(item.Field)))}", Warning, 10));
+        panel.Children.Add(SectionCard("采购需求五要素", "SOURCING", sourcingPanel));
+
+        if (context?.OpenHandoff is { } handoff)
+        {
+            var handoffPanel = new StackPanel { Spacing = 7 };
+            handoffPanel.Children.Add(BodyText(handoff.Reason, Danger, 11));
+            handoffPanel.Children.Add(BodyText($"客户原话：{handoff.OriginalMessage}", Ink, 10));
+            handoffPanel.Children.Add(BodyText($"中文辅助：{handoff.ChineseAssistTranslation}", Muted, 10));
+            handoffPanel.Children.Add(BodyText($"暂停消息：{handoff.PausedMessageCount}", Muted, 10));
+            var handoffActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7 };
+            handoffActions.Children.Add(ActionButton("人工接管", async () =>
+            {
+                await _services.CustomerSuccessAgent.TakeOverAsync(context.CustomerId, "macOS 用户", _lifetime.Token);
+                await RenderCurrentPageAsync();
+            }, danger: true));
+            handoffActions.Children.Add(ActionButton("标记解决", async () =>
+            {
+                await _services.CustomerSuccessAgent.ResolveHandoffAsync(context.CustomerId, "macOS 客户端人工确认已处理", _lifetime.Token);
+                await RenderCurrentPageAsync();
+            }));
+            handoffActions.Children.Add(ActionButton("复核并恢复", async () =>
+            {
+                await _services.CustomerSuccessAgent.ResumeAsync(
+                    context.CustomerId,
+                    conversation.AccountId,
+                    conversation.Id,
+                    ConversationAgentMode.SuggestOnly,
+                    _lifetime.Token);
+                await RenderCurrentPageAsync();
+            }, primary: true));
+            handoffPanel.Children.Add(handoffActions);
+            panel.Children.Add(SectionCard("需要人工处理", "HUMAN REQUIRED", handoffPanel));
+        }
+
+        var brain = context?.Brain;
+        var brainPanel = new StackPanel { Spacing = 7 };
+        brainPanel.Children.Add(BodyText(
+            brain is null ? "CUSTOMER BRAIN · 等待客户上下文" : $"CUSTOMER BRAIN · {brain.CoverageLabel}",
+            ResourceBrush("AiAccent", "#6659B8"),
+            10));
+        brainPanel.Children.Add(TitleText(
+            brain is null ? "等待 AI 分析" : $"{brain.Confidence:P0} 置信度",
+            18));
+        brainPanel.Children.Add(new ProgressBar { Maximum = 100, Value = (brain?.Confidence ?? 0) * 100 });
+        brainPanel.Children.Add(BodyText(
+            brain?.Summary ?? lead?.ProfileSummary ?? "选择已关联客户后显示画像",
+            Ink,
+            10));
+        brainPanel.Children.Add(BodyText(
+            $"下一步：{brain?.NextBestAction ?? lead?.NextAction ?? "等待客户上下文"}",
+            Primary,
+            10));
+        if (lead is not null)
+            brainPanel.Children.Add(ActionButton("编辑并同步客户资料", async () => await ShowLeadEditorAsync(lead)));
+        panel.Children.Add(SectionCard("AI SALES BRIEF", "CUSTOMER BRAIN", brainPanel));
+
+        var knowledge = brain?.KnowledgeReferences ?? [];
+        var knowledgePanel = new StackPanel { Spacing = 6 };
+        knowledgePanel.Children.Add(BodyText(
+            knowledge.Count == 0 ? "尚未执行知识检索" : $"本次建议参考 {knowledge.Count:N0} 条已批准知识",
+            Muted,
+            10));
+        foreach (var hit in knowledge.Take(5))
+            knowledgePanel.Children.Add(TextCell(hit.CitationLabel, true, hit.Content));
+        panel.Children.Add(SectionCard("本次建议参考", "RAG SOURCES", knowledgePanel));
+
+        return Card(new ScrollViewer
+        {
+            Content = panel,
+            MaxHeight = 720,
+            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto
+        }, new Thickness(12));
+    }
+
+    private static string SourcingFieldLabel(SourcingFieldKey value) => value switch
+    {
+        SourcingFieldKey.ProductImage => "产品图片/链接",
+        SourcingFieldKey.Quantity => "数量",
+        SourcingFieldKey.TargetPrice => "目标价",
+        SourcingFieldKey.Destination => "目的地",
+        SourcingFieldKey.ShippingPreference => "运输偏好",
+        _ => value.ToString()
+    };
 
     private async Task AddWhatsAppAccountAsync(List<WhatsAppAccount> accounts)
     {
@@ -398,8 +741,9 @@ public sealed partial class MainWindow
     {
         var page = PageStack();
         page.Children.Add(PageLead(
-            "邮件原生收件箱",
-            "邮箱密码保存在 macOS 钥匙串；应用通过 IMAP / SMTP 在本机同步和发送，不上传到项目服务器。"));
+            "邮件 Inbox",
+            "连接邮箱、收发邮件、保存历史，并通过邮箱地址与客户列表和商机智能共享同一客户资料。",
+            "CUSTOMER EMAIL INTELLIGENCE"));
         var accounts = await _services.Repository.GetEmailAccountsAsync(_lifetime.Token);
         if (accounts.Count > 0 &&
             !accounts.Any(item => item.Id.Equals(_activeEmailAccountId, StringComparison.OrdinalIgnoreCase)))
@@ -451,14 +795,45 @@ public sealed partial class MainWindow
             return page;
         }
 
-        var conversations = await _services.Repository.GetEmailConversationsAsync(active.Id, _lifetime.Token);
-        var selected = conversations.FirstOrDefault(item =>
-                           item.Id.Equals(_selectedEmailConversationId, StringComparison.OrdinalIgnoreCase))
-                       ?? conversations.FirstOrDefault();
-        _selectedEmailConversationId = selected?.Id ?? "";
-        var workspace = new Grid { ColumnDefinitions = new ColumnDefinitions("310,*"), ColumnSpacing = 14 };
+        var allConversations = await _services.Repository.GetEmailConversationsAsync(active.Id, _lifetime.Token);
+        var conversations = allConversations
+            .Where(item => string.IsNullOrWhiteSpace(_emailSearch) ||
+                           string.Join(' ', item.DisplayName, item.PeerEmail, item.Subject, item.LastMessage)
+                               .Contains(_emailSearch, StringComparison.CurrentCultureIgnoreCase))
+            .ToList();
+        var composingNew = _selectedEmailConversationId == "__new__";
+        var selected = composingNew
+            ? null
+            : conversations.FirstOrDefault(item =>
+                  item.Id.Equals(_selectedEmailConversationId, StringComparison.OrdinalIgnoreCase))
+              ?? conversations.FirstOrDefault();
+        if (!composingNew) _selectedEmailConversationId = selected?.Id ?? "";
+        var workspace = new Grid { ColumnDefinitions = new ColumnDefinitions("300,*,390"), ColumnSpacing = 14 };
         var list = new StackPanel { Spacing = 7 };
-        list.Children.Add(TitleText($"邮件会话 · {conversations.Count:N0}", 17));
+        var listHeader = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 8 };
+        listHeader.Children.Add(TitleText($"邮件会话 · {allConversations.Count:N0}", 17));
+        var newEmail = ActionButton("＋", async () =>
+        {
+            _selectedEmailConversationId = "__new__";
+            await RenderCurrentPageAsync();
+        }, minWidth: 42);
+        AutomationProperties.SetName(newEmail, "新建邮件");
+        Grid.SetColumn(newEmail, 1);
+        listHeader.Children.Add(newEmail);
+        list.Children.Add(listHeader);
+        var search = Accessible(new TextBox
+        {
+            Text = _emailSearch,
+            Watermark = "搜索姓名、邮箱、主题或正文"
+        }, "搜索邮件会话");
+        search.KeyUp += async (_, _) =>
+        {
+            var value = search.Text?.Trim() ?? "";
+            if (value == _emailSearch) return;
+            _emailSearch = value;
+            await RenderCurrentPageAsync();
+        };
+        list.Children.Add(search);
         foreach (var conversation in conversations.Take(300))
         {
             var button = new Button
@@ -491,6 +866,9 @@ public sealed partial class MainWindow
         var detail = await BuildEmailConversationAsync(active, selected);
         Grid.SetColumn(detail, 1);
         workspace.Children.Add(detail);
+        var intelligence = await BuildEmailIntelligenceAsync(selected);
+        Grid.SetColumn(intelligence, 2);
+        workspace.Children.Add(intelligence);
         page.Children.Add(workspace);
         return page;
     }
@@ -597,6 +975,68 @@ public sealed partial class MainWindow
         return Card(panel);
     }
 
+    private async Task<Control> BuildEmailIntelligenceAsync(EmailConversation? conversation)
+    {
+        var lead = conversation is null
+            ? null
+            : !string.IsNullOrWhiteSpace(conversation.LeadId)
+                ? await _services.Repository.GetLeadAsync(conversation.LeadId, _lifetime.Token)
+                : await _services.Repository.GetLeadByEmailAsync(conversation.PeerEmail, _lifetime.Token);
+        var panel = new StackPanel { Spacing = 12 };
+        panel.Children.Add(TitleText("Customer Intelligence", 18));
+        panel.Children.Add(BodyText(
+            lead is null ? "按邮箱自动匹配客户" : $"已关联：{lead.DisplayName} · {lead.Email}",
+            lead is null ? Muted : Primary,
+            11));
+
+        var brain = lead is null
+            ? null
+            : await _services.CustomerBrain.GetAsync(lead.Id, _lifetime.Token)
+              ?? await _services.CustomerBrain.RefreshAsync(lead.Id, _lifetime.Token);
+        var brief = new StackPanel { Spacing = 7 };
+        brief.Children.Add(BodyText(
+            brain is null ? "CUSTOMER BRAIN · 等待客户上下文" : $"CUSTOMER BRAIN · {brain.CoverageLabel}",
+            ResourceBrush("AiAccent", "#6659B8"),
+            10));
+        brief.Children.Add(TitleText(brain is null ? "等待关联客户" : $"{brain.Confidence:P0} 资料置信度", 18));
+        brief.Children.Add(new ProgressBar { Maximum = 100, Value = (brain?.Confidence ?? 0) * 100 });
+        brief.Children.Add(BodyText(
+            brain?.Summary ?? lead?.ProfileSummary ?? "选择会话或填写收件邮箱后显示客户画像",
+            Ink,
+            10));
+        brief.Children.Add(BodyText(
+            $"下一步：{brain?.NextBestAction ?? lead?.NextAction ?? "等待客户上下文"}",
+            Primary,
+            10));
+        panel.Children.Add(SectionCard("AI SALES BRIEF", "CUSTOMER BRAIN", brief));
+
+        var linked = new StackPanel { Spacing = 8 };
+        linked.Children.Add(BodyText(
+            "保存后，客户列表、商机智能、Customer Brain、客户分析和邮件自动化任务都会读取这份资料。",
+            Muted,
+            10));
+        if (lead is null)
+        {
+            linked.Children.Add(EmptyState(
+                "尚未关联 CRM 客户",
+                conversation is null ? "新邮件发送后会按收件邮箱匹配客户。" : "可在客户列表中新建或补充相同邮箱。"));
+        }
+        else
+        {
+            linked.Children.Add(TextCell(lead.DisplayName, true, $"{lead.Company} · {lead.Country} · {lead.StageLabel}"));
+            linked.Children.Add(BodyText($"负责人：{Fallback(lead.Owner, "—")} · 标签：{Fallback(lead.TagsLabel, "—")}", Ink, 10));
+            linked.Children.Add(BodyText($"备注 / 最近情况：{Fallback(lead.LatestMessage, "—")}", Ink, 10));
+            linked.Children.Add(ActionButton("编辑并同步客户资料", async () => await ShowLeadEditorAsync(lead), primary: true));
+        }
+        panel.Children.Add(SectionCard("邮件与 CRM 已联动", "CRM LIVE SYNC", linked));
+        return Card(new ScrollViewer
+        {
+            Content = panel,
+            MaxHeight = 720,
+            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto
+        }, new Thickness(12));
+    }
+
     private async Task SyncEmailAsync(EmailAccount? account)
     {
         if (account is null) return;
@@ -627,9 +1067,28 @@ public sealed partial class MainWindow
         var imapPort = new TextBox { Text = account.ImapPort.ToString() };
         var smtpHost = new TextBox { Text = account.SmtpHost };
         var smtpPort = new TextBox { Text = account.SmtpPort.ToString() };
+        var imapSsl = new CheckBox { Content = "IMAP 使用 SSL / TLS", IsChecked = account.ImapUseSsl };
+        var smtpSsl = new CheckBox { Content = "SMTP 使用 SSL / TLS", IsChecked = account.SmtpUseSsl };
+        var guideTitle = TitleText("", 17);
+        var guideBadge = BodyText("", Primary, 11);
+        var guideSummary = BodyText("", Ink, 12);
+        var guideSteps = BodyText("", Muted, 11);
+        var compatibility = BodyText("", Warning, 11);
+        var setup = new Button();
+        var help = new Button();
+        EmailProviderGuide CurrentGuide() =>
+            EmailService.Guide(providerDefinitions[Math.Clamp(provider.SelectedIndex, 0, providerDefinitions.Count - 1)].Provider);
+        void OpenUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url)) return;
+            Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+        }
+        setup.Click += (_, _) => OpenUrl(CurrentGuide().SetupUrl);
+        help.Click += (_, _) => OpenUrl(CurrentGuide().HelpUrl);
         void ApplyPreset()
         {
             var preset = providerDefinitions[Math.Clamp(provider.SelectedIndex, 0, providerDefinitions.Count - 1)];
+            var guide = EmailService.Guide(preset.Provider);
             account.Provider = preset.Provider;
             if (preset.Provider != EmailProviderKind.Custom)
             {
@@ -639,12 +1098,30 @@ public sealed partial class MainWindow
                 smtpPort.Text = preset.SmtpPort.ToString();
             }
             if (string.IsNullOrWhiteSpace(user.Text)) user.Text = email.Text;
+            email.Watermark = guide.EmailHint;
+            user.Watermark = guide.UserNameHint;
+            password.Watermark = source is null ? guide.PasswordHint : $"留空继续使用钥匙串密码；{guide.PasswordHint}";
+            guideTitle.Text = guide.Title;
+            guideBadge.Text = guide.Badge;
+            guideSummary.Text = guide.Summary;
+            guideSteps.Text = string.Join("\n", guide.Steps.Select((step, index) => $"{index + 1}. {step}"));
+            compatibility.Text = guide.CompatibilityNote;
+            setup.Content = guide.SetupButtonLabel;
+            setup.IsVisible = !string.IsNullOrWhiteSpace(guide.SetupUrl);
+            help.Content = guide.HelpButtonLabel;
         }
         provider.SelectionChanged += (_, _) => ApplyPreset();
         if (source is null) ApplyPreset();
         var panel = new StackPanel { Spacing = 11, Margin = new Thickness(24) };
         panel.Children.Add(TitleText(source is null ? "连接邮箱" : $"管理 · {account.EmailAddress}", 23));
-        panel.Children.Add(BodyText("Gmail、Yahoo 和 iCloud 必须使用应用专用密码；Microsoft OAuth-only 账号当前不能使用密码模式。"));
+        var guideActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        guideActions.Children.Add(setup);
+        guideActions.Children.Add(help);
+        panel.Children.Add(Card(new StackPanel
+        {
+            Spacing = 7,
+            Children = { guideTitle, guideBadge, guideSummary, guideSteps, guideActions, compatibility }
+        }, background: PrimarySoft));
         var form = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("*,*"),
@@ -667,6 +1144,10 @@ public sealed partial class MainWindow
             form.Children.Add(fields[index]);
         }
         panel.Children.Add(form);
+        var sslRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 18 };
+        sslRow.Children.Add(imapSsl);
+        sslRow.Children.Add(smtpSsl);
+        panel.Children.Add(Field("高级服务器加密", sslRow, "993 / 465 通常使用直接 TLS；587 通常由邮件库自动协商 STARTTLS。"));
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 9, HorizontalAlignment = HorizontalAlignment.Right };
         var dialog = DialogWindow(source is null ? "连接邮箱" : "管理邮箱", new ScrollViewer { Content = panel }, 760, 720);
         if (source is not null)
@@ -693,8 +1174,8 @@ public sealed partial class MainWindow
                 account.ImapPort = int.TryParse(imapPort.Text, out var imap) ? imap : 993;
                 account.SmtpHost = smtpHost.Text?.Trim() ?? "";
                 account.SmtpPort = int.TryParse(smtpPort.Text, out var smtp) ? smtp : 465;
-                account.ImapUseSsl = true;
-                account.SmtpUseSsl = true;
+                account.ImapUseSsl = imapSsl.IsChecked == true;
+                account.SmtpUseSsl = smtpSsl.IsChecked == true;
                 await _services.Email.SaveAndTestAccountAsync(account, password.Text ?? "", _lifetime.Token);
                 _activeEmailAccountId = account.Id;
                 dialog.Close(true);
