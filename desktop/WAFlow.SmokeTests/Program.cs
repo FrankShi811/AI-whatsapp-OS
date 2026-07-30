@@ -27,7 +27,7 @@ var imports = new ImportService(repository);
 var updateCacheRoot = Path.Combine(root, "update-cache-retention");
 var installedPackageCache = Path.Combine(updateCacheRoot, "packages");
 Directory.CreateDirectory(installedPackageCache);
-foreach (var version in new[] { "5.15.0", "5.14.0", "5.13.0", "5.12.0", "5.11.0", "5.10.0", "5.9.0" })
+foreach (var version in new[] { "5.15.0", "5.14.1", "5.14.0", "5.13.0", "5.12.0", "5.11.0", "5.10.0", "5.9.0" })
 {
     await File.WriteAllBytesAsync(
         Path.Combine(installedPackageCache, $"AISalesOS-{version}-full.nupkg"),
@@ -40,12 +40,13 @@ await File.WriteAllTextAsync(Path.Combine(installedPackageCache, ".velopack_lock
 await File.WriteAllTextAsync(Path.Combine(installedPackageCache, "unrelated-package.nupkg"), "keep");
 var packageCleanup = UpdateCacheRetention.PruneInstalledPackages(
     installedPackageCache,
-    "5.14.0");
+    "5.14.1");
 Check(
-    packageCleanup.DeletedFiles == 4
+    packageCleanup.DeletedFiles == 6
     && File.Exists(Path.Combine(installedPackageCache, "AISalesOS-5.15.0-full.nupkg"))
-    && File.Exists(Path.Combine(installedPackageCache, "AISalesOS-5.14.0-full.nupkg"))
-    && File.Exists(Path.Combine(installedPackageCache, "AISalesOS-5.11.0-full.nupkg"))
+    && File.Exists(Path.Combine(installedPackageCache, "AISalesOS-5.14.1-full.nupkg"))
+    && File.Exists(Path.Combine(installedPackageCache, "AISalesOS-5.12.0-full.nupkg"))
+    && !File.Exists(Path.Combine(installedPackageCache, "AISalesOS-5.11.0-full.nupkg"))
     && !File.Exists(Path.Combine(installedPackageCache, "AISalesOS-5.10.0-full.nupkg"))
     && !File.Exists(Path.Combine(installedPackageCache, "AISalesOS-5.9.0-delta.nupkg"))
     && File.Exists(Path.Combine(installedPackageCache, ".velopack_lock"))
@@ -1409,8 +1410,9 @@ Check(
     && generatedDigest.Items.Count == 2
     && generatedDigest.WhatsAppUnreadCount == 2
     && generatedDigest.EmailUnreadCount == 1
+    && generatedDigest.Items.Select(item => item.ChannelLabel).Order().SequenceEqual(new[] { "WhatsApp", "邮件" }.Order())
     && dashboardDigestProvider.ModuleKey == AiModuleKeys.Dashboard,
-    "Dashboard uses its independent API model to generate channel-aware unread bullet points");
+    "Dashboard merges WhatsApp and email unread originals into one source-labelled bullet list");
 Check(
     dashboardDigestProvider.CallCount == 1
     && cachedDigest.Fingerprint == generatedDigest.Fingerprint
@@ -1423,11 +1425,14 @@ await digestRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
     Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received,
     Body="We need delivery before August 20.", Timestamp=digestNow
 });
+dashboardDigestService.QueueBackgroundRefresh();
+for (var attempt = 0; attempt < 30 && dashboardDigestProvider.CallCount < 2; attempt++)
+    await Task.Delay(100);
 var digestAfterRecoveredContent = await dashboardDigestService.GetAsync();
 Check(
     dashboardDigestProvider.CallCount == 2
     && digestAfterRecoveredContent.Fingerprint != cachedDigest.Fingerprint,
-    "recovered unread message content invalidates the Dashboard digest even when count and timestamp stay unchanged");
+    "background message events debounce into one Dashboard analysis and invalidate changed unread content");
 await digestRepository.MarkWhatsAppConversationReadAsync(digestWhatsAppConversation.Id);
 var digestAfterWhatsAppRead = await dashboardDigestService.GetAsync();
 Check(
@@ -1677,11 +1682,10 @@ var settingsWindowRouteMismatches = AiModulePreferencePersistence.FindMismatches
     settingsWindowRouteRoundTrip.AiModulePreferences);
 Check(
     settingsWindowRouteMismatches.Count == 0
-    && settingsWindowRouteRoundTrip.AiModulePreferences[AiModuleKeys.Dashboard].Model == "deepseek-v4-pro"
     && settingsWindowRouteRoundTrip.AiModulePreferences[AiModuleKeys.KnowledgeBase].Model == "deepseek-v4-flash"
     && settingsWindowRouteRoundTrip.AiModulePreferences[AiModuleKeys.CustomerAnalytics].Model == "deepseek-v4-flash"
     && settingsWindowRouteRoundTrip.AiModulePreferences[AiModuleKeys.LeadIntelligence].Model == "deepseek-v4-pro",
-    "all settings-window module rows, including the final Insights rows, survive an immediate database round trip");
+    "all user-configurable settings-window module rows survive an immediate database round trip");
 var incompleteSettingsWindowRoute = settingsWindowRouteRoundTrip.AiModulePreferences
     .Where(item => item.Key != AiModuleKeys.CustomerAnalytics)
     .ToDictionary(item => item.Key, item => item.Value, StringComparer.OrdinalIgnoreCase);
@@ -1713,7 +1717,19 @@ await repository.SaveAppSettingsAsync(new AppSettings
         new AiProviderProfile
         {
             ProviderId="deepseek", DisplayName="DeepSeek", BaseUrl="https://api.deepseek.com",
-            Model="deepseek-chat", AvailableModels=["deepseek-chat"], IsConfigured=true
+            Model="deepseek-chat",
+            AvailableModels=["deepseek-v4-pro", "deepseek-chat", "deepseek-v4-flash"],
+            ModelCapabilities=
+            [
+                new AiModelCapability
+                {
+                    ModelId="deepseek-v4-flash",
+                    ReasoningEfforts=["low", "high"],
+                    ReasoningParameter="reasoning_effort",
+                    Source="api_metadata"
+                }
+            ],
+            IsConfigured=true
         },
         new AiProviderProfile
         {
@@ -1761,9 +1777,9 @@ var leadRoutedResult = await routingProvider.CompleteStructuredAsync<RoutingProb
     _ => null);
 var unsupportedReasoningRoute = await routingProvider.ResolveExecutionProfileAsync(AiModuleKeys.EmailInbox);
 var leadIntelligenceRoute = await routingProvider.ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence);
+var dashboardLowestTierRoute = await routingProvider.ResolveExecutionProfileAsync(AiModuleKeys.Dashboard);
 var expectedModuleModels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 {
-    [AiModuleKeys.Dashboard]="dashboard-model",
     [AiModuleKeys.LeadIntelligence]="gpt-5-mini",
     [AiModuleKeys.Customers]="customer-brain-model",
     [AiModuleKeys.WhatsAppInbox]="gpt-5-nano",
@@ -1790,6 +1806,19 @@ Check(
     AiModuleKeys.Configurable.All(moduleKey => resolvedModuleModels[moduleKey] == expectedModuleModels[moduleKey])
     && resolvedModuleModels.Values.Distinct(StringComparer.OrdinalIgnoreCase).Count() == AiModuleKeys.Configurable.Count,
     "every configurable module resolves its own persisted model without leaking the global or another module route");
+Check(
+    dashboardLowestTierRoute.ModuleKey == AiModuleKeys.Dashboard
+    && dashboardLowestTierRoute.ProviderId == "deepseek"
+    && dashboardLowestTierRoute.Model == "deepseek-v4-flash"
+    && dashboardLowestTierRoute.ReasoningEffort == "low"
+    && dashboardLowestTierRoute.ReasoningParameter == "reasoning_effort"
+    && DeepSeekService.SelectLowestTierModel(
+        ["gpt-5-mini", "gpt-5-nano", "gpt-5-pro"],
+        "gpt-5-pro") == "gpt-5-nano"
+    && DeepSeekService.SelectLowestTierModel(
+        ["deepseek-reasoner", "deepseek-chat"],
+        "deepseek-reasoner") == "deepseek-chat",
+    "Dashboard silently ignores old module overrides and selects the API-discovered lowest-tier model and reasoning depth");
 var invalidModuleSettings = await repository.GetAppSettingsAsync();
 invalidModuleSettings.AiModulePreferences[AiModuleKeys.KnowledgeBase] =
     new AiModuleModelPreference { ProviderId="openai", Model="removed-model", ReasoningEffort="high" };

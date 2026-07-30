@@ -380,6 +380,7 @@ public partial class MainWindow : Window
         InitializeSidebarMotionState();
         await UpdateProviderStateAsync();
         await UpdateUnreadBadgesAsync();
+        _services.DashboardUnreadDigest.QueueBackgroundRefresh();
         _unreadBadgeTimer.Start();
         await NavigateAsync("dashboard", DashboardButton);
         _onboardingState = await _services.Repository.GetOnboardingStateAsync();
@@ -867,18 +868,26 @@ public partial class MainWindow : Window
     private void View_DataChanged(object? sender, EventArgs e)
     {
         QueueUnreadBadgeRefresh();
+        _services.DashboardUnreadDigest.QueueBackgroundRefresh();
         _dashboard.NotifyUnreadChanged();
     }
 
     private void MessagingUnreadChanged(object? sender, WhatsAppMessage e)
     {
         QueueUnreadBadgeRefresh();
+        _services.DashboardUnreadDigest.QueueBackgroundRefresh();
         _dashboard.NotifyUnreadChanged();
     }
 
     private void WhatsAppSynchronizationChanged(object? sender, WhatsAppSyncProgress e) => QueueUnreadBadgeRefresh();
 
-    private void EmailSynchronizationChanged(object? sender, EmailSynchronizationState e) => QueueUnreadBadgeRefresh();
+    private void EmailSynchronizationChanged(object? sender, EmailSynchronizationState e)
+    {
+        QueueUnreadBadgeRefresh();
+        if (e.Imported <= 0) return;
+        _services.DashboardUnreadDigest.QueueBackgroundRefresh();
+        _dashboard.NotifyUnreadChanged();
+    }
 
     private void UnreadBadgeTimer_Tick(object? sender, EventArgs e) => QueueUnreadBadgeRefresh();
 
@@ -956,7 +965,10 @@ public partial class MainWindow : Window
         SetUnreadBadge(WhatsAppUnreadBadge, WhatsAppUnreadText, InboxButton, totals.WhatsApp, "WhatsApp");
         SetUnreadBadge(EmailUnreadBadge, EmailUnreadText, EmailButton, totals.Email, "邮件");
         if (_lastUnreadTotals is not null && _lastUnreadTotals != totals)
+        {
+            _services.DashboardUnreadDigest.QueueBackgroundRefresh();
             _dashboard.NotifyUnreadChanged();
+        }
         _lastUnreadTotals = totals;
     }
 

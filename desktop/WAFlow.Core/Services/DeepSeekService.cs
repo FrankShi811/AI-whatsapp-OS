@@ -80,15 +80,19 @@ public sealed class DeepSeekService : IStructuredAiProvider
         CancellationToken cancellationToken = default)
     {
         var settings = await _repository.GetAppSettingsAsync(cancellationToken);
-        var normalizedModule = AiModuleKeys.Configurable.Contains(moduleKey, StringComparer.OrdinalIgnoreCase)
-            ? moduleKey
-            : AiModuleKeys.Global;
+        var isDashboard = moduleKey.Equals(AiModuleKeys.Dashboard, StringComparison.OrdinalIgnoreCase);
+        var normalizedModule = isDashboard
+            ? AiModuleKeys.Dashboard
+            : AiModuleKeys.Configurable.Contains(moduleKey, StringComparer.OrdinalIgnoreCase)
+                ? moduleKey
+                : AiModuleKeys.Global;
         var providerId = settings.ActiveProviderId;
         var model = settings.DeepSeekModel;
         var reasoningEffort = settings.DefaultReasoningEffort;
         var profiles = settings.ConfiguredAiProviders ?? [];
 
-        if (!settings.UseGlobalAiConfiguration
+        if (!isDashboard
+            && !settings.UseGlobalAiConfiguration
             && normalizedModule != AiModuleKeys.Global
             && settings.AiModulePreferences?.TryGetValue(normalizedModule, out var preference) == true)
         {
@@ -111,6 +115,11 @@ public sealed class DeepSeekService : IStructuredAiProvider
 
         var profile = profiles.FirstOrDefault(item =>
             item.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase));
+        if (isDashboard)
+        {
+            model = SelectLowestTierModel(profile?.AvailableModels, model);
+            reasoningEffort = SelectLowestReasoningEffort(profile, model);
+        }
         var baseUrl = profile?.BaseUrl;
         if (string.IsNullOrWhiteSpace(baseUrl))
             baseUrl = providerId.Equals(settings.ActiveProviderId, StringComparison.OrdinalIgnoreCase)
@@ -138,6 +147,91 @@ public sealed class DeepSeekService : IStructuredAiProvider
             normalizedEffort,
             normalizedEffort == AiReasoningEfforts.Auto ? "" : capability?.ReasoningParameter ?? "",
             providerId.Equals(settings.ActiveProviderId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static string SelectLowestTierModel(
+        IReadOnlyList<string>? availableModels,
+        string? fallbackModel)
+    {
+        var models = (availableModels ?? [])
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Select(item => item.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (models.Count == 0) return fallbackModel?.Trim() ?? "";
+        return models
+            .OrderBy(GetModelCostRank)
+            .ThenBy(item => item, StringComparer.OrdinalIgnoreCase)
+            .First();
+    }
+
+    private static string SelectLowestReasoningEffort(AiProviderProfile? profile, string model)
+    {
+        var capability = profile?.ModelCapabilities?.FirstOrDefault(item =>
+            item.ModelId.Equals(model, StringComparison.OrdinalIgnoreCase));
+        if (capability is null || string.IsNullOrWhiteSpace(capability.ReasoningParameter))
+            return AiReasoningEfforts.Auto;
+        return AiReasoningEfforts.Ordered
+            .FirstOrDefault(effort => capability.ReasoningEfforts.Contains(
+                effort,
+                StringComparer.OrdinalIgnoreCase))
+            ?? AiReasoningEfforts.Auto;
+    }
+
+    private static int GetModelCostRank(string model)
+    {
+        var normalized = model.Trim().ToLowerInvariant();
+        var rank = 0;
+        rank += ContainsTier(normalized, "nano") ? -10_000 : 0;
+        rank += ContainsTier(normalized, "tiny") ? -9_000 : 0;
+        rank += ContainsTier(normalized, "micro") ? -8_500 : 0;
+        rank += ContainsTier(normalized, "lite") ? -7_000 : 0;
+        rank += ContainsTier(normalized, "flash") ? -6_500 : 0;
+        rank += ContainsTier(normalized, "mini") ? -6_000 : 0;
+        rank += ContainsTier(normalized, "small") ? -5_500 : 0;
+        rank += ContainsTier(normalized, "instant") ? -5_000 : 0;
+        rank += ContainsTier(normalized, "haiku") ? -4_500 : 0;
+        rank += ContainsTier(normalized, "chat") ? -2_000 : 0;
+        rank += ContainsTier(normalized, "pro") ? 3_000 : 0;
+        rank += ContainsTier(normalized, "large") ? 3_500 : 0;
+        rank += ContainsTier(normalized, "opus") ? 3_500 : 0;
+        rank += ContainsTier(normalized, "ultra") ? 4_500 : 0;
+        rank += ContainsTier(normalized, "max") ? 4_500 : 0;
+        rank += ContainsTier(normalized, "reasoner") || ContainsTier(normalized, "reasoning")
+            || ContainsTier(normalized, "thinking")
+            ? 5_000
+            : 0;
+        rank += TryReadParameterBillions(normalized, out var billions)
+            ? Math.Clamp(billions, 1, 1_000)
+            : 250;
+        return rank;
+    }
+
+    private static bool ContainsTier(string model, string tier)
+    {
+        var tokens = model.Split(
+            ['-', '_', '/', ':', '.', ' '],
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return tokens.Any(token =>
+        {
+            if (token.Equals(tier, StringComparison.OrdinalIgnoreCase)) return true;
+            if (!token.StartsWith(tier, StringComparison.OrdinalIgnoreCase)) return false;
+            var suffix = token[tier.Length..];
+            return suffix.Length > 0 && suffix.All(char.IsDigit);
+        });
+    }
+
+    private static bool TryReadParameterBillions(string model, out int billions)
+    {
+        billions = 0;
+        foreach (var token in model.Split(
+                     ['-', '_', '/', ':', '.', ' '],
+                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (token.Length < 2 || token[^1] != 'b') continue;
+            if (int.TryParse(token[..^1], out billions) && billions > 0) return true;
+        }
+        return false;
     }
 
     public async Task<T> CompleteStructuredAsync<T>(
