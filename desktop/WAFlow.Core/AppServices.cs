@@ -33,6 +33,7 @@ public sealed class AppServices
     public CustomerActionLifecycleService CustomerActions { get; }
     public PersonalSalesLearningService SalesLearning { get; }
     public TodayBriefService TodayBrief { get; }
+    public DashboardUnreadDigestService DashboardUnreadDigest { get; }
     public KnowledgeBaseService KnowledgeBase { get; }
     public KnowledgeRetrievalService KnowledgeRetrieval { get; }
     public KnowledgeLearningService KnowledgeLearning { get; }
@@ -84,6 +85,7 @@ public sealed class AppServices
             KnowledgeRetrieval);
         CustomerSuccessCoordinator = new CustomerSuccessAgentCoordinator(Repository, WhatsAppSync, WhatsApp, CustomerSuccessAgent);
         TodayBrief = new TodayBriefService(Repository, SalesLearning);
+        DashboardUnreadDigest = new DashboardUnreadDigestService(Repository, DeepSeek);
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)

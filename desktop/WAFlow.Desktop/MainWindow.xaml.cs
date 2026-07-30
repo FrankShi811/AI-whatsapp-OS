@@ -38,6 +38,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _unreadBadgeTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private bool _unreadBadgeRefreshRunning;
     private bool _unreadBadgeRefreshPending;
+    private InboxUnreadTotals? _lastUnreadTotals;
     private IReadOnlyList<FrameworkElement> _sidebarRevealElements = [];
     private bool _sidebarExpanded;
     private bool _sidebarPointerInside;
@@ -866,9 +867,14 @@ public partial class MainWindow : Window
     private void View_DataChanged(object? sender, EventArgs e)
     {
         QueueUnreadBadgeRefresh();
+        _dashboard.NotifyUnreadChanged();
     }
 
-    private void MessagingUnreadChanged(object? sender, WhatsAppMessage e) => QueueUnreadBadgeRefresh();
+    private void MessagingUnreadChanged(object? sender, WhatsAppMessage e)
+    {
+        QueueUnreadBadgeRefresh();
+        _dashboard.NotifyUnreadChanged();
+    }
 
     private void WhatsAppSynchronizationChanged(object? sender, WhatsAppSyncProgress e) => QueueUnreadBadgeRefresh();
 
@@ -949,6 +955,9 @@ public partial class MainWindow : Window
         var totals = await _services.Repository.GetInboxUnreadTotalsAsync();
         SetUnreadBadge(WhatsAppUnreadBadge, WhatsAppUnreadText, InboxButton, totals.WhatsApp, "WhatsApp");
         SetUnreadBadge(EmailUnreadBadge, EmailUnreadText, EmailButton, totals.Email, "邮件");
+        if (_lastUnreadTotals is not null && _lastUnreadTotals != totals)
+            _dashboard.NotifyUnreadChanged();
+        _lastUnreadTotals = totals;
     }
 
     private static void SetUnreadBadge(Border badge, TextBlock text, Button button, int count, string channel)

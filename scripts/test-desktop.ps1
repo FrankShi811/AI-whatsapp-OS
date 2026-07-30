@@ -33,6 +33,7 @@ $mainWindowSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $roo
 $motionAssistSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\MotionAssist.cs')
 $dashboardXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\DashboardView.xaml')
 $dashboardSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\DashboardView.xaml.cs')
+$dashboardUnreadDigestSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\DashboardUnreadDigestService.cs')
 $customersXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CustomersView.xaml')
 $customersSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CustomersView.xaml.cs')
 $campaignsXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CampaignsView.xaml')
@@ -324,6 +325,22 @@ if ($todayBriefSource -match '"identity"' -or
   throw 'Dashboard Today Brief must not create or count identity-confirmation work; unmatched Inbox contacts wait for manual CRM creation.'
 }
 Write-Host 'PASS  Today Brief known-customer workflow without identity-confirmation tasks'
+
+if ($dashboardXaml -notmatch 'x:Name="UnreadDigestItems"' -or
+    $dashboardXaml -notmatch 'x:Name="WhatsAppUnreadText"' -or
+    $dashboardXaml -notmatch 'x:Name="EmailUnreadText"' -or
+    $dashboardXaml -notmatch 'Text="\{Binding SuggestedAction, StringFormat=下一步：\{0\}\}"' -or
+    $dashboardSource -notmatch [regex]::Escape('_services.DashboardUnreadDigest.GetAsync(forceRefresh)') -or
+    $dashboardSource -notmatch [regex]::Escape('NotifyUnreadChanged()') -or
+    $dashboardUnreadDigestSource -notmatch [regex]::Escape('AiModuleKeys.Dashboard') -or
+    $dashboardUnreadDigestSource -notmatch [regex]::Escape('GetDashboardUnreadDigestCacheAsync') -or
+    $localRepositorySource -notmatch [regex]::Escape('GetDashboardUnreadSnapshotAsync') -or
+    $localRepositorySource -notmatch [regex]::Escape('LastReadAt') -or
+    $settingsSource -notmatch [regex]::Escape('Command Center · Dashboard') -or
+    $guideCatalogSource -notmatch [regex]::Escape('未读消息 AI 摘要')) {
+  throw 'Dashboard Today Brief must summarize real unread WhatsApp and email originals through an independent cached AI route, with direct Inbox actions and no read-state mutation.'
+}
+Write-Host 'PASS  cached Dashboard AI digest for unread WhatsApp and email action points'
 
 if ($customerDimensionSource -notmatch [regex]::Escape('RemoveDuplicateSuffix(visibleLabel)') -or
     $customerDimensionSource -notmatch [regex]::Escape('$"未命名维度 {unnamedOrdinal}"') -or
@@ -827,7 +844,9 @@ if ($missingAiRoutingCoreTokens.Count -gt 0) {
 }
 if (-not $conversationAssistantSource.Contains('AiModuleKeys.WhatsAppInbox') -or
     -not $customerSuccessAgentSource.Contains('AiModuleKeys.WhatsAppInbox') -or
+    -not $dashboardUnreadDigestSource.Contains('AiModuleKeys.Dashboard') -or
     -not $domainModelsSource.Contains('AiModuleKeys') -or
+    -not $domainModelsSource.Contains('public const string Dashboard') -or
     -not $domainModelsSource.Contains('public const string LeadIntelligence') -or
     -not $settingsSource.Contains('AiModuleKeys.LeadIntelligence') -or
     -not $deepSeekSource.Contains('ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence') -or

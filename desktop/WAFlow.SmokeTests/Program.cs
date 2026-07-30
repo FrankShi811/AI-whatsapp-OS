@@ -1284,6 +1284,107 @@ Check(
     readEmailConversation.UnreadCount == 1,
     "email arriving after the read cursor increments the global unread badge");
 await repository.MarkEmailConversationReadAsync(emailUnreadConversation.Id);
+
+var digestRoot = Path.Combine(root, "dashboard-unread-digest");
+var digestRepository = new LocalRepository(Path.Combine(digestRoot, "digest.db"));
+await digestRepository.InitializeAsync();
+var digestEmailAccount = new EmailAccount
+{
+    Id="digest-email", DisplayName="Digest Mailbox", EmailAddress="digest@example.com",
+    Status=EmailConnectionStatus.Connected
+};
+await digestRepository.SaveEmailAccountAsync(digestEmailAccount);
+var digestNow = DateTimeOffset.Now;
+var digestWhatsAppConversation = new WhatsAppConversation
+{
+    Id="primary:digest-wa", AccountId="primary", Phone="14155550181", DisplayName="WhatsApp Buyer",
+    LastMessage="Can you quote 500 pieces for delivery next month?", LastMessageAt=digestNow,
+    UnreadCount=2, LastReadAt=digestNow.AddHours(-1)
+};
+await digestRepository.UpsertWhatsAppConversationAsync(digestWhatsAppConversation);
+await digestRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id="digest-wa-1", ProviderMessageId="digest-wa-1", AccountId="primary",
+    ConversationId=digestWhatsAppConversation.Id, Phone=digestWhatsAppConversation.Phone,
+    Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received,
+    Body="Can you quote 500 pieces?", Timestamp=digestNow.AddMinutes(-2)
+});
+await digestRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id="digest-wa-2", ProviderMessageId="digest-wa-2", AccountId="primary",
+    ConversationId=digestWhatsAppConversation.Id, Phone=digestWhatsAppConversation.Phone,
+    Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received,
+    Body="We need delivery next month.", Timestamp=digestNow
+});
+var digestEmailConversation = new EmailConversation
+{
+    Id="digest-email:buyer@example.com", AccountId=digestEmailAccount.Id,
+    PeerEmail="buyer@example.com", PeerName="Email Buyer", Subject="Payment question",
+    LastMessage="Please confirm the payment terms.", LastMessageAt=digestNow.AddMinutes(-1),
+    UnreadCount=1, LastReadAt=digestNow.AddHours(-1)
+};
+await digestRepository.UpsertEmailConversationAsync(digestEmailConversation);
+await digestRepository.UpsertEmailMessageAsync(new EmailMessage
+{
+    Id="digest-email-1", ProviderMessageId="digest-email-1", AccountId=digestEmailAccount.Id,
+    ConversationId=digestEmailConversation.Id, Direction=EmailMessageDirection.Incoming,
+    Status=EmailMessageStatus.Received, FromName=digestEmailConversation.PeerName,
+    FromAddress=digestEmailConversation.PeerEmail, Subject=digestEmailConversation.Subject,
+    TextBody="Please confirm the payment terms.", Timestamp=digestNow.AddMinutes(-1)
+});
+var unreadDigestSnapshot = await digestRepository.GetDashboardUnreadSnapshotAsync();
+Check(
+    unreadDigestSnapshot.WhatsAppUnreadCount == 2
+    && unreadDigestSnapshot.EmailUnreadCount == 1
+    && unreadDigestSnapshot.Threads.Count == 2
+    && unreadDigestSnapshot.Threads.Any(thread => thread.Channel == "whatsapp" && thread.Messages.Count == 2)
+    && unreadDigestSnapshot.Threads.Any(thread => thread.Channel == "email" && thread.Messages.Single().Contains("Payment question")),
+    "Dashboard unread snapshot reads only unread WhatsApp and email originals with stable channel context");
+var dashboardDigestProvider = new CapturingDashboardDigestProvider();
+var dashboardDigestService = new DashboardUnreadDigestService(digestRepository, dashboardDigestProvider);
+var generatedDigest = await dashboardDigestService.GetAsync();
+var cachedDigest = await dashboardDigestService.GetAsync();
+var totalsAfterDigest = await digestRepository.GetInboxUnreadTotalsAsync();
+Check(
+    generatedDigest.IsAiGenerated
+    && generatedDigest.Items.Count == 2
+    && generatedDigest.WhatsAppUnreadCount == 2
+    && generatedDigest.EmailUnreadCount == 1
+    && dashboardDigestProvider.ModuleKey == AiModuleKeys.Dashboard,
+    "Dashboard uses its independent API model to generate channel-aware unread bullet points");
+Check(
+    dashboardDigestProvider.CallCount == 1
+    && cachedDigest.Fingerprint == generatedDigest.Fingerprint
+    && totalsAfterDigest == new InboxUnreadTotals(2, 1),
+    "unchanged unread content reuses the local digest cache without spending Token or marking messages read");
+await digestRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id="digest-wa-2", ProviderMessageId="digest-wa-2", AccountId="primary",
+    ConversationId=digestWhatsAppConversation.Id, Phone=digestWhatsAppConversation.Phone,
+    Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received,
+    Body="We need delivery before August 20.", Timestamp=digestNow
+});
+var digestAfterRecoveredContent = await dashboardDigestService.GetAsync();
+Check(
+    dashboardDigestProvider.CallCount == 2
+    && digestAfterRecoveredContent.Fingerprint != cachedDigest.Fingerprint,
+    "recovered unread message content invalidates the Dashboard digest even when count and timestamp stay unchanged");
+await digestRepository.MarkWhatsAppConversationReadAsync(digestWhatsAppConversation.Id);
+var digestAfterWhatsAppRead = await dashboardDigestService.GetAsync();
+Check(
+    dashboardDigestProvider.CallCount == 3
+    && digestAfterWhatsAppRead.WhatsAppUnreadCount == 0
+    && digestAfterWhatsAppRead.EmailUnreadCount == 1
+    && digestAfterWhatsAppRead.Items.All(item => item.Channel == "email"),
+    "reading a WhatsApp conversation removes it from the next Dashboard digest and invalidates the fingerprint");
+await digestRepository.MarkEmailConversationReadAsync(digestEmailConversation.Id);
+var emptyDigest = await dashboardDigestService.GetAsync();
+Check(
+    emptyDigest.TotalUnreadCount == 0
+    && emptyDigest.Items.Count == 0
+    && dashboardDigestProvider.CallCount == 3,
+    "Dashboard skips the API entirely when both inboxes have no unread messages");
+
 var emailLead = new Lead { Id="email-lead", Name="Email Buyer", Email="buyer@example.com", Stage=LeadStage.New, Grade="D", Score=0 };
 await repository.UpsertLeadAsync(emailLead);
 Check((await repository.GetLeadByEmailAsync(" BUYER@EXAMPLE.COM "))?.Id == emailLead.Id, "email address links inbox conversations to the authoritative CRM customer");
@@ -1517,6 +1618,7 @@ var settingsWindowRouteMismatches = AiModulePreferencePersistence.FindMismatches
     settingsWindowRouteRoundTrip.AiModulePreferences);
 Check(
     settingsWindowRouteMismatches.Count == 0
+    && settingsWindowRouteRoundTrip.AiModulePreferences[AiModuleKeys.Dashboard].Model == "deepseek-v4-pro"
     && settingsWindowRouteRoundTrip.AiModulePreferences[AiModuleKeys.KnowledgeBase].Model == "deepseek-v4-flash"
     && settingsWindowRouteRoundTrip.AiModulePreferences[AiModuleKeys.CustomerAnalytics].Model == "deepseek-v4-flash"
     && settingsWindowRouteRoundTrip.AiModulePreferences[AiModuleKeys.LeadIntelligence].Model == "deepseek-v4-pro",
@@ -1560,7 +1662,7 @@ await repository.SaveAppSettingsAsync(new AppSettings
             Model="gpt-5-mini",
             AvailableModels=
             [
-                "gpt-5-mini", "gpt-5-nano", "gpt-4.1-mini",
+                "gpt-5-mini", "gpt-5-nano", "gpt-4.1-mini", "dashboard-model",
                 "customer-brain-model", "campaign-model", "vision-model", "analytics-model"
             ],
             IsConfigured=true,
@@ -1578,6 +1680,7 @@ await repository.SaveAppSettingsAsync(new AppSettings
     ],
     AiModulePreferences=new Dictionary<string, AiModuleModelPreference>(StringComparer.OrdinalIgnoreCase)
     {
+        [AiModuleKeys.Dashboard]=new() { ProviderId="openai", Model="dashboard-model", ReasoningEffort="auto" },
         [AiModuleKeys.LeadIntelligence]=new() { ProviderId="openai", Model="gpt-5-mini", ReasoningEffort="high" },
         [AiModuleKeys.Customers]=new() { ProviderId="openai", Model="customer-brain-model", ReasoningEffort="auto" },
         [AiModuleKeys.WhatsAppInbox]=new() { ProviderId="openai", Model="gpt-5-nano", ReasoningEffort="auto" },
@@ -1601,6 +1704,7 @@ var unsupportedReasoningRoute = await routingProvider.ResolveExecutionProfileAsy
 var leadIntelligenceRoute = await routingProvider.ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence);
 var expectedModuleModels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 {
+    [AiModuleKeys.Dashboard]="dashboard-model",
     [AiModuleKeys.LeadIntelligence]="gpt-5-mini",
     [AiModuleKeys.Customers]="customer-brain-model",
     [AiModuleKeys.WhatsAppInbox]="gpt-5-nano",
@@ -3230,6 +3334,54 @@ sealed class FakeSecretStore(string value) : ISecretStore
 sealed class RoutingProbe
 {
     public string Value { get; set; } = "";
+}
+
+sealed class CapturingDashboardDigestProvider : IStructuredAiProvider
+{
+    public int CallCount { get; private set; }
+    public string ModuleKey { get; private set; } = "";
+
+    public bool HasApiKey() => true;
+    public bool HasApiKey(string moduleKey) => true;
+    public Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult("dashboard-test-model");
+    public Task<string> GetSelectedModelAsync(string moduleKey, CancellationToken cancellationToken = default) =>
+        Task.FromResult("dashboard-test-model");
+
+    public Task<T> CompleteStructuredAsync<T>(
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class =>
+        throw new InvalidOperationException("Dashboard digest must use the module-aware overload.");
+
+    public Task<T> CompleteStructuredAsync<T>(
+        string moduleKey,
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        CallCount++;
+        ModuleKey = moduleKey;
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(payload));
+        var threads = document.RootElement.GetProperty("suppliedThreads");
+        var response = new DashboardUnreadDigestAiResponse
+        {
+            Items = threads.EnumerateArray().Take(8).Select(thread => new DashboardUnreadDigestAiItem
+            {
+                SourceKey = thread.GetProperty("SourceKey").GetString() ?? "",
+                Headline = "客户新回复",
+                Summary = "客户发来新的业务问题，需要核对原文。",
+                SuggestedAction = "进入对应 Inbox 核对详情并人工回复。",
+                Priority = "normal"
+            }).ToList()
+        };
+        var typed = (T)(object)response;
+        var validationError = validate(typed);
+        if (!string.IsNullOrWhiteSpace(validationError)) throw new InvalidOperationException(validationError);
+        return Task.FromResult(typed);
+    }
 }
 
 sealed class FakeImageTextExtractor(string value) : ImageTextExtractor

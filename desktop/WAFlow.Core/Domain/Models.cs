@@ -328,6 +328,72 @@ public sealed class EmailConversation
 
 public sealed record InboxUnreadTotals(int WhatsApp, int Email);
 
+public sealed class DashboardUnreadThread
+{
+    public string SourceKey { get; set; } = "";
+    public string Channel { get; set; } = "";
+    public string ConversationId { get; set; } = "";
+    public string LeadId { get; set; } = "";
+    public string SenderLabel { get; set; } = "";
+    public string ContactLabel { get; set; } = "";
+    public string Subject { get; set; } = "";
+    public int UnreadCount { get; set; }
+    public DateTimeOffset LastMessageAt { get; set; }
+    public List<string> MessageIds { get; set; } = [];
+    public List<string> Messages { get; set; } = [];
+}
+
+public sealed class DashboardUnreadSnapshot
+{
+    public int WhatsAppUnreadCount { get; set; }
+    public int EmailUnreadCount { get; set; }
+    public int TotalUnreadThreadCount { get; set; }
+    public string Fingerprint { get; set; } = "";
+    public List<DashboardUnreadThread> Threads { get; set; } = [];
+}
+
+public sealed class DashboardUnreadDigestItem
+{
+    public string SourceKey { get; set; } = "";
+    public string Channel { get; set; } = "";
+    public string SenderLabel { get; set; } = "";
+    public string Headline { get; set; } = "";
+    public string Summary { get; set; } = "";
+    public string SuggestedAction { get; set; } = "";
+    public string Priority { get; set; } = "normal";
+    public DateTimeOffset LastMessageAt { get; set; }
+    public int UnreadCount { get; set; }
+
+    [JsonIgnore] public string ChannelLabel => Channel.Equals("email", StringComparison.OrdinalIgnoreCase) ? "邮件" : "WhatsApp";
+    [JsonIgnore] public string ChannelBadge => Channel.Equals("email", StringComparison.OrdinalIgnoreCase) ? "EMAIL" : "WA";
+    [JsonIgnore] public string PriorityLabel => Priority.ToLowerInvariant() switch
+    {
+        "urgent" => "紧急",
+        "high" => "高优先",
+        _ => "普通"
+    };
+    [JsonIgnore] public string TimeLabel => LastMessageAt == default ? "" : LastMessageAt.LocalDateTime.ToString("MM-dd HH:mm");
+    [JsonIgnore] public string UnreadLabel => $"{Math.Max(1, UnreadCount)} 条未读";
+}
+
+public sealed class DashboardUnreadDigest
+{
+    public string Fingerprint { get; set; } = "";
+    public string Model { get; set; } = "";
+    public DateTimeOffset GeneratedAt { get; set; }
+    public int WhatsAppUnreadCount { get; set; }
+    public int EmailUnreadCount { get; set; }
+    public int TotalUnreadThreadCount { get; set; }
+    public int SummarizedThreadCount { get; set; }
+    public bool IsAiGenerated { get; set; }
+    public string StatusMessage { get; set; } = "";
+    public List<DashboardUnreadDigestItem> Items { get; set; } = [];
+
+    [JsonIgnore] public int TotalUnreadCount => WhatsAppUnreadCount + EmailUnreadCount;
+    [JsonIgnore] public int OmittedThreadCount => Math.Max(0, TotalUnreadThreadCount - SummarizedThreadCount);
+    [JsonIgnore] public string GeneratedLabel => GeneratedAt == default ? "" : GeneratedAt.LocalDateTime.ToString("MM-dd HH:mm");
+}
+
 public sealed class EmailMessage
 {
     public string Id { get; set; } = "";
@@ -593,6 +659,7 @@ public static class AiReasoningEfforts
 public static class AiModuleKeys
 {
     public const string Global = "global";
+    public const string Dashboard = "command_center.dashboard";
     public const string LeadIntelligence = "command_center.lead_intelligence";
     public const string Customers = "customer_operations.customers";
     public const string WhatsAppInbox = "customer_operations.whatsapp_inbox";
@@ -603,6 +670,7 @@ public static class AiModuleKeys
 
     public static readonly IReadOnlyList<string> Configurable =
     [
+        Dashboard,
         LeadIntelligence,
         Customers,
         WhatsAppInbox,

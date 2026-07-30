@@ -1,3 +1,4 @@
+using System.Windows;
 using System.Windows.Controls;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
@@ -7,6 +8,10 @@ namespace WAFlow.Desktop.Pages;
 public partial class DashboardView : UserControl, IRefreshableView
 {
     private readonly AppServices _services;
+    private bool _unreadDigestRefreshRunning;
+    private bool _unreadDigestRefreshPending;
+    private bool _unreadDigestForcePending;
+    private int _unreadDigestDelayMilliseconds;
     public event EventHandler<string>? NavigateRequested;
     public DashboardView(AppServices services) { InitializeComponent(); _services = services; }
 
@@ -50,8 +55,99 @@ public partial class DashboardView : UserControl, IRefreshableView
         LearningDetailText.Text =
             $"已接受 {brief.Learning.Accepted} · 已执行 {brief.Learning.Executed} · 观察中 {brief.Learning.AwaitingOutcome} · 复购 {brief.Learning.RepeatPurchases}";
         LearningStrategyText.Text = brief.Learning.StrategyReview;
+        QueueUnreadDigestRefresh();
         return;
         void SetGrade(string grade, TextBlock text, Border bar) { var count = data.Grades.GetValueOrDefault(grade); text.Text = count.ToString(); bar.Height = 20 + (data.TotalLeads == 0 ? 0 : 100d * count / data.TotalLeads); }
+    }
+
+    public void NotifyUnreadChanged()
+    {
+        if (IsVisible) QueueUnreadDigestRefresh(delayMilliseconds: 350);
+    }
+
+    private void QueueUnreadDigestRefresh(bool forceRefresh = false, int delayMilliseconds = 0)
+    {
+        _unreadDigestRefreshPending = true;
+        _unreadDigestForcePending |= forceRefresh;
+        _unreadDigestDelayMilliseconds = Math.Max(_unreadDigestDelayMilliseconds, delayMilliseconds);
+        if (_unreadDigestRefreshRunning) return;
+        _ = RunUnreadDigestRefreshLoopAsync();
+    }
+
+    private async Task RunUnreadDigestRefreshLoopAsync()
+    {
+        _unreadDigestRefreshRunning = true;
+        RefreshUnreadDigestButton.IsEnabled = false;
+        try
+        {
+            do
+            {
+                var forceRefresh = _unreadDigestForcePending;
+                var delay = _unreadDigestDelayMilliseconds;
+                _unreadDigestRefreshPending = false;
+                _unreadDigestForcePending = false;
+                _unreadDigestDelayMilliseconds = 0;
+                if (delay > 0) await Task.Delay(delay);
+                await RefreshUnreadDigestAsync(forceRefresh);
+            }
+            while (_unreadDigestRefreshPending);
+        }
+        finally
+        {
+            _unreadDigestRefreshRunning = false;
+            RefreshUnreadDigestButton.IsEnabled = true;
+        }
+    }
+
+    private async Task RefreshUnreadDigestAsync(bool forceRefresh)
+    {
+        try
+        {
+            var totals = await _services.Repository.GetInboxUnreadTotalsAsync();
+            WhatsAppUnreadText.Text = $"WhatsApp {totals.WhatsApp}";
+            EmailUnreadText.Text = $"邮件 {totals.Email}";
+            UnreadDigestStatusText.Text = totals.WhatsApp + totals.Email == 0
+                ? "正在核对 Inbox 未读状态…"
+                : forceRefresh
+                    ? "正在重新调用 Dashboard 模型汇总未读原文…"
+                    : "正在读取未读原文；未读集合未变化时直接使用本地缓存…";
+            UnreadDigestModelText.Text = "模型读取中…";
+            UnreadDigestEmptyText.Visibility = Visibility.Collapsed;
+
+            var digest = await _services.DashboardUnreadDigest.GetAsync(forceRefresh);
+            WhatsAppUnreadText.Text = $"WhatsApp {digest.WhatsAppUnreadCount}";
+            EmailUnreadText.Text = $"邮件 {digest.EmailUnreadCount}";
+            UnreadDigestStatusText.Text = digest.StatusMessage;
+            UnreadDigestModelText.Text = string.IsNullOrWhiteSpace(digest.Model)
+                ? "Dashboard 模型未配置"
+                : $"{digest.Model} · {digest.GeneratedLabel}";
+            UnreadDigestItems.ItemsSource = digest.Items.Take(6).ToList();
+            UnreadDigestEmptyText.Visibility = digest.TotalUnreadCount == 0
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            UnreadDigestCoverageText.Text = digest.TotalUnreadCount == 0
+                ? "新消息到达后会自动按未读集合生成分点摘要。"
+                : digest.OmittedThreadCount > 0
+                    ? $"已展示 {Math.Min(6, digest.Items.Count)} 个重点；另有 {digest.OmittedThreadCount} 个未读会话，请进入对应 Inbox 查看。"
+                    : $"覆盖 {digest.SummarizedThreadCount} 个未读会话 · 共 {digest.TotalUnreadCount} 条未读消息。";
+        }
+        catch (Exception error)
+        {
+            UnreadDigestStatusText.Text = $"未读摘要暂时无法刷新：{error.Message}";
+            UnreadDigestModelText.Text = "稍后自动重试";
+        }
+    }
+
+    private void RefreshUnreadDigest_Click(object sender, RoutedEventArgs e)
+    {
+        UnreadDigestStatusText.Text = "已请求重新汇总；将忽略现有摘要缓存并调用 Dashboard 模型。";
+        QueueUnreadDigestRefresh(forceRefresh: true);
+    }
+
+    private void OpenUnreadChannel_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string channel }) return;
+        NavigateRequested?.Invoke(this, channel.Equals("email", StringComparison.OrdinalIgnoreCase) ? "email" : "inbox");
     }
 
     private void Action_Click(object sender, System.Windows.RoutedEventArgs e)

@@ -2195,6 +2195,198 @@ public sealed class LocalRepository
             Math.Max(0, Convert.ToInt32(reader.GetInt64(1))));
     }
 
+    public async Task<DashboardUnreadSnapshot> GetDashboardUnreadSnapshotAsync(
+        int maxThreads = 12,
+        int maxMessagesPerThread = 6,
+        CancellationToken cancellationToken = default)
+    {
+        maxThreads = Math.Clamp(maxThreads, 1, 30);
+        maxMessagesPerThread = Math.Clamp(maxMessagesPerThread, 1, 12);
+        var candidates = new List<(DashboardUnreadThread Thread, DateTimeOffset? LastReadAt)>();
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+
+        await using (var command = db.CreateCommand())
+        {
+            command.CommandText = "SELECT data_json FROM whatsapp_conversations WHERE unread_count>0 ORDER BY last_message_at DESC";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (Json.Deserialize<WhatsAppConversation>(reader.GetString(0)) is not { UnreadCount: > 0 } conversation)
+                    continue;
+                candidates.Add((
+                    new DashboardUnreadThread
+                    {
+                        SourceKey = $"whatsapp:{conversation.Id}",
+                        Channel = "whatsapp",
+                        ConversationId = conversation.Id,
+                        LeadId = conversation.LeadId,
+                        SenderLabel = FirstNonEmpty(conversation.DisplayName, conversation.IsGroup ? "WhatsApp 群组" : conversation.Phone, "未知联系人"),
+                        ContactLabel = conversation.IsGroup ? "群聊" : conversation.Phone,
+                        UnreadCount = conversation.UnreadCount,
+                        LastMessageAt = conversation.LastMessageAt
+                    },
+                    conversation.LastReadAt));
+            }
+        }
+
+        await using (var command = db.CreateCommand())
+        {
+            command.CommandText = "SELECT data_json FROM email_conversations WHERE unread_count>0 ORDER BY last_message_at DESC";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (Json.Deserialize<EmailConversation>(reader.GetString(0)) is not { UnreadCount: > 0 } conversation)
+                    continue;
+                candidates.Add((
+                    new DashboardUnreadThread
+                    {
+                        SourceKey = $"email:{conversation.Id}",
+                        Channel = "email",
+                        ConversationId = conversation.Id,
+                        LeadId = conversation.LeadId,
+                        SenderLabel = FirstNonEmpty(conversation.PeerName, conversation.PeerEmail, "未知发件人"),
+                        ContactLabel = conversation.PeerEmail,
+                        Subject = conversation.Subject,
+                        UnreadCount = conversation.UnreadCount,
+                        LastMessageAt = conversation.LastMessageAt
+                    },
+                    conversation.LastReadAt));
+            }
+        }
+
+        var ordered = candidates
+            .OrderByDescending(item => item.Thread.LastMessageAt)
+            .ThenBy(item => item.Thread.SourceKey, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        foreach (var candidate in ordered.Take(maxThreads))
+        {
+            if (candidate.Thread.Channel == "whatsapp")
+                await LoadUnreadWhatsAppMessagesAsync(db, candidate.Thread, candidate.LastReadAt, maxMessagesPerThread, cancellationToken);
+            else
+                await LoadUnreadEmailMessagesAsync(db, candidate.Thread, candidate.LastReadAt, maxMessagesPerThread, cancellationToken);
+        }
+
+        var fingerprintText = string.Join(
+            "\n",
+            ordered.Select(item =>
+                $"{item.Thread.SourceKey}|{item.Thread.UnreadCount}|{item.Thread.LastMessageAt.UtcTicks}|{item.LastReadAt?.UtcTicks ?? 0}"
+                + $"|{string.Join(',', item.Thread.MessageIds)}|{string.Join('\u001e', item.Thread.Messages)}"));
+        var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(fingerprintText)));
+
+        return new DashboardUnreadSnapshot
+        {
+            WhatsAppUnreadCount = ordered
+                .Where(item => item.Thread.Channel == "whatsapp")
+                .Sum(item => item.Thread.UnreadCount),
+            EmailUnreadCount = ordered
+                .Where(item => item.Thread.Channel == "email")
+                .Sum(item => item.Thread.UnreadCount),
+            TotalUnreadThreadCount = ordered.Count,
+            Fingerprint = fingerprint,
+            Threads = ordered.Take(maxThreads).Select(item => item.Thread).ToList()
+        };
+    }
+
+    public async Task<DashboardUnreadDigest?> GetDashboardUnreadDigestCacheAsync(
+        CancellationToken cancellationToken = default) =>
+        await GetSettingAsync<DashboardUnreadDigest>("dashboard_unread_digest_cache", cancellationToken);
+
+    public Task SaveDashboardUnreadDigestCacheAsync(
+        DashboardUnreadDigest digest,
+        CancellationToken cancellationToken = default) =>
+        SaveSettingAsync("dashboard_unread_digest_cache", digest, cancellationToken);
+
+    private static async Task LoadUnreadWhatsAppMessagesAsync(
+        SqliteConnection db,
+        DashboardUnreadThread thread,
+        DateTimeOffset? lastReadAt,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        await using var command = db.CreateCommand();
+        command.CommandText = lastReadAt is null
+            ? "SELECT data_json FROM whatsapp_messages WHERE conversation_id=$conversation AND direction=$direction ORDER BY timestamp DESC LIMIT $limit"
+            : "SELECT data_json FROM whatsapp_messages WHERE conversation_id=$conversation AND direction=$direction AND julianday(timestamp)>julianday($read) ORDER BY timestamp DESC LIMIT $limit";
+        command.Parameters.AddWithValue("$conversation", thread.ConversationId);
+        command.Parameters.AddWithValue("$direction", WhatsAppMessageDirection.Incoming.ToString());
+        command.Parameters.AddWithValue("$limit", Math.Min(limit, Math.Max(1, thread.UnreadCount)));
+        if (lastReadAt is not null) command.Parameters.AddWithValue("$read", lastReadAt.Value.ToString("O"));
+        var messages = new List<WhatsAppMessage>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (Json.Deserialize<WhatsAppMessage>(reader.GetString(0)) is { IsRevoked: false, IsStatusUpdate: false } message)
+                messages.Add(message);
+        }
+        messages.Reverse();
+        foreach (var message in messages)
+        {
+            thread.MessageIds.Add(message.Id);
+            var text = WhatsAppDigestPreview(message);
+            if (message.IsGroup && !string.IsNullOrWhiteSpace(message.ParticipantName))
+                text = $"{message.ParticipantName.Trim()}：{text}";
+            thread.Messages.Add(BoundDigestText(text));
+        }
+        if (thread.Messages.Count == 0) thread.Messages.Add("有一条未读 WhatsApp 消息，请进入会话查看原文。");
+    }
+
+    private static async Task LoadUnreadEmailMessagesAsync(
+        SqliteConnection db,
+        DashboardUnreadThread thread,
+        DateTimeOffset? lastReadAt,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        await using var command = db.CreateCommand();
+        command.CommandText = lastReadAt is null
+            ? "SELECT data_json FROM email_messages WHERE conversation_id=$conversation AND direction=$direction ORDER BY timestamp DESC LIMIT $limit"
+            : "SELECT data_json FROM email_messages WHERE conversation_id=$conversation AND direction=$direction AND julianday(timestamp)>julianday($read) ORDER BY timestamp DESC LIMIT $limit";
+        command.Parameters.AddWithValue("$conversation", thread.ConversationId);
+        command.Parameters.AddWithValue("$direction", EmailMessageDirection.Incoming.ToString());
+        command.Parameters.AddWithValue("$limit", Math.Min(limit, Math.Max(1, thread.UnreadCount)));
+        if (lastReadAt is not null) command.Parameters.AddWithValue("$read", lastReadAt.Value.ToString("O"));
+        var messages = new List<EmailMessage>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<EmailMessage>(reader.GetString(0)) is { } message) messages.Add(message);
+        messages.Reverse();
+        foreach (var message in messages)
+        {
+            thread.MessageIds.Add(message.Id);
+            var subject = FirstNonEmpty(message.Subject, thread.Subject);
+            var body = BoundDigestText(message.TextBody);
+            thread.Messages.Add(string.IsNullOrWhiteSpace(subject) ? body : $"主题：{subject}\n正文：{body}");
+        }
+        if (thread.Messages.Count == 0) thread.Messages.Add("有一封未读邮件，请进入邮件会话查看原文。");
+    }
+
+    private static string WhatsAppDigestPreview(WhatsAppMessage message)
+    {
+        if (!string.IsNullOrWhiteSpace(message.Body)) return message.Body;
+        return message.Kind.ToLowerInvariant() switch
+        {
+            "image" => "[图片]",
+            "video" => "[视频]",
+            "audio" => "[音频]",
+            "document" => $"[文件{(string.IsNullOrWhiteSpace(message.FileName) ? "" : $"：{message.FileName}")}]",
+            "sticker" => "[贴纸]",
+            _ => "[媒体消息]"
+        };
+    }
+
+    private static string BoundDigestText(string? value)
+    {
+        var normalized = string.Join(
+            " ",
+            (value ?? "").Replace('\u00a0', ' ').Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        if (normalized.Length == 0) return "[无纯文本内容]";
+        return normalized.Length <= 900 ? normalized : normalized[..900] + "…";
+    }
+
+    private static string FirstNonEmpty(params string?[] values) =>
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? "";
+
     public async Task<bool> UpsertEmailMessageAsync(EmailMessage message, CancellationToken cancellationToken = default)
     {
         message.UpdatedAt = DateTimeOffset.Now;
