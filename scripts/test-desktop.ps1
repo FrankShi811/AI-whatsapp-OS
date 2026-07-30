@@ -359,20 +359,28 @@ if ($todayBriefSource -match '"identity"' -or
 Write-Host 'PASS  Today Brief known-customer workflow without identity-confirmation tasks'
 
 if ($dashboardXaml -notmatch 'x:Name="UnreadDigestItems"' -or
-    $dashboardXaml -notmatch 'x:Name="WhatsAppUnreadText"' -or
-    $dashboardXaml -notmatch 'x:Name="EmailUnreadText"' -or
+    $dashboardXaml -notmatch 'Text="\{Binding ChannelLabel\}"' -or
     $dashboardXaml -notmatch 'Text="\{Binding SuggestedAction, StringFormat=下一步：\{0\}\}"' -or
+    $dashboardXaml -match 'x:Name="WhatsAppUnreadText"' -or
+    $dashboardXaml -match 'x:Name="EmailUnreadText"' -or
+    $dashboardXaml -match 'x:Name="UnreadDigestStatusText"' -or
+    $dashboardXaml -match 'x:Name="UnreadDigestModelText"' -or
+    $dashboardXaml -match 'x:Name="UnreadDigestCoverageText"' -or
+    $dashboardSource -match 'Dashboard 模型未配置' -or
     $dashboardSource -notmatch [regex]::Escape('_services.DashboardUnreadDigest.GetAsync(forceRefresh)') -or
     $dashboardSource -notmatch [regex]::Escape('NotifyUnreadChanged()') -or
     $dashboardUnreadDigestSource -notmatch [regex]::Escape('AiModuleKeys.Dashboard') -or
+    $dashboardUnreadDigestSource -notmatch [regex]::Escape('QueueBackgroundRefresh()') -or
     $dashboardUnreadDigestSource -notmatch [regex]::Escape('GetDashboardUnreadDigestCacheAsync') -or
+    $deepSeekSource -notmatch [regex]::Escape('SelectLowestTierModel') -or
+    $mainWindowSource -notmatch [regex]::Escape('_services.DashboardUnreadDigest.QueueBackgroundRefresh()') -or
     $localRepositorySource -notmatch [regex]::Escape('GetDashboardUnreadSnapshotAsync') -or
     $localRepositorySource -notmatch [regex]::Escape('LastReadAt') -or
-    $settingsSource -notmatch [regex]::Escape('Command Center · Dashboard') -or
-    $guideCatalogSource -notmatch [regex]::Escape('未读消息 AI 摘要')) {
-  throw 'Dashboard Today Brief must summarize real unread WhatsApp and email originals through an independent cached AI route, with direct Inbox actions and no read-state mutation.'
+    $settingsSource -match [regex]::Escape('Command Center · Dashboard') -or
+    $guideCatalogSource -notmatch [regex]::Escape('最低配模型')) {
+  throw 'Dashboard Today Brief must merge WhatsApp and email unread originals into one source-labelled list, hide counters/model status, and refresh through the cached lowest-tier background AI route.'
 }
-Write-Host 'PASS  cached Dashboard AI digest for unread WhatsApp and email action points'
+Write-Host 'PASS  merged cached Dashboard unread digest with silent lowest-tier background AI routing'
 
 if ($customerDimensionSource -notmatch [regex]::Escape('RemoveDuplicateSuffix(visibleLabel)') -or
     $customerDimensionSource -notmatch [regex]::Escape('$"未命名维度 {unnamedOrdinal}"') -or

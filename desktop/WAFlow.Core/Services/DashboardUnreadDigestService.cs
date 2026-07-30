@@ -36,11 +36,56 @@ public sealed class DashboardUnreadDigestService
     private readonly LocalRepository _repository;
     private readonly IStructuredAiProvider _provider;
     private readonly SemaphoreSlim _generationGate = new(1, 1);
+    private int _backgroundRefreshVersion;
+    private int _backgroundRefreshRunning;
 
     public DashboardUnreadDigestService(LocalRepository repository, IStructuredAiProvider provider)
     {
         _repository = repository;
         _provider = provider;
+    }
+
+    public void QueueBackgroundRefresh()
+    {
+        Interlocked.Increment(ref _backgroundRefreshVersion);
+        TryStartBackgroundRefresh();
+    }
+
+    private void TryStartBackgroundRefresh()
+    {
+        if (Interlocked.CompareExchange(ref _backgroundRefreshRunning, 1, 0) != 0) return;
+        _ = Task.Run(RunBackgroundRefreshLoopAsync);
+    }
+
+    private async Task RunBackgroundRefreshLoopAsync()
+    {
+        var processedVersion = 0;
+        try
+        {
+            while (true)
+            {
+                var requestedVersion = Volatile.Read(ref _backgroundRefreshVersion);
+                await Task.Delay(900);
+                if (requestedVersion != Volatile.Read(ref _backgroundRefreshVersion)) continue;
+                try
+                {
+                    await GetAsync();
+                }
+                catch
+                {
+                    // Inbox synchronization remains authoritative. A later message event
+                    // or Dashboard visit retries transient provider and network failures.
+                }
+                processedVersion = requestedVersion;
+                if (processedVersion == Volatile.Read(ref _backgroundRefreshVersion)) break;
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref _backgroundRefreshRunning, 0);
+            if (processedVersion != Volatile.Read(ref _backgroundRefreshVersion))
+                TryStartBackgroundRefresh();
+        }
     }
 
     public async Task<DashboardUnreadDigest> GetAsync(
@@ -58,11 +103,8 @@ public sealed class DashboardUnreadDigestService
                 return Empty(snapshot);
 
             var model = "";
-            if (_provider.HasApiKey(AiModuleKeys.Dashboard))
-            {
-                try { model = await _provider.GetSelectedModelAsync(AiModuleKeys.Dashboard, cancellationToken); }
-                catch (DeepSeekException) { model = ""; }
-            }
+            try { model = await _provider.GetSelectedModelAsync(AiModuleKeys.Dashboard, cancellationToken); }
+            catch (DeepSeekException) { model = ""; }
 
             var cached = await _repository.GetDashboardUnreadDigestCacheAsync(cancellationToken);
             if (!forceRefresh
@@ -76,7 +118,7 @@ public sealed class DashboardUnreadDigestService
                 var fallback = Fallback(
                     snapshot,
                     "",
-                    "未配置可用的 Dashboard 模型；当前展示未读原文预览，配置后可生成 AI 摘要。");
+                    "当前先展示未读原文预览。");
                 await _repository.SaveDashboardUnreadDigestCacheAsync(fallback, cancellationToken);
                 return fallback;
             }
@@ -158,7 +200,7 @@ public sealed class DashboardUnreadDigestService
                 var fallback = Fallback(
                     snapshot,
                     model,
-                    $"本次 AI 摘要暂不可用（{FriendlyError(error)}）；已保留未读原文预览，可点击重新汇总。");
+                    $"本次 AI 摘要暂不可用（{FriendlyError(error)}）；已保留未读原文预览。");
                 await _repository.SaveDashboardUnreadDigestCacheAsync(fallback, cancellationToken);
                 return fallback;
             }

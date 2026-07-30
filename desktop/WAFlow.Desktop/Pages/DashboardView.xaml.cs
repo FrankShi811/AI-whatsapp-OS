@@ -103,44 +103,25 @@ public partial class DashboardView : UserControl, IRefreshableView
     {
         try
         {
-            var totals = await _services.Repository.GetInboxUnreadTotalsAsync();
-            WhatsAppUnreadText.Text = $"WhatsApp {totals.WhatsApp}";
-            EmailUnreadText.Text = $"邮件 {totals.Email}";
-            UnreadDigestStatusText.Text = totals.WhatsApp + totals.Email == 0
-                ? "正在核对 Inbox 未读状态…"
-                : forceRefresh
-                    ? "正在重新调用 Dashboard 模型汇总未读原文…"
-                    : "正在读取未读原文；未读集合未变化时直接使用本地缓存…";
-            UnreadDigestModelText.Text = "模型读取中…";
             UnreadDigestEmptyText.Visibility = Visibility.Collapsed;
 
             var digest = await _services.DashboardUnreadDigest.GetAsync(forceRefresh);
-            WhatsAppUnreadText.Text = $"WhatsApp {digest.WhatsAppUnreadCount}";
-            EmailUnreadText.Text = $"邮件 {digest.EmailUnreadCount}";
-            UnreadDigestStatusText.Text = digest.StatusMessage;
-            UnreadDigestModelText.Text = string.IsNullOrWhiteSpace(digest.Model)
-                ? "Dashboard 模型未配置"
-                : $"{digest.Model} · {digest.GeneratedLabel}";
             UnreadDigestItems.ItemsSource = digest.Items.Take(6).ToList();
-            UnreadDigestEmptyText.Visibility = digest.TotalUnreadCount == 0
+            UnreadDigestEmptyText.Text = "暂无未读客户消息。";
+            UnreadDigestEmptyText.Visibility = digest.Items.Count == 0
                 ? Visibility.Visible
                 : Visibility.Collapsed;
-            UnreadDigestCoverageText.Text = digest.TotalUnreadCount == 0
-                ? "新消息到达后会自动按未读集合生成分点摘要。"
-                : digest.OmittedThreadCount > 0
-                    ? $"已展示 {Math.Min(6, digest.Items.Count)} 个重点；另有 {digest.OmittedThreadCount} 个未读会话，请进入对应 Inbox 查看。"
-                    : $"覆盖 {digest.SummarizedThreadCount} 个未读会话 · 共 {digest.TotalUnreadCount} 条未读消息。";
         }
-        catch (Exception error)
+        catch
         {
-            UnreadDigestStatusText.Text = $"未读摘要暂时无法刷新：{error.Message}";
-            UnreadDigestModelText.Text = "稍后自动重试";
+            UnreadDigestItems.ItemsSource = null;
+            UnreadDigestEmptyText.Text = "未读消息暂时无法整理，后台会自动重试。";
+            UnreadDigestEmptyText.Visibility = Visibility.Visible;
         }
     }
 
     private void RefreshUnreadDigest_Click(object sender, RoutedEventArgs e)
     {
-        UnreadDigestStatusText.Text = "已请求重新汇总；将忽略现有摘要缓存并调用 Dashboard 模型。";
         QueueUnreadDigestRefresh(forceRefresh: true);
     }
 

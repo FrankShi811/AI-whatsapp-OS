@@ -671,7 +671,6 @@ public static class AiModuleKeys
 
     public static readonly IReadOnlyList<string> Configurable =
     [
-        Dashboard,
         LeadIntelligence,
         Customers,
         WhatsAppInbox,

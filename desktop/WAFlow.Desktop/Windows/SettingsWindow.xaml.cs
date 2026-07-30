@@ -259,7 +259,6 @@ public partial class SettingsWindow : Window
             StringComparer.OrdinalIgnoreCase);
         var definitions = new[]
         {
-            new ModuleDefinition(AiModuleKeys.Dashboard, "Command Center · Dashboard", "今日行动简报根据 WhatsApp 与邮件未读原文生成分点摘要；未读计数、查看 Inbox 和命中缓存不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.LeadIntelligence, "Command Center · 商机智能", "客户价值、成交可能性、证据、风险与下一步的结构化分析；查看列表和筛选不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.Customers, "Customer Operations · 客户列表", "Customer Brain 人工分析；查看、编辑和同步客户资料不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.WhatsAppInbox, "Customer Operations · WhatsApp Inbox", "AI 会话助理与 Customer Success Agent；普通消息同步不耗 Token。"),
