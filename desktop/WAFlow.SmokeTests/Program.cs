@@ -3353,6 +3353,84 @@ Check(restartedDocuments.Any(document => document.Id == globalDocument.Id && doc
       && restartedLogs.Count >= retrievalLogs.Count,
     "knowledge schema, records and retrieval audit survive an idempotent database restart");
 
+var translationDatabase = Path.Combine(root, "translation.db");
+var translationRepository = new LocalRepository(translationDatabase);
+await translationRepository.InitializeAsync();
+var translationConversation = new WhatsAppConversation
+{
+    Id = "primary:translation",
+    AccountId = "primary",
+    Phone = "34600000000",
+    DisplayName = "Cliente",
+    LastMessageAt = DateTimeOffset.Now,
+    UpdatedAt = DateTimeOffset.Now
+};
+await translationRepository.UpsertWhatsAppConversationAsync(translationConversation);
+await translationRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id = "primary:translation-in",
+    ProviderMessageId = "translation-in",
+    AccountId = "primary",
+    ConversationId = translationConversation.Id,
+    Phone = translationConversation.Phone,
+    Direction = WhatsAppMessageDirection.Incoming,
+    Status = WhatsAppMessageStatus.Received,
+    Kind = "text",
+    Body = "Hola, ¿cuál es el precio para 500 unidades?",
+    Timestamp = DateTimeOffset.Now.AddMinutes(-2)
+});
+await translationRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id = "primary:translation-out",
+    ProviderMessageId = "translation-out",
+    AccountId = "primary",
+    ConversationId = translationConversation.Id,
+    Phone = translationConversation.Phone,
+    Direction = WhatsAppMessageDirection.Outgoing,
+    Status = WhatsAppMessageStatus.Sent,
+    Kind = "text",
+    Body = "我会确认报价。",
+    Timestamp = DateTimeOffset.Now.AddMinutes(-1)
+});
+var translationProvider = new FakeWhatsAppTranslationProvider();
+var translationService = new WhatsAppTranslationService(
+    translationRepository,
+    translationProvider,
+    () => System.Globalization.CultureInfo.GetCultureInfo("zh-CN"));
+var localLanguage = WhatsAppTranslationService.ResolveLocalLanguage(
+    System.Globalization.CultureInfo.GetCultureInfo("zh-CN"));
+Check(localLanguage == ("zh-Hans", "简体中文"), "WhatsApp translation follows the Windows UI language");
+var translationContext = await translationService.GetContextAsync(translationConversation.Id);
+var cachedTranslationContext = await translationService.GetContextAsync(translationConversation.Id);
+Check(translationContext.Profile.CustomerLanguageCode == "es"
+      && translationContext.Profile.LocalLanguageCode == "zh-Hans"
+      && translationProvider.DetectionCalls == 1
+      && cachedTranslationContext.Profile.SourceFingerprint == translationContext.Profile.SourceFingerprint,
+    "WhatsApp dominant customer language is detected from incoming messages and cached by conversation fingerprint");
+var bilingualMessages = await translationService.TranslateRecentMessagesAsync(translationConversation.Id);
+var bilingualMessagesAgain = await translationService.TranslateRecentMessagesAsync(translationConversation.Id);
+var untouchedTranslationMessages = await translationRepository.GetWhatsAppMessagesAsync(translationConversation.Id);
+Check(bilingualMessages.Count == 2
+      && bilingualMessages.Any(item => item.MessageId == "translation-in" && item.TargetLanguageCode == "zh-Hans")
+      && bilingualMessages.Any(item => item.MessageId == "translation-out" && item.TargetLanguageCode == "es")
+      && bilingualMessagesAgain.Count == 2
+      && translationProvider.TranslationCalls == 1
+      && untouchedTranslationMessages.Any(item => item.ProviderMessageId == "translation-in" && item.Body.StartsWith("Hola", StringComparison.Ordinal))
+      && untouchedTranslationMessages.Any(item => item.ProviderMessageId == "translation-out" && item.Body == "我会确认报价。"),
+    "WhatsApp bilingual translations are cached without overwriting original message bodies");
+var translatedDraft = await translationService.TranslateOutgoingAsync(
+    translationConversation.Id,
+    "我明天给你正式报价。");
+var translatedDraftAgain = await translationService.TranslateOutgoingAsync(
+    translationConversation.Id,
+    "我明天给你正式报价。");
+Check(translatedDraft.TargetLanguageCode == "es"
+      && translatedDraft.TranslatedText.Contains("cotización", StringComparison.OrdinalIgnoreCase)
+      && translatedDraftAgain.TranslatedText == translatedDraft.TranslatedText
+      && translationProvider.TranslationCalls == 2
+      && (await translationRepository.GetWhatsAppMessagesAsync(translationConversation.Id)).Count == 2,
+    "WhatsApp outgoing translation creates a cached preview and never sends or inserts a message");
+
 try { File.Delete(database); Directory.Delete(root, true); } catch { }
 Console.WriteLine(failures.Count == 0 ? "\nAI Sales OS native core smoke tests passed." : $"\n{failures.Count} smoke test(s) failed.");
 return failures.Count == 0 ? 0 : 1;
@@ -3513,6 +3591,79 @@ sealed class CapturingDashboardDigestProvider : IStructuredAiProvider
         var typed = (T)(object)response;
         var validationError = validate(typed);
         if (!string.IsNullOrWhiteSpace(validationError)) throw new InvalidOperationException(validationError);
+        return Task.FromResult(typed);
+    }
+}
+
+sealed class FakeWhatsAppTranslationProvider : IStructuredAiProvider
+{
+    public int DetectionCalls { get; private set; }
+    public int TranslationCalls { get; private set; }
+
+    public bool HasApiKey() => true;
+    public bool HasApiKey(string moduleKey) => moduleKey == AiModuleKeys.WhatsAppInbox;
+    public Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult("translation-test-model");
+    public Task<string> GetSelectedModelAsync(string moduleKey, CancellationToken cancellationToken = default) =>
+        Task.FromResult("translation-test-model");
+    public Task<T> CompleteStructuredAsync<T>(
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class =>
+        throw new InvalidOperationException("WhatsApp translation must use the module-aware overload.");
+
+    public Task<T> CompleteStructuredAsync<T>(
+        string moduleKey,
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        object response;
+        if (typeof(T) == typeof(WhatsAppLanguageDetectionResponse))
+        {
+            DetectionCalls++;
+            response = new WhatsAppLanguageDetectionResponse
+            {
+                LanguageCode = "es",
+                LanguageName = "西班牙语",
+                Confidence = .94
+            };
+        }
+        else if (typeof(T) == typeof(WhatsAppTranslationBatchResponse))
+        {
+            TranslationCalls++;
+            using var document = JsonDocument.Parse(JsonSerializer.Serialize(payload));
+            response = new WhatsAppTranslationBatchResponse
+            {
+                Items = document.RootElement.GetProperty("suppliedMessages")
+                    .EnumerateArray()
+                    .Select(item =>
+                    {
+                        var target = item.GetProperty("targetLanguageCode").GetString() ?? "";
+                        var id = item.GetProperty("id").GetString() ?? "";
+                        return new WhatsAppTranslationBatchItem
+                        {
+                            Id = id,
+                            SourceLanguageCode = target == "zh-Hans" ? "es" : "zh-Hans",
+                            TranslatedText = target == "zh-Hans"
+                                ? "你好，500 件的价格是多少？"
+                                : id.StartsWith("draft:", StringComparison.Ordinal)
+                                    ? "Te enviaré la cotización formal mañana."
+                                    : "Confirmaré la cotización."
+                        };
+                    })
+                    .ToList()
+            };
+        }
+        else
+        {
+            throw new InvalidOperationException($"Unexpected translation response type {typeof(T).Name}.");
+        }
+        var typed = (T)response;
+        var error = validate(typed);
+        if (!string.IsNullOrWhiteSpace(error)) throw new InvalidOperationException(error);
         return Task.FromResult(typed);
     }
 }

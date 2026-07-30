@@ -44,6 +44,8 @@ $leadIntelligenceXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path 
 $leadIntelligenceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\LeadIntelligenceView.xaml.cs')
 $leadAutomationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\LeadIntelligenceAutomationService.cs')
 $whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml')
+$whatsAppTranslationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppTranslationService.cs')
+$whatsAppTranslationModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Domain\WhatsAppTranslationModels.cs')
 $emailInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\EmailInboxView.xaml')
 $bridgeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\index.mjs')
 $bridgeMessageSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\message-content.mjs')
@@ -746,6 +748,31 @@ if ($whatsAppNamingSource -notmatch [regex]::Escape('lead?.DisplayName') -or
 }
 Write-Host 'PASS  WhatsApp conversation CRM-name priority, owned-account guard and phone-remark fallback contract'
 
+if ($whatsAppInboxXaml -notmatch 'x:Name="TranslationBar"' -or
+    $whatsAppInboxXaml -notmatch [regex]::Escape('Content="翻译最近消息"') -or
+    $whatsAppInboxXaml -notmatch [regex]::Escape('Content="译成客户语言"') -or
+    $whatsAppInboxXaml -notmatch [regex]::Escape('Content="采用译文"') -or
+    $whatsAppInboxXaml -notmatch [regex]::Escape('Text="{Binding TranslatedText}"') -or
+    $whatsAppInboxXaml -notmatch [regex]::Escape('AutomationProperties.LiveSetting="Polite"') -or
+    $whatsAppInboxXaml -notmatch [regex]::Escape('VerticalScrollBarVisibility="Auto"') -or
+    $whatsAppInboxXaml -match 'x:Name="TranslateDraftButton"[^>]*Focusable="False"' -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('_services.WhatsAppTranslation.GetContextAsync') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('_services.WhatsAppTranslation.TranslateRecentMessagesAsync') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('_services.WhatsAppTranslation.TranslateOutgoingAsync') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('"human_translated"') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('"desktop_translated"') -or
+    $whatsAppTranslationSource -notmatch [regex]::Escape('CultureInfo.CurrentUICulture') -or
+    $whatsAppTranslationSource -notmatch [regex]::Escape('AiModuleKeys.WhatsAppInbox') -or
+    $whatsAppTranslationSource -notmatch [regex]::Escape('message.Direction == WhatsAppMessageDirection.Incoming') -or
+    $whatsAppTranslationSource -notmatch [regex]::Escape('Where(IsTranslatableMessage)') -or
+    $whatsAppTranslationSource -notmatch [regex]::Escape('GetWhatsAppTranslationStateAsync') -or
+    $whatsAppTranslationModelsSource -notmatch [regex]::Escape('SourceTextHash') -or
+    $localRepositorySource -notmatch [regex]::Escape('whatsapp_translation:{conversationId}') -or
+    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 4'))) {
+  throw 'WhatsApp Inbox must detect the Windows UI language and customer dominant incoming language, cache bilingual translations, preserve originals and require manual adoption plus send.'
+}
+Write-Host 'PASS  WhatsApp per-conversation language detection, bilingual cache and manual-send translation contract'
+
 if ($emailInboxXaml -notmatch [regex]::Escape('Visibility="{Binding UnreadVisibility}"') -or
     $emailInboxXaml -notmatch [regex]::Escape('Text="{Binding UnreadLabel}"') -or
     $emailInboxXaml -notmatch [regex]::Escape('DynamicResource PrimarySoft') -or
@@ -793,7 +820,7 @@ if ($whatsAppInboxXaml -match 'x:Name="CompanyBox"' -or
     $customerAnalysisSource -notmatch [regex]::Escape('_customerBrain.UpdateConversationContextAsync') -or
     $customerAnalysisSource -notmatch [regex]::Escape('ConversationContext = customerBrain?.ConversationContext') -or
     $customerAnalysisSource -notmatch [regex]::Escape('manualNotes = lead.ManualNotes') -or
-    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 3')) -or
+    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 4')) -or
     -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 4'))) {
   throw 'Customer Intelligence must separate manual notes from AI context, remove company/source blanks, update cross-channel context incrementally and feed both into customer analysis.'
 }

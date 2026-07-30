@@ -80,7 +80,7 @@
             </Border>
 
             <Border Grid.Column="2" Style="{StaticResource Card}" Padding="0">
-                <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <Border Padding="18,14" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1">
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock x:Name="ChatTitleText" Text="选择会话" FontWeight="SemiBold" FontSize="17"/><TextBlock x:Name="ChatNumberText" Text="连接后会同步个人与群聊会话" Foreground="{DynamicResource Muted}" FontSize="10.5" Margin="0,3,0,0"/></StackPanel><Border Grid.Column="1" Background="{DynamicResource PrimarySoft}" CornerRadius="10" Padding="9,5" VerticalAlignment="Center"><TextBlock x:Name="ChatModeBadgeText" Text="CRM LIVE SYNC" Foreground="{DynamicResource Primary}" FontSize="9" FontWeight="Bold"/></Border></Grid>
                     </Border>
@@ -94,7 +94,33 @@
                             <Button Grid.Column="1" Content="打开动态链接" Style="{StaticResource SecondaryButton}" Click="OpenStatusUpdate_Click" Margin="12,0,0,0" VerticalAlignment="Center"/>
                         </Grid>
                     </Border>
-                    <Grid Grid.Row="2">
+                    <Border x:Name="TranslationBar" Grid.Row="2" Visibility="Collapsed"
+                            Background="{DynamicResource AiSurface}" BorderBrush="{DynamicResource AiSoft}"
+                            BorderThickness="0,0,0,1" Padding="16,9">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                             <Border Background="{DynamicResource AiSoft}" CornerRadius="9" Padding="9,5" VerticalAlignment="Center">
+                                 <TextBlock x:Name="TranslationRouteText" Text="本机语言 ⇄ 客户主流语言"
+                                            Foreground="{DynamicResource AiAccentDeep}" FontSize="10.5" FontWeight="SemiBold"
+                                            MaxWidth="210" TextTrimming="CharacterEllipsis"
+                                            ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+                             </Border>
+                             <TextBlock x:Name="TranslationStatusText" Grid.Column="1"
+                                        Text="选择会话后自动识别；译文会缓存在本机"
+                                        Foreground="{DynamicResource Muted}" FontSize="9.5"
+                                        TextWrapping="Wrap" VerticalAlignment="Center" Margin="10,0"
+                                        AutomationProperties.LiveSetting="Polite"/>
+                            <Button x:Name="TranslateConversationButton" Grid.Column="2"
+                                    Content="翻译最近消息" Style="{StaticResource SecondaryButton}"
+                                    Click="TranslateConversation_Click" Padding="11,6"
+                                    IsEnabled="False" ToolTip="把客户消息译成本机语言，并把我方消息译成客户主流语言；已缓存内容不重复消耗 Token。"/>
+                        </Grid>
+                    </Border>
+                    <Grid Grid.Row="3">
                         <StackPanel x:Name="QrPanel" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="380">
                             <Image x:Name="QrImage" Width="300" Height="300" Stretch="Uniform"/>
                             <TextBlock x:Name="QrHintText" Text="点击“连接 / 显示二维码”，然后使用手机 WhatsApp 的“已关联设备”扫描。" TextWrapping="Wrap" TextAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,12,0,0"/>
@@ -134,6 +160,16 @@
                                                 </Button>
                                                 <Button Visibility="{Binding FileVisibility}" Click="OpenMedia_Click" Content="{Binding MediaActionLabel}" Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left" Padding="12,7"/>
                                                 <TextBlock Text="{Binding TextContent}" Visibility="{Binding TextVisibility}" TextWrapping="Wrap" Foreground="{DynamicResource Ink}" Margin="0,3,0,0"/>
+                                                <Border Visibility="{Binding TranslationVisibility}"
+                                                        Background="{DynamicResource AiSurface}" BorderBrush="{DynamicResource AiSoft}"
+                                                        BorderThickness="1" CornerRadius="7" Padding="8,6" Margin="0,7,0,1">
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding TranslationLabel}" Foreground="{DynamicResource AiAccentDeep}"
+                                                                   FontSize="8.5" FontWeight="SemiBold"/>
+                                                        <TextBlock Text="{Binding TranslatedText}" Foreground="{DynamicResource Ink}"
+                                                                   FontSize="11" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                                    </StackPanel>
+                                                </Border>
                                                 <TextBlock Text="{Binding MediaMissingText}" Visibility="{Binding MediaMissingVisibility}" TextWrapping="Wrap" Foreground="{DynamicResource Warning}" FontSize="10" Margin="0,4,0,0"/>
                                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,0,0">
                                                     <TextBlock Text="{Binding TimeLabel}" Foreground="{DynamicResource Muted}" FontSize="9"/>
@@ -147,23 +183,50 @@
                             </ListBox.ItemTemplate>
                         </ListBox>
                     </Grid>
-                    <Border Grid.Row="3" Padding="14" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0">
-                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <Border Grid.Row="4" Padding="14" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0">
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <Button x:Name="AiAssistantButton" Content="✦ AI" ToolTip="根据客户白色气泡生成回复，并提取需求到客户资料" Style="{StaticResource SecondaryButton}" Click="AiAssistant_Click" Width="68" Height="54" Padding="0" FontSize="15" FontWeight="Bold" Foreground="{DynamicResource AiAccentDeep}" BorderBrush="{DynamicResource AiAccent}" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Focusable="False" Margin="0,0,8,0" IsEnabled="False"/>
                             <Button x:Name="AttachButton" Grid.Column="1" Content="＋" ToolTip="添加图片、视频、音频或文件" Style="{StaticResource SecondaryButton}" Click="Attach_Click" Width="54" Height="54" Padding="0" FontSize="25" FontWeight="SemiBold" FontFamily="Segoe UI Symbol" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Focusable="False" Margin="0,0,12,0" IsEnabled="False"/>
-                            <Grid Grid.Column="2"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                             <Button x:Name="TranslateDraftButton" Grid.Column="2" Content="译成客户语言"
+                                     ToolTip="按本机语言写消息，翻译成当前客户主流语言；只生成预览，不会自动发送。"
+                                     Style="{StaticResource SecondaryButton}" Click="TranslateDraft_Click"
+                                     MinWidth="96" Height="54" Padding="10,0" FontSize="11"
+                                     Margin="0,0,12,0" IsEnabled="False"/>
+                            <Grid Grid.Column="3"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                                 <Border x:Name="ReplyPanel" Grid.Row="0" Background="{DynamicResource PrimarySurface}" BorderBrush="{DynamicResource Primary}" BorderThickness="3,0,0,0" CornerRadius="8" Padding="9,6" Margin="0,0,0,6" Visibility="Collapsed">
                                     <DockPanel>
                                         <Button Content="×" DockPanel.Dock="Right" Click="ClearReply_Click" Padding="7,1" Margin="8,0,0,0" ToolTip="取消回复"/>
                                         <StackPanel><TextBlock Text="回复该消息" Foreground="{DynamicResource Primary}" FontSize="10" FontWeight="SemiBold"/><TextBlock x:Name="ReplyText" Foreground="{DynamicResource InkSecondary}" FontSize="10" TextTrimming="CharacterEllipsis" MaxWidth="600"/></StackPanel>
                                     </DockPanel>
                                 </Border>
-                                <TextBox x:Name="ComposerBox" Grid.Row="1" MinHeight="54" MaxHeight="120" AcceptsReturn="True" TextWrapping="Wrap" IsEnabled="False" PreviewKeyDown="ComposerBox_PreviewKeyDown" ToolTip="Enter 发送，Ctrl+Enter 换行"/>
-                                <Border x:Name="AttachmentPanel" Grid.Row="2" Background="{DynamicResource PrimarySurface}" CornerRadius="8" Padding="8,5" Margin="0,6,0,0" Visibility="Collapsed">
+                                <Border x:Name="OutgoingTranslationPanel" Grid.Row="1"
+                                        Background="{DynamicResource AiSurface}" BorderBrush="{DynamicResource AiAccent}"
+                                        BorderThickness="1" CornerRadius="8" Padding="9,7" Margin="0,0,0,6" Visibility="Collapsed">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                         <StackPanel>
+                                             <TextBlock x:Name="OutgoingTranslationLabel" Text="发送预览 · 客户语言"
+                                                        Foreground="{DynamicResource AiAccentDeep}" FontSize="9" FontWeight="SemiBold"
+                                                        AutomationProperties.LiveSetting="Polite"/>
+                                             <ScrollViewer MaxHeight="72" Margin="0,3,8,0"
+                                                           VerticalScrollBarVisibility="Auto"
+                                                           HorizontalScrollBarVisibility="Disabled">
+                                                 <TextBlock x:Name="OutgoingTranslationText" TextWrapping="Wrap"
+                                                            AutomationProperties.LiveSetting="Polite"/>
+                                             </ScrollViewer>
+                                         </StackPanel>
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                            <Button Content="采用译文" Style="{StaticResource PrimaryButton}" Click="UseOutgoingTranslation_Click" Padding="9,4" Margin="0,0,6,0"/>
+                                            <Button Content="取消" Style="{StaticResource GhostButton}" Click="CancelOutgoingTranslation_Click" Padding="8,4"/>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                                <TextBox x:Name="ComposerBox" Grid.Row="2" MinHeight="54" MaxHeight="120" AcceptsReturn="True" TextWrapping="Wrap" IsEnabled="False" PreviewKeyDown="ComposerBox_PreviewKeyDown" ToolTip="Enter 发送，Ctrl+Enter 换行"/>
+                                <Border x:Name="AttachmentPanel" Grid.Row="3" Background="{DynamicResource PrimarySurface}" CornerRadius="8" Padding="8,5" Margin="0,6,0,0" Visibility="Collapsed">
                                     <DockPanel><Button Content="移除" DockPanel.Dock="Right" Click="ClearAttachment_Click" Padding="7,2" Margin="8,0,0,0"/><TextBlock x:Name="AttachmentText" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/></DockPanel>
                                 </Border>
                             </Grid>
-                            <Button x:Name="SendButton" Grid.Column="3" Content="发送" Style="{StaticResource PrimaryButton}" Click="Send_Click" Margin="10,0,0,0" MinWidth="68" Height="54" IsEnabled="False"/>
+                            <Button x:Name="SendButton" Grid.Column="4" Content="发送" Style="{StaticResource PrimaryButton}" Click="Send_Click" Margin="10,0,0,0" MinWidth="68" Height="54" IsEnabled="False"/>
                         </Grid>
                     </Border>
                 </Grid>
