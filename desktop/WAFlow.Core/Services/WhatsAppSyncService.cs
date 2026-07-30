@@ -119,13 +119,13 @@ public sealed class WhatsAppSyncService
         conversation.DisplayName = WhatsAppConversationNaming.Resolve(
             lead,
             phone,
+            ownedPeer?.Name,
             contact.SavedName,
             contact.DisplayName,
             contact.NotifyName,
             contact.VerifiedName,
             contact.Username,
-            conversation.DisplayName,
-            ownedPeer?.Name);
+            conversation.DisplayName);
         await _repository.UpsertWhatsAppConversationAsync(conversation);
     }
 
@@ -180,9 +180,9 @@ public sealed class WhatsAppSyncService
         conversation.DisplayName = WhatsAppConversationNaming.Resolve(
             lead,
             phone,
+            ownedPeer?.Name,
             displayName,
-            conversation.DisplayName,
-            ownedPeer?.Name);
+            conversation.DisplayName);
         ApplyChatSnapshot(conversation, data);
         if (conversation.LastReadAt is not null)
         {
@@ -258,9 +258,9 @@ public sealed class WhatsAppSyncService
             conversation.DisplayName = WhatsAppConversationNaming.Resolve(
                 lead,
                 phone,
-                conversation.DisplayName,
+                ownedPeer?.Name,
                 pushName,
-                ownedPeer?.Name);
+                conversation.DisplayName);
         }
         var message = new WhatsAppMessage
         {

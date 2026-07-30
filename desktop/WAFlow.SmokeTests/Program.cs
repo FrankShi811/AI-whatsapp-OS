@@ -2881,7 +2881,7 @@ var ownedAccountLead = new Lead
 await customerSuccessRepository.UpsertLeadAsync(ownedAccountLead);
 await customerSuccessRepository.SaveWhatsAppAccountsAsync(
 [
-    new WhatsAppAccount { Id = "sales-a", Name = "Sales A", LinkedPhone = "+15550000001" },
+    new WhatsAppAccount { Id = "sales-a", Name = "Frank", LinkedPhone = "+15550000001" },
     new WhatsAppAccount { Id = "sales-b", Name = "Frank Shi", LinkedPhone = "+15550000002" }
 ]);
 var ownedPeerConversation = new WhatsAppConversation
@@ -2925,6 +2925,45 @@ await customerIdentity.ConfirmBindingAsync(
     ownedPeerConversation.Id,
     ownedPeerConversation.Phone,
     "15550000002@s.whatsapp.net");
+var selfConversation = new WhatsAppConversation
+{
+    Id = "sales-a:15550000001",
+    AccountId = "sales-a",
+    Phone = "15550000001",
+    LeadId = ownedAccountLead.Id,
+    DisplayName = "Wrong CRM customer",
+    LastMessage = "self chat",
+    LastMessageAt = DateTimeOffset.Now
+};
+await customerSuccessRepository.UpsertWhatsAppConversationAsync(selfConversation);
+await customerSuccessRepository.UpsertWhatsAppContactAsync(new WhatsAppContact
+{
+    Id = "sales-a:15550000001@s.whatsapp.net",
+    AccountId = "sales-a",
+    Jid = "15550000001@s.whatsapp.net",
+    Phone = "15550000001",
+    DisplayName = "+15550000001",
+    Source = "live_update"
+});
+await customerSuccessRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id = "sales-a:self-message",
+    ProviderMessageId = "self-message",
+    AccountId = "sales-a",
+    ConversationId = selfConversation.Id,
+    LeadId = ownedAccountLead.Id,
+    Phone = selfConversation.Phone,
+    Direction = WhatsAppMessageDirection.Outgoing,
+    Status = WhatsAppMessageStatus.Sent,
+    Body = "self chat",
+    Timestamp = DateTimeOffset.Now
+});
+await customerIdentity.ConfirmBindingAsync(
+    ownedAccountLead.Id,
+    selfConversation.AccountId,
+    selfConversation.Id,
+    selfConversation.Phone,
+    "15550000001@s.whatsapp.net");
 var ownedRepairs = await customerIdentity.RepairOwnedAccountBindingsAsync();
 await customerSuccessRepository.SynchronizeLeadConnectionsFromInboxAsync([ownedAccountLead]);
 var repairedOwnedConversation = await customerSuccessRepository.GetWhatsAppConversationByIdAsync(ownedPeerConversation.Id);
@@ -2937,14 +2976,35 @@ var ownedIdentity = await customerIdentity.ResolveAsync(
     ownedPeerConversation.Id,
     ownedPeerConversation.Phone,
     displayName: ownedPeerConversation.DisplayName);
+var repairedSelfConversation = await customerSuccessRepository.GetWhatsAppConversationByIdAsync(selfConversation.Id);
+var repairedSelfMessage = (await customerSuccessRepository.GetWhatsAppMessagesAsync(selfConversation.Id)).Single();
+var repairedSelfLink = await customerSuccessRepository.GetWhatsAppIdentityLinkAsync(
+    selfConversation.AccountId,
+    selfConversation.Id);
+var selfIdentity = await customerIdentity.ResolveAsync(
+    selfConversation.AccountId,
+    selfConversation.Id,
+    selfConversation.Phone,
+    displayName: selfConversation.DisplayName);
+var resolvedSameAccount = await customerSuccessRepository.GetOwnedWhatsAppPeerAccountAsync(
+    selfConversation.AccountId,
+    selfConversation.Phone);
 Check(
-    ownedRepairs >= 2
+    ownedRepairs >= 4
     && repairedOwnedConversation is { LeadId.Length: 0, DisplayName: "Frank Shi" }
     && string.IsNullOrWhiteSpace(repairedOwnedMessage.LeadId)
     && repairedOwnedLink is { IsActive: false }
     && ownedIdentity.Result == CustomerIdentityMatchResult.NoMatch
     && ownedIdentity.Reason.Contains("本机已登录 WhatsApp 账号", StringComparison.Ordinal),
     "cross-account self messages keep the WhatsApp name and cannot be mislabeled or automated as a CRM customer");
+Check(
+    repairedSelfConversation is { LeadId.Length: 0, DisplayName: "Frank" }
+    && string.IsNullOrWhiteSpace(repairedSelfMessage.LeadId)
+    && repairedSelfLink is { IsActive: false }
+    && selfIdentity.Result == CustomerIdentityMatchResult.NoMatch
+    && resolvedSameAccount?.Id == "sales-a"
+    && selfIdentity.Reason.Contains("本机已登录 WhatsApp 账号", StringComparison.Ordinal),
+    "same-account self chats use the logged-in account name and cannot retain a stale CRM binding");
 
 var persistedCustomerSuccessRepository = new LocalRepository(Path.Combine(customerSuccessRoot, "customer-success.db"));
 await persistedCustomerSuccessRepository.InitializeAsync();

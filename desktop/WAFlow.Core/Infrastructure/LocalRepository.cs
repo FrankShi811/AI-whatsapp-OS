@@ -1120,8 +1120,7 @@ public sealed class LocalRepository
         if (digits.Length == 0) return null;
         return (await GetWhatsAppAccountsAsync(cancellationToken))
             .FirstOrDefault(account =>
-                !account.Id.Equals(currentAccountId, StringComparison.OrdinalIgnoreCase)
-                && Services.PhoneIdentity.Digits(account.LinkedPhone).Equals(digits, StringComparison.Ordinal));
+                Services.PhoneIdentity.Digits(account.LinkedPhone).Equals(digits, StringComparison.Ordinal));
     }
 
     private async Task<T?> GetSettingAsync<T>(string key, CancellationToken cancellationToken)
@@ -1570,7 +1569,7 @@ public sealed class LocalRepository
         foreach (var conversation in conversations)
         {
             var digits = Services.PhoneIdentity.Digits(conversation.Phone);
-            if (IsOwnedWhatsAppPeer(accountPhones, conversation.AccountId, digits))
+            if (IsOwnedWhatsAppPeer(accountPhones, digits))
             {
                 if (!string.IsNullOrWhiteSpace(conversation.LeadId))
                 {
@@ -1602,7 +1601,7 @@ public sealed class LocalRepository
         foreach (var message in messages)
         {
             var digits = Services.PhoneIdentity.Digits(message.Phone);
-            if (IsOwnedWhatsAppPeer(accountPhones, message.AccountId, digits))
+            if (IsOwnedWhatsAppPeer(accountPhones, digits))
             {
                 if (!string.IsNullOrWhiteSpace(message.LeadId))
                 {
@@ -1645,11 +1644,10 @@ public sealed class LocalRepository
 
     private static bool IsOwnedWhatsAppPeer(
         IReadOnlyDictionary<string, HashSet<string>> accountPhones,
-        string accountId,
         string phone) =>
         phone.Length > 0
         && accountPhones.TryGetValue(phone, out var owners)
-        && owners.Any(owner => !owner.Equals(accountId, StringComparison.OrdinalIgnoreCase));
+        && owners.Count > 0;
 
     public async Task<List<WhatsAppConversation>> GetWhatsAppConversationsAsync(string accountId = "primary", CancellationToken cancellationToken = default)
     {
