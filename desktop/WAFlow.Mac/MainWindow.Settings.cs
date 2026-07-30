@@ -256,14 +256,40 @@ public sealed partial class MainWindow
         page.Children.Add(SectionCard("外观与可读性", "立即生效", appearancePanel));
 
         var dataPanel = new StackPanel { Spacing = 10 };
+        dataPanel.Children.Add(BodyText($"当前工作区：{_services.DataWorkspace.RootDirectory}", Ink, 12));
         dataPanel.Children.Add(BodyText($"数据库：{_services.Repository.DatabasePath}", Ink, 12));
-        dataPanel.Children.Add(BodyText($"WhatsApp 会话：{PlatformDataPaths.WhatsAppSessionsDirectory}", Ink, 12));
-        dataPanel.Children.Add(BodyText("没有共享客户数据库、跨用户同步或自动上传；备份文件也由您自行保管。", Muted, 11));
+        dataPanel.Children.Add(BodyText(
+            $"WhatsApp 会话：{Path.Combine(_services.DataWorkspace.RootDirectory, "whatsapp-sessions")}",
+            Ink,
+            12));
+        try
+        {
+            var usage = await _dataWorkspaceManager.GetUsageAsync(
+                _services.DataWorkspace,
+                _lifetime.Token);
+            dataPanel.Children.Add(BodyText(
+                $"工作区占用 {DataWorkspaceManager.FormatBytes(usage.UsedBytes)} · " +
+                $"{usage.DriveName} 可用 {DataWorkspaceManager.FormatBytes(usage.AvailableBytes)}",
+                Muted,
+                11));
+        }
+        catch (Exception error)
+        {
+            dataPanel.Children.Add(BodyText($"无法读取工作区空间：{error.Message}", Warning, 11));
+        }
+        dataPanel.Children.Add(BodyText(
+            "迁移包括客户与 AI 结果、WhatsApp 加密会话与媒体、邮件索引、知识库原件、自动化和报告；API Key 与邮箱密码仍由 macOS 钥匙串保护。",
+            Muted,
+            11));
+        dataPanel.Children.Add(BodyText(
+            "没有共享客户数据库、跨用户同步或自动上传；迁移会先复制、校验哈希和 SQLite 完整性，成功启动后才清理原位置。",
+            Muted,
+            11));
         var dataActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 9 };
         dataActions.Children.Add(ActionButton("在 Finder 中显示", () =>
         {
             if (OperatingSystem.IsMacOS())
-                Process.Start(new ProcessStartInfo("/usr/bin/open", [Path.GetDirectoryName(_services.Repository.DatabasePath)!])
+                Process.Start(new ProcessStartInfo("/usr/bin/open", [_services.DataWorkspace.RootDirectory])
                 {
                     UseShellExecute = false
                 });
@@ -279,6 +305,48 @@ public sealed partial class MainWindow
             File.Copy(_services.Repository.DatabasePath, destination, true);
             await ShowMessageAsync("数据库已备份", destination);
         }));
+        if (!_services.DataWorkspace.IsEnvironmentOverride)
+        {
+            dataActions.Children.Add(ActionButton("迁移工作区", async () =>
+            {
+                var selected = await PickFolderAsync("选择本地数据工作区要迁移到的磁盘或文件夹");
+                if (string.IsNullOrWhiteSpace(selected)) return;
+                try
+                {
+                    var targetRoot = _dataWorkspaceManager.BuildSuggestedTargetRoot(selected);
+                    var preview = await _dataWorkspaceManager.PreviewMigrationAsync(
+                        targetRoot,
+                        _lifetime.Token);
+                    var confirmed = await ConfirmAsync(
+                        "确认迁移本地数据工作区",
+                        $"准备迁移到：\n{preview.TargetRoot}\n\n" +
+                        $"需要复制：{DataWorkspaceManager.FormatBytes(preview.SourceBytes)}\n" +
+                        $"目标磁盘可用：{DataWorkspaceManager.FormatBytes(preview.TargetAvailableBytes)}\n\n" +
+                        "程序将重启并完成复制、文件哈希和 SQLite 完整性校验。只有新工作区成功启动后才会清理原位置；任何失败都会继续使用原位置。",
+                        "确认并重启");
+                    if (!confirmed) return;
+
+                    await _dataWorkspaceManager.ScheduleMigrationAsync(preview, _lifetime.Token);
+                    try
+                    {
+                        if (Process.Start(BuildWorkspaceMigrationRestart()) is null)
+                            throw new InvalidOperationException("未能启动迁移重启进程。");
+                        Close();
+                    }
+                    catch
+                    {
+                        await _dataWorkspaceManager.CancelScheduledMigrationAsync(_lifetime.Token);
+                        throw;
+                    }
+                }
+                catch (Exception error)
+                {
+                    await ShowMessageAsync(
+                        "迁移未开始",
+                        $"程序仍在使用原工作区。\n\n{error.Message}");
+                }
+            }, primary: true));
+        }
         dataPanel.Children.Add(dataActions);
         page.Children.Add(SectionCard("本地数据与隐私", "LOCAL ONLY", dataPanel));
 
@@ -292,5 +360,24 @@ public sealed partial class MainWindow
         }));
         page.Children.Add(SectionCard("版本与更新", "独立 macOS 通道", updatePanel));
         return page;
+    }
+
+    private static ProcessStartInfo BuildWorkspaceMigrationRestart()
+    {
+        var processPath = Environment.ProcessPath
+            ?? throw new InvalidOperationException("无法定位当前程序入口。");
+        if (Path.GetFileNameWithoutExtension(processPath)
+            .Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("请在正式安装版中迁移本地数据工作区。");
+        var start = new ProcessStartInfo
+        {
+            FileName = processPath,
+            WorkingDirectory = AppContext.BaseDirectory,
+            UseShellExecute = false
+        };
+        start.ArgumentList.Add("--apply-workspace-migration");
+        start.ArgumentList.Add("--wait-for-pid");
+        start.ArgumentList.Add(Environment.ProcessId.ToString());
+        return start;
     }
 }

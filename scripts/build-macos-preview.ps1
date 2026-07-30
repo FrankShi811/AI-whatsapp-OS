@@ -110,8 +110,36 @@ foreach ($target in $targets) {
   if ($LASTEXITCODE -ne 0) { throw "macOS $($target.Arch) bundle packaging failed." }
 
   if ($isMacHost) {
-    & /usr/bin/codesign --force --deep --sign - $bundle
-    if ($LASTEXITCODE -ne 0) { throw "macOS $($target.Arch) ad-hoc app signing failed." }
+    $signingIdentity = $env:MACOS_SIGNING_IDENTITY
+    if ($signingIdentity) {
+      $entitlements = Join-Path $root 'desktop\WAFlow.Mac\macos-entitlements.plist'
+      $mainExecutable = Join-Path $bundle 'Contents\MacOS\AISalesOS.Mac'
+      $nestedMachO = Get-ChildItem -LiteralPath (Join-Path $bundle 'Contents\MacOS') -Recurse -File |
+        Where-Object {
+          $_.FullName -ne $mainExecutable -and
+          (& /usr/bin/file -b $_.FullName) -match 'Mach-O'
+        } |
+        Sort-Object { $_.FullName.Length } -Descending
+      foreach ($binary in $nestedMachO) {
+        $binarySignArguments = @(
+          '--force', '--options', 'runtime', '--timestamp',
+          '--sign', $signingIdentity
+        )
+        if ($binary.Name -eq 'WAFlow.WhatsApp.Bridge') {
+          $binarySignArguments += @('--entitlements', $entitlements)
+        }
+        $binarySignArguments += $binary.FullName
+        & /usr/bin/codesign @binarySignArguments
+        if ($LASTEXITCODE -ne 0) { throw "Developer ID signing failed: $($binary.FullName)" }
+      }
+      & /usr/bin/codesign --force --options runtime --timestamp `
+        --entitlements $entitlements --sign $signingIdentity $bundle
+      if ($LASTEXITCODE -ne 0) { throw "macOS $($target.Arch) Developer ID app signing failed." }
+    } else {
+      & /usr/bin/codesign --force --deep --timestamp=none `
+        --identifier 'com.aisalesos.desktop' --sign - $bundle
+      if ($LASTEXITCODE -ne 0) { throw "macOS $($target.Arch) ad-hoc app signing failed." }
+    }
     & /usr/bin/codesign --verify --deep --strict --verbose=2 $bundle
     if ($LASTEXITCODE -ne 0) { throw "macOS $($target.Arch) app signature verification failed." }
 
@@ -125,14 +153,56 @@ foreach ($target in $targets) {
       '',
       '安装',
       '1. 将“AI Sales OS.app”拖到“Applications”。',
-      '2. 首次启动请右键应用并选择“打开”。',
-      '3. 数据只保存在此 Mac：',
+      '2. Developer ID 正式包可直接双击打开。',
+      '3. 内部验收包若被 Gatekeeper 拦截，请双击“首次安装并打开 AI Sales OS.command”。',
+      '4. 数据只保存在此 Mac：',
       '   ~/Library/Application Support/WAFlow',
       '',
       '本包包含原生 WhatsApp Bridge、邮箱、客户、商机智能、自动化、知识库和客户报告。',
-      '当前使用 ad-hoc 签名，未使用 Apple Developer ID 公证，不作为公开正式分发包。'
+      $(if ($signingIdentity) {
+          '本包已使用 Developer ID 签名；仅在完成 notarytool 公证和 stapler 装订后作为正式分发包。'
+        } else {
+          '当前使用 ad-hoc 签名，未使用 Apple Developer ID 公证，不作为公开正式分发包。'
+        })
     )
     $guideLines | Set-Content -LiteralPath (Join-Path $dmgStage '安装说明.txt') -Encoding utf8
+    $launcherLines = @(
+      '#!/bin/zsh',
+      'set -u',
+      'SCRIPT_DIR="${0:A:h}"',
+      'SOURCE_APP="$SCRIPT_DIR/AI Sales OS.app"',
+      'TARGET_DIR="$HOME/Applications"',
+      'TARGET_APP="$TARGET_DIR/AI Sales OS.app"',
+      'STAGING_APP="$TARGET_DIR/.AI Sales OS.app.install-$$"',
+      'BACKUP_APP="$TARGET_DIR/AI Sales OS.app.previous-$(date +%Y%m%d-%H%M%S)"',
+      '',
+      'echo "正在校验并安装 AI Sales OS…"',
+      'if [[ ! -d "$SOURCE_APP" ]]; then',
+      '  echo "错误：安装映像中缺少 AI Sales OS.app"',
+      '  read "?按回车键关闭…"',
+      '  exit 1',
+      'fi',
+      '/bin/mkdir -p "$TARGET_DIR"',
+      '/usr/bin/ditto "$SOURCE_APP" "$STAGING_APP" || exit 1',
+      '/usr/bin/xattr -dr com.apple.quarantine "$STAGING_APP" 2>/dev/null || true',
+      '/usr/bin/codesign --verify --deep --strict --verbose=2 "$STAGING_APP" || {',
+      '  echo "错误：应用签名校验失败，已停止安装。"',
+      '  read "?按回车键关闭…"',
+      '  exit 1',
+      '}',
+      'if [[ -d "$TARGET_APP" ]]; then',
+      '  /bin/mv "$TARGET_APP" "$BACKUP_APP" || exit 1',
+      '  echo "旧应用已备份为：$BACKUP_APP"',
+      'fi',
+      '/bin/mv "$STAGING_APP" "$TARGET_APP" || exit 1',
+      '/usr/bin/open "$TARGET_APP"',
+      'echo "安装完成。客户、消息和设置仍只保存在这台 Mac 的本地工作区。"',
+      'sleep 2'
+    )
+    $launcher = Join-Path $dmgStage '首次安装并打开 AI Sales OS.command'
+    $launcherLines | Set-Content -LiteralPath $launcher -Encoding utf8NoBOM
+    & /bin/chmod 755 $launcher
+    if ($LASTEXITCODE -ne 0) { throw 'macOS compatibility launcher chmod failed.' }
     $dmg = Join-Path $root "dist\installers\AI Sales OS macOS $($target.Label) Chinese v$Version.dmg"
     if (Test-Path -LiteralPath $dmg) { Remove-Item -LiteralPath $dmg -Force }
     & /usr/bin/hdiutil create -volname 'AI Sales OS' -srcfolder $dmgStage -ov -format UDZO $dmg

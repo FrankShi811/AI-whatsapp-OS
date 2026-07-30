@@ -67,6 +67,7 @@ def main() -> int:
         raise FileNotFoundError(f"macOS apphost 不存在: {executable}")
 
     architecture_name = "Apple 芯片" if args.arch == "arm64" else "Intel"
+    launch_architecture = "arm64" if args.arch == "arm64" else "x86_64"
     staging_root = output.parent / f"macos-{args.arch}-staging"
     if staging_root.exists():
         shutil.rmtree(staging_root)
@@ -109,6 +110,7 @@ def main() -> int:
         "CFBundleShortVersionString": args.version,
         "CFBundleVersion": args.version,
         "LSMinimumSystemVersion": "11.0",
+        "LSArchitecturePriority": [launch_architecture],
         "LSApplicationCategoryType": "public.app-category.business",
         "NSHighResolutionCapable": True,
         "NSPrincipalClass": "NSApplication",

@@ -9,7 +9,7 @@
         KeyDown="MainWindow_KeyDown">
   <LayoutTransformControl x:Name="MainScaleHost">
   <Grid ColumnDefinitions="60,*" Background="{DynamicResource Canvas}">
-    <!-- Windows v5.10.2 parity: the canvas always starts at x=60; navigation expands above it. -->
+    <!-- Windows v5.11.1 parity: the canvas always starts at x=60; navigation expands above it. -->
     <Border x:Name="SidebarHost"
             Grid.Column="0" Grid.ColumnSpan="2" ZIndex="40"
             HorizontalAlignment="Left"

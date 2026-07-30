@@ -11,6 +11,10 @@ MACHO_CPU_TYPES = {
     "arm64": 0x0100000C,
     "x64": 0x01000007,
 }
+MACHO_CPU_SUBTYPES = {
+    "arm64": 0,
+    "x64": 3,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,22 +63,34 @@ def validate_archive(path: Path, version: str, architecture: str) -> None:
             raise RuntimeError(f"{path.name} bundle version 与 {version} 不一致")
         if plist.get("CFBundleIdentifier") != "com.aisalesos.desktop":
             raise RuntimeError(f"{path.name} App 身份不稳定")
+        launch_architecture = "arm64" if architecture == "arm64" else "x86_64"
+        if plist.get("LSArchitecturePriority") != [launch_architecture]:
+            raise RuntimeError(
+                f"{path.name} LaunchServices 架构优先级错误: "
+                f"{plist.get('LSArchitecturePriority')}"
+            )
         if plist.get("CFBundleDevelopmentRegion") != "zh_CN":
             raise RuntimeError(f"{path.name} 不是中文默认区域")
         if "zh_CN" not in plist.get("CFBundleLocalizations", []):
             raise RuntimeError(f"{path.name} 缺少中文本地化声明")
 
         with archive.open(executable_name) as executable_stream:
-            executable_header = executable_stream.read(8)
+            executable_header = executable_stream.read(12)
         if executable_header[:4] not in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf"):
             raise RuntimeError(f"{path.name} 主程序不是 64 位 Mach-O")
         byte_order = (
             "little" if executable_header[:4] == b"\xcf\xfa\xed\xfe" else "big"
         )
         cpu_type = int.from_bytes(executable_header[4:8], byte_order)
+        cpu_subtype = int.from_bytes(executable_header[8:12], byte_order)
         if cpu_type != MACHO_CPU_TYPES[architecture]:
             raise RuntimeError(
                 f"{path.name} 架构错误: expected={architecture} cpu=0x{cpu_type:08X}"
+            )
+        if cpu_subtype & 0x00FFFFFF != MACHO_CPU_SUBTYPES[architecture]:
+            raise RuntimeError(
+                f"{path.name} CPU subtype 错误: expected={architecture} "
+                f"subtype=0x{cpu_subtype:08X}"
             )
 
         unix_mode = archive.getinfo(executable_name).external_attr >> 16
@@ -84,17 +100,23 @@ def validate_archive(path: Path, version: str, architecture: str) -> None:
         if not bridge_mode & stat.S_IXUSR:
             raise RuntimeError(f"{path.name} WhatsApp Bridge 缺少 Unix 执行权限")
         with archive.open(bridge_name) as bridge_stream:
-            bridge_header = bridge_stream.read(8)
+            bridge_header = bridge_stream.read(12)
         if bridge_header[:4] not in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf"):
             raise RuntimeError(f"{path.name} WhatsApp Bridge 不是 64 位 Mach-O")
         bridge_byte_order = (
             "little" if bridge_header[:4] == b"\xcf\xfa\xed\xfe" else "big"
         )
         bridge_cpu_type = int.from_bytes(bridge_header[4:8], bridge_byte_order)
+        bridge_cpu_subtype = int.from_bytes(bridge_header[8:12], bridge_byte_order)
         if bridge_cpu_type != MACHO_CPU_TYPES[architecture]:
             raise RuntimeError(
                 f"{path.name} WhatsApp Bridge 架构错误: expected={architecture} "
                 f"cpu=0x{bridge_cpu_type:08X}"
+            )
+        if bridge_cpu_subtype & 0x00FFFFFF != MACHO_CPU_SUBTYPES[architecture]:
+            raise RuntimeError(
+                f"{path.name} WhatsApp Bridge CPU subtype 错误: "
+                f"expected={architecture} subtype=0x{bridge_cpu_subtype:08X}"
             )
 
         if not any(name.endswith("libhostfxr.dylib") for name in names):

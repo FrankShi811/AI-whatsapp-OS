@@ -10,11 +10,16 @@ internal static class MacSelfTest
     {
         var root = Path.Combine(Path.GetTempPath(), $"ai-sales-os-mac-smoke-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var previousDataRoot = Environment.GetEnvironmentVariable("WAFLOW_LOCAL_APP_DATA_ROOT");
-        Environment.SetEnvironmentVariable("WAFLOW_LOCAL_APP_DATA_ROOT", root);
-        var database = PlatformDataPaths.DatabasePath;
+        var previousDatabase = Environment.GetEnvironmentVariable("WAFLOW_DATABASE_PATH");
+        var database = Path.Combine(root, "workspace", "waflow.db");
+        Environment.SetEnvironmentVariable("WAFLOW_DATABASE_PATH", database);
+        var workspaceManager = new DataWorkspaceManager(
+            Path.Combine(root, "locator"),
+            Path.Combine(root, "workspace"));
         var secrets = new MemorySecretStore();
-        var services = new AppServices(new LocalRepository(), _ => secrets);
+        var services = new AppServices(
+            dataWorkspaceManager: workspaceManager,
+            secretStoreFactory: _ => secrets);
         try
         {
             await services.InitializeAsync();
@@ -54,11 +59,12 @@ internal static class MacSelfTest
             try { await services.MessagingSync.DisposeAsync(); } catch { }
             try { await services.LeadAutomation.DisposeAsync(); } catch { }
             try { await services.Campaigns.DisposeAsync(); } catch { }
+            try { await services.WhatsAppNumberValidation.DisposeAsync(); } catch { }
             try { await services.Email.DisposeAsync(); } catch { }
             try { await services.WhatsApp.DisposeAsync(); } catch { }
             services.CustomerSuccessCoordinator.Dispose();
             try { Directory.Delete(root, true); } catch { }
-            Environment.SetEnvironmentVariable("WAFLOW_LOCAL_APP_DATA_ROOT", previousDataRoot);
+            Environment.SetEnvironmentVariable("WAFLOW_DATABASE_PATH", previousDatabase);
         }
     }
 

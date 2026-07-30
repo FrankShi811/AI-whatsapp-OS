@@ -22,6 +22,11 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
       DOTNET_NOLOGO: '1'
       AVALONIA_TELEMETRY_OPTOUT: '1'
+      MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+      APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+      APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -52,9 +57,49 @@ jobs:
           if ($version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw "Invalid version: $version" }
           "MAC_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Enforce Windows v5.10.2 parity contract
+      - name: Enforce Windows v5.11.1 parity contract
         shell: pwsh
         run: ./scripts/test-macos-parity.ps1
+
+      - name: Validate Apple signing configuration
+        run: |
+          if { test -n "$MACOS_CERTIFICATE_P12_BASE64" && test -z "$MACOS_CERTIFICATE_PASSWORD"; } ||
+             { test -z "$MACOS_CERTIFICATE_P12_BASE64" && test -n "$MACOS_CERTIFICATE_PASSWORD"; }; then
+            echo "Developer ID certificate secrets must be configured as a complete pair." >&2
+            exit 1
+          fi
+          NOTARY_VALUES=0
+          test -n "$APPLE_NOTARY_KEY_P8_BASE64" && NOTARY_VALUES=$((NOTARY_VALUES + 1))
+          test -n "$APPLE_NOTARY_KEY_ID" && NOTARY_VALUES=$((NOTARY_VALUES + 1))
+          test -n "$APPLE_NOTARY_ISSUER_ID" && NOTARY_VALUES=$((NOTARY_VALUES + 1))
+          if test "$NOTARY_VALUES" -ne 0 && test "$NOTARY_VALUES" -ne 3; then
+            echo "Apple notary secrets must be configured as a complete set." >&2
+            exit 1
+          fi
+          if test "$NOTARY_VALUES" -eq 3 && test -z "$MACOS_CERTIFICATE_P12_BASE64"; then
+            echo "Notarization requires the Developer ID certificate secrets." >&2
+            exit 1
+          fi
+
+      - name: Import Developer ID certificate when configured
+        if: ${{ env.MACOS_CERTIFICATE_P12_BASE64 != '' && env.MACOS_CERTIFICATE_PASSWORD != '' }}
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/ai-sales-os-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" |
+            sed -n 's/.*"\\(Developer ID Application:.*\\)"/\\1/p' | head -n 1)"
+          test -n "$SIGNING_IDENTITY"
+          echo "MACOS_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          echo "MACOS_SIGNING_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
       - name: Build native Apple Silicon app, Bridge and DMG
         shell: pwsh
@@ -63,6 +108,21 @@ jobs:
             -Version $env:MAC_VERSION `
             -Architecture AppleSilicon `
             -RepositoryUrl "https://github.com/${{ github.repository }}"
+
+      - name: Notarize and staple Developer ID DMG when configured
+        if: ${{ env.MACOS_SIGNING_IDENTITY != '' && env.APPLE_NOTARY_KEY_P8_BASE64 != '' && env.APPLE_NOTARY_KEY_ID != '' && env.APPLE_NOTARY_ISSUER_ID != '' }}
+        run: |
+          NOTARY_KEY="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          DMG="dist/installers/AI Sales OS macOS Apple-Silicon Chinese v${MAC_VERSION}.dmg"
+          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "$NOTARY_KEY"
+          xcrun notarytool submit "$DMG" \
+            --key "$NOTARY_KEY" \
+            --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
 
       - name: Validate ZIP bundle
         run: |

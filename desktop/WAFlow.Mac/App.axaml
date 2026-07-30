@@ -133,6 +133,11 @@
     <Style Selector="Button.nav:pointerover /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource SidebarHover}" />
     </Style>
+    <Style Selector="Button.nav:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SidebarHover}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource Primary}" />
+      <Setter Property="BorderThickness" Value="3,0,0,0" />
+    </Style>
     <Style Selector="Button.nav.selected /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource SidebarActive}" />
     </Style>

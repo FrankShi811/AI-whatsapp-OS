@@ -31,6 +31,10 @@ public sealed partial class MainWindow : Window
     private static IBrush Danger => ResourceBrush("Danger", "#A52D2D");
     private static IBrush Warning => ResourceBrush("Warning", "#8A5A00");
     private readonly AppServices _services;
+    private readonly DataWorkspaceManager _dataWorkspaceManager;
+    private readonly DataWorkspaceMigrationResult _startupMigration;
+    private readonly Exception? _workspaceStartupError;
+    private DataWorkspaceLease? _workspaceLease;
     private readonly IApplicationUpdateService _updates = new VelopackUpdateService();
     private readonly CancellationTokenSource _lifetime = new();
     private List<Lead> _leads = [];
@@ -72,14 +76,26 @@ public sealed partial class MainWindow : Window
     };
 
     public MainWindow()
+        : this(null, null, null)
+    {
+    }
+
+    internal MainWindow(
+        DataWorkspaceManager? dataWorkspaceManager = null,
+        DataWorkspaceMigrationResult? startupMigration = null,
+        Exception? workspaceStartupError = null)
     {
         InitializeComponent();
         _reduceMotion = PrefersReducedMotion();
         Classes.Set("reduce-motion", _reduceMotion);
-        var repository = new LocalRepository(PlatformDataPaths.DatabasePath);
+        _dataWorkspaceManager = dataWorkspaceManager ?? new DataWorkspaceManager();
+        _startupMigration = startupMigration ?? new DataWorkspaceMigrationResult(false, true, "");
+        _workspaceStartupError = workspaceStartupError;
+        var location = _dataWorkspaceManager.Resolve();
+        _workspaceLease = _dataWorkspaceManager.AcquireLease(location.RootDirectory);
         _services = new AppServices(
-            repository,
-            target => new MacKeychainSecretStore(target));
+            dataWorkspaceManager: _dataWorkspaceManager,
+            secretStoreFactory: target => new MacKeychainSecretStore(target));
         _updates.StateChanged += Updates_StateChanged;
         _services.WhatsApp.EventReceived += WhatsApp_EventReceived;
         _services.WhatsAppSync.SynchronizationChanged += WhatsAppSync_SynchronizationChanged;
@@ -93,8 +109,21 @@ public sealed partial class MainWindow : Window
 
     private async void MainWindow_Opened(object? sender, EventArgs e)
     {
+        if (_workspaceStartupError is not null)
+        {
+            ContentHost.Content = MessagePanel(
+                "本地数据工作区无法启动",
+                _workspaceStartupError.Message,
+                "程序尚未修改任何客户数据。请保留此提示用于排查。",
+                Danger);
+            _openedReady.TrySetResult(false);
+            return;
+        }
+
+        DataWorkspaceLocation? location = null;
         try
         {
+            location = _services.DataWorkspace;
             await _services.InitializeAsync(_lifetime.Token);
             var settings = await _services.Repository.GetAppSettingsAsync(_lifetime.Token);
             MacThemeManager.Apply(settings.ThemeMode);
@@ -102,6 +131,7 @@ public sealed partial class MainWindow : Window
             await _services.Campaigns.StartAsync(_lifetime.Token);
             await _services.LeadAutomation.StartAsync(_lifetime.Token);
             await _services.MessagingSync.StartAsync(_lifetime.Token);
+            await _services.WhatsAppNumberValidation.StartAsync(_lifetime.Token);
             await ReloadAsync();
             await UpdateUnreadBadgesAsync();
             await RenderCurrentPageAsync();
@@ -109,9 +139,28 @@ public sealed partial class MainWindow : Window
             _unreadBadgeTimer.Start();
             _ = _updates.CheckAndDownloadAsync();
             _openedReady.TrySetResult(true);
+            var completion = await _dataWorkspaceManager.CompletePendingMigrationAsync(
+                _services.DataWorkspace.RootDirectory,
+                _lifetime.Token);
+            if (!string.IsNullOrWhiteSpace(completion.Message))
+                await ShowMessageAsync(
+                    completion.SourceRetained ? "工作区已切换，原位置已保留" : "工作区迁移完成",
+                    completion.Message);
+            else if (_startupMigration.Attempted && !_startupMigration.Succeeded)
+                await ShowMessageAsync("工作区迁移未完成", _startupMigration.Message);
         }
         catch (Exception error)
         {
+            if (location is not null)
+            {
+                try
+                {
+                    await _dataWorkspaceManager.RollbackAfterStartupFailureAsync(
+                        location.RootDirectory,
+                        error);
+                }
+                catch { }
+            }
             ContentHost.Content = MessagePanel(
                 "初始化失败",
                 error.Message,
@@ -218,9 +267,13 @@ public sealed partial class MainWindow : Window
         try { await _services.MessagingSync.DisposeAsync(); } catch { }
         try { await _services.LeadAutomation.DisposeAsync(); } catch { }
         try { await _services.Campaigns.DisposeAsync(); } catch { }
+        try { await _services.WhatsAppNumberValidation.DisposeAsync(); } catch { }
         try { await _services.Email.DisposeAsync(); } catch { }
         try { await _services.WhatsApp.DisposeAsync(); } catch { }
+        try { await _updates.DisposeAsync(); } catch { }
         _services.CustomerSuccessCoordinator.Dispose();
+        _workspaceLease?.Dispose();
+        _workspaceLease = null;
         _lifetime.Dispose();
     }
 
@@ -1272,6 +1325,16 @@ public sealed partial class MainWindow : Window
             ]
         });
         return file?.TryGetLocalPath();
+    }
+
+    private async Task<string?> PickFolderAsync(string title)
+    {
+        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+        {
+            Title = title,
+            AllowMultiple = false
+        });
+        return folders.Count == 0 ? null : folders[0].TryGetLocalPath();
     }
 
     private static Bitmap? DecodeDataUrl(string value)

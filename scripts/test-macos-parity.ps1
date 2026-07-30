@@ -31,9 +31,14 @@ $macVersion = Project-Version 'desktop\WAFlow.Mac\WAFlow.Mac.csproj'
 if ($coreVersion -ne $windowsVersion -or $coreVersion -ne $macVersion) {
   throw "macOS parity gate failed [version]: Core=$coreVersion Windows=$windowsVersion Mac=$macVersion"
 }
+if ($macVersion -ne '5.11.1') {
+  throw "macOS parity gate failed [release]: expected=5.11.1 actual=$macVersion"
+}
 
 $shell = Read-Utf8 'desktop\WAFlow.Mac\MainWindow.axaml'
 $shellCode = Read-Utf8 'desktop\WAFlow.Mac\MainWindow.axaml.cs'
+$program = Read-Utf8 'desktop\WAFlow.Mac\Program.cs'
+$appCode = Read-Utf8 'desktop\WAFlow.Mac\App.axaml.cs'
 $styles = Read-Utf8 'desktop\WAFlow.Mac\App.axaml'
 $theme = Read-Utf8 'desktop\WAFlow.Mac\MacThemeManager.cs'
 $customers = Read-Utf8 'desktop\WAFlow.Mac\MainWindow.Customers.cs'
@@ -43,6 +48,8 @@ $settings = Read-Utf8 'desktop\WAFlow.Mac\MainWindow.Settings.cs'
 $project = Read-Utf8 'desktop\WAFlow.Mac\WAFlow.Mac.csproj'
 $emailService = Read-Utf8 'desktop\WAFlow.Core\Services\EmailService.cs'
 $macPackager = Read-Utf8 'scripts\package-macos-app.py'
+$macBuild = Read-Utf8 'scripts\build-macos-preview.ps1'
+$dmgTest = Read-Utf8 'scripts\test-macos-dmg.py'
 
 Require-Text $shell @(
   'Width="1440" Height="900" MinWidth="1120" MinHeight="700"',
@@ -68,6 +75,8 @@ Require-Text $styles @(
   'Delay="0:0:0.06"',
   'Border#SidebarHost.expanded',
   'Button.nav.selected',
+  'Button.nav:focus-visible',
+  'BorderThickness" Value="3,0,0,0"',
   'Button:focus-visible',
   'TextBox:focus-visible',
   'ComboBox:focus-visible',
@@ -87,17 +96,42 @@ Require-Text $shellCode @(
   'MacThemeManager.Apply("Dark")',
   'ApplyUiScale(settings.UiScalePercentage)'
 ) 'interaction'
+Require-Text $program @(
+  'ApplyPendingMigrationAsync',
+  'ParseWaitForProcessId',
+  'ConfigureWorkspaceFailure'
+) 'workspace-startup'
+Require-Text $appCode @(
+  'WAFLOW_UI_SMOKE_RESULT_PATH',
+  'WriteUiSmokeResult'
+) 'launchservices-evidence'
 Require-Text $shell @('Duration="0:0:0.235"') 'page-transition'
 Require-Text $emailService @(
   'StartBackgroundSyncAsync',
   'RequestSyncAsync',
   'BackgroundAccountMonitor',
   'RunConnectedAccountSessionAsync'
-) 'v5.10.2-inbox-performance'
+) 'inbox-performance'
 Require-Text $macPackager @(
   'source_mode = path.stat().st_mode',
-  'stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH'
+  'stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH',
+  '"LSArchitecturePriority": [launch_architecture]'
 ) 'macos-zip-executable-permissions'
+Require-Text $macBuild @(
+  'MACOS_SIGNING_IDENTITY',
+  'macos-entitlements.plist',
+  '$launcher = Join-Path $dmgStage',
+  'AI Sales OS.command',
+  'codesign --verify --deep --strict'
+) 'macos-signing-and-install'
+Require-Text $dmgTest @(
+  'validate_macho',
+  'CPU subtype',
+  '"/usr/bin/open"',
+  '"-W"',
+  '"-n"',
+  'Finder/LaunchServices'
+) 'm2-finder-launch'
 
 $semanticKeys = [regex]::Matches($theme, '\["([^"]+)"\]\s*=') |
   ForEach-Object { $_.Groups[1].Value } |
@@ -191,7 +225,13 @@ Require-Text $settings @(
   'UiScalePercentage',
   'ThemeMode',
   'MacThemeManager.Apply',
-  'ApplyUiScale'
+  'ApplyUiScale',
+  'GetUsageAsync',
+  'BuildSuggestedTargetRoot',
+  'PreviewMigrationAsync',
+  'ScheduleMigrationAsync',
+  'BuildWorkspaceMigrationRestart',
+  'CancelScheduledMigrationAsync'
 ) 'settings'
 
 Require-Text $project @(
