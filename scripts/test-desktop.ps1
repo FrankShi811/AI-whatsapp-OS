@@ -318,6 +318,21 @@ if ($leadIntelligenceXaml -match 'DataGridTextColumn Header="公司"' -or
 }
 Write-Host 'PASS  Lead Intelligence compact opportunity dimensions without company column'
 
+if ($campaignsXaml -notmatch 'x:Name="AudienceFilterActionsRow"' -or
+    $campaignsXaml -notmatch 'Grid\.Column="6"\s+Orientation="Horizontal"' -or
+    $campaignsXaml -notmatch 'Click="SelectAllEligible_Click"' -or
+    $campaignsXaml -notmatch 'Click="ClearSelection_Click"' -or
+    $leadIntelligenceXaml -notmatch 'x:Name="PageSizeBox"[\s\S]*?Width="112"' -or
+    $leadIntelligenceXaml -notmatch 'x:Name="PreviousPageButton"' -or
+    $leadIntelligenceXaml -notmatch 'x:Name="NextPageButton"' -or
+    $leadIntelligenceSource -notmatch 'new PageSizeOption\([^,]+,\s*10\)' -or
+    $leadIntelligenceSource -notmatch 'new PageSizeOption\([^,]+,\s*30\)' -or
+    $leadIntelligenceSource -notmatch 'new PageSizeOption\([^,]+,\s*50\)' -or
+    $leadIntelligenceSource -notmatch [regex]::Escape('Skip(startIndex).Take(_pageSize)')) {
+  throw 'Campaign audience actions must share the filter row and Lead Intelligence must paginate by 10, 30 or 50 rows.'
+}
+Write-Host 'PASS  compact campaign audience actions and Lead Intelligence 10/30/50 pagination contract'
+
 if ($todayBriefSource -match '"identity"' -or
     $todayBriefSource -match 'identityPending' -or
     $dashboardSource -match '身份确认' -or

@@ -119,12 +119,35 @@
                             <TextBlock Grid.Column="1" x:Name="EligibleCountText" Text="已选 0" Foreground="{DynamicResource Primary}" FontWeight="SemiBold" VerticalAlignment="Center"/>
                         </Grid>
                         <TextBox x:Name="AudienceSearchBox" Margin="0,9,0,7" ToolTip="搜索姓名、公司、WhatsApp、邮箱或标签" TextChanged="AudienceFilter_Changed"/>
-                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="6"/><ColumnDefinition Width="*"/><ColumnDefinition Width="6"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                            <ComboBox x:Name="CustomerGradeFilterBox" SelectionChanged="AudienceFilter_Changed"/>
-                            <ComboBox Grid.Column="2" x:Name="CustomerStageFilterBox" DisplayMemberPath="Label" SelectionChanged="AudienceFilter_Changed"/>
-                            <ComboBox Grid.Column="4" x:Name="CustomerCategoryPreferenceFilterBox" DisplayMemberPath="Label" ToolTip="按一级品类偏好筛选发送客户" SelectionChanged="AudienceFilter_Changed"/>
+                        <Grid x:Name="AudienceFilterActionsRow">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="6"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="6"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="10"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="CustomerGradeFilterBox"
+                                      AutomationProperties.Name="发送客户等级筛选"
+                                      SelectionChanged="AudienceFilter_Changed"/>
+                            <ComboBox Grid.Column="2"
+                                      x:Name="CustomerStageFilterBox"
+                                      AutomationProperties.Name="发送客户阶段筛选"
+                                      DisplayMemberPath="Label"
+                                      SelectionChanged="AudienceFilter_Changed"/>
+                            <ComboBox Grid.Column="4"
+                                      x:Name="CustomerCategoryPreferenceFilterBox"
+                                      AutomationProperties.Name="发送客户一级品类偏好筛选"
+                                      DisplayMemberPath="Label"
+                                      ToolTip="按一级品类偏好筛选发送客户"
+                                      SelectionChanged="AudienceFilter_Changed"/>
+                            <StackPanel Grid.Column="6" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button Content="全选当前可发送" Style="{StaticResource SecondaryButton}" Click="SelectAllEligible_Click" Padding="10,5" MinHeight="32" Margin="0,0,6,0"/>
+                                <Button Content="清空选择" Style="{StaticResource SecondaryButton}" Click="ClearSelection_Click" Padding="10,5" MinHeight="32"/>
+                            </StackPanel>
                         </Grid>
-                        <WrapPanel Margin="0,7,0,0"><Button Content="全选当前可发送" Style="{StaticResource SecondaryButton}" Click="SelectAllEligible_Click" Padding="10,5" Margin="0,0,6,0"/><Button Content="清空选择" Style="{StaticResource SecondaryButton}" Click="ClearSelection_Click" Padding="10,5"/></WrapPanel>
                     </StackPanel>
                     <DataGrid x:Name="AudienceGrid" Grid.Row="1" AutoGenerateColumns="False" CanUserAddRows="False" RowHeight="40" BorderThickness="0,1,0,1" SelectionChanged="AudienceGrid_SelectionChanged">
                         <DataGrid.Columns>

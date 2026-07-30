@@ -60,8 +60,25 @@
                             <DataGridTextColumn Header="分析状态" Binding="{Binding AnalysisStateLabel}" Width="135"/>
                         </DataGrid.Columns>
                     </DataGrid>
-                    <Border Grid.Row="2" Background="{DynamicResource SurfaceMuted}" CornerRadius="0,0,16,16" Padding="16,10">
-                        <TextBlock Text="未分析客户始终保持 D / 0 分；只有结构化 AI 结果通过校验后才更新。" Foreground="{DynamicResource Muted}" FontSize="9.5"/>
+                    <Border Grid.Row="2" Background="{DynamicResource SurfaceMuted}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" CornerRadius="0,0,16,16" Padding="16,9"
+                            ToolTip="未分析客户始终保持 D / 0 分；只有结构化 AI 结果通过校验后才更新。">
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="每页" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                                <ComboBox x:Name="PageSizeBox"
+                                          Width="112"
+                                          AutomationProperties.Name="商机队列每页条数"
+                                          DisplayMemberPath="Label"
+                                          SelectionChanged="PageSizeBox_SelectionChanged"/>
+                                <TextBlock x:Name="PageRangeText" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button x:Name="PreviousPageButton" Content="上一页" Style="{StaticResource SecondaryButton}" Click="PreviousPage_Click" Padding="12,6" MinHeight="30"/>
+                                <TextBlock x:Name="PageStatusText" Foreground="{DynamicResource Ink}" FontWeight="SemiBold" VerticalAlignment="Center" Margin="13,0"/>
+                                <Button x:Name="NextPageButton" Content="下一页" Style="{StaticResource SecondaryButton}" Click="NextPage_Click" Padding="12,6" MinHeight="30"/>
+                            </StackPanel>
+                        </Grid>
                     </Border>
                 </Grid>
             </Border>
