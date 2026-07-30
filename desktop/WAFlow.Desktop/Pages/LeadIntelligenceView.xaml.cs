@@ -11,10 +11,13 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
 {
     private readonly AppServices _services;
     private List<Lead> _leads = [];
+    private List<Lead> _visibleLeads = [];
     private CancellationTokenSource? _bulkCancellation;
     private LeadBulkAnalysisProgress? _lastBulkProgress;
     private bool _decisionDrawerExpanded = true;
     private int _customerBrainRefreshGeneration;
+    private int _currentPage = 1;
+    private int _pageSize = 30;
     public event EventHandler? ImportRequested;
     public event EventHandler? DataChanged;
 
@@ -22,6 +25,8 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     {
         InitializeComponent(); _services = services;
         GradeFilter.ItemsSource = new[] { "全部", "A", "B", "C", "D" }; GradeFilter.SelectedIndex = 0;
+        PageSizeBox.ItemsSource = new[] { new PageSizeOption("10 条/页", 10), new PageSizeOption("30 条/页", 30), new PageSizeOption("50 条/页", 50) };
+        PageSizeBox.SelectedIndex = 1;
     }
 
     public async Task RefreshAsync()
@@ -29,11 +34,31 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         var selectedId = (LeadGrid.SelectedItem as Lead)?.Id;
         _leads = await _services.Repository.GetLeadsAsync(SearchBox.Text, GradeFilter.SelectedItem as string);
         await RefreshAiRouteAsync();
-        LeadGrid.ItemsSource = _leads;
-        LeadGrid.SelectedItem = _leads.FirstOrDefault(x => x.Id == selectedId) ?? _leads.FirstOrDefault();
+        ApplyPagination(selectedId);
         var selectedLead = LeadGrid.SelectedItem as Lead;
         UpdateInspector(selectedLead);
         await UpdateCustomerBrainAsync(selectedLead);
+    }
+
+    private void ApplyPagination(string? preferredLeadId = null)
+    {
+        var total = _leads.Count;
+        var totalPages = Math.Max(1, (int)Math.Ceiling(total / (double)_pageSize));
+        _currentPage = Math.Clamp(_currentPage, 1, totalPages);
+        var startIndex = (_currentPage - 1) * _pageSize;
+        _visibleLeads = _leads.Skip(startIndex).Take(_pageSize).ToList();
+
+        LeadGrid.ItemsSource = null;
+        LeadGrid.ItemsSource = _visibleLeads;
+        LeadGrid.SelectedItem = _visibleLeads.FirstOrDefault(lead =>
+            lead.Id.Equals(preferredLeadId, StringComparison.OrdinalIgnoreCase)) ?? _visibleLeads.FirstOrDefault();
+
+        var first = total == 0 ? 0 : startIndex + 1;
+        var last = total == 0 ? 0 : startIndex + _visibleLeads.Count;
+        PageRangeText.Text = total == 0 ? "暂无商机" : $"显示第 {first:N0}–{last:N0} 位，共 {total:N0} 位";
+        PageStatusText.Text = $"第 {_currentPage:N0} / {totalPages:N0} 页";
+        PreviousPageButton.IsEnabled = _currentPage > 1;
+        NextPageButton.IsEnabled = _currentPage < totalPages;
     }
 
     public async Task RefreshAiRouteAsync()
@@ -229,9 +254,40 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
 
     private void Import_Click(object sender, RoutedEventArgs e) => ImportRequested?.Invoke(this, EventArgs.Empty);
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await RefreshAsync();
-    private async void GradeFilter_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (IsLoaded) await RefreshAsync(); }
-    private async void SearchBox_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) await RefreshAsync(); }
+    private async void GradeFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        _currentPage = 1;
+        await RefreshAsync();
+    }
+    private async void SearchBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        _currentPage = 1;
+        await RefreshAsync();
+    }
+    private void PageSizeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (PageSizeBox.SelectedItem is not PageSizeOption option || _pageSize == option.Value) return;
+        _pageSize = option.Value;
+        _currentPage = 1;
+        if (IsLoaded) ApplyPagination();
+    }
+    private void PreviousPage_Click(object sender, RoutedEventArgs e)
+    {
+        if (_currentPage <= 1) return;
+        _currentPage--;
+        ApplyPagination();
+    }
+    private void NextPage_Click(object sender, RoutedEventArgs e)
+    {
+        var totalPages = Math.Max(1, (int)Math.Ceiling(_leads.Count / (double)_pageSize));
+        if (_currentPage >= totalPages) return;
+        _currentPage++;
+        ApplyPagination();
+    }
 
     private sealed record FactorMetric(string Label, int Score, int Max, string Reason, string Evidence) { public double Percent => Max == 0 ? 0 : 100d * Score / Max; public string Value => $"{Score}/{Max}"; }
+    private sealed record PageSizeOption(string Label, int Value);
     private static class LeadScoringLabel { public static readonly string[] Order = ["paid_marketing_willingness","supply_stability","ecommerce_foundation","private_traffic","existing_sales","materials_readiness"]; }
 }
