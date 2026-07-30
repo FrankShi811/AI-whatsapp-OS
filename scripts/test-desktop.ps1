@@ -72,6 +72,9 @@ $guideCatalogSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $r
 $releaseCatalogSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\ReleaseCatalog.cs')
 $updateStateSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Updates\ApplicationUpdateState.cs')
 $updateServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Updates\VelopackUpdateService.cs')
+$updateCacheRetentionSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Infrastructure\UpdateCacheRetention.cs')
+$updateCacheMaintenanceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Updates\LocalUpdateCacheMaintenance.cs')
+$trimUpdateCacheSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'scripts\trim-local-update-cache.ps1')
 $settingsXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\SettingsWindow.xaml')
 $settingsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\SettingsWindow.xaml.cs')
 $dataWorkspaceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Infrastructure\DataWorkspaceManager.cs')
@@ -507,6 +510,17 @@ if ($appStartupSource -notmatch [regex]::Escape('DesktopShortcutService.EnsureFo
   throw 'Windows install/update must recreate and verify shortcuts, while isolated QA restores the real user links.'
 }
 Write-Host 'PASS  Velopack plus verified Windows-native post-update shortcut repair contract'
+if ($appStartupSource -notmatch [regex]::Escape('LocalUpdateCacheMaintenance.Run();') -or
+    $updateServiceSource -notmatch [regex]::Escape('LocalUpdateCacheMaintenance.Run();') -or
+    $updateCacheRetentionSource -notmatch [regex]::Escape('public const int RollbackVersionLimit = 3;') -or
+    $updateCacheRetentionSource -notmatch [regex]::Escape('package.Version >= installedVersion || rollbackVersions.Contains(package.Version)') -or
+    $updateCacheMaintenanceSource -notmatch [regex]::Escape('Path.Combine(locator.PackagesDir, "VelopackTemp")') -or
+    $updateCacheMaintenanceSource -notmatch [regex]::Escape('Path.Combine(Path.GetTempPath(), "AI Sales OS Updates")') -or
+    $trimUpdateCacheSource -notmatch [regex]::Escape('[int]$RollbackVersionLimit = 3') -or
+    $velopackBuildSource -notmatch [regex]::Escape("scripts\trim-local-update-cache.ps1")) {
+  throw 'Every update must prune only recognized update caches while retaining the current package and three rollback versions.'
+}
+Write-Host 'PASS  installed, portable and local-build update-cache retention contract'
 if ($domainModelsSource -notmatch [regex]::Escape('public int UiScalePercentage { get; set; } = 100;') -or
     $uiScaleSource -notmatch [regex]::Escape('SupportedPercentages = [80, 90, 100, 110, 125]') -or
     $uiScaleHostSource -notmatch 'class UiScaleHost : Decorator' -or
