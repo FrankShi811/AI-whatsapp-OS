@@ -726,10 +726,13 @@ Write-Host 'PASS  application-wide account synchronization, durable unread curso
 if ($whatsAppNamingSource -notmatch [regex]::Escape('lead?.DisplayName') -or
     $whatsAppSyncSource -notmatch 'WhatsAppConversationNaming\.Resolve' -or
     $localRepositorySource -notmatch 'WhatsAppConversationNaming\.Resolve' -or
-    $whatsAppInboxSource -notmatch 'WhatsAppConversationNaming\.Resolve') {
+    $whatsAppInboxSource -notmatch 'WhatsAppConversationNaming\.Resolve' -or
+    $localRepositorySource -notmatch [regex]::Escape('owners.Count > 0') -or
+    $localRepositorySource.Contains('!account.Id.Equals(currentAccountId') -or
+    $customerIdentitySource -notmatch [regex]::Escape('ownedPeer.Name')) {
   throw 'WhatsApp conversation naming must prefer the unique CRM phone match and fall back to the native phone remark.'
 }
-Write-Host 'PASS  WhatsApp conversation CRM-name priority and phone-remark fallback contract'
+Write-Host 'PASS  WhatsApp conversation CRM-name priority, owned-account guard and phone-remark fallback contract'
 
 if ($emailInboxXaml -notmatch [regex]::Escape('Visibility="{Binding UnreadVisibility}"') -or
     $emailInboxXaml -notmatch [regex]::Escape('Text="{Binding UnreadLabel}"') -or

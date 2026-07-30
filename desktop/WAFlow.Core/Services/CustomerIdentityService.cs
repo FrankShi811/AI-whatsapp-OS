@@ -316,12 +316,18 @@ public sealed class CustomerIdentityService
             foreach (var conversation in await _repository.GetWhatsAppConversationsAsync(account.Id, cancellationToken))
             {
                 if (conversation.IsGroup || string.IsNullOrWhiteSpace(conversation.Phone)) continue;
-                if (await _repository.GetOwnedWhatsAppPeerAccountAsync(account.Id, conversation.Phone, cancellationToken) is null) continue;
+                var ownedPeer = await _repository.GetOwnedWhatsAppPeerAccountAsync(
+                    account.Id,
+                    conversation.Phone,
+                    cancellationToken);
+                if (ownedPeer is null) continue;
                 var nativeName = contacts
                     .Where(contact => PhoneIdentity.Digits(contact.Phone).Equals(
                         PhoneIdentity.Digits(conversation.Phone), StringComparison.Ordinal))
                     .Select(BestNativeContactName)
                     .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
+                if (string.IsNullOrWhiteSpace(nativeName))
+                    nativeName = WhatsAppTextEncodingRepair.Repair(ownedPeer.Name).Trim();
                 if (!string.IsNullOrWhiteSpace(nativeName) &&
                     !nativeName.Equals(conversation.DisplayName, StringComparison.CurrentCulture))
                 {
