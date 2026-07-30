@@ -671,7 +671,7 @@ Check(protectedUpdated.Name == "Changed Name"
       && protectedUpdated.PhoneE164 == "+14155550999"
       && protectedUpdated.Email == ""
       && protectedUpdated.Stage == LeadStage.Lost
-      && protectedUpdated.LatestMessage == "replacement note",
+      && protectedUpdated.ManualNotes == "replacement note",
     "columns present in a Buyer ID reimport overwrite the same customer's canonical values, including blanks");
 Check(protectedUpdated.CustomFields[protectedStageHeader] == "old follow-up"
       && protectedUpdated.CustomFields[protectedDetailHeader] == "new detail"
@@ -2051,7 +2051,7 @@ await reportRepository.InitializeAsync();
 var reportLead = new Lead
 {
     Id="report-customer", Name="Monthly Buyer", Country="美国", PhoneE164="+14155558888", PhoneValid=true,
-    ProductInterest="家居用品", Owner="Frank", Stage=LeadStage.Negotiation, Grade="A", Score=86,
+    ProductInterest="家居用品", Owner="Frank", ManualNotes="销售备注：客户更在意稳定供货，需人工核实交期。", Stage=LeadStage.Negotiation, Grade="A", Score=86,
     AnalysisContractVersion=LeadIntelligenceContract.Version, AiScoreApplied=true, AnalysisStatus=AnalysisStatus.Succeeded,
     ScoreFactors=
     [
@@ -2113,6 +2113,20 @@ Check(firstBrain.Statements.Any(item => item.Nature == IntelligenceStatementNatu
 Check(firstBrainAgain.Version == firstBrain.Version && firstRecommendations.Count == 1, "Customer Brain refresh is idempotent and does not duplicate versions or recommendations");
 Check(behaviorTimeline.Count >= 88 && behaviorTimeline.Any(item => item.SourceType == "whatsapp_message") && behaviorTimeline.Any(item => item.SourceType == "campaign_recipient") && behaviorTimeline.Any(item => item.SourceType == "customer_analysis_report"), "Customer Brain builds an idempotent behavior timeline from conversations, campaigns and reports");
 var stagedBrainService = new CustomerBrainService(reportRepository, new FakeCustomerBrainProvider());
+var contextualBrain = await stagedBrainService.UpdateConversationContextAsync(reportLead.Id);
+Check(contextualBrain.ConversationContext is
+    {
+        Status: CustomerContextStatus.Current,
+        WhatsAppMessageCount: 85,
+        EmailMessageCount: 0
+    }
+    && contextualBrain.ConversationContext.Overview.Contains("持续采购")
+    && contextualBrain.Statements.Any(item => item.Source == "人工备注")
+    && contextualBrain.Statements.Any(item => item.Source == "AI 上下文总结"),
+    "Customer Intelligence keeps manual notes separate and summarizes all retained WhatsApp/email context into evidence-bound AI inferences");
+var contextualBrainAgain = await stagedBrainService.UpdateConversationContextAsync(reportLead.Id);
+Check(contextualBrainAgain.ConversationContext.UpdatedAt == contextualBrain.ConversationContext.UpdatedAt,
+    "unchanged customer context reuses the persisted summary without another AI request");
 var decisionBrain = await stagedBrainService.AnalyzeAsync(reportLead.Id);
 var brainRuns = await reportRepository.GetCustomerBrainRunsAsync(reportLead.Id);
 var followUpTasks = await reportRepository.GetFollowUpTasksAsync(reportLead.Id);
@@ -3615,7 +3629,33 @@ sealed class FakeCustomerBrainProvider : IStructuredAiProvider
         CancellationToken cancellationToken = default) where T : class
     {
         object result;
-        if (typeof(T) == typeof(CustomerUnderstandingResult))
+        if (typeof(T) == typeof(CustomerConversationContextResult))
+        {
+            result = new CustomerConversationContextResult
+            {
+                Overview = "客户通过 WhatsApp 表达持续采购需求，沟通直接，当前仍需核实价格与交期。",
+                AttitudesAndInterests = ["重视稳定供货", "关注月度持续采购"],
+                PersonalityTraits = ["目标导向"],
+                CommunicationStyle = ["表达直接、偏好明确问题"],
+                ConcernsAndObjections = ["目标价格和交期尚未确认"],
+                PurchaseSignals = ["明确提出每月500件需求"],
+                RelationshipState = "已进入需求确认阶段",
+                RecommendedApproach = "用简洁问题确认 SKU、价格区间和交期。",
+                Inferences =
+                [
+                    new CustomerIntelligenceStatement
+                    {
+                        Nature = IntelligenceStatementNature.Inference,
+                        Topic = "沟通偏好",
+                        Text = "客户偏好直接、可执行的沟通。",
+                        Evidence = "I need 500 pcs monthly.",
+                        Source = "WhatsApp report-84",
+                        Confidence = .84
+                    }
+                ]
+            };
+        }
+        else if (typeof(T) == typeof(CustomerUnderstandingResult))
         {
             result = new CustomerUnderstandingResult
             {

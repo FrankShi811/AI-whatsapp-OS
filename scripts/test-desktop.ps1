@@ -368,7 +368,7 @@ Write-Host 'PASS  customer editor theme resource and canonical country-field con
 if ($importServiceSource -notmatch [regex]::Escape('MergeCustomDimensions(lead, customValues, isNew)') -or
     $importServiceSource -match [regex]::Escape('lead.CustomFields.Clear()') -or
     $importServiceSource -notmatch [regex]::Escape('SetExact(ImportField.Name, x => lead.Name = x);') -or
-    $importServiceSource -notmatch [regex]::Escape('SetExact(ImportField.Notes, x => lead.LatestMessage = x);') -or
+    $importServiceSource -notmatch [regex]::Escape('SetExact(ImportField.Notes, x => lead.ManualNotes = x);') -or
     $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 6')) {
   throw 'Spreadsheet reimports must merge by Buyer ID: update present columns, add new dimensions and preserve absent old dimensions.'
 }
@@ -662,7 +662,7 @@ if ($emailAccountXaml -notmatch 'x:Name="GuideStepsText"' -or
     -not ($emailAccountSource.Contains('UserNameBox.Text = EmailBox.Text.Trim()')) -or
     -not ($emailAccountSource.Contains('ImapHostBox.Clear()')) -or
     -not ($emailAccountSource.Contains('UseShellExecute = true')) -or
-    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 3'))) {
+    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 4'))) {
   throw 'Email account window must provide provider steps, direct official links, field hints, username sync and preset recovery.'
 }
 Write-Host 'PASS  provider-specific email onboarding and compatibility guidance contract'
@@ -730,11 +730,30 @@ if ($emailInboxXaml -notmatch 'x:Name="NewEmailButton"' -or
     $guideCatalogSource -match 'Ctrl\+1 . Ctrl\+7' -or
     $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 6') -or
     $guideCatalogSource -notmatch [regex]::Escape('["broadcast"] = ModuleGuideVersion + 2') -or
-    $guideCatalogSource -notmatch [regex]::Escape('["analytics"] = ModuleGuideVersion + 1') -or
+    $guideCatalogSource -notmatch [regex]::Escape('["analytics"] = ModuleGuideVersion + 2') -or
     $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 7')) {
   throw 'Email Inbox must support new-message composition, CRM/Customer Brain-aware AI drafting, manual-send safety and current module guidance.'
 }
 Write-Host 'PASS  Email Inbox new-message, Customer Intelligence, AI draft and all-module guide audit contract'
+
+if ($whatsAppInboxXaml -match 'x:Name="CompanyBox"' -or
+    $emailInboxXaml -match 'x:Name="CompanyBox"' -or
+    $whatsAppInboxXaml -match 'x:Name="OptInSourceBox"' -or
+    $whatsAppInboxXaml -notmatch 'x:Name="NotesBox"' -or
+    $whatsAppInboxXaml -notmatch 'x:Name="AiContextSummaryText"' -or
+    $emailInboxXaml -notmatch 'x:Name="AiContextSummaryText"' -or
+    $domainModelsSource -notmatch [regex]::Escape('public string ManualNotes { get; set; }') -or
+    $customerBrainModelsSource -notmatch [regex]::Escape('CustomerConversationContext') -or
+    $customerBrainSource -notmatch [regex]::Escape('UpdateConversationContextAsync') -or
+    $customerBrainSource -notmatch [regex]::Escape('AiModuleKeys.Customers') -or
+    $customerAnalysisSource -notmatch [regex]::Escape('_customerBrain.UpdateConversationContextAsync') -or
+    $customerAnalysisSource -notmatch [regex]::Escape('ConversationContext = customerBrain?.ConversationContext') -or
+    $customerAnalysisSource -notmatch [regex]::Escape('manualNotes = lead.ManualNotes') -or
+    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 3')) -or
+    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 4'))) {
+  throw 'Customer Intelligence must separate manual notes from AI context, remove company/source blanks, update cross-channel context incrementally and feed both into customer analysis.'
+}
+Write-Host 'PASS  Customer Intelligence manual-note and cross-channel AI-context contract'
 
 $workspaceMigrationFailures = @()
 if ($settingsXaml -notmatch 'x:Name="WorkspaceUsageText"' -or

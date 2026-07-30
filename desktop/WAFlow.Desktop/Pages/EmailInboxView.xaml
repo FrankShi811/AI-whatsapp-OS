@@ -178,12 +178,31 @@
                     <Border Background="{DynamicResource PrimarySoft}" CornerRadius="12" Padding="12"><StackPanel><TextBlock Text="邮件与 CRM 已联动" Foreground="{DynamicResource Primary}" FontWeight="SemiBold"/><TextBlock Text="保存后，客户列表、商机智能、Customer Brain、客户分析和邮件自动化任务都会读取这份资料。" Foreground="{DynamicResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,4,0,0"/></StackPanel></Border>
                     <TextBlock Text="姓名" Style="{StaticResource LabelText}" Margin="0,14,0,4"/><TextBox x:Name="NameBox"/>
                     <TextBlock Text="邮箱" Style="{StaticResource LabelText}" Margin="0,10,0,4"/><TextBox x:Name="CustomerEmailBox"/>
-                    <TextBlock Text="公司" Style="{StaticResource LabelText}" Margin="0,10,0,4"/><TextBox x:Name="CompanyBox"/>
                     <TextBlock Text="国家" Style="{StaticResource LabelText}" Margin="0,10,0,4"/><TextBox x:Name="CountryBox"/>
                     <TextBlock Text="阶段" Style="{StaticResource LabelText}" Margin="0,10,0,4"/><ComboBox x:Name="StageBox" DisplayMemberPath="Label"/>
                     <TextBlock Text="负责人" Style="{StaticResource LabelText}" Margin="0,10,0,4"/><TextBox x:Name="OwnerBox"/>
                     <TextBlock Text="标签（逗号分隔）" Style="{StaticResource LabelText}" Margin="0,10,0,4"/><TextBox x:Name="TagsBox"/>
-                    <TextBlock Text="备注 / 最近情况" Style="{StaticResource LabelText}" Margin="0,10,0,4"/><TextBox x:Name="NotesBox" AcceptsReturn="True" TextWrapping="Wrap" Height="100" VerticalContentAlignment="Top"/>
+                    <TextBlock Text="人工备注" Style="{StaticResource LabelText}" Margin="0,10,0,4"/>
+                    <TextBox x:Name="NotesBox" AcceptsReturn="True" TextWrapping="Wrap" Height="88" VerticalContentAlignment="Top"
+                             ToolTip="仅保存销售人员手动记录，不会被最新邮件内容覆盖。"/>
+                    <Border Background="{DynamicResource AiSurface}" BorderBrush="{DynamicResource AiSoft}" BorderThickness="1" CornerRadius="10" Padding="11" Margin="0,12,0,0">
+                        <StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="AI 上下文总结" FontWeight="SemiBold"/>
+                                    <TextBlock x:Name="AiContextStatusText" Text="等待关联客户" Foreground="{DynamicResource AiAccent}" FontSize="9.5" Margin="0,3,0,0"/>
+                                </StackPanel>
+                                <Button x:Name="RefreshAiContextButton" Grid.Column="1" Content="刷新总结" Style="{StaticResource GhostButton}"
+                                        Click="RefreshAiContext_Click" Padding="10,6" IsEnabled="False"
+                                        ToolTip="使用“客户列表 / Customer Brain”板块模型重新总结，会消耗 Token。"/>
+                            </Grid>
+                            <TextBlock x:Name="AiContextSummaryText" Text="关联客户后，将综合 WhatsApp 与邮件历史生成态度、性格、语气和当前关系摘要。"
+                                       Foreground="{DynamicResource Ink}" TextWrapping="Wrap" LineHeight="17" Margin="0,9,0,0"/>
+                            <TextBlock x:Name="AiContextMetaText" Text="客户原文是证据；人工备注与 AI 推断会分开标注。"
+                                       Foreground="{DynamicResource Muted}" FontSize="9" TextWrapping="Wrap" Margin="0,7,0,0"/>
+                        </StackPanel>
+                    </Border>
                 </StackPanel></ScrollViewer>
                 <Button Grid.Row="2" x:Name="SaveCustomerButton" Content="保存并同步客户" Style="{StaticResource PrimaryButton}" Click="SaveCustomer_Click" Margin="15"/>
             </Grid></Border>

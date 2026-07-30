@@ -299,7 +299,7 @@ public partial class EmailInboxView : UserControl, IRefreshableView
                 Stage = LeadStage.New,
                 Source = "邮件 Inbox"
             };
-            _lead.Name = NameBox.Text.Trim(); _lead.Email = CustomerEmailBox.Text.Trim(); _lead.Company = CompanyBox.Text.Trim();
+            _lead.Name = NameBox.Text.Trim(); _lead.Email = CustomerEmailBox.Text.Trim();
             if (string.IsNullOrWhiteSpace(_lead.Name)) _lead.Name = email;
             if (string.IsNullOrWhiteSpace(_lead.Email)) _lead.Email = email;
             _lead.Country = CountryBox.Text.Trim(); _lead.Owner = OwnerBox.Text.Trim();
@@ -312,7 +312,7 @@ public partial class EmailInboxView : UserControl, IRefreshableView
                 _lead.StageManuallyUpdatedAt = DateTimeOffset.Now;
             }
             _lead.Tags = TagsBox.Text.Split([',', '，'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.CurrentCultureIgnoreCase).ToList();
-            _lead.LatestMessage = NotesBox.Text.Trim();
+            _lead.ManualNotes = NotesBox.Text.Trim();
             await _services.Repository.UpsertLeadAsync(_lead);
             if (_conversation is not null)
             {
@@ -332,8 +332,8 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     {
         NameBox.Text = _lead?.Name ?? _conversation?.PeerName ?? "";
         CustomerEmailBox.Text = _lead?.Email ?? _conversation?.PeerEmail ?? RecipientBox.Text.Trim();
-        CompanyBox.Text = _lead?.Company ?? ""; CountryBox.Text = _lead?.Country ?? ""; OwnerBox.Text = _lead?.Owner ?? "";
-        TagsBox.Text = _lead is null ? "" : string.Join(", ", _lead.Tags); NotesBox.Text = _lead?.LatestMessage ?? "";
+        CountryBox.Text = _lead?.Country ?? ""; OwnerBox.Text = _lead?.Owner ?? "";
+        TagsBox.Text = _lead is null ? "" : string.Join(", ", _lead.Tags); NotesBox.Text = _lead?.ManualNotes ?? "";
         StageBox.SelectedItem = StageBox.Items.Cast<StageChoice>().First(item => item.Value == (_lead?.Stage ?? LeadStage.New));
         LinkStateText.Text = _lead is null ? "未关联客户 · 保存时将创建" : $"已关联：{_lead.Grade} 级 · {Labels.Stage(_lead.Stage)}";
     }
@@ -342,7 +342,7 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     {
         _isNewEmail = false; _conversation = null; _lead = null; _emailDraft = null; _messages.Clear(); ConversationTitle.Text = "选择邮件会话"; ConversationSubtitle.Text = "";
         RecipientBox.Clear(); RecipientBox.IsReadOnly = true; SubjectBox.Clear(); ComposerBox.Clear(); EmailAiInstructionBox.Clear();
-        NameBox.Clear(); CustomerEmailBox.Clear(); CompanyBox.Clear(); CountryBox.Clear(); OwnerBox.Clear(); TagsBox.Clear(); NotesBox.Clear(); LinkStateText.Text = "按邮箱自动匹配客户";
+        NameBox.Clear(); CustomerEmailBox.Clear(); CountryBox.Clear(); OwnerBox.Clear(); TagsBox.Clear(); NotesBox.Clear(); LinkStateText.Text = "按邮箱自动匹配客户";
         ResetEmailAssistantResult();
         ResetCustomerIntelligenceSummary();
         UpdateComposerState();
@@ -511,11 +511,17 @@ public partial class EmailInboxView : UserControl, IRefreshableView
             AiSidebarBrainMetaText.Text = $"BRAIN V{brain.Version} · 覆盖 {brain.Coverage.Percentage}% · 事实 {facts} / 判断 {inferences} / 缺口 {gaps}";
             if (!string.IsNullOrWhiteSpace(brain.Summary)) AiSidebarProfileText.Text = brain.Summary;
             if (!string.IsNullOrWhiteSpace(brain.NextBestAction)) AiSidebarNextActionText.Text = $"下一步：{brain.NextBestAction}";
+            RenderConversationContext(brain.ConversationContext, loading: true);
+            brain = await _services.CustomerBrain.UpdateConversationContextAsync(lead.Id);
+            if (generation != _customerBrainRefreshGeneration || _lead?.Id != lead.Id) return;
+            RenderConversationContext(brain.ConversationContext);
         }
         catch (Exception error)
         {
             if (generation != _customerBrainRefreshGeneration || _lead?.Id != lead.Id) return;
             AiSidebarBrainMetaText.Text = $"CUSTOMER BRAIN · 暂不可用：{error.Message}";
+            var profile = await _services.CustomerBrain.GetAsync(lead.Id);
+            RenderConversationContext(profile?.ConversationContext);
         }
     }
 
@@ -528,6 +534,79 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         AiSidebarConfidenceText.Text = "等待关联客户";
         AiSidebarProfileText.Text = "选择会话或填写收件邮箱后显示客户画像";
         AiSidebarNextActionText.Text = "下一步：等待客户上下文";
+        RenderConversationContext(null);
+    }
+
+    private async void RefreshAiContext_Click(object sender, RoutedEventArgs e)
+    {
+        if (_lead is null) return;
+        RefreshAiContextButton.IsEnabled = false;
+        AiContextStatusText.Text = "正在重新读取全部 WhatsApp 与邮件历史…";
+        try
+        {
+            var profile = await _services.CustomerBrain.UpdateConversationContextAsync(_lead.Id, force: true);
+            if (_lead?.Id == profile.CustomerId) RenderConversationContext(profile.ConversationContext);
+        }
+        catch (Exception error)
+        {
+            AiContextStatusText.Text = "更新失败，可重试";
+            AiContextMetaText.Text = error.Message;
+        }
+        finally
+        {
+            RefreshAiContextButton.IsEnabled = _lead is not null;
+        }
+    }
+
+    private void RenderConversationContext(CustomerConversationContext? context, bool loading = false)
+    {
+        RefreshAiContextButton.IsEnabled = _lead is not null && !loading;
+        if (_lead is null)
+        {
+            AiContextStatusText.Text = "等待关联客户";
+            AiContextSummaryText.Text = "关联客户后，将综合 WhatsApp 与邮件历史生成态度、性格、语气和当前关系摘要。";
+            AiContextMetaText.Text = "客户原文是证据；人工备注与 AI 推断会分开标注。";
+            return;
+        }
+        if (loading && context is not { Status: CustomerContextStatus.Current })
+        {
+            AiContextStatusText.Text = "正在检查新增上下文…";
+            AiContextSummaryText.Text = context?.HasContent == true ? BuildContextText(context) : "正在读取该客户的跨渠道历史。";
+            AiContextMetaText.Text = "仅在消息或人工备注发生变化时调用模型。";
+            return;
+        }
+        context ??= new CustomerConversationContext();
+        AiContextStatusText.Text = context.Status switch
+        {
+            CustomerContextStatus.Current => "已更新",
+            CustomerContextStatus.Stale => "有新增内容，等待更新",
+            CustomerContextStatus.Generating => "正在生成…",
+            CustomerContextStatus.NotConfigured => "等待配置 Customer Brain 模型",
+            CustomerContextStatus.RetryableFailed => "更新失败，可重试",
+            _ => "尚无可总结的沟通"
+        };
+        AiContextSummaryText.Text = context.HasContent
+            ? BuildContextText(context)
+            : context.Status == CustomerContextStatus.NotConfigured
+                ? "配置模型后，将自动总结该客户的 WhatsApp 与邮件历史。"
+                : "该客户尚无可用于总结的 WhatsApp、邮件或人工备注。";
+        AiContextMetaText.Text = context.UpdatedAt is null
+            ? string.IsNullOrWhiteSpace(context.Error) ? "客户原文是证据；人工备注与 AI 推断会分开标注。" : context.Error
+            : $"WhatsApp {context.WhatsAppMessageCount} 条 · 邮件 {context.EmailMessageCount} 条 · {context.AiModel} · {context.UpdatedAt:MM-dd HH:mm}";
+    }
+
+    private static string BuildContextText(CustomerConversationContext context)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(context.Overview)) parts.Add(context.Overview);
+        if (context.AttitudesAndInterests.Count > 0) parts.Add($"态度与偏好：{string.Join("；", context.AttitudesAndInterests.Take(3))}");
+        if (context.PersonalityTraits.Count > 0) parts.Add($"性格倾向：{string.Join("；", context.PersonalityTraits.Take(3))}");
+        if (context.CommunicationStyle.Count > 0) parts.Add($"沟通语气：{string.Join("；", context.CommunicationStyle.Take(3))}");
+        if (context.ConcernsAndObjections.Count > 0) parts.Add($"关注与异议：{string.Join("；", context.ConcernsAndObjections.Take(3))}");
+        if (context.PurchaseSignals.Count > 0) parts.Add($"购买信号：{string.Join("；", context.PurchaseSignals.Take(3))}");
+        if (!string.IsNullOrWhiteSpace(context.RelationshipState)) parts.Add($"当前关系：{context.RelationshipState}");
+        if (!string.IsNullOrWhiteSpace(context.RecommendedApproach)) parts.Add($"建议沟通：{context.RecommendedApproach}");
+        return string.Join(Environment.NewLine, parts);
     }
 
     private static string EmailAssistantErrorMessage(DeepSeekException error) => error.Code switch
@@ -553,7 +632,12 @@ public partial class EmailInboxView : UserControl, IRefreshableView
             {
                 await Task.Delay(250, debounce.Token);
                 await Dispatcher
-                    .InvokeAsync(() => IsVisible ? RefreshAsync() : Task.CompletedTask)
+                    .InvokeAsync(async () =>
+                    {
+                        if (!IsVisible) return;
+                        await RefreshAsync();
+                        if (_lead is not null) await UpdateCustomerBrainSummaryAsync(_lead);
+                    })
                     .Task
                     .Unwrap();
             }

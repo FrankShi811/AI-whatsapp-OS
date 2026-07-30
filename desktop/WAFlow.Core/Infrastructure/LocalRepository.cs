@@ -1912,7 +1912,7 @@ public sealed class LocalRepository
         command.CommandText = "SELECT data_json FROM whatsapp_messages WHERE lead_id=$lead OR ($phone <> '' AND phone=$phone) ORDER BY timestamp DESC LIMIT $limit";
         command.Parameters.AddWithValue("$lead", lead.Id);
         command.Parameters.AddWithValue("$phone", phone);
-        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 5000));
+        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 20_000));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken)) if (Json.Deserialize<WhatsAppMessage>(reader.GetString(0)) is { } item) items.Add(item);
         items.Reverse();
@@ -2435,7 +2435,7 @@ public sealed class LocalRepository
         await using var db = Open(); await db.OpenAsync(cancellationToken);
         await using var command = db.CreateCommand();
         command.CommandText = "SELECT data_json FROM email_messages WHERE lead_id=$lead ORDER BY timestamp DESC LIMIT $limit";
-        command.Parameters.AddWithValue("$lead", leadId); command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 1_000));
+        command.Parameters.AddWithValue("$lead", leadId); command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 20_000));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
             if (Json.Deserialize<EmailMessage>(reader.GetString(0)) is { } item) items.Add(item);

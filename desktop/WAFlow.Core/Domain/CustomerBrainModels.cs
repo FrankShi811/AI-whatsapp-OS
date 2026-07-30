@@ -64,6 +64,17 @@ public enum CustomerBrainDecisionStatus
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
+public enum CustomerContextStatus
+{
+    NotGenerated,
+    Current,
+    Stale,
+    Generating,
+    NotConfigured,
+    RetryableFailed
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum FollowUpTaskStatus
 {
     Proposed,
@@ -115,6 +126,52 @@ public sealed class CustomerIntelligenceCoverage
     }
 }
 
+public sealed class CustomerConversationContext
+{
+    public CustomerContextStatus Status { get; set; } = CustomerContextStatus.NotGenerated;
+    public string Overview { get; set; } = "";
+    public List<string> AttitudesAndInterests { get; set; } = [];
+    public List<string> PersonalityTraits { get; set; } = [];
+    public List<string> CommunicationStyle { get; set; } = [];
+    public List<string> ConcernsAndObjections { get; set; } = [];
+    public List<string> PurchaseSignals { get; set; } = [];
+    public string RelationshipState { get; set; } = "";
+    public string RecommendedApproach { get; set; } = "";
+    public List<CustomerIntelligenceStatement> Inferences { get; set; } = [];
+    public int WhatsAppMessageCount { get; set; }
+    public int EmailMessageCount { get; set; }
+    public string SourceSnapshotHash { get; set; } = "";
+    public string ManualNotesHash { get; set; } = "";
+    public DateTimeOffset? LastWhatsAppAt { get; set; }
+    public DateTimeOffset? LastEmailAt { get; set; }
+    public string AiModel { get; set; } = "";
+    public string Error { get; set; } = "";
+    public DateTimeOffset? UpdatedAt { get; set; }
+
+    [JsonIgnore]
+    public bool HasContent => !string.IsNullOrWhiteSpace(Overview)
+        || AttitudesAndInterests.Count > 0
+        || PersonalityTraits.Count > 0
+        || CommunicationStyle.Count > 0
+        || ConcernsAndObjections.Count > 0
+        || PurchaseSignals.Count > 0
+        || !string.IsNullOrWhiteSpace(RelationshipState)
+        || !string.IsNullOrWhiteSpace(RecommendedApproach);
+}
+
+public sealed class CustomerConversationContextResult
+{
+    public string Overview { get; set; } = "";
+    public List<string> AttitudesAndInterests { get; set; } = [];
+    public List<string> PersonalityTraits { get; set; } = [];
+    public List<string> CommunicationStyle { get; set; } = [];
+    public List<string> ConcernsAndObjections { get; set; } = [];
+    public List<string> PurchaseSignals { get; set; } = [];
+    public string RelationshipState { get; set; } = "";
+    public string RecommendedApproach { get; set; } = "";
+    public List<CustomerIntelligenceStatement> Inferences { get; set; } = [];
+}
+
 public sealed class CustomerIntelligenceProfile
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
@@ -140,6 +197,7 @@ public sealed class CustomerIntelligenceProfile
     public string AiModel { get; set; } = "";
     public CustomerIntelligenceCoverage Coverage { get; set; } = new();
     public List<CustomerIntelligenceStatement> Statements { get; set; } = [];
+    public CustomerConversationContext ConversationContext { get; set; } = new();
     public string KnowledgeRetrievalId { get; set; } = "";
     public List<KnowledgeRetrievalHit> KnowledgeReferences { get; set; } = [];
     public string SourceSnapshotHash { get; set; } = "";

@@ -116,6 +116,7 @@ public sealed class Lead
     public DateTimeOffset? LastAnalyzedAt { get; set; }
     public List<string> LatestReplySignals { get; set; } = [];
     public string LatestMessage { get; set; } = "";
+    public string ManualNotes { get; set; } = "";
     public DateTimeOffset? LastContactAt { get; set; }
     public DateTimeOffset? NextFollowUpAt { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;

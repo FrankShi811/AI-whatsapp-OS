@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using WAFlow.Core.Domain;
@@ -15,6 +16,7 @@ public sealed class CustomerBrainService
     private readonly LocalRepository _repository;
     private readonly IStructuredAiProvider? _provider;
     private readonly HybridRetriever? _knowledgeRetrieval;
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _contextLocks = new(StringComparer.OrdinalIgnoreCase);
 
     public CustomerBrainService(
         LocalRepository repository,
@@ -72,6 +74,205 @@ public sealed class CustomerBrainService
     public Task<CustomerIntelligenceProfile?> GetAsync(string customerId, CancellationToken cancellationToken = default) =>
         _repository.GetCustomerIntelligenceProfileAsync(customerId, cancellationToken);
 
+    public async Task<CustomerIntelligenceProfile> UpdateConversationContextAsync(
+        string customerId,
+        bool force = false,
+        CancellationToken cancellationToken = default)
+    {
+        var gate = _contextLocks.GetOrAdd(customerId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            var lead = await _repository.GetLeadAsync(customerId, cancellationToken)
+                ?? throw new InvalidOperationException("客户不存在或已经删除。");
+            var whatsApp = (await _repository.GetWhatsAppMessagesForLeadAsync(lead, 20_000, cancellationToken))
+                .Where(message => !message.IsStatusUpdate && !message.IsRevoked && !string.IsNullOrWhiteSpace(message.Body))
+                .OrderBy(message => message.Timestamp)
+                .ToList();
+            var emails = (await _repository.GetEmailMessagesForLeadAsync(lead.Id, 20_000, cancellationToken))
+                .Where(message => !string.IsNullOrWhiteSpace(message.TextBody) || !string.IsNullOrWhiteSpace(message.Subject))
+                .OrderBy(message => message.Timestamp)
+                .ToList();
+            var profile = await RefreshAsync(customerId, cancellationToken);
+            var current = profile.ConversationContext ?? new CustomerConversationContext();
+            var contextHash = ComputeConversationContextHash(lead, whatsApp, emails);
+            var notesHash = StableHash(lead.ManualNotes);
+            if (!force
+                && current.Status == CustomerContextStatus.Current
+                && string.Equals(current.SourceSnapshotHash, contextHash, StringComparison.Ordinal))
+                return profile;
+
+            if (whatsApp.Count == 0 && emails.Count == 0 && string.IsNullOrWhiteSpace(lead.ManualNotes))
+            {
+                profile.ConversationContext = new CustomerConversationContext
+                {
+                    Status = CustomerContextStatus.NotGenerated,
+                    SourceSnapshotHash = contextHash,
+                    ManualNotesHash = notesHash
+                };
+                await _repository.SaveCustomerIntelligenceProfileAsync(profile, cancellationToken);
+                return profile;
+            }
+
+            if (_provider is null || !_provider.HasApiKey(AiModuleKeys.Customers))
+            {
+                current.Status = CustomerContextStatus.NotConfigured;
+                current.SourceSnapshotHash = contextHash;
+                current.ManualNotesHash = notesHash;
+                current.Error = "请在设置中为“客户列表 / Customer Brain”配置可用模型。";
+                profile.ConversationContext = current;
+                await _repository.SaveCustomerIntelligenceProfileAsync(profile, cancellationToken);
+                return profile;
+            }
+
+            var newWhatsApp = whatsApp
+                .Where(message => current.LastWhatsAppAt is null || message.Timestamp > current.LastWhatsAppAt)
+                .ToList();
+            var newEmails = emails
+                .Where(message => current.LastEmailAt is null || message.Timestamp > current.LastEmailAt)
+                .ToList();
+            var canIncrement = !force
+                && current.HasContent
+                && string.Equals(current.ManualNotesHash, notesHash, StringComparison.Ordinal)
+                && whatsApp.Count >= current.WhatsAppMessageCount
+                && emails.Count >= current.EmailMessageCount
+                && newWhatsApp.Count == whatsApp.Count - current.WhatsAppMessageCount
+                && newEmails.Count == emails.Count - current.EmailMessageCount;
+            var contextMessages = BuildContextMessages(
+                canIncrement ? newWhatsApp : whatsApp,
+                canIncrement ? newEmails : emails);
+            var batches = BuildContextBatches(contextMessages);
+            if (batches.Count == 0) batches.Add([]);
+
+            current.Status = CustomerContextStatus.Generating;
+            current.Error = "";
+            profile.ConversationContext = current;
+            await _repository.SaveCustomerIntelligenceProfileAsync(profile, cancellationToken);
+
+            var accumulated = canIncrement ? ToContextResult(current) : new CustomerConversationContextResult();
+            foreach (var batch in batches)
+            {
+                var payload = new
+                {
+                    customer = new
+                    {
+                        lead.BuyerId,
+                        lead.Name,
+                        lead.Country,
+                        lead.ProductInterest,
+                        lead.Stage,
+                        lead.Tags,
+                        lead.CustomFields
+                    },
+                    manualNotes = lead.ManualNotes,
+                    priorContext = accumulated,
+                    messages = batch,
+                    mode = canIncrement ? "incremental_merge" : "historical_progressive_merge"
+                };
+                accumulated = await _provider.CompleteStructuredAsync<CustomerConversationContextResult>(
+                    AiModuleKeys.Customers,
+                    """
+                    You are the cross-channel Customer Context stage of AI Sales OS.
+                    Merge priorContext, manualNotes and the supplied chronological WhatsApp/email messages into one current customer context.
+                    Return one camelCase JSON object without markdown:
+                    {
+                      "overview":"",
+                      "attitudesAndInterests":[""],
+                      "personalityTraits":[""],
+                      "communicationStyle":[""],
+                      "concernsAndObjections":[""],
+                      "purchaseSignals":[""],
+                      "relationshipState":"",
+                      "recommendedApproach":"",
+                      "inferences":[{"nature":"inference","topic":"","text":"","evidence":"","source":"","sourceId":"","confidence":0.0,"observedAt":"2026-01-01T00:00:00Z"}]
+                    }
+                    Write concise Simplified Chinese and preserve short customer quotes in their original language as evidence.
+                    Cover attitudes, preferences, personality tendencies, speaking tone, communication habits, objections,
+                    purchase signals, relationship state and recommended communication approach when evidence exists.
+                    Customer messages and emails are primary evidence. manualNotes are salesperson-entered context and must be
+                    identified as such, never presented as a customer quote. Salesperson outgoing messages are not customer intent.
+                    Never invent company, budget, quantity, decision timing, personality or sentiment.
+                    Every inference must contain evidence, source, confidence from 0 to 1, and nature must be inference.
+                    If evidence is insufficient, omit the claim instead of guessing. Keep lists de-duplicated and practical.
+                    """,
+                    payload,
+                    ValidateConversationContext,
+                    cancellationToken);
+            }
+
+            profile.ConversationContext = new CustomerConversationContext
+            {
+                Status = CustomerContextStatus.Current,
+                Overview = accumulated.Overview.Trim(),
+                AttitudesAndInterests = Clean(accumulated.AttitudesAndInterests),
+                PersonalityTraits = Clean(accumulated.PersonalityTraits),
+                CommunicationStyle = Clean(accumulated.CommunicationStyle),
+                ConcernsAndObjections = Clean(accumulated.ConcernsAndObjections),
+                PurchaseSignals = Clean(accumulated.PurchaseSignals),
+                RelationshipState = accumulated.RelationshipState.Trim(),
+                RecommendedApproach = accumulated.RecommendedApproach.Trim(),
+                Inferences = accumulated.Inferences
+                    .Where(item => item.Nature == IntelligenceStatementNature.Inference
+                        && !string.IsNullOrWhiteSpace(item.Text)
+                        && !string.IsNullOrWhiteSpace(item.Evidence)
+                        && !string.IsNullOrWhiteSpace(item.Source))
+                    .ToList(),
+                WhatsAppMessageCount = whatsApp.Count,
+                EmailMessageCount = emails.Count,
+                SourceSnapshotHash = contextHash,
+                ManualNotesHash = notesHash,
+                LastWhatsAppAt = whatsApp.LastOrDefault()?.Timestamp,
+                LastEmailAt = emails.LastOrDefault()?.Timestamp,
+                AiModel = await _provider.GetSelectedModelAsync(AiModuleKeys.Customers, cancellationToken),
+                UpdatedAt = DateTimeOffset.Now
+            };
+            profile.Statements = profile.Statements
+                .Where(item => !string.Equals(item.Source, "AI 上下文总结", StringComparison.Ordinal))
+                .Concat(profile.ConversationContext.Inferences.Select(item => new CustomerIntelligenceStatement
+                {
+                    Nature = IntelligenceStatementNature.Inference,
+                    Topic = item.Topic,
+                    Text = item.Text,
+                    Evidence = item.Evidence,
+                    Source = "AI 上下文总结",
+                    SourceId = item.SourceId,
+                    Confidence = item.Confidence,
+                    ObservedAt = item.ObservedAt
+                }))
+                .ToList();
+            await _repository.SaveCustomerIntelligenceProfileAsync(profile, cancellationToken);
+            await _repository.LogEventAsync(
+                "customer_context_summarized",
+                customerId,
+                null,
+                $"whatsapp={whatsApp.Count};email={emails.Count};incremental={canIncrement};model={profile.ConversationContext.AiModel}",
+                cancellationToken);
+            return profile;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            var profile = await _repository.GetCustomerIntelligenceProfileAsync(customerId, CancellationToken.None);
+            if (profile is not null)
+            {
+                profile.ConversationContext ??= new CustomerConversationContext();
+                profile.ConversationContext.Status = CustomerContextStatus.RetryableFailed;
+                profile.ConversationContext.Error = error is DeepSeekException deepSeek
+                    ? $"{deepSeek.Code}: {deepSeek.Message}"
+                    : error.Message;
+                await _repository.SaveCustomerIntelligenceProfileAsync(profile, CancellationToken.None);
+            }
+            throw;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
     public async Task<CustomerIntelligenceProfile> AnalyzeAsync(string customerId, CancellationToken cancellationToken = default)
     {
         var profile = await RefreshAsync(customerId, cancellationToken);
@@ -117,8 +318,10 @@ public sealed class CustomerBrainService
                 lead.Id, lead.BuyerId, lead.Name, lead.Company, lead.Country, lead.PhoneE164, lead.Email,
                 lead.ProductInterest, lead.EstimatedOrderValue, lead.Currency, lead.Tags, lead.CustomFields,
                 stage = lead.Stage.ToString(), lead.Score, lead.Grade, lead.PurchaseProbability,
-                lead.ProfileSummary, lead.CustomerSegment, lead.NextAction, lead.Risks, lead.Evidence
+                lead.ProfileSummary, lead.CustomerSegment, lead.NextAction, lead.Risks, lead.Evidence,
+                manualNotes = lead.ManualNotes
             },
+            conversationContext = profile.ConversationContext,
             coverage = profile.Coverage,
             verifiedStatements = profile.Statements.Where(statement => statement.Nature == IntelligenceStatementNature.Fact).Take(200),
             behaviorTimeline = timeline.Take(500),
@@ -456,6 +659,9 @@ public sealed class CustomerBrainService
             LastBrainAnalyzedAt = current?.LastBrainAnalyzedAt,
             AiModel = FirstUseful(current?.AiModel, latestReport?.AiModel),
             Coverage = coverage,
+            ConversationContext = ResolveConversationContext(
+                current?.ConversationContext,
+                ComputeConversationContextHash(lead, whatsApp, emails)),
             SourceSnapshotHash = sourceHash,
             SourceCapturedAt = DateTimeOffset.Now,
             CreatedAt = current?.CreatedAt ?? DateTimeOffset.Now
@@ -504,6 +710,20 @@ public sealed class CustomerBrainService
                 Source = "Lead Intelligence",
                 Confidence = profile.Confidence,
                 ObservedAt = lead.LastAnalyzedAt ?? lead.UpdatedAt
+            });
+        }
+        foreach (var inference in profile.ConversationContext.Inferences)
+        {
+            profile.Statements.Add(new CustomerIntelligenceStatement
+            {
+                Nature = IntelligenceStatementNature.Inference,
+                Topic = inference.Topic,
+                Text = inference.Text,
+                Evidence = inference.Evidence,
+                Source = "AI 上下文总结",
+                SourceId = inference.SourceId,
+                Confidence = inference.Confidence,
+                ObservedAt = inference.ObservedAt
             });
         }
         profile.Statements.Add(new CustomerIntelligenceStatement
@@ -766,6 +986,19 @@ public sealed class CustomerBrainService
         Add("联系方式", $"客户 WhatsApp 号码为 {lead.PhoneE164}。", lead.PhoneE164);
         Add("邮箱", $"客户邮箱为 {lead.Email}。", lead.Email);
         Add("产品方向", $"客户产品方向为 {lead.ProductInterest}。", lead.ProductInterest);
+        if (!string.IsNullOrWhiteSpace(lead.ManualNotes))
+        {
+            statements.Add(new CustomerIntelligenceStatement
+            {
+                Nature = IntelligenceStatementNature.Fact,
+                Topic = "销售人工备注",
+                Text = $"销售人员备注：{lead.ManualNotes}",
+                Evidence = lead.ManualNotes,
+                Source = "人工备注",
+                Confidence = 1,
+                ObservedAt = lead.UpdatedAt
+            });
+        }
         foreach (var field in lead.CustomFields.Where(item => !string.IsNullOrWhiteSpace(item.Value)))
             Add(field.Key, $"{field.Key}：{field.Value}", field.Value);
     }
@@ -811,7 +1044,8 @@ public sealed class CustomerBrainService
                 lead.BuyerId, lead.Name, lead.Company, lead.Country, lead.PhoneE164, lead.Email, lead.ProductInterest, lead.Tags, lead.CustomFields,
                 lead.Stage, lead.Score, lead.Grade, lead.AnalysisContractVersion, lead.AiScoreApplied, lead.AnalysisStatus,
                 lead.ProfileSummary, lead.CustomerSegment, lead.NextAction, lead.RiskWarning, lead.Risks, lead.ScoreFactors,
-                lead.BehaviorSignals, lead.Evidence, lead.AnalysisConfidence, lead.PurchaseProbability, lead.LastAnalyzedAt
+                lead.BehaviorSignals, lead.Evidence, lead.AnalysisConfidence, lead.PurchaseProbability, lead.LastAnalyzedAt,
+                lead.ManualNotes
             },
             whatsApp = whatsApp.Select(message => new
             {
@@ -834,6 +1068,122 @@ public sealed class CustomerBrainService
     private static string StableId(params string[] values) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", values)))).ToLowerInvariant()[..32];
 
+    private static string StableHash(string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value ?? ""))).ToLowerInvariant();
+
+    private static string ComputeConversationContextHash(
+        Lead lead,
+        IReadOnlyList<WhatsAppMessage> whatsApp,
+        IReadOnlyList<EmailMessage> emails) =>
+        StableHash(Json.Serialize(new
+        {
+            lead.ManualNotes,
+            whatsApp = whatsApp.Select(message => new
+            {
+                message.Id,
+                message.Direction,
+                message.Body,
+                message.Timestamp
+            }),
+            emails = emails.Select(message => new
+            {
+                message.Id,
+                message.Direction,
+                message.Subject,
+                message.TextBody,
+                message.Timestamp
+            })
+        }));
+
+    private static CustomerConversationContext ResolveConversationContext(
+        CustomerConversationContext? current,
+        string sourceHash)
+    {
+        var context = current ?? new CustomerConversationContext();
+        if (context.Status == CustomerContextStatus.Current
+            && !string.Equals(context.SourceSnapshotHash, sourceHash, StringComparison.Ordinal))
+            context.Status = CustomerContextStatus.Stale;
+        return context;
+    }
+
+    private static CustomerConversationContextResult ToContextResult(CustomerConversationContext context) => new()
+    {
+        Overview = context.Overview,
+        AttitudesAndInterests = [.. context.AttitudesAndInterests],
+        PersonalityTraits = [.. context.PersonalityTraits],
+        CommunicationStyle = [.. context.CommunicationStyle],
+        ConcernsAndObjections = [.. context.ConcernsAndObjections],
+        PurchaseSignals = [.. context.PurchaseSignals],
+        RelationshipState = context.RelationshipState,
+        RecommendedApproach = context.RecommendedApproach,
+        Inferences = [.. context.Inferences]
+    };
+
+    private static List<CustomerContextMessage> BuildContextMessages(
+        IEnumerable<WhatsAppMessage> whatsApp,
+        IEnumerable<EmailMessage> emails) =>
+        whatsApp.Select(message => new CustomerContextMessage(
+                "WhatsApp",
+                message.Id,
+                message.Direction == WhatsAppMessageDirection.Incoming ? "客户" : "销售",
+                message.Timestamp,
+                "",
+                SummarizeForContext(message.Body)))
+            .Concat(emails.Select(message => new CustomerContextMessage(
+                "Email",
+                message.Id,
+                message.Direction == EmailMessageDirection.Incoming ? "客户" : "销售",
+                message.Timestamp,
+                SummarizeForContext(message.Subject),
+                SummarizeForContext(message.TextBody))))
+            .OrderBy(message => message.Timestamp)
+            .ToList();
+
+    private static List<List<CustomerContextMessage>> BuildContextBatches(IReadOnlyList<CustomerContextMessage> messages)
+    {
+        const int maximumCharacters = 24_000;
+        const int maximumMessages = 120;
+        var batches = new List<List<CustomerContextMessage>>();
+        var current = new List<CustomerContextMessage>();
+        var characters = 0;
+        foreach (var message in messages)
+        {
+            var size = message.Subject.Length + message.Body.Length + 120;
+            if (current.Count > 0 && (current.Count >= maximumMessages || characters + size > maximumCharacters))
+            {
+                batches.Add(current);
+                current = [];
+                characters = 0;
+            }
+            current.Add(message);
+            characters += size;
+        }
+        if (current.Count > 0) batches.Add(current);
+        return batches;
+    }
+
+    private static string SummarizeForContext(string value)
+    {
+        var normalized = string.Join(' ', (value ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return normalized.Length <= 3_000 ? normalized : $"{normalized[..2_997]}...";
+    }
+
+    private static string? ValidateConversationContext(CustomerConversationContextResult result)
+    {
+        if (string.IsNullOrWhiteSpace(result.Overview)) return "overview 不能为空。";
+        foreach (var statement in result.Inferences)
+        {
+            if (statement.Nature != IntelligenceStatementNature.Inference)
+                return "AI 上下文只能返回 inference，不能把推断写成事实。";
+            if (string.IsNullOrWhiteSpace(statement.Text)
+                || string.IsNullOrWhiteSpace(statement.Evidence)
+                || string.IsNullOrWhiteSpace(statement.Source))
+                return "每条上下文推断都必须包含 text、evidence 和 source。";
+            if (statement.Confidence is < 0 or > 1) return "confidence 必须在 0 到 1 之间。";
+        }
+        return null;
+    }
+
     private static string Summarize(string value)
     {
         var normalized = string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
@@ -850,4 +1200,12 @@ public sealed class CustomerBrainService
             .Select(value => value.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+    private sealed record CustomerContextMessage(
+        string Channel,
+        string Id,
+        string Direction,
+        DateTimeOffset Timestamp,
+        string Subject,
+        string Body);
 }
