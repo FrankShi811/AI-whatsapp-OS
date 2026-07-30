@@ -56,6 +56,7 @@ public partial class App : Application
     {
         WindowsTaskbarIdentity.InitializeProcess();
         DesktopShortcutService.EnsureForInstalledApp();
+        LocalUpdateCacheMaintenance.Run();
         base.OnStartup(e);
         DispatcherUnhandledException += OnUnhandledException;
         DataWorkspaceLocation? location = null;

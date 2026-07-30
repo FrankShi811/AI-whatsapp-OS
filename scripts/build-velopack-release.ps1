@@ -139,3 +139,9 @@ foreach ($artifact in $artifacts) {
 
 try { Remove-Item -LiteralPath $publish -Recurse -Force -ErrorAction Stop }
 catch { Write-Warning "Temporary publish directory could not be removed: $publish" }
+
+& (Join-Path $root 'scripts\trim-local-update-cache.ps1') `
+  -CacheDirectory $releases `
+  -CurrentVersion $Version `
+  -RollbackVersionLimit 3
+if ($LASTEXITCODE -ne 0) { throw 'Local Velopack cache retention failed.' }

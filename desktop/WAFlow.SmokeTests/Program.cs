@@ -24,6 +24,65 @@ await repository.InitializeAsync();
 var scorer = new LeadScoringService();
 var imports = new ImportService(repository);
 
+var updateCacheRoot = Path.Combine(root, "update-cache-retention");
+var installedPackageCache = Path.Combine(updateCacheRoot, "packages");
+Directory.CreateDirectory(installedPackageCache);
+foreach (var version in new[] { "5.15.0", "5.14.0", "5.13.0", "5.12.0", "5.11.0", "5.10.0", "5.9.0" })
+{
+    await File.WriteAllBytesAsync(
+        Path.Combine(installedPackageCache, $"AISalesOS-{version}-full.nupkg"),
+        new byte[16]);
+    await File.WriteAllBytesAsync(
+        Path.Combine(installedPackageCache, $"AISalesOS-{version}-delta.nupkg"),
+        new byte[8]);
+}
+await File.WriteAllTextAsync(Path.Combine(installedPackageCache, ".velopack_lock"), "keep");
+await File.WriteAllTextAsync(Path.Combine(installedPackageCache, "unrelated-package.nupkg"), "keep");
+var packageCleanup = UpdateCacheRetention.PruneInstalledPackages(
+    installedPackageCache,
+    "5.14.0");
+Check(
+    packageCleanup.DeletedFiles == 4
+    && File.Exists(Path.Combine(installedPackageCache, "AISalesOS-5.15.0-full.nupkg"))
+    && File.Exists(Path.Combine(installedPackageCache, "AISalesOS-5.14.0-full.nupkg"))
+    && File.Exists(Path.Combine(installedPackageCache, "AISalesOS-5.11.0-full.nupkg"))
+    && !File.Exists(Path.Combine(installedPackageCache, "AISalesOS-5.10.0-full.nupkg"))
+    && !File.Exists(Path.Combine(installedPackageCache, "AISalesOS-5.9.0-delta.nupkg"))
+    && File.Exists(Path.Combine(installedPackageCache, ".velopack_lock"))
+    && File.Exists(Path.Combine(installedPackageCache, "unrelated-package.nupkg")),
+    "update cache retains current and pending packages plus exactly three rollback versions");
+
+var portableUpdateCache = Path.Combine(updateCacheRoot, "portable");
+foreach (var version in new[] { "5.10.0", "5.11.0", "5.12.0", "5.13.0" })
+{
+    var versionDirectory = Path.Combine(portableUpdateCache, $"v{version}");
+    Directory.CreateDirectory(versionDirectory);
+    await File.WriteAllBytesAsync(Path.Combine(versionDirectory, "AI Sales OS Setup.exe"), new byte[12]);
+}
+var portableCleanup = UpdateCacheRetention.PruneVersionDirectories(portableUpdateCache);
+Check(
+    portableCleanup.DeletedDirectories == 1
+    && !Directory.Exists(Path.Combine(portableUpdateCache, "v5.10.0"))
+    && Directory.Exists(Path.Combine(portableUpdateCache, "v5.11.0"))
+    && Directory.Exists(Path.Combine(portableUpdateCache, "v5.13.0")),
+    "portable installer cache keeps only the latest three version directories");
+
+var temporaryUpdateCache = Path.Combine(updateCacheRoot, "temporary");
+Directory.CreateDirectory(temporaryUpdateCache);
+var staleTemporaryFile = Path.Combine(temporaryUpdateCache, "stale.tmp");
+var currentTemporaryFile = Path.Combine(temporaryUpdateCache, "current.tmp");
+await File.WriteAllTextAsync(staleTemporaryFile, "old");
+await File.WriteAllTextAsync(currentTemporaryFile, "current");
+File.SetLastWriteTimeUtc(staleTemporaryFile, DateTime.UtcNow.AddDays(-2));
+var temporaryCleanup = UpdateCacheRetention.DeleteStaleChildren(
+    temporaryUpdateCache,
+    DateTime.UtcNow.AddDays(-1));
+Check(
+    temporaryCleanup.DeletedFiles == 1
+    && !File.Exists(staleTemporaryFile)
+    && File.Exists(currentTemporaryFile),
+    "stale update temporary files are deleted without touching active cache files");
+
 if (args.Length >= 3 && args[0] == "--database-reimport")
 {
     var upgradeRepository = new LocalRepository(args[2]);

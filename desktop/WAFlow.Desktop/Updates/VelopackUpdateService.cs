@@ -118,6 +118,7 @@ public sealed class VelopackUpdateService : IApplicationUpdateService
             }));
             await _manager.DownloadUpdatesAsync(update, progress, cancellationToken);
             _downloadedRelease = target;
+            LocalUpdateCacheMaintenance.Run();
             PublishReady(target);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -333,6 +334,7 @@ public sealed class VelopackUpdateService : IApplicationUpdateService
         }
 
         _portableInstallerPath = targetPath;
+        LocalUpdateCacheMaintenance.Run();
         Publish(State with
         {
             Stage = ApplicationUpdateStage.ReadyToInstall,

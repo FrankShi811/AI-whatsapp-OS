@@ -29,6 +29,7 @@
     <Compile Include="..\WAFlow.Desktop\ReleaseCatalog.cs" Link="Updates\ReleaseCatalog.cs" />
     <Compile Include="..\WAFlow.Desktop\Updates\ApplicationUpdateState.cs" Link="Updates\ApplicationUpdateState.cs" />
     <Compile Include="..\WAFlow.Desktop\Updates\UpdateConfiguration.cs" Link="Updates\UpdateConfiguration.cs" />
+    <Compile Include="..\WAFlow.Desktop\Updates\LocalUpdateCacheMaintenance.cs" Link="Updates\LocalUpdateCacheMaintenance.cs" />
     <Compile Include="..\WAFlow.Desktop\Updates\VelopackUpdateService.cs" Link="Updates\VelopackUpdateService.cs" />
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>GitHubRepositoryUrl</_Parameter1>
