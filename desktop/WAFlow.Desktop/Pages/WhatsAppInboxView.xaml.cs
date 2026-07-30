@@ -53,6 +53,13 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private Task _activeRefresh = Task.CompletedTask;
     private bool _refreshRequestedAgain;
     private CancellationTokenSource? _contextRefreshDebounce;
+    private CancellationTokenSource? _translationCts;
+    private WhatsAppConversationLanguageProfile? _translationProfile;
+    private bool _translationBusy;
+    private string _draftTranslationOriginal = "";
+    private string _draftTranslationText = "";
+    private bool _translatedDraftApplied;
+    private bool _applyingTranslatedDraft;
 
     private string CurrentAccountId => (AccountCombo.SelectedItem as WhatsAppAccount)?.Id ?? "primary";
 
@@ -670,6 +677,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             _composerConversationId = "";
             ClearAttachment();
             ClearReply();
+            ResetTranslationUi();
             ChatTitleText.Text = "选择会话"; ChatNumberText.Text = "连接后会同步个人与群聊会话"; ChatModeBadgeText.Text = "CRM LIVE SYNC"; MessageList.ItemsSource = null; HideStatusUpdateBanner(); ClearLead(); return;
         }
         if (!_composerConversationId.Equals(conversation.Id, StringComparison.OrdinalIgnoreCase))
@@ -678,6 +686,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             ClearAttachment();
             ClearReply();
             ClearKnowledgeReferences();
+            ResetTranslationUi(conversation);
         }
         if (IsVisible)
         {
@@ -707,6 +716,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         UpdateComposerState();
         UpdateStatusUpdateBanner(conversation);
         ScrollMessages(conversation);
+        await LoadTranslationContextAsync(conversation);
     }
 
     private async Task LoadLeadAsync(ConversationItem conversation)
@@ -992,7 +1002,95 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         await SendCurrentAsync();
     }
 
-    private void ComposerBox_TextChanged(object sender, TextChangedEventArgs e) => UpdateComposerState();
+    private void ComposerBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!_applyingTranslatedDraft &&
+            _translatedDraftApplied &&
+            !string.Equals(ComposerBox.Text.Trim(), _draftTranslationText, StringComparison.Ordinal))
+            _translatedDraftApplied = false;
+        UpdateComposerState();
+    }
+
+    private async void TranslateConversation_Click(object sender, RoutedEventArgs e)
+    {
+        if (_translationBusy || ConversationList.SelectedItem is not ConversationItem conversation) return;
+        _translationBusy = true;
+        UpdateTranslationControls();
+        TranslationStatusText.Text = "正在翻译最近消息…原文始终保留，完成后显示双语。";
+        try
+        {
+            _translationCts?.Cancel();
+            _translationCts?.Dispose();
+            _translationCts = new CancellationTokenSource();
+            var translations = await _services.WhatsAppTranslation.TranslateRecentMessagesAsync(
+                conversation.Id,
+                cancellationToken: _translationCts.Token);
+            ApplyTranslations(conversation, translations);
+            TranslationStatusText.Text = translations.Count == 0
+                ? "当前没有可翻译的文字消息。"
+                : $"已显示 {translations.Count} 条双语消息 · 译文已缓存在本机";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            TranslationStatusText.Text = $"翻译未完成：{FriendlyTranslationError(error)}";
+        }
+        finally
+        {
+            _translationBusy = false;
+            UpdateTranslationControls();
+        }
+    }
+
+    private async void TranslateDraft_Click(object sender, RoutedEventArgs e)
+    {
+        if (_translationBusy || ConversationList.SelectedItem is not ConversationItem conversation) return;
+        var source = ComposerBox.Text.Trim();
+        if (source.Length == 0) return;
+        _translationBusy = true;
+        UpdateTranslationControls();
+        OutgoingTranslationPanel.Visibility = Visibility.Visible;
+        OutgoingTranslationLabel.Text = "正在翻译 · 只生成预览，不会自动发送";
+        OutgoingTranslationText.Text = "请稍候…";
+        try
+        {
+            var translation = await _services.WhatsAppTranslation.TranslateOutgoingAsync(conversation.Id, source);
+            _draftTranslationOriginal = source;
+            _draftTranslationText = translation.TranslatedText;
+            _translatedDraftApplied = false;
+            OutgoingTranslationLabel.Text = $"发送预览 · {translation.TargetLanguageName}";
+            OutgoingTranslationText.Text = translation.TranslatedText;
+            TranslationStatusText.Text = $"译文已生成 · {translation.Model} · 采用后仍需手动点击发送";
+        }
+        catch (Exception error)
+        {
+            _draftTranslationOriginal = "";
+            _draftTranslationText = "";
+            OutgoingTranslationLabel.Text = "翻译未完成";
+            OutgoingTranslationText.Text = FriendlyTranslationError(error);
+        }
+        finally
+        {
+            _translationBusy = false;
+            UpdateTranslationControls();
+        }
+    }
+
+    private void UseOutgoingTranslation_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_draftTranslationText)) return;
+        _applyingTranslatedDraft = true;
+        ComposerBox.Text = _draftTranslationText;
+        ComposerBox.CaretIndex = ComposerBox.Text.Length;
+        _applyingTranslatedDraft = false;
+        _translatedDraftApplied = true;
+        OutgoingTranslationPanel.Visibility = Visibility.Collapsed;
+        ComposerBox.Focus();
+        UpdateComposerState();
+    }
+
+    private void CancelOutgoingTranslation_Click(object sender, RoutedEventArgs e) =>
+        ClearOutgoingTranslation();
 
     private void Attach_Click(object sender, RoutedEventArgs e)
     {
@@ -1034,7 +1132,12 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                                 string.Equals(_pendingKnowledgeDecision.ReplyText.Trim(), text, StringComparison.Ordinal)
             ? _pendingKnowledgeDecision
             : null;
-        var effectiveOrigin = knowledgeDecision is not null ? "ai_knowledge_assisted" : origin;
+        var effectiveOrigin = knowledgeDecision is not null
+            ? "ai_knowledge_assisted"
+            : _translatedDraftApplied &&
+              string.Equals(text, _draftTranslationText, StringComparison.Ordinal)
+                ? "human_translated"
+                : origin;
         var attachmentPath = _attachmentPath;
         var reply = _replyingTo;
         if (string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(attachmentPath)) return false;
@@ -1087,6 +1190,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             conversation.LastMessage = MessagePreview(text, kind, fileName);
             conversation.LastAt = timestamp;
             ComposerBox.Clear();
+            ClearOutgoingTranslation();
             ClearAttachment();
             ClearReply();
 
@@ -1111,7 +1215,12 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 StatusUpdatedAt = DateTimeOffset.Now,
                 DeliveredAt = status is WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read ? DateTimeOffset.Now : null,
                 ReadAt = status == WhatsAppMessageStatus.Read ? DateTimeOffset.Now : null,
-                Source = effectiveOrigin is "ai_conversation_assistant" or "ai_knowledge_assisted" ? "desktop_ai" : "desktop"
+                Source = effectiveOrigin switch
+                {
+                    "ai_conversation_assistant" or "ai_knowledge_assisted" => "desktop_ai",
+                    "human_translated" => "desktop_translated",
+                    _ => "desktop"
+                }
             };
             await _services.Repository.UpsertWhatsAppMessageAsync(storedMessage);
             ReorderConversations(conversation);
@@ -1318,9 +1427,112 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             : "Enter 发送，Ctrl+Enter 换行";
         AttachButton.IsEnabled = available;
         SendButton.IsEnabled = available && (!string.IsNullOrWhiteSpace(ComposerBox.Text) || !string.IsNullOrWhiteSpace(_attachmentPath));
+        TranslateDraftButton.IsEnabled = available &&
+                                         !_translationBusy &&
+                                         !string.IsNullOrWhiteSpace(ComposerBox.Text) &&
+                                         !string.IsNullOrWhiteSpace(_translationProfile?.CustomerLanguageCode);
+        TranslateConversationButton.IsEnabled = ConversationList.SelectedItem is ConversationItem &&
+                                                 !_translationBusy &&
+                                                 !string.IsNullOrWhiteSpace(_translationProfile?.CustomerLanguageCode);
         AiAssistantButton.IsEnabled = canGenerate;
         GenerateAgentSuggestionButton.IsEnabled = canGenerate;
     }
+
+    private void ResetTranslationUi(ConversationItem? conversation = null)
+    {
+        _translationCts?.Cancel();
+        _translationCts?.Dispose();
+        _translationCts = null;
+        _translationProfile = null;
+        _translationBusy = false;
+        ClearOutgoingTranslation();
+        if (conversation is null)
+        {
+            TranslationBar.Visibility = Visibility.Collapsed;
+            return;
+        }
+        foreach (var message in conversation.Messages) message.ClearTranslation();
+        TranslationBar.Visibility = Visibility.Visible;
+        TranslationRouteText.Text = "本机语言 ⇄ 客户主流语言";
+        TranslationStatusText.Text = "正在读取 Windows 语言并识别本会话主流语言…";
+        UpdateTranslationControls();
+    }
+
+    private async Task LoadTranslationContextAsync(ConversationItem conversation)
+    {
+        var cts = new CancellationTokenSource();
+        _translationCts?.Cancel();
+        _translationCts?.Dispose();
+        _translationCts = cts;
+        try
+        {
+            var context = await _services.WhatsAppTranslation.GetContextAsync(
+                conversation.Id,
+                cancellationToken: cts.Token);
+            if (cts.IsCancellationRequested ||
+                ConversationList.SelectedItem is not ConversationItem current ||
+                !current.Id.Equals(conversation.Id, StringComparison.OrdinalIgnoreCase))
+                return;
+            _translationProfile = context.Profile;
+            TranslationRouteText.Text = $"{context.Profile.LocalLanguageName} ⇄ {context.Profile.CustomerLanguageName}";
+            TranslationStatusText.Text = context.Profile.SampleCount == 0
+                ? "等待客户发来文字消息后自动识别语言"
+                : $"基于 {context.Profile.SampleCount} 条客户消息 · 置信度 {context.Profile.Confidence:P0} · 已缓存译文不重复消耗 Token";
+            ApplyTranslations(conversation, context.CachedTranslations);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            _translationProfile = null;
+            TranslationRouteText.Text = "本机语言 ⇄ 客户主流语言";
+            TranslationStatusText.Text = $"语言识别未完成：{FriendlyTranslationError(error)}";
+        }
+        finally
+        {
+            if (ReferenceEquals(_translationCts, cts))
+            {
+                _translationBusy = false;
+                UpdateTranslationControls();
+            }
+        }
+    }
+
+    private void ApplyTranslations(
+        ConversationItem conversation,
+        IEnumerable<WhatsAppMessageTranslation> translations)
+    {
+        var byId = translations
+            .GroupBy(item => item.MessageId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(item => item.UpdatedAt).First(), StringComparer.OrdinalIgnoreCase);
+        foreach (var message in conversation.Messages)
+        {
+            if (byId.TryGetValue(message.Id, out var translation) &&
+                !string.Equals(message.Text.Trim(), translation.TranslatedText.Trim(), StringComparison.OrdinalIgnoreCase))
+                message.SetTranslation(translation.TranslatedText, translation.TargetLanguageName);
+            else
+                message.ClearTranslation();
+        }
+    }
+
+    private void UpdateTranslationControls()
+    {
+        TranslateConversationButton.Content = _translationBusy ? "翻译中…" : "翻译最近消息";
+        UpdateComposerState();
+    }
+
+    private void ClearOutgoingTranslation()
+    {
+        _draftTranslationOriginal = "";
+        _draftTranslationText = "";
+        _translatedDraftApplied = false;
+        if (OutgoingTranslationPanel is not null) OutgoingTranslationPanel.Visibility = Visibility.Collapsed;
+        if (OutgoingTranslationText is not null) OutgoingTranslationText.Text = "";
+    }
+
+    private static string FriendlyTranslationError(Exception error) =>
+        error is DeepSeekException deepSeek
+            ? deepSeek.Message
+            : error.Message.Length <= 120 ? error.Message : error.Message[..120] + "…";
 
     private static Dictionary<string, string> ParseCustomFields(string text)
     {
@@ -1964,6 +2176,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
     private sealed class MessageItem : INotifyPropertyChanged
     {
+        private string _translatedText = "";
+        private string _translationLanguageName = "";
         public MessageItem(
             string id,
             string text,
@@ -2054,6 +2268,13 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         public Visibility RevokeMenuVisibility => !IsGroup && FromMe ? Visibility.Visible : Visibility.Collapsed;
         public bool CanRevoke => !IsGroup && FromMe && !IsRevoked && !IsRevoking && !string.IsNullOrWhiteSpace(Id) && !Id.StartsWith("local-", StringComparison.OrdinalIgnoreCase) && Status is WhatsAppMessageStatus.Sent or WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read;
         public Visibility OutgoingStatusVisibility => FromMe && !IsRevoked ? Visibility.Visible : Visibility.Collapsed;
+        public string TranslatedText => _translatedText;
+        public string TranslationLabel => string.IsNullOrWhiteSpace(_translationLanguageName)
+            ? "译文"
+            : $"译文 · {_translationLanguageName}";
+        public Visibility TranslationVisibility => !IsRevoked && !string.IsNullOrWhiteSpace(_translatedText)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         public string ReceiptGlyph => !FromMe || IsRevoked ? "" : Status switch
         {
             WhatsAppMessageStatus.Pending => "…",
@@ -2134,6 +2355,25 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             RevokedAt ??= revokedAt ?? DateTimeOffset.Now;
             IsRevoking = false;
             NotifyAll();
+        }
+
+        public void SetTranslation(string text, string targetLanguageName)
+        {
+            _translatedText = text.Trim();
+            _translationLanguageName = targetLanguageName.Trim();
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TranslatedText)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TranslationLabel)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TranslationVisibility)));
+        }
+
+        public void ClearTranslation()
+        {
+            if (_translatedText.Length == 0 && _translationLanguageName.Length == 0) return;
+            _translatedText = "";
+            _translationLanguageName = "";
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TranslatedText)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TranslationLabel)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TranslationVisibility)));
         }
 
         private static bool CanAdvance(WhatsAppMessageStatus current, WhatsAppMessageStatus next)

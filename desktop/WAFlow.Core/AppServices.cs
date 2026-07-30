@@ -25,6 +25,7 @@ public sealed class AppServices
     public CustomerAnalysisService CustomerAnalysis { get; }
     public CustomerReportExportService CustomerReportExports { get; }
     public ConversationAssistantService ConversationAssistant { get; }
+    public WhatsAppTranslationService WhatsAppTranslation { get; }
     public CustomerIdentityService CustomerIdentity { get; }
     public SourcingRequestService SourcingRequests { get; }
     public CustomerSuccessAgentService CustomerSuccessAgent { get; }
@@ -74,6 +75,7 @@ public sealed class AppServices
         CustomerActions = new CustomerActionLifecycleService(Repository);
         SalesLearning = new PersonalSalesLearningService(Repository);
         ConversationAssistant = new ConversationAssistantService(Repository, DeepSeek, SalesLearning, KnowledgeRetrieval);
+        WhatsAppTranslation = new WhatsAppTranslationService(Repository, DeepSeek);
         CustomerIdentity = new CustomerIdentityService(Repository);
         SourcingRequests = new SourcingRequestService(Repository);
         KnowledgeLearning = new KnowledgeLearningService(Repository, SalesLearning);

@@ -1099,6 +1099,19 @@ public sealed class LocalRepository
     public Task SaveWhatsAppIpStateAsync(WhatsAppIpState state, CancellationToken cancellationToken = default) =>
         SaveSettingAsync($"whatsapp_ip_state:{state.AccountId}", state, cancellationToken);
 
+    public async Task<WhatsAppTranslationState> GetWhatsAppTranslationStateAsync(
+        string conversationId,
+        CancellationToken cancellationToken = default) =>
+        await GetSettingAsync<WhatsAppTranslationState>(
+            $"whatsapp_translation:{conversationId}",
+            cancellationToken) ?? new WhatsAppTranslationState();
+
+    public Task SaveWhatsAppTranslationStateAsync(
+        string conversationId,
+        WhatsAppTranslationState state,
+        CancellationToken cancellationToken = default) =>
+        SaveSettingAsync($"whatsapp_translation:{conversationId}", state, cancellationToken);
+
     public async Task<List<WhatsAppAccount>> GetWhatsAppAccountsAsync(CancellationToken cancellationToken = default) =>
         await GetSettingAsync<List<WhatsAppAccount>>("whatsapp_accounts", cancellationToken) ?? [new WhatsAppAccount()];
 
