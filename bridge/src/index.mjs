@@ -18,14 +18,19 @@ import makeWASocket, {
 import { isDisplayableMessage, messageContent, messageKind, messageText } from './message-content.mjs'
 import { normalizeOutboundUserJid, summarizeOutboundDeviceFanout } from './outbound-routing.mjs'
 import { isGroupJid, isSupportedInboundJid, normalizeGroupJid } from './conversation-routing.mjs'
+import { resolveBaileysVersion } from './connection-bootstrap.mjs'
 
 const logger = pino({ level: 'silent' })
+const QR_GENERATION_WATCHDOG_MS = 35000
 const state = {
   accountId: 'default',
   sessionDir: '',
   socket: null,
   connection: 'idle',
   reconnectTimer: null,
+  pairingTimer: null,
+  connectionAttempt: 0,
+  qrSeen: false,
   manualDisconnect: false,
   authKey: null,
   existingSession: false,
@@ -970,6 +975,8 @@ async function manualSync() {
 async function closeSocket() {
   if (state.reconnectTimer) clearTimeout(state.reconnectTimer)
   state.reconnectTimer = null
+  if (state.pairingTimer) clearTimeout(state.pairingTimer)
+  state.pairingTimer = null
   const socket = state.socket
   state.socket = null
   if (socket) {
@@ -989,6 +996,12 @@ async function connect() {
   if (!state.sessionDir) throw new Error('bridge_not_initialized')
   await closeSocket()
   state.manualDisconnect = false
+  state.qrSeen = false
+  const attempt = ++state.connectionAttempt
+  emit({
+    type: 'event', event: 'connection_stage', accountId: state.accountId,
+    data: { state: 'preparing', attempt, message: '正在准备安全登录会话' }
+  })
   await fs.mkdir(state.sessionDir, { recursive: true })
   if (!state.authKey) throw new Error('session_encryption_key_missing')
   const { state: auth, saveCreds } = await loadAuthStateWithRecovery()
@@ -997,21 +1010,58 @@ async function connect() {
   state.chats.clear()
   state.messages.clear()
   state.historyTotals = { contacts: 0, chats: 0, messages: 0 }
-  const { version } = await fetchLatestBaileysVersion()
+  emit({
+    type: 'event', event: 'connection_stage', accountId: state.accountId,
+    data: { state: 'checking_protocol', attempt, message: '正在检查 WhatsApp 兼容协议' }
+  })
+  const versionInfo = await resolveBaileysVersion(fetchLatestBaileysVersion)
+  emit({
+    type: 'event', event: 'connection_stage', accountId: state.accountId,
+    data: {
+      state: 'opening',
+      attempt,
+      versionSource: versionInfo.source,
+      warning: versionInfo.warning,
+      message: versionInfo.source === 'remote'
+        ? '正在建立 WhatsApp 安全连接'
+        : '在线协议检查不可用，正在使用内置兼容协议连接'
+    }
+  })
   const socket = makeWASocket({
     auth,
-    version,
+    ...(versionInfo.version ? { version: versionInfo.version } : {}),
     browser: Browsers.windows('WAFlow'),
     logger,
     printQRInTerminal: false,
     markOnlineOnConnect: false,
     syncFullHistory: true,
+    connectTimeoutMs: 20000,
+    defaultQueryTimeoutMs: 30000,
+    qrTimeout: 60000,
     shouldSyncHistoryMessage: () => true,
     generateHighQualityLinkPreview: false
   })
   state.socket = socket
   state.connection = 'connecting'
   emit({ type: 'event', event: 'connection', accountId: state.accountId, data: { state: 'connecting' } })
+  state.pairingTimer = setTimeout(() => {
+    if (state.socket !== socket || state.connection !== 'connecting' || state.qrSeen) return
+    state.connection = 'retrying'
+    emit({
+      type: 'event', event: 'connection_issue', accountId: state.accountId,
+      data: {
+        code: 'qr_generation_timeout',
+        recoverable: true,
+        attempt,
+        message: '二维码生成超时，程序正在自动重新建立连接'
+      }
+    })
+    emit({
+      type: 'event', event: 'connection', accountId: state.accountId,
+      data: { state: 'retrying', attempt }
+    })
+    try { socket.end(new Error('qr_generation_timeout')) } catch { }
+  }, QR_GENERATION_WATCHDOG_MS)
 
   socket.ev.on('creds.update', saveCreds)
   socket.ev.on('messages.upsert', update => {
@@ -1156,11 +1206,37 @@ async function connect() {
     }
   })
   socket.ev.on('connection.update', async update => {
+    if (state.socket !== socket) return
     if (update.qr) {
-      const dataUrl = await QRCode.toDataURL(update.qr, { width: 320, margin: 2, errorCorrectionLevel: 'M' })
-      emit({ type: 'event', event: 'qr', accountId: state.accountId, data: { dataUrl } })
+      state.qrSeen = true
+      if (state.pairingTimer) clearTimeout(state.pairingTimer)
+      state.pairingTimer = null
+      try {
+        const dataUrl = await QRCode.toDataURL(update.qr, { width: 320, margin: 2, errorCorrectionLevel: 'M' })
+        emit({ type: 'event', event: 'qr', accountId: state.accountId, data: { dataUrl, attempt } })
+      } catch (error) {
+        state.qrSeen = false
+        state.connection = 'retrying'
+        emit({
+          type: 'event', event: 'connection_issue', accountId: state.accountId,
+          data: {
+            code: 'qr_render_failed',
+            recoverable: true,
+            attempt,
+            message: '已收到登录凭据，但二维码绘制失败，程序将自动重试',
+            error: safeError(error)
+          }
+        })
+        emit({
+          type: 'event', event: 'connection', accountId: state.accountId,
+          data: { state: 'retrying', attempt }
+        })
+        try { socket.end(new Error('qr_render_failed')) } catch { }
+      }
     }
     if (update.connection === 'open') {
+      if (state.pairingTimer) clearTimeout(state.pairingTimer)
+      state.pairingTimer = null
       state.connection = 'connected'
       emit({
         type: 'event', event: 'connection', accountId: state.accountId,
@@ -1173,9 +1249,11 @@ async function connect() {
       ?? update.lastDisconnect?.error?.statusCode
       ?? null
     const loggedOut = statusCode === DisconnectReason.loggedOut
+    if (state.pairingTimer) clearTimeout(state.pairingTimer)
+    state.pairingTimer = null
+    state.socket = null
     state.connection = loggedOut ? 'logged_out' : 'disconnected'
     if (loggedOut) {
-      state.socket = null
       await resetSessionForQr()
     }
     emit({
@@ -1183,7 +1261,14 @@ async function connect() {
       data: { state: loggedOut ? 'logged_out' : 'disconnected', statusCode, error: safeError(update.lastDisconnect?.error) }
     })
     if (!loggedOut && !state.manualDisconnect) {
-      state.reconnectTimer = setTimeout(() => connect().catch(error => emit({ type: 'event', event: 'bridge_error', data: { error: safeError(error) } })), 5000)
+      emit({
+        type: 'event', event: 'connection_stage', accountId: state.accountId,
+        data: { state: 'retrying', attempt, message: '连接暂时中断，5 秒后自动重试' }
+      })
+      state.reconnectTimer = setTimeout(() => connect().catch(error => emit({
+        type: 'event', event: 'bridge_error', accountId: state.accountId,
+        data: { error: safeError(error), code: 'automatic_reconnect_failed' }
+      })), 5000)
     }
   })
 }

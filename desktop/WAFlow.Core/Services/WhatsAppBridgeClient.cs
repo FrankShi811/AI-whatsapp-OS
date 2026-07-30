@@ -22,6 +22,8 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     private Process? _process;
     private StreamWriter? _input;
     private TaskCompletionSource _ready = NewSignal();
+    private TaskCompletionSource<string>? _pairingMilestone;
+    private readonly object _pairingLock = new();
     private CancellationTokenSource? _lifetime;
     private readonly string _dataRoot;
 
@@ -31,6 +33,7 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     public string ConnectionState { get; private set; } = "disconnected";
     public string CurrentAccountId { get; private set; } = "primary";
     public string LastBridgeError { get; private set; } = "";
+    public string LatestQrDataUrl { get; private set; } = "";
 
     public WhatsAppBridgeClient(string? dataRoot = null)
     {
@@ -80,19 +83,60 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     public Task<JsonElement> PingAsync(CancellationToken cancellationToken = default) => SendCommandAsync("ping", null, cancellationToken);
     public async Task<JsonElement> ConnectAsync(CancellationToken cancellationToken = default)
     {
+        if (ConnectionState == "connected") return default;
+        TaskCompletionSource<string> milestone;
+        var sendConnectCommand = true;
+        lock (_pairingLock)
+        {
+            if (ConnectionState == "connecting" && _pairingMilestone is not null)
+            {
+                milestone = _pairingMilestone;
+                sendConnectCommand = false;
+            }
+            else
+            {
+                milestone = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _pairingMilestone = milestone;
+                LatestQrDataUrl = "";
+            }
+        }
         ConnectionState = "connecting";
-        return await SendCommandAsync("connect", null, cancellationToken);
+        var result = sendConnectCommand
+            ? await SendCommandAsync("connect", null, cancellationToken)
+            : default;
+        try
+        {
+            await milestone.Task.WaitAsync(TimeSpan.FromSeconds(75), cancellationToken);
+            return result;
+        }
+        catch (TimeoutException)
+        {
+            try
+            {
+                await SendCommandAsync("disconnect", null, CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch { }
+            ConnectionState = "disconnected";
+            throw new WhatsAppBridgeException(
+                "qr_generation_timeout",
+                "WhatsApp 二维码未能在限定时间内生成。程序已停止本次连接，请检查网络、防火墙或代理后点击重试。");
+        }
     }
     public async Task<JsonElement> DisconnectAsync(CancellationToken cancellationToken = default)
     {
         var result = await SendCommandAsync("disconnect", null, cancellationToken);
         ConnectionState = "disconnected";
+        LatestQrDataUrl = "";
+        FailPairing(new WhatsAppBridgeException("connection_cancelled", "WhatsApp 连接已取消。"));
         return result;
     }
     public async Task<JsonElement> LogoutAsync(CancellationToken cancellationToken = default)
     {
         var result = await SendCommandAsync("logout", null, cancellationToken);
         ConnectionState = "logged_out";
+        LatestQrDataUrl = "";
+        FailPairing(new WhatsAppBridgeException("logged_out", "WhatsApp 登录已失效，请重新生成二维码。"));
         new WindowsCredentialStore($"WAFlow/WhatsAppSessionKey/{CurrentAccountId}").Delete();
         return result;
     }
@@ -179,7 +223,40 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
                 var accountId = root.TryGetProperty("accountId", out var account) ? account.GetString() ?? "" : "";
                 var data = root.TryGetProperty("data", out var dataElement) ? dataElement.Clone() : default;
                 if (eventName == "connection" && data.ValueKind == JsonValueKind.Object && data.TryGetProperty("state", out var state))
+                {
                     ConnectionState = state.GetString() ?? "disconnected";
+                    if (ConnectionState == "connected")
+                    {
+                        LatestQrDataUrl = "";
+                        CompletePairing("connected");
+                    }
+                    else if (ConnectionState == "logged_out")
+                    {
+                        LatestQrDataUrl = "";
+                        FailPairing(new WhatsAppBridgeException("logged_out", "WhatsApp 登录已失效，请重新生成二维码。"));
+                    }
+                    else if (ConnectionState == "disconnected"
+                        && data.TryGetProperty("manual", out var manual)
+                        && manual.ValueKind == JsonValueKind.True)
+                    {
+                        FailPairing(new WhatsAppBridgeException("connection_cancelled", "WhatsApp 连接已取消。"));
+                    }
+                }
+                else if (eventName == "qr"
+                    && data.ValueKind == JsonValueKind.Object
+                    && data.TryGetProperty("dataUrl", out var qrDataUrl))
+                {
+                    LatestQrDataUrl = qrDataUrl.GetString() ?? "";
+                    CompletePairing("qr");
+                }
+                else if (eventName == "bridge_error")
+                {
+                    var message = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("error", out var error)
+                        ? error.GetString() ?? "WhatsApp 桥接连接失败。"
+                        : "WhatsApp 桥接连接失败。";
+                    LastBridgeError = message;
+                    FailPairing(new WhatsAppBridgeException("bridge_error", message));
+                }
                 EventReceived?.Invoke(this, new WhatsAppBridgeEvent(eventName, accountId, data));
                 }
             }
@@ -189,6 +266,7 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
         {
             LastBridgeError = error.Message;
             FailPending(error);
+            FailPairing(error);
         }
     }
 
@@ -207,12 +285,29 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
         try { await process.WaitForExitAsync(cancellationToken); }
         catch (OperationCanceledException) { return; }
         ConnectionState = "disconnected";
-        FailPending(new WhatsAppBridgeException("bridge_exited", $"WhatsApp 桥接进程已退出，代码 {process.ExitCode}。"));
+        LatestQrDataUrl = "";
+        var error = new WhatsAppBridgeException("bridge_exited", $"WhatsApp 桥接进程已退出，代码 {process.ExitCode}。");
+        FailPending(error);
+        FailPairing(error);
+        EventReceived?.Invoke(this, new WhatsAppBridgeEvent(
+            "bridge_error",
+            CurrentAccountId,
+            JsonSerializer.SerializeToElement(new { code = "bridge_exited", error = error.Message })));
     }
 
     private void FailPending(Exception error)
     {
         foreach (var pair in _pending) pair.Value.TrySetException(error);
+    }
+
+    private void CompletePairing(string milestone)
+    {
+        lock (_pairingLock) _pairingMilestone?.TrySetResult(milestone);
+    }
+
+    private void FailPairing(Exception error)
+    {
+        lock (_pairingLock) _pairingMilestone?.TrySetException(error);
     }
 
     public async ValueTask DisposeAsync()

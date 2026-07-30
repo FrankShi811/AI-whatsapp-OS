@@ -122,8 +122,16 @@
                     </Border>
                     <Grid Grid.Row="3">
                         <StackPanel x:Name="QrPanel" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="380">
-                            <Image x:Name="QrImage" Width="300" Height="300" Stretch="Uniform"/>
-                            <TextBlock x:Name="QrHintText" Text="点击“连接 / 显示二维码”，然后使用手机 WhatsApp 的“已关联设备”扫描。" TextWrapping="Wrap" TextAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,12,0,0"/>
+                            <Image x:Name="QrImage" Width="300" Height="300" Stretch="Uniform"
+                                   Visibility="Collapsed"
+                                   AutomationProperties.Name="WhatsApp 登录二维码"/>
+                            <ProgressBar x:Name="QrProgressBar" Width="260" Height="4" Margin="36,12"
+                                         IsIndeterminate="True" Visibility="Collapsed"
+                                         AutomationProperties.Name="正在生成 WhatsApp 登录二维码"
+                                         Foreground="{DynamicResource Primary}"/>
+                            <TextBlock x:Name="QrHintText" Text="点击“连接 / 显示二维码”，然后使用手机 WhatsApp 的“已关联设备”扫描。"
+                                       TextWrapping="Wrap" TextAlignment="Center" Foreground="{DynamicResource Muted}"
+                                       Margin="0,12,0,0" AutomationProperties.LiveSetting="Polite"/>
                         </StackPanel>
                         <ListBox x:Name="MessageList" BorderThickness="0" Background="{DynamicResource Canvas}" Visibility="Collapsed" ScrollViewer.VerticalScrollBarVisibility="Auto">
                             <ListBox.ItemContainerStyle>

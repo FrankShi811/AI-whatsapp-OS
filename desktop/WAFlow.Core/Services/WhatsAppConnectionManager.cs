@@ -25,6 +25,7 @@ public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLooku
     public void SetActiveAccount(string accountId) => ActiveAccountId = Normalize(accountId);
     public bool IsConnectedFor(string accountId) => _clients.TryGetValue(Normalize(accountId), out var client) && client.IsConnected;
     public string ConnectionStateFor(string accountId) => _clients.TryGetValue(Normalize(accountId), out var client) ? client.ConnectionState : "disconnected";
+    public string LatestQrDataUrlFor(string accountId) => _clients.TryGetValue(Normalize(accountId), out var client) ? client.LatestQrDataUrl : "";
     public bool IsAutoReconnectEnabled(string accountId) => !_autoReconnectSuppressed.ContainsKey(Normalize(accountId));
     public bool HasStoredSession(string accountId)
     {
@@ -113,7 +114,7 @@ public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLooku
         try
         {
             var client = GetClient(accountId);
-            if (client.ConnectionState is "connected" or "connecting") return default;
+            if (client.ConnectionState == "connected") return default;
             await client.StartAsync(accountId, cancellationToken);
             return await client.ConnectAsync(cancellationToken);
         }

@@ -31,7 +31,7 @@ internal static class GuideCatalog
             ["dashboard"] = ModuleGuideVersion + 3,
             ["intelligence"] = ModuleGuideVersion + 3,
             ["customers"] = ModuleGuideVersion + 6,
-            ["inbox"] = ModuleGuideVersion + 4,
+            ["inbox"] = ModuleGuideVersion + 5,
             ["email"] = ModuleGuideVersion + 4,
             ["broadcast"] = ModuleGuideVersion + 2,
             ["knowledge"] = ModuleGuideVersion + 2,
@@ -92,7 +92,7 @@ internal static class GuideCatalog
             new("先理解完整工作流", "AI Sales OS 把客户资料、WhatsApp、邮件、AI 判断和销售动作连接成一条工作流。", "从客户数据到可执行销售动作", ["在客户列表导入或维护客户资料。", "程序启动后让全部已登录 WhatsApp 与邮箱账号在后台保持同步。", "在 Inbox 处理侧栏新消息，并用 AI 根据客户上下文生成可编辑回复。", "让商机智能分析价值、风险和下一步。", "用多渠道自动化触达执行任务，用客户智能分析生成管理层报告。"], "不必一次学会所有功能；先完成设置中的 AI 对接和客户导入，再按左侧导航逐页使用。"),
             new("完成 AI API 对接", "左侧“设置”统一管理 AI 模型、界面缩放和主题；填写兼容接口后会自动拉取可用模型。", "首次使用唯一必需的 AI 配置", ["点击左侧栏“设置”。", "填写 HTTPS Base URL 和 API Key。", "点击拉取模型并选择工作模型。", "按屏幕分辨率选择界面缩放比例。", "保存后确认顶部显示“AI 已配置”。"], "API Key 只写入 Windows 凭据管理器；界面缩放和主题不要求先配置 API。", true),
             new("准备客户数据", "Excel / CSV 的每一列都会保留，自定义列也能用于筛选、分析和群发变量。", "建立统一客户数据底座", ["进入客户列表并点击“导入客户数据”。", "选择文件和非空工作表。", "确认 Buyer ID、姓名、电话和邮箱等关键字段。", "导入后抽查系统字段和自定义字段。", "双击客户可继续人工修正。"], "新导入客户统一为 D 级、0 分；Buyer ID 优先作为跨板块客户身份，缺失时才按电话号码安全匹配。"),
-            new("连接沟通账号", "WhatsApp 通过关联设备连接；邮件按平台使用 IMAP / SMTP 和应用专用密码。", "把真实沟通反馈连接到 CRM", ["进入 WhatsApp Inbox 扫码连接需要的个人账号。", "进入邮件 Inbox，按 Gmail、Outlook、Yahoo、iCloud 或自定义平台引导连接邮箱。", "首次连接后同步联系人、会话或收件箱。", "回到其他板块确认侧栏未读气泡可以实时更新。"], "WhatsApp 个人账号连接使用非官方多设备协议；邮箱凭据只保存在 Windows 凭据管理器。"),
+            new("连接沟通账号", "WhatsApp 通过关联设备连接；邮件按平台使用 IMAP / SMTP 和应用专用密码。", "把真实沟通反馈连接到 CRM", ["进入 WhatsApp Inbox，点击“连接 / 显示二维码”。", "等待页面依次显示准备连接、建立连接和真实二维码；受限网络下程序会自动切换内置兼容协议并重试。", "使用手机 WhatsApp 的“已关联设备”扫描二维码。", "进入邮件 Inbox，按对应平台引导连接邮箱。", "首次连接后同步联系人、会话或收件箱。"], "二维码长时间未出现时，页面会明确提示检查 WhatsApp 网络、防火墙或代理并允许直接重试；程序不会生成或显示伪造二维码。"),
             new("形成每日工作节奏", "Dashboard 告诉你今天先做什么，其他模块负责完成对应动作。", "每天从优先级开始，而不是从表格开始", ["先看 Dashboard 的优先商机和待办。", "进入商机智能查看评分证据。", "在 WhatsApp 或邮件 Inbox 完成沟通并更新客户资料。", "需要批量触达时再创建多渠道自动化任务。", "重点客户用客户智能分析生成报告。"], "Ctrl+1 至 Ctrl+8 可快速切换八个模块；主题、AI 模型和版本更新统一从左下角“设置”进入。")
         ],
         true);
