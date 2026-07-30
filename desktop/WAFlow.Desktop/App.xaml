@@ -374,6 +374,12 @@
             <Setter Property="BorderThickness" Value="0,0,0,1"/>
         </Style>
         <Style TargetType="ListBox"><Setter Property="Background" Value="{DynamicResource Surface}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/></Style>
+        <Style x:Key="PassivePageViewport" TargetType="ScrollViewer">
+            <!-- Page-level scrolling is a passive viewport. Keep focus on its actionable descendants
+                 instead of drawing WPF's default dotted rectangle around the whole product canvas. -->
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        </Style>
         <Style TargetType="ListBoxItem">
             <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
             <Setter Property="Background" Value="Transparent"/>

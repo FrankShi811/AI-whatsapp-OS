@@ -221,6 +221,18 @@ if ($overlaySidebarFailures.Count -gt 0) {
 }
 Write-Host 'PASS  60px hover-to-expand overlay sidebar without product-canvas reflow'
 
+$pageViewportFailures = @()
+if ($appXaml -notmatch 'x:Key="PassivePageViewport"[\s\S]*?TargetType="ScrollViewer"' -or
+    $appXaml -notmatch 'x:Key="PassivePageViewport"[\s\S]*?<Setter Property="IsTabStop" Value="False"/>' -or
+    $appXaml -notmatch 'x:Key="PassivePageViewport"[\s\S]*?<Setter Property="FocusVisualStyle" Value="\{x:Null\}"/>' -or
+    $dashboardXaml -notmatch '<ScrollViewer Style="\{StaticResource PassivePageViewport\}"') {
+  $pageViewportFailures += 'dashboard_passive_viewport'
+}
+if ($pageViewportFailures.Count -gt 0) {
+  throw "Passive page viewports must never draw WPF's full-canvas dotted focus rectangle. missing=$($pageViewportFailures -join ',')"
+}
+Write-Host 'PASS  passive Dashboard viewport without full-canvas dotted focus rectangle'
+
 $motionFailures = @()
 if ($appXaml -match 'TargetName="NavRoot" Property="BorderBrush"' -or
     $appXaml -match 'TargetName="NavRoot" Property="BorderThickness"') { $motionFailures += 'nav_perimeter_border' }
