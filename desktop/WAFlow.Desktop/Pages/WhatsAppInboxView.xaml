@@ -338,14 +338,32 @@
                         </Border>
                         <TextBlock Text="客户资料" Style="{StaticResource SectionTitle}" Margin="0,0,0,11"/>
                         <TextBlock Text="姓名" Style="{StaticResource LabelText}"/><TextBox x:Name="NameBox" Margin="0,5,0,11"/>
-                        <TextBlock Text="公司" Style="{StaticResource LabelText}"/><TextBox x:Name="CompanyBox" Margin="0,5,0,11"/>
                         <TextBlock Text="阶段" Style="{StaticResource LabelText}"/><ComboBox x:Name="StageCombo" DisplayMemberPath="Label" Margin="0,5,0,11"/>
                         <TextBlock Text="负责人" Style="{StaticResource LabelText}"/><TextBox x:Name="OwnerBox" Margin="0,5,0,11"/>
                         <TextBlock Text="标签（逗号分隔）" Style="{StaticResource LabelText}"/><TextBox x:Name="TagsBox" Margin="0,5,0,11"/>
                         <CheckBox x:Name="OptInCheck" Content="客户已同意接收 WhatsApp 营销消息" Margin="0,0,0,7"/>
-                        <TextBox x:Name="OptInSourceBox" ToolTip="同意来源，例如：展会登记 / 网站表单 / 客户主动要求" Margin="0,0,0,7"/>
                         <CheckBox x:Name="OptedOutCheck" Content="客户已退订（禁止任何 Campaign）" Margin="0,0,0,11" Foreground="{DynamicResource Danger}"/>
-                        <TextBlock Text="备注 / 最近情况" Style="{StaticResource LabelText}"/><TextBox x:Name="NotesBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="72" Margin="0,5,0,11"/>
+                        <TextBlock Text="人工备注" Style="{StaticResource LabelText}"/>
+                        <TextBox x:Name="NotesBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="72" Margin="0,5,0,11"
+                                 ToolTip="仅保存销售人员手动记录，不会被最新聊天内容覆盖。"/>
+                        <Border Background="{DynamicResource AiSurface}" BorderBrush="{DynamicResource AiSoft}" BorderThickness="1" CornerRadius="10" Padding="11" Margin="0,0,0,11">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="AI 上下文总结" FontWeight="SemiBold"/>
+                                        <TextBlock x:Name="AiContextStatusText" Text="等待关联客户" Foreground="{DynamicResource AiAccent}" FontSize="9.5" Margin="0,3,0,0"/>
+                                    </StackPanel>
+                                    <Button x:Name="RefreshAiContextButton" Grid.Column="1" Content="刷新总结" Style="{StaticResource GhostButton}"
+                                            Click="RefreshAiContext_Click" Padding="10,6" IsEnabled="False"
+                                            ToolTip="使用“客户列表 / Customer Brain”板块模型重新总结，会消耗 Token。"/>
+                                </Grid>
+                                <TextBlock x:Name="AiContextSummaryText" Text="关联客户后，将综合 WhatsApp 与邮件历史生成态度、性格、语气和当前关系摘要。"
+                                           Foreground="{DynamicResource Ink}" TextWrapping="Wrap" LineHeight="17" Margin="0,9,0,0"/>
+                                <TextBlock x:Name="AiContextMetaText" Text="客户原文是证据；人工备注与 AI 推断会分开标注。"
+                                           Foreground="{DynamicResource Muted}" FontSize="9" TextWrapping="Wrap" Margin="0,7,0,0"/>
+                            </StackPanel>
+                        </Border>
                         <TextBlock Text="自定义维度（每行 key=value）" Style="{StaticResource LabelText}"/><TextBox x:Name="CustomFieldsBox" AcceptsReturn="True" TextWrapping="NoWrap" MinHeight="90" Margin="0,5,0,11" FontFamily="Consolas" FontSize="11"/>
                         <Border Background="{DynamicResource WarningSoft}" CornerRadius="9" Padding="10"><TextBlock Text="保存会同步到客户列表、商机智能和后续 Campaign。" Foreground="{DynamicResource Warning}" TextWrapping="Wrap" FontSize="10"/></Border>
                     </StackPanel></ScrollViewer>

@@ -68,9 +68,9 @@ public sealed class AppServices
         LeadAutomation = new LeadIntelligenceAutomationService(Repository, DeepSeek, WhatsAppSync);
         PublicIp = new PublicIpMonitor(Repository);
         Campaigns = new CampaignAutomationService(Repository, WhatsApp, PublicIp, Email);
-        CustomerAnalysis = new CustomerAnalysisService(Repository, DeepSeek, KnowledgeRetrieval);
-        CustomerReportExports = new CustomerReportExportService(Repository);
         CustomerBrain = new CustomerBrainService(Repository, DeepSeek, KnowledgeRetrieval);
+        CustomerAnalysis = new CustomerAnalysisService(Repository, DeepSeek, KnowledgeRetrieval, CustomerBrain);
+        CustomerReportExports = new CustomerReportExportService(Repository);
         CustomerActions = new CustomerActionLifecycleService(Repository);
         SalesLearning = new PersonalSalesLearningService(Repository);
         ConversationAssistant = new ConversationAssistantService(Repository, DeepSeek, SalesLearning, KnowledgeRetrieval);

@@ -10,15 +10,18 @@ public sealed class CustomerAnalysisService
     private readonly LocalRepository _repository;
     private readonly IStructuredAiProvider _provider;
     private readonly HybridRetriever? _knowledgeRetrieval;
+    private readonly CustomerBrainService? _customerBrain;
 
     public CustomerAnalysisService(
         LocalRepository repository,
         IStructuredAiProvider provider,
-        HybridRetriever? knowledgeRetrieval = null)
+        HybridRetriever? knowledgeRetrieval = null,
+        CustomerBrainService? customerBrain = null)
     {
         _repository = repository;
         _provider = provider;
         _knowledgeRetrieval = knowledgeRetrieval;
+        _customerBrain = customerBrain;
     }
 
     public async Task<CustomerAnalysisReport> GenerateAsync(
@@ -28,6 +31,26 @@ public sealed class CustomerAnalysisService
     {
         if (!_provider.HasApiKey(AiModuleKeys.CustomerAnalytics)) throw new DeepSeekException("provider_not_configured", "请先完成 AI API 对接并选择模型。", false);
         var lead = await _repository.GetLeadAsync(customerId, cancellationToken) ?? throw new InvalidOperationException("客户不存在或已经删除。");
+        if (_customerBrain is not null)
+        {
+            try
+            {
+                await _customerBrain.UpdateConversationContextAsync(customerId, cancellationToken: cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception error)
+            {
+                await _repository.LogEventAsync(
+                    "customer_analysis_context_refresh_failed",
+                    customerId,
+                    null,
+                    error.Message,
+                    cancellationToken);
+            }
+        }
         var model = await _provider.GetSelectedModelAsync(AiModuleKeys.CustomerAnalytics, cancellationToken);
         var report = new CustomerAnalysisReport
         {
@@ -189,6 +212,7 @@ public sealed class CustomerAnalysisService
         var timeline = await _repository.GetCustomerHistoryAsync(lead.Id, cancellationToken);
         timeline.Insert(0, new CustomerHistoryEvent { Type = "customer_created", Detail = "客户资料进入 AI Sales OS", CreatedAt = lead.CreatedAt });
         timeline.Add(new CustomerHistoryEvent { Type = "customer_snapshot", Detail = $"当前阶段：{lead.StageLabel}；当前等级：{(lead.HasCurrentAiScore ? lead.Grade : "D")}", CreatedAt = lead.UpdatedAt });
+        var customerBrain = await _repository.GetCustomerIntelligenceProfileAsync(lead.Id, cancellationToken);
         return new CustomerIntelligenceSourceSnapshot
         {
             CapturedAt = DateTimeOffset.Now,
@@ -197,7 +221,8 @@ public sealed class CustomerAnalysisService
             EmailMessages = emailMessages,
             CampaignTouches = touches.OrderBy(item => item.ScheduledAt).ToList(),
             Timeline = timeline.OrderBy(item => item.CreatedAt).ToList(),
-            LeadAnalysisHistory = await _repository.GetLeadAnalysisHistoryAsync(lead.Id, cancellationToken)
+            LeadAnalysisHistory = await _repository.GetLeadAnalysisHistoryAsync(lead.Id, cancellationToken),
+            ConversationContext = customerBrain?.ConversationContext ?? new CustomerConversationContext()
         };
     }
 
@@ -262,6 +287,8 @@ public sealed class CustomerAnalysisService
         if (!string.IsNullOrWhiteSpace(lead.Country)) Add("市场", $"客户所在国家或地区为 {lead.Country}。", lead.Country);
         if (!string.IsNullOrWhiteSpace(lead.PhoneE164)) Add("联系方式", $"客户 WhatsApp 号码为 {lead.PhoneE164}。", lead.PhoneE164);
         if (!string.IsNullOrWhiteSpace(lead.ProductInterest)) Add("产品方向", $"客户产品兴趣为 {lead.ProductInterest}。", lead.ProductInterest);
+        if (!string.IsNullOrWhiteSpace(lead.ManualNotes))
+            Add("销售人工备注", $"销售人员备注：{lead.ManualNotes}", lead.ManualNotes, "人工备注");
         Add("销售状态", $"CRM 当前阶段为 {lead.StageLabel}，AI 等级为 {(lead.HasCurrentAiScore ? lead.Grade : "D")}，评分为 {(lead.HasCurrentAiScore ? lead.Score : 0)}。", $"stage={lead.Stage}; score={lead.Score}; grade={lead.Grade}", "Lead Intelligence");
         foreach (var field in lead.CustomFields.Where(item => !string.IsNullOrWhiteSpace(item.Value)))
             Add("导入字段", $"{field.Key}：{field.Value}", field.Value, "Excel/CRM 自定义字段");
@@ -275,7 +302,20 @@ public sealed class CustomerAnalysisService
         var lead = snapshot.Lead;
         var payload = new
         {
-            crm = new { lead.BuyerId, lead.Name, lead.Company, lead.Country, lead.ProductInterest, lead.Stage, lead.Owner, lead.Tags, lead.CustomFields },
+            crm = new
+            {
+                lead.BuyerId,
+                lead.Name,
+                lead.Company,
+                lead.Country,
+                lead.ProductInterest,
+                lead.Stage,
+                lead.Owner,
+                lead.Tags,
+                lead.CustomFields,
+                manualNotes = lead.ManualNotes
+            },
+            customerConversationContext = snapshot.ConversationContext,
             leadIntelligence = new
             {
                 score = lead.HasCurrentAiScore ? lead.Score : 0,
@@ -318,9 +358,17 @@ public sealed class CustomerAnalysisService
     {
         var payload = new
         {
-            customer = new { snapshot.Lead.Name, snapshot.Lead.Country, snapshot.Lead.Stage, snapshot.Lead.ProductInterest },
+            customer = new
+            {
+                snapshot.Lead.Name,
+                snapshot.Lead.Country,
+                snapshot.Lead.Stage,
+                snapshot.Lead.ProductInterest,
+                manualNotes = snapshot.Lead.ManualNotes
+            },
             facts,
             business,
+            customerConversationContext = snapshot.ConversationContext,
             constraint = "只能基于证据提出销售建议，不得承诺价格、库存、认证、交付时间或折扣。"
         };
         try
@@ -336,7 +384,15 @@ public sealed class CustomerAnalysisService
 
     private async Task<CustomerReportSynthesisResult> SynthesizeReportAsync(CustomerIntelligenceSourceSnapshot snapshot, CustomerFactSet facts, CustomerBusinessAnalysisResult business, CustomerSalesStrategy strategy, CancellationToken cancellationToken)
     {
-        var payload = new { customer = snapshot.Lead.DisplayName, facts, business, strategy };
+        var payload = new
+        {
+            customer = snapshot.Lead.DisplayName,
+            manualNotes = snapshot.Lead.ManualNotes,
+            customerConversationContext = snapshot.ConversationContext,
+            facts,
+            business,
+            strategy
+        };
         try
         {
             return await _provider.CompleteStructuredAsync<CustomerReportSynthesisResult>(AiModuleKeys.CustomerAnalytics, ReportSynthesisPrompt, payload, ValidateSynthesis, cancellationToken);

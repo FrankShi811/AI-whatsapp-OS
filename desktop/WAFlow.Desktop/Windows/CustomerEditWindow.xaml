@@ -68,7 +68,7 @@
                                        Text="身份优先级：Buyer ID → 电话号码。Buyer ID 冲突时禁止自动合并。"
                                        Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0" VerticalAlignment="Center"/>
                         </Grid>
-                        <TextBlock Text="备注 / 最新沟通" Style="{StaticResource LabelText}" Margin="0,15,0,5"/>
+                        <TextBlock Text="人工备注" Style="{StaticResource LabelText}" Margin="0,15,0,5"/>
                         <TextBox x:Name="NotesBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="82" VerticalContentAlignment="Top"/>
                     </StackPanel>
                 </Border>

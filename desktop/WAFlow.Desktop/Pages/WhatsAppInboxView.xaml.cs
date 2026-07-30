@@ -52,6 +52,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private readonly object _refreshLock = new();
     private Task _activeRefresh = Task.CompletedTask;
     private bool _refreshRequestedAgain;
+    private CancellationTokenSource? _contextRefreshDebounce;
 
     private string CurrentAccountId => (AccountCombo.SelectedItem as WhatsAppAccount)?.Id ?? "primary";
 
@@ -612,6 +613,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         {
             UpdateStatusUpdateBanner(conversation);
             ScrollMessages(conversation);
+            if (contentAccepted && !isStatusUpdate && _currentLead is not null)
+                ScheduleConversationContextRefresh(_currentLead.Id);
         }
     }
 
@@ -704,8 +707,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             };
             _currentCustomerSuccessContext = null;
             LeadLinkStateText.Text = "群聊安全隔离：不关联单一客户，不触发 CRM/AI 自动化";
-            NameBox.Clear(); CompanyBox.Clear(); OwnerBox.Clear(); TagsBox.Clear(); OptInCheck.IsChecked = false;
-            OptInSourceBox.Clear(); OptedOutCheck.IsChecked = false; NotesBox.Clear(); CustomFieldsBox.Clear();
+            NameBox.Clear(); OwnerBox.Clear(); TagsBox.Clear(); OptInCheck.IsChecked = false;
+            OptedOutCheck.IsChecked = false; NotesBox.Clear(); CustomFieldsBox.Clear();
             SaveLeadButton.IsEnabled = false;
             UpdateCustomerSuccessPanel(_currentIdentityResolution, null);
             UpdateLeadIntelligenceSummary(null);
@@ -730,13 +733,11 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 ? $"WhatsApp：{conversation.DisplayName} · {CustomerSuccessAgentLabels.Match(_currentIdentityResolution.Result)}"
                 : $"WhatsApp：{conversation.DisplayName} · CRM：{_currentLead.DisplayName} · {_currentLead.Grade} 级";
         NameBox.Text = _currentLead?.Name ?? "";
-        CompanyBox.Text = _currentLead?.Company ?? "";
         OwnerBox.Text = _currentLead?.Owner ?? "";
         TagsBox.Text = _currentLead is null ? "" : string.Join(", ", _currentLead.Tags);
         OptInCheck.IsChecked = _currentLead?.WhatsAppOptIn == true;
-        OptInSourceBox.Text = _currentLead?.WhatsAppOptInSource ?? "";
         OptedOutCheck.IsChecked = _currentLead?.OptedOut == true;
-        NotesBox.Text = _currentLead?.LatestMessage ?? "";
+        NotesBox.Text = _currentLead?.ManualNotes ?? "";
         CustomFieldsBox.Text = _currentLead is null ? "" : string.Join(Environment.NewLine, _currentLead.CustomFields.Select(x => $"{x.Key}={x.Value}"));
         StageCombo.SelectedItem = (StageCombo.ItemsSource as IEnumerable<StageOption>)?.FirstOrDefault(x => x.Value == (_currentLead?.Stage ?? LeadStage.New));
         UpdateLeadIntelligenceSummary(_currentLead);
@@ -751,7 +752,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         try
         {
             var lead = _currentLead ?? new Lead { PhoneE164 = "+" + conversation.Phone, PhoneValid = true, Source = "WhatsApp QR session" };
-            lead.Name = NameBox.Text.Trim(); lead.Company = CompanyBox.Text.Trim(); lead.Owner = OwnerBox.Text.Trim(); lead.LatestMessage = NotesBox.Text.Trim();
+            lead.Name = NameBox.Text.Trim(); lead.Owner = OwnerBox.Text.Trim(); lead.ManualNotes = NotesBox.Text.Trim();
             var selectedStage = (StageCombo.SelectedItem as StageOption)?.Value ?? LeadStage.New;
             if (selectedStage != lead.Stage)
             {
@@ -763,9 +764,17 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             lead.Tags = TagsBox.Text.Split([',','，',';','；','|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.CurrentCultureIgnoreCase).ToList();
             var wasOptedIn = lead.WhatsAppOptIn;
             lead.WhatsAppOptIn = OptInCheck.IsChecked == true;
-            lead.WhatsAppOptInSource = OptInSourceBox.Text.Trim();
-            if (!wasOptedIn && lead.WhatsAppOptIn) lead.WhatsAppOptInAt = DateTimeOffset.Now;
-            if (!lead.WhatsAppOptIn) lead.WhatsAppOptInAt = null;
+            if (!wasOptedIn && lead.WhatsAppOptIn)
+            {
+                lead.WhatsAppOptInAt = DateTimeOffset.Now;
+                if (string.IsNullOrWhiteSpace(lead.WhatsAppOptInSource))
+                    lead.WhatsAppOptInSource = "Customer Intelligence 人工确认";
+            }
+            if (!lead.WhatsAppOptIn)
+            {
+                lead.WhatsAppOptInAt = null;
+                lead.WhatsAppOptInSource = "";
+            }
             lead.OptedOut = OptedOutCheck.IsChecked == true;
             lead.CustomFields = ParseCustomFields(CustomFieldsBox.Text);
             await _services.Repository.UpsertLeadAsync(lead);
@@ -1315,11 +1324,12 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
     private void ClearLead()
     {
-        _currentLead = null; LeadLinkStateText.Text = "选择会话后关联客户"; NameBox.Clear(); CompanyBox.Clear(); OwnerBox.Clear(); TagsBox.Clear(); OptInCheck.IsChecked = false; OptInSourceBox.Clear(); OptedOutCheck.IsChecked = false; NotesBox.Clear(); CustomFieldsBox.Clear(); SaveLeadButton.IsEnabled = false;
+        _currentLead = null; LeadLinkStateText.Text = "选择会话后关联客户"; NameBox.Clear(); OwnerBox.Clear(); TagsBox.Clear(); OptInCheck.IsChecked = false; OptedOutCheck.IsChecked = false; NotesBox.Clear(); CustomFieldsBox.Clear(); SaveLeadButton.IsEnabled = false;
         _currentIdentityResolution = null;
         _currentCustomerSuccessContext = null;
         UpdateCustomerSuccessPanel(null, null);
         UpdateLeadIntelligenceSummary(null);
+        RenderConversationContext(null);
         UpdateComposerState();
     }
 
@@ -1527,6 +1537,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         if (lead is null)
         {
             AiSidebarBrainMetaText.Text = "CUSTOMER BRAIN · 等待客户上下文";
+            RenderConversationContext(null);
             return;
         }
 
@@ -1541,12 +1552,121 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             AiSidebarBrainMetaText.Text = $"BRAIN V{brain.Version} · 覆盖 {brain.Coverage.Percentage}% · 事实 {facts} / 判断 {inferences} / 缺口 {gaps} · 知识 {brain.KnowledgeReferences.Count}";
             if (!string.IsNullOrWhiteSpace(brain.Summary)) AiSidebarProfileText.Text = brain.Summary;
             if (!string.IsNullOrWhiteSpace(brain.NextBestAction)) AiSidebarNextActionText.Text = $"下一步：{brain.NextBestAction}";
+            RenderConversationContext(brain.ConversationContext, loading: true);
+            brain = await _services.CustomerBrain.UpdateConversationContextAsync(lead.Id);
+            if (generation != _customerBrainRefreshGeneration || _currentLead?.Id != lead.Id) return;
+            RenderConversationContext(brain.ConversationContext);
         }
         catch (Exception error)
         {
             if (generation != _customerBrainRefreshGeneration || _currentLead?.Id != lead.Id) return;
             AiSidebarBrainMetaText.Text = $"CUSTOMER BRAIN · 暂不可用：{error.Message}";
+            var profile = await _services.CustomerBrain.GetAsync(lead.Id);
+            RenderConversationContext(profile?.ConversationContext);
         }
+    }
+
+    private async void RefreshAiContext_Click(object sender, RoutedEventArgs e)
+    {
+        if (_currentLead is null) return;
+        RefreshAiContextButton.IsEnabled = false;
+        AiContextStatusText.Text = "正在重新读取全部 WhatsApp 与邮件历史…";
+        try
+        {
+            var profile = await _services.CustomerBrain.UpdateConversationContextAsync(_currentLead.Id, force: true);
+            if (_currentLead?.Id == profile.CustomerId) RenderConversationContext(profile.ConversationContext);
+        }
+        catch (Exception error)
+        {
+            AiContextStatusText.Text = "更新失败，可重试";
+            AiContextMetaText.Text = error.Message;
+        }
+        finally
+        {
+            RefreshAiContextButton.IsEnabled = _currentLead is not null;
+        }
+    }
+
+    private void ScheduleConversationContextRefresh(string customerId)
+    {
+        var debounce = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(ref _contextRefreshDebounce, debounce);
+        previous?.Cancel();
+        previous?.Dispose();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), debounce.Token);
+                await Dispatcher
+                    .InvokeAsync(async () =>
+                    {
+                        if (IsVisible && _currentLead?.Id == customerId)
+                            await UpdateCustomerBrainSummaryAsync(_currentLead);
+                    })
+                    .Task
+                    .Unwrap();
+            }
+            catch (OperationCanceledException) when (debounce.IsCancellationRequested)
+            {
+            }
+            finally
+            {
+                if (ReferenceEquals(Interlocked.CompareExchange(ref _contextRefreshDebounce, null, debounce), debounce))
+                    debounce.Dispose();
+            }
+        });
+    }
+
+    private void RenderConversationContext(CustomerConversationContext? context, bool loading = false)
+    {
+        RefreshAiContextButton.IsEnabled = _currentLead is not null && !loading;
+        if (_currentLead is null)
+        {
+            AiContextStatusText.Text = "等待关联客户";
+            AiContextSummaryText.Text = "关联客户后，将综合 WhatsApp 与邮件历史生成态度、性格、语气和当前关系摘要。";
+            AiContextMetaText.Text = "客户原文是证据；人工备注与 AI 推断会分开标注。";
+            return;
+        }
+        if (loading && context is not { Status: CustomerContextStatus.Current })
+        {
+            AiContextStatusText.Text = "正在检查新增上下文…";
+            AiContextSummaryText.Text = context?.HasContent == true ? BuildContextText(context) : "正在读取该客户的跨渠道历史。";
+            AiContextMetaText.Text = "仅在消息或人工备注发生变化时调用模型。";
+            return;
+        }
+        context ??= new CustomerConversationContext();
+        AiContextStatusText.Text = context.Status switch
+        {
+            CustomerContextStatus.Current => "已更新",
+            CustomerContextStatus.Stale => "有新增内容，等待更新",
+            CustomerContextStatus.Generating => "正在生成…",
+            CustomerContextStatus.NotConfigured => "等待配置 Customer Brain 模型",
+            CustomerContextStatus.RetryableFailed => "更新失败，可重试",
+            _ => "尚无可总结的沟通"
+        };
+        AiContextSummaryText.Text = context.HasContent
+            ? BuildContextText(context)
+            : context.Status == CustomerContextStatus.NotConfigured
+                ? "配置模型后，将自动总结该客户的 WhatsApp 与邮件历史。"
+                : "该客户尚无可用于总结的 WhatsApp、邮件或人工备注。";
+        AiContextMetaText.Text = context.UpdatedAt is null
+            ? string.IsNullOrWhiteSpace(context.Error) ? "客户原文是证据；人工备注与 AI 推断会分开标注。" : context.Error
+            : $"WhatsApp {context.WhatsAppMessageCount} 条 · 邮件 {context.EmailMessageCount} 条 · {context.AiModel} · {context.UpdatedAt:MM-dd HH:mm}";
+    }
+
+    private static string BuildContextText(CustomerConversationContext context)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(context.Overview)) parts.Add(context.Overview);
+        if (context.AttitudesAndInterests.Count > 0) parts.Add($"态度与偏好：{string.Join("；", context.AttitudesAndInterests.Take(3))}");
+        if (context.PersonalityTraits.Count > 0) parts.Add($"性格倾向：{string.Join("；", context.PersonalityTraits.Take(3))}");
+        if (context.CommunicationStyle.Count > 0) parts.Add($"沟通语气：{string.Join("；", context.CommunicationStyle.Take(3))}");
+        if (context.ConcernsAndObjections.Count > 0) parts.Add($"关注与异议：{string.Join("；", context.ConcernsAndObjections.Take(3))}");
+        if (context.PurchaseSignals.Count > 0) parts.Add($"购买信号：{string.Join("；", context.PurchaseSignals.Take(3))}");
+        if (!string.IsNullOrWhiteSpace(context.RelationshipState)) parts.Add($"当前关系：{context.RelationshipState}");
+        if (!string.IsNullOrWhiteSpace(context.RecommendedApproach)) parts.Add($"建议沟通：{context.RecommendedApproach}");
+        return string.Join(Environment.NewLine, parts);
     }
 
     private void ShowKnowledgeReferences(

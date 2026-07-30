@@ -1,6 +1,6 @@
 # AI Sales OS Windows 原生版
 
-直接双击 `AI Sales OS.exe` 运行。当前 Windows 版本为 5.12.0。默认本地数据工作区位于 `%LOCALAPPDATA%\WAFlow`；也可在“设置 → 本地数据工作区”安全迁移到 D、E 等其他本机固定磁盘。升级和迁移后仍会读取原有客户、账号、邮件历史、自动化任务、分析报告、知识库和设置。
+直接双击 `AI Sales OS.exe` 运行。当前 Windows 版本为 5.13.0。默认本地数据工作区位于 `%LOCALAPPDATA%\WAFlow`；也可在“设置 → 本地数据工作区”安全迁移到 D、E 等其他本机固定磁盘。升级和迁移后仍会读取原有客户、账号、邮件历史、自动化任务、分析报告、知识库和设置。
 
 这是 WPF/.NET 8 自包含单文件 EXE，不是 Electron、Tauri 或 WebView 套壳，不启动 localhost HTTP 服务。最终用户无需安装 Node.js、npm、浏览器或 .NET Runtime；WhatsApp 桥接程序已作为 Windows EXE 嵌入主程序。
 
@@ -12,9 +12,10 @@
 - 邮件 Inbox 的每个会话会独立显示新邮件数量气泡和浅色强调，超过 99 封显示 `99+`；进入对应会话后立即清零，切换板块、账号或重新同步不会恢复已读气泡。
 - 邮件 Inbox 搜索框右侧的“＋”可直接新建邮件；选择既有会话则以回复模式保留邮件线程，收件人、主题、正文和发送结果都保存在本地会话历史。
 - 邮件右侧 Customer Intelligence 会显示 Customer Brain 跨渠道画像，并提供 Email Sales Copilot：使用邮件板块独立模型，根据写信意图、CRM、Customer Brain、真实邮件上下文和已批准知识生成可编辑主题与正文；AI 不自动发送或修改 CRM。
+- WhatsApp 与邮件 Inbox 的 Customer Intelligence 将“人工备注”和“AI 上下文总结”分开：人工备注只由用户维护；AI 总结使用客户列表 / Customer Brain 板块模型，综合该客户全部已保留的 WhatsApp 与邮件历史，提炼态度、兴趣、性格倾向、说话语气、沟通习惯、异议、购买信号和当前关系。消息或人工备注变化后增量更新，无变化时复用本地结果。
 - Knowledge Base 支持 PDF、DOCX、TXT、Markdown、XLSX、CSV、PPTX、HTML 与常见图片；资料必须人工审核启用，并按全局、账号、客户、会话或临时任务严格隔离后，才会通过带来源和版本的混合检索进入 AI 建议与报告。
 - 邮件 Inbox 支持 Gmail、Outlook / Microsoft 365、Yahoo、iCloud 和自定义 IMAP / SMTP；邮件地址自动匹配 CRM 客户，收发历史保存在本地，未匹配联系人可从客户侧栏创建客户。
-- 客户智能分析会按“数据整理 → 事实提取 → 商业分析 → 销售策略 → 报告生成”分阶段调用所选 AI 模型，整合 CRM、完整 WhatsApp 历史、Lead Intelligence、自动化触达和客户轨迹，生成中文为主且事实、AI 判断、销售建议明确分离的专业报告。
+- 客户智能分析会按“数据整理 → 事实提取 → 商业分析 → 销售策略 → 报告生成”分阶段调用所选 AI 模型，整合 CRM、完整 WhatsApp 与邮件历史、销售人员人工备注、Customer Intelligence AI 上下文、Lead Intelligence、自动化触达和客户轨迹，生成中文为主且客户事实、人工输入、AI 判断、销售建议明确分离的专业报告。
 - 每位客户的报告按版本永久保留，可重新分析、查看历史和对比版本；支持带封面、评分卡、图表、页码、证据台账和管理层摘要的原生 `.docx` 与 `.pdf` 导出。
 - 多个个人 WhatsApp 账号扫码登录；账号的会话、消息与 Campaign 队列相互隔离。
 - 已连接账号可在 WhatsApp Inbox 点击“＋ 建群”，填写群名并从已同步联系人中单选或多选成员，也可手动添加国际号码；确认后会通过当前个人账号真实创建 WhatsApp 群组并同步到手机端。建群不会进入自动化群发队列。

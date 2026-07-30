@@ -357,7 +357,7 @@ public sealed class ImportService
         MergeCustomDimensions(lead, customValues, isNew);
         BuyerIdentity.Synchronize(lead);
         lead.RegisteredOrConsulted = lead.ExplicitDemand || !string.IsNullOrWhiteSpace(lead.ProductInterest);
-        SetExact(ImportField.Notes, x => lead.LatestMessage = x);
+        SetExact(ImportField.Notes, x => lead.ManualNotes = x);
         return;
         void SetExact(ImportField field, Action<string> apply) { if (values.TryGetValue(field, out var value)) apply(value.Trim()); }
     }

@@ -46,7 +46,7 @@ public partial class CustomerEditWindow : Window
         CurrencyBox.Text = lead.Currency;
         SourceBox.Text = lead.Source;
         TagsBox.Text = string.Join("，", lead.Tags);
-        NotesBox.Text = lead.LatestMessage;
+        NotesBox.Text = lead.ManualNotes;
         OptInCheck.IsChecked = lead.WhatsAppOptIn;
         OptedOutCheck.IsChecked = lead.OptedOut;
 
@@ -287,7 +287,7 @@ public partial class CustomerEditWindow : Window
             _lead.EstimatedOrderValue = ParseAmount(AmountBox.Text);
             _lead.Source = SourceBox.Text.Trim();
             _lead.Tags = TagsBox.Text.Split([',','，',';','；','|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.CurrentCultureIgnoreCase).ToList();
-            _lead.LatestMessage = NotesBox.Text.Trim();
+            _lead.ManualNotes = NotesBox.Text.Trim();
             _lead.WhatsAppOptIn = OptInCheck.IsChecked == true;
             _lead.OptedOut = OptedOutCheck.IsChecked == true;
             if (StageBox.SelectedItem is StageOption stage) _lead.Stage = stage.Value;
@@ -396,7 +396,7 @@ public partial class CustomerEditWindow : Window
         ImportField.Owner => lead.Owner,
         ImportField.Stage => Labels.Stage(lead.Stage),
         ImportField.Tags => string.Join("，", lead.Tags),
-        ImportField.Notes => lead.LatestMessage,
+        ImportField.Notes => lead.ManualNotes,
         _ => ""
     };
 
