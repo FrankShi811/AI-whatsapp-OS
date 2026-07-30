@@ -2,17 +2,22 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import readline from 'node:readline'
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const accountId = 'smoke-qr'
 const encryptionKey = Buffer.alloc(32, 11).toString('base64')
-const sessionDir = path.join(process.env.LOCALAPPDATA, 'WAFlow', 'whatsapp-sessions', accountId)
-await fs.rm(sessionDir, { recursive: true, force: true })
+const isolatedRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'waflow-qr-smoke-'))
+const sessionDir = path.join(isolatedRoot, 'whatsapp-sessions', accountId)
 const packagedExecutable = process.argv[2]
+const childEnvironment = {
+  ...process.env,
+  WAFLOW_DATA_ROOT: isolatedRoot
+}
 const child = packagedExecutable
-  ? spawn(path.resolve(packagedExecutable), [], { stdio: ['pipe', 'pipe', 'inherit'] })
-  : spawn(process.execPath, [path.join(here, '..', 'src', 'index.mjs')], { stdio: ['pipe', 'pipe', 'inherit'] })
+  ? spawn(path.resolve(packagedExecutable), [], { stdio: ['pipe', 'pipe', 'inherit'], env: childEnvironment })
+  : spawn(process.execPath, [path.join(here, '..', 'src', 'index.mjs')], { stdio: ['pipe', 'pipe', 'inherit'], env: childEnvironment })
 const output = readline.createInterface({ input: child.stdout })
 let qrReceived = false
 let encryptedSession = false
@@ -47,7 +52,7 @@ output.on('line', line => {
 await new Promise(resolve => child.on('exit', resolve))
 const sessionFiles = await fs.readdir(sessionDir).catch(() => [])
 encryptedSession = sessionFiles.some(file => file.endsWith('.enc')) && !sessionFiles.some(file => file.endsWith('.json'))
-await fs.rm(sessionDir, { recursive: true, force: true })
+await fs.rm(isolatedRoot, { recursive: true, force: true })
 if (qrReceived && encryptedSession) console.log(`PASS WhatsApp multi-device QR event produced with encrypted session state${packagedExecutable ? ' (packaged EXE)' : ''}`)
 else {
   console.error(`FAIL WhatsApp QR/session check qr=${qrReceived} encrypted=${encryptedSession}`)

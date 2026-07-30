@@ -48,6 +48,7 @@ $whatsAppTranslationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-
 $whatsAppTranslationModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Domain\WhatsAppTranslationModels.cs')
 $emailInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\EmailInboxView.xaml')
 $bridgeSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\index.mjs')
+$bridgeConnectionBootstrapSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\connection-bootstrap.mjs')
 $bridgeMessageSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\message-content.mjs')
 $bridgeOutboundRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\outbound-routing.mjs')
 $bridgeConversationRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\conversation-routing.mjs')
@@ -603,6 +604,27 @@ if ($bridgeSource -notmatch 'receiptBelongsToPhone' -or
   throw 'WhatsApp bridge must verify the recipient and require a server message id before confirming a send.'
 }
 
+if ($bridgeConnectionBootstrapSource -notmatch 'version_lookup_timeout' -or
+    $bridgeConnectionBootstrapSource -notmatch "source: 'bundled'" -or
+    $bridgeSource -notmatch 'QR_GENERATION_WATCHDOG_MS' -or
+    $bridgeSource -notmatch 'qr_generation_timeout' -or
+    $bridgeSource -notmatch 'qr_render_failed' -or
+    $bridgeSource -notmatch 'state\.socket !== socket' -or
+    $whatsAppBridgeClientSource -notmatch 'LatestQrDataUrl' -or
+    $whatsAppBridgeClientSource -notmatch 'TimeSpan\.FromSeconds\(75\)' -or
+    $whatsAppBridgeClientSource -notmatch 'qr_generation_timeout' -or
+    $whatsAppManagerSource -match 'ConnectionState is "connected" or "connecting"' -or
+    $whatsAppInboxXaml -notmatch 'x:Name="QrProgressBar"' -or
+    $whatsAppInboxXaml -notmatch 'AutomationProperties\.Name="WhatsApp 登录二维码"' -or
+    $whatsAppInboxSource -notmatch 'connection_stage' -or
+    $whatsAppInboxSource -notmatch 'connection_issue' -or
+    $whatsAppInboxSource -notmatch 'RestoreLatestQr') {
+  throw 'WhatsApp first-connect QR must use bounded protocol discovery, bundled fallback, automatic retry, cached QR restoration and visible inline status.'
+}
+& $node (Join-Path $root 'bridge\scripts\connection-bootstrap-smoke.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'WhatsApp connection-bootstrap smoke test failed.' }
+Write-Host 'PASS  WhatsApp first-connect QR timeout, fallback, retry and visible recovery contract'
+
 if ($bridgeOutboundRoutingSource -notmatch 'jidNormalizedUser' -or
     $bridgeSource -notmatch [regex]::Escape('getUSyncDevices([senderIdentity, targetJid], false, false)') -or
     $bridgeSource -notmatch 'senderDeviceSyncPrepared:\s*true' -or
@@ -776,7 +798,7 @@ if ($whatsAppInboxXaml -notmatch 'x:Name="TranslationBar"' -or
     $whatsAppTranslationSource -notmatch [regex]::Escape('GetWhatsAppTranslationStateAsync') -or
     $whatsAppTranslationModelsSource -notmatch [regex]::Escape('SourceTextHash') -or
     $localRepositorySource -notmatch [regex]::Escape('whatsapp_translation:{conversationId}') -or
-    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 4'))) {
+    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 5'))) {
   throw 'WhatsApp Inbox must detect the Windows UI language and customer dominant incoming language, cache bilingual translations, preserve originals and require manual adoption plus send.'
 }
 Write-Host 'PASS  WhatsApp per-conversation language detection, bilingual cache and manual-send translation contract'
@@ -828,7 +850,7 @@ if ($whatsAppInboxXaml -match 'x:Name="CompanyBox"' -or
     $customerAnalysisSource -notmatch [regex]::Escape('_customerBrain.UpdateConversationContextAsync') -or
     $customerAnalysisSource -notmatch [regex]::Escape('ConversationContext = customerBrain?.ConversationContext') -or
     $customerAnalysisSource -notmatch [regex]::Escape('manualNotes = lead.ManualNotes') -or
-    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 4')) -or
+    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 5')) -or
     -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 4'))) {
   throw 'Customer Intelligence must separate manual notes from AI context, remove company/source blanks, update cross-channel context incrementally and feed both into customer analysis.'
 }

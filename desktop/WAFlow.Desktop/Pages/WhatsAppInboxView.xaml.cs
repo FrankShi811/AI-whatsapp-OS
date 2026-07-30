@@ -84,7 +84,12 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         _services.WhatsAppSync.SynchronizationChanged += WhatsAppSync_SynchronizationChanged;
         _services.CustomerSuccessCoordinator.RunCompleted += CustomerSuccessCoordinator_RunCompleted;
         _ipTimer.Tick += async (_, _) => await RefreshPublicIpAsync();
-        Loaded += async (_, _) => { _ipTimer.Start(); await RefreshPublicIpAsync(); };
+        Loaded += async (_, _) =>
+        {
+            _ipTimer.Start();
+            RestoreLatestQr();
+            await RefreshPublicIpAsync();
+        };
         Unloaded += (_, _) => _ipTimer.Stop();
     }
 
@@ -235,6 +240,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         ApplyConversationFilter();
         ConversationList.SelectedItem = _conversations.FirstOrDefault(item => item.Id == selectedConversationId);
         UpdateConnectionControls();
+        RestoreLatestQr();
     }
 
     private async void AccountCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -311,16 +317,29 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private async void Connect_Click(object sender, RoutedEventArgs e)
     {
         SetConnectionText("正在启动本地桥…", false);
+        ShowQrProgress("正在准备安全登录会话，请稍候…", clearQr: true);
         ConnectButton.IsEnabled = false;
         _ = RefreshPublicIpAsync();
         try
         {
             await _services.WhatsApp.ConnectAsync(CurrentAccountId);
+            RestoreLatestQr();
+        }
+        catch (WhatsAppBridgeException error)
+        {
+            SetConnectionText("请重试连接", false);
+            ShowQrIssue(error.Code switch
+            {
+                "qr_generation_timeout" => "二维码生成超时。请确认此电脑可以访问 WhatsApp，检查防火墙、代理或公司网络限制后，再点击“连接 / 显示二维码”。",
+                "bridge_runtime_missing" => "本地 WhatsApp 连接组件缺失。请通过设置中的“版本与更新”修复或重新安装当前版本。",
+                "bridge_exited" => "本地 WhatsApp 连接组件意外退出。程序已停止本次连接，请点击按钮重试；若持续发生，请检查安全软件是否拦截。",
+                _ => $"WhatsApp 连接暂未完成：{error.Message} 请检查网络后重试。"
+            });
         }
         catch (Exception error)
         {
             SetConnectionText("连接失败", false);
-            MessageBox.Show(error.Message, "WhatsApp 连接失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ShowQrIssue($"WhatsApp 连接暂未完成：{error.Message} 请检查网络后重试。");
         }
         finally { ConnectButton.IsEnabled = true; }
     }
@@ -485,6 +504,36 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private void HandleBridgeEvent(WhatsAppBridgeEvent e)
     {
         if (!string.IsNullOrWhiteSpace(e.AccountId) && !e.AccountId.Equals(CurrentAccountId, StringComparison.OrdinalIgnoreCase)) return;
+        if (e.Name == "connection_stage")
+        {
+            var stage = Text(e.Data, "state");
+            var message = Text(e.Data, "message");
+            ShowQrProgress(string.IsNullOrWhiteSpace(message)
+                ? stage switch
+                {
+                    "checking_protocol" => "正在检查 WhatsApp 兼容协议…",
+                    "opening" => "正在建立 WhatsApp 安全连接…",
+                    "retrying" => "连接暂时中断，程序正在自动重试…",
+                    _ => "正在准备安全登录会话…"
+                }
+                : $"{message}…");
+            return;
+        }
+        if (e.Name == "connection_issue")
+        {
+            var message = Text(e.Data, "message");
+            ShowQrProgress(string.IsNullOrWhiteSpace(message)
+                ? "二维码暂未生成，程序正在自动重试…"
+                : $"{message}…");
+            SetConnectionText("自动重试中", false);
+            return;
+        }
+        if (e.Name == "bridge_error")
+        {
+            ShowQrIssue($"本地 WhatsApp 连接组件暂时无法完成连接：{Text(e.Data, "error")} 请检查网络后重试。");
+            SetConnectionText("请重试连接", false);
+            return;
+        }
         if (e.Name == "auth_recovery")
         {
             SetConnectionText("请重新扫码", false);
@@ -494,10 +543,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         }
         if (e.Name == "qr" && e.Data.TryGetProperty("dataUrl", out var dataUrl))
         {
-            QrImage.Source = DecodeDataUrl(dataUrl.GetString() ?? "");
-            QrHintText.Text = "请使用手机 WhatsApp → 设置 → 已关联设备扫描二维码。二维码会定期刷新。";
-            QrPanel.Visibility = Visibility.Visible; MessageList.Visibility = Visibility.Collapsed;
-            SetConnectionText("等待扫码", false);
+            ShowQr(dataUrl.GetString() ?? "");
             return;
         }
         if (e.Name == "connection")
@@ -505,13 +551,14 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             var connection = e.Data.TryGetProperty("state", out var state) ? state.GetString() ?? "disconnected" : "disconnected";
             _connected = connection == "connected";
             _existingSession = Bool(e.Data, "existingSession");
-            SetConnectionText(connection switch { "connected" => "已连接", "connecting" => "连接中", "logged_out" => "登录已失效", _ => "已断开" }, _connected);
-            DisconnectButton.IsEnabled = _connected || connection == "connecting";
+            SetConnectionText(connection switch { "connected" => "已连接", "connecting" => "连接中", "retrying" => "自动重试中", "logged_out" => "登录已失效", _ => "已断开" }, _connected);
+            DisconnectButton.IsEnabled = _connected || connection is "connecting" or "retrying";
             LogoutButton.IsEnabled = _connected;
             UpdateComposerState();
             SyncButton.IsEnabled = _connected;
             if (_connected)
             {
+                QrProgressBar.Visibility = Visibility.Collapsed;
                 QrPanel.Visibility = Visibility.Collapsed;
                 MessageList.Visibility = Visibility.Visible;
                 _ = SaveLinkedAccountAsync(e);
@@ -520,6 +567,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             }
             else if (connection == "logged_out")
             {
+                QrProgressBar.Visibility = Visibility.Collapsed;
                 QrHintText.Text = "登录凭据已失效。点击“连接 / 显示二维码”将创建新二维码，请重新扫码登录。";
                 QrPanel.Visibility = Visibility.Visible;
                 MessageList.Visibility = Visibility.Collapsed;
@@ -2077,11 +2125,67 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private void UpdateConnectionControls()
     {
         var state = _services.WhatsApp.ConnectionStateFor(CurrentAccountId);
-        SetConnectionText(state switch { "connected" => "已连接", "connecting" => "连接中", "logged_out" => "登录已失效", _ => "未连接" }, state == "connected");
-        DisconnectButton.IsEnabled = state is "connected" or "connecting"; LogoutButton.IsEnabled = state == "connected";
+        SetConnectionText(state switch { "connected" => "已连接", "connecting" => "连接中", "retrying" => "自动重试中", "logged_out" => "登录已失效", _ => "未连接" }, state == "connected");
+        DisconnectButton.IsEnabled = state is "connected" or "connecting" or "retrying"; LogoutButton.IsEnabled = state == "connected";
         SyncButton.IsEnabled = state == "connected";
         CreateGroupButton.IsEnabled = state == "connected";
         UpdateComposerState();
+    }
+
+    private void ShowQrProgress(string message, bool clearQr = false)
+    {
+        if (clearQr)
+        {
+            QrImage.Source = null;
+            QrImage.Visibility = Visibility.Collapsed;
+        }
+        QrProgressBar.Visibility = Visibility.Visible;
+        QrHintText.Text = message;
+        QrPanel.Visibility = Visibility.Visible;
+        MessageList.Visibility = Visibility.Collapsed;
+    }
+
+    private void ShowQrIssue(string message)
+    {
+        QrImage.Source = null;
+        QrImage.Visibility = Visibility.Collapsed;
+        QrProgressBar.Visibility = Visibility.Collapsed;
+        QrHintText.Text = message;
+        QrPanel.Visibility = Visibility.Visible;
+        MessageList.Visibility = Visibility.Collapsed;
+    }
+
+    private void ShowQr(string dataUrl)
+    {
+        try
+        {
+            var image = DecodeDataUrl(dataUrl);
+            if (image is null)
+            {
+                ShowQrIssue("二维码数据不完整，程序正在等待下一张二维码；若长时间没有恢复，请点击“连接 / 显示二维码”重试。");
+                return;
+            }
+            QrImage.Source = image;
+            QrImage.Visibility = Visibility.Visible;
+            QrProgressBar.Visibility = Visibility.Collapsed;
+            QrHintText.Text = "请使用手机 WhatsApp → 设置 → 已关联设备扫描二维码。二维码会定期刷新。";
+            QrPanel.Visibility = Visibility.Visible;
+            MessageList.Visibility = Visibility.Collapsed;
+            SetConnectionText("等待扫码", false);
+        }
+        catch
+        {
+            ShowQrIssue("二维码绘制失败，程序正在等待自动刷新；若长时间没有恢复，请点击“连接 / 显示二维码”重试。");
+        }
+    }
+
+    private bool RestoreLatestQr()
+    {
+        if (_services.WhatsApp.IsConnectedFor(CurrentAccountId)) return false;
+        var dataUrl = _services.WhatsApp.LatestQrDataUrlFor(CurrentAccountId);
+        if (string.IsNullOrWhiteSpace(dataUrl)) return false;
+        ShowQr(dataUrl);
+        return true;
     }
 
     private static BitmapImage? DecodeDataUrl(string dataUrl)
