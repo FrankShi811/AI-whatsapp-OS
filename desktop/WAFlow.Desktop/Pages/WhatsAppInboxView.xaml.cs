@@ -53,7 +53,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private Task _activeRefresh = Task.CompletedTask;
     private bool _refreshRequestedAgain;
     private CancellationTokenSource? _contextRefreshDebounce;
-    private CancellationTokenSource? _translationCts;
+    private CancellationTokenSource? _translationContextCts;
+    private CancellationTokenSource? _translationRunCts;
     private WhatsAppConversationLanguageProfile? _translationProfile;
     private bool _translationBusy;
     private string _draftTranslationOriginal = "";
@@ -330,7 +331,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             SetConnectionText("请重试连接", false);
             ShowQrIssue(error.Code switch
             {
-                "qr_generation_timeout" => "二维码生成超时。请确认此电脑可以访问 WhatsApp，检查防火墙、代理或公司网络限制后，再点击“连接 / 显示二维码”。",
+                "qr_generation_timeout" => "二维码生成超时。程序已尝试 Windows 系统代理与直连；请确认防火墙、代理或公司网络允许访问 WhatsApp 后再试。",
                 "bridge_runtime_missing" => "本地 WhatsApp 连接组件缺失。请通过设置中的“版本与更新”修复或重新安装当前版本。",
                 "bridge_exited" => "本地 WhatsApp 连接组件意外退出。程序已停止本次连接，请点击按钮重试；若持续发生，请检查安全软件是否拦截。",
                 _ => $"WhatsApp 连接暂未完成：{error.Message} 请检查网络后重试。"
@@ -1062,31 +1063,31 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private async void TranslateConversation_Click(object sender, RoutedEventArgs e)
     {
         if (_translationBusy || ConversationList.SelectedItem is not ConversationItem conversation) return;
+        var cts = StartTranslationRun();
         _translationBusy = true;
         UpdateTranslationControls();
         TranslationStatusText.Text = "正在翻译最近消息…原文始终保留，完成后显示双语。";
         try
         {
-            _translationCts?.Cancel();
-            _translationCts?.Dispose();
-            _translationCts = new CancellationTokenSource();
             var translations = await _services.WhatsAppTranslation.TranslateRecentMessagesAsync(
                 conversation.Id,
-                cancellationToken: _translationCts.Token);
+                cancellationToken: cts.Token);
+            if (!IsCurrentTranslationRun(cts, conversation.Id)) return;
             ApplyTranslations(conversation, translations);
+            ScrollMessages(conversation);
             TranslationStatusText.Text = translations.Count == 0
                 ? "当前没有可翻译的文字消息。"
-                : $"已显示 {translations.Count} 条双语消息 · 译文已缓存在本机";
+                : $"已刷新最近 {translations.Count} 条双语消息 · {DateTime.Now:HH:mm:ss} · 译文已缓存在本机";
         }
         catch (OperationCanceledException) { }
         catch (Exception error)
         {
-            TranslationStatusText.Text = $"翻译未完成：{FriendlyTranslationError(error)}";
+            if (IsCurrentTranslationRun(cts, conversation.Id))
+                TranslationStatusText.Text = $"翻译未完成：{FriendlyTranslationError(error)}";
         }
         finally
         {
-            _translationBusy = false;
-            UpdateTranslationControls();
+            CompleteTranslationRun(cts);
         }
     }
 
@@ -1095,6 +1096,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         if (_translationBusy || ConversationList.SelectedItem is not ConversationItem conversation) return;
         var source = ComposerBox.Text.Trim();
         if (source.Length == 0) return;
+        var cts = StartTranslationRun();
         _translationBusy = true;
         UpdateTranslationControls();
         OutgoingTranslationPanel.Visibility = Visibility.Visible;
@@ -1102,7 +1104,11 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         OutgoingTranslationText.Text = "请稍候…";
         try
         {
-            var translation = await _services.WhatsAppTranslation.TranslateOutgoingAsync(conversation.Id, source);
+            var translation = await _services.WhatsAppTranslation.TranslateOutgoingAsync(
+                conversation.Id,
+                source,
+                cts.Token);
+            if (!IsCurrentTranslationRun(cts, conversation.Id)) return;
             _draftTranslationOriginal = source;
             _draftTranslationText = translation.TranslatedText;
             _translatedDraftApplied = false;
@@ -1110,17 +1116,20 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             OutgoingTranslationText.Text = translation.TranslatedText;
             TranslationStatusText.Text = $"译文已生成 · {translation.Model} · 采用后仍需手动点击发送";
         }
+        catch (OperationCanceledException) { }
         catch (Exception error)
         {
-            _draftTranslationOriginal = "";
-            _draftTranslationText = "";
-            OutgoingTranslationLabel.Text = "翻译未完成";
-            OutgoingTranslationText.Text = FriendlyTranslationError(error);
+            if (IsCurrentTranslationRun(cts, conversation.Id))
+            {
+                _draftTranslationOriginal = "";
+                _draftTranslationText = "";
+                OutgoingTranslationLabel.Text = "翻译未完成";
+                OutgoingTranslationText.Text = FriendlyTranslationError(error);
+            }
         }
         finally
         {
-            _translationBusy = false;
-            UpdateTranslationControls();
+            CompleteTranslationRun(cts);
         }
     }
 
@@ -1488,9 +1497,12 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
     private void ResetTranslationUi(ConversationItem? conversation = null)
     {
-        _translationCts?.Cancel();
-        _translationCts?.Dispose();
-        _translationCts = null;
+        _translationContextCts?.Cancel();
+        _translationContextCts?.Dispose();
+        _translationContextCts = null;
+        _translationRunCts?.Cancel();
+        _translationRunCts?.Dispose();
+        _translationRunCts = null;
         _translationProfile = null;
         _translationBusy = false;
         ClearOutgoingTranslation();
@@ -1509,9 +1521,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private async Task LoadTranslationContextAsync(ConversationItem conversation)
     {
         var cts = new CancellationTokenSource();
-        _translationCts?.Cancel();
-        _translationCts?.Dispose();
-        _translationCts = cts;
+        _translationContextCts?.Cancel();
+        _translationContextCts?.Dispose();
+        _translationContextCts = cts;
         try
         {
             var context = await _services.WhatsAppTranslation.GetContextAsync(
@@ -1537,9 +1549,10 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         }
         finally
         {
-            if (ReferenceEquals(_translationCts, cts))
+            if (ReferenceEquals(_translationContextCts, cts))
             {
-                _translationBusy = false;
+                _translationContextCts = null;
+                cts.Dispose();
                 UpdateTranslationControls();
             }
         }
@@ -1566,6 +1579,29 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     {
         TranslateConversationButton.Content = _translationBusy ? "翻译中…" : "翻译最近消息";
         UpdateComposerState();
+    }
+
+    private CancellationTokenSource StartTranslationRun()
+    {
+        _translationRunCts?.Cancel();
+        _translationRunCts?.Dispose();
+        _translationRunCts = new CancellationTokenSource();
+        return _translationRunCts;
+    }
+
+    private bool IsCurrentTranslationRun(CancellationTokenSource cts, string conversationId) =>
+        !cts.IsCancellationRequested &&
+        ReferenceEquals(_translationRunCts, cts) &&
+        ConversationList.SelectedItem is ConversationItem current &&
+        current.Id.Equals(conversationId, StringComparison.OrdinalIgnoreCase);
+
+    private void CompleteTranslationRun(CancellationTokenSource cts)
+    {
+        if (!ReferenceEquals(_translationRunCts, cts)) return;
+        _translationRunCts = null;
+        cts.Dispose();
+        _translationBusy = false;
+        UpdateTranslationControls();
     }
 
     private void ClearOutgoingTranslation()

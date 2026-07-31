@@ -11,7 +11,8 @@ public sealed partial class WhatsAppTranslationService
 {
     private const int DetectionSampleLimit = 30;
     private const int TranslationHistoryLimit = 160;
-    private const int TranslationBatchSize = 30;
+    private const int RecentTranslationLimit = 30;
+    private const int TranslationBatchSize = 10;
 
     private const string DetectionInstructions = """
         你是 AI Sales OS 的会话语言识别器。只分析 suppliedIncomingMessages 中客户发送的原文，
@@ -108,29 +109,44 @@ public sealed partial class WhatsAppTranslationService
                  !profile.SourceFingerprint.Equals(fingerprint, StringComparison.Ordinal) ||
                  !profile.Model.Equals(model, StringComparison.OrdinalIgnoreCase))
         {
-            var response = await _provider.CompleteStructuredAsync<WhatsAppLanguageDetectionResponse>(
-                AiModuleKeys.WhatsAppInbox,
-                DetectionInstructions,
-                new
-                {
-                    localLanguage = new { code = local.Code, name = local.Name },
-                    suppliedIncomingMessages = samples
-                },
-                ValidateDetection,
-                cancellationToken);
-            profile = new WhatsAppConversationLanguageProfile
+            try
             {
-                ConversationId = conversationId,
-                LocalLanguageCode = local.Code,
-                LocalLanguageName = local.Name,
-                CustomerLanguageCode = NormalizeLanguageCode(response.LanguageCode),
-                CustomerLanguageName = response.LanguageName.Trim(),
-                Confidence = Math.Clamp(response.Confidence, 0, 1),
-                SampleCount = samples.Count,
-                SourceFingerprint = fingerprint,
-                Model = model,
-                UpdatedAt = DateTimeOffset.Now
-            };
+                var response = await _provider.CompleteStructuredAsync<WhatsAppLanguageDetectionResponse>(
+                    AiModuleKeys.WhatsAppInbox,
+                    DetectionInstructions,
+                    new
+                    {
+                        localLanguage = new { code = local.Code, name = local.Name },
+                        suppliedIncomingMessages = samples
+                    },
+                    ValidateDetection,
+                    cancellationToken);
+                profile = new WhatsAppConversationLanguageProfile
+                {
+                    ConversationId = conversationId,
+                    LocalLanguageCode = local.Code,
+                    LocalLanguageName = local.Name,
+                    CustomerLanguageCode = NormalizeLanguageCode(response.LanguageCode),
+                    CustomerLanguageName = response.LanguageName.Trim(),
+                    Confidence = Math.Clamp(response.Confidence, 0, 1),
+                    SampleCount = samples.Count,
+                    SourceFingerprint = fingerprint,
+                    Model = model,
+                    UpdatedAt = DateTimeOffset.Now
+                };
+            }
+            catch (DeepSeekException error) when (
+                error.Code.Equals("invalid_structured_output", StringComparison.OrdinalIgnoreCase) ||
+                error.Retryable)
+            {
+                profile = BuildFallbackProfile(
+                    conversationId,
+                    samples,
+                    local,
+                    model,
+                    fingerprint,
+                    profile);
+            }
         }
 
         state.Profile = profile;
@@ -172,7 +188,11 @@ public sealed partial class WhatsAppTranslationService
                 TranslationHistoryLimit,
                 cancellationToken))
             .Where(IsTranslatableMessage)
+            .OrderByDescending(message => message.Timestamp)
+            .ThenByDescending(TranslationMessageId, StringComparer.OrdinalIgnoreCase)
+            .Take(RecentTranslationLimit)
             .OrderBy(message => message.Timestamp)
+            .ThenBy(TranslationMessageId, StringComparer.OrdinalIgnoreCase)
             .ToList();
         var state = await _repository.GetWhatsAppTranslationStateAsync(conversationId, cancellationToken);
         var output = new List<WhatsAppMessageTranslation>();
@@ -233,7 +253,7 @@ public sealed partial class WhatsAppTranslationService
 
         foreach (var batch in pending.Chunk(TranslationBatchSize))
         {
-            var translated = await TranslateBatchAsync(batch, profile, cancellationToken);
+            var translated = await TranslateBatchWithRecoveryAsync(batch, profile, cancellationToken);
             foreach (var item in translated)
             {
                 state.Translations.RemoveAll(existing =>
@@ -285,7 +305,7 @@ public sealed partial class WhatsAppTranslationService
             };
         }
 
-        var result = (await TranslateBatchAsync(
+        var result = (await TranslateBatchWithRecoveryAsync(
             [new TranslationSource(
                 id,
                 sourceText.Trim(),
@@ -302,6 +322,28 @@ public sealed partial class WhatsAppTranslationService
         state.Translations.Add(result);
         await _repository.SaveWhatsAppTranslationStateAsync(conversationId, state, cancellationToken);
         return result;
+    }
+
+    private async Task<List<WhatsAppMessageTranslation>> TranslateBatchWithRecoveryAsync(
+        IReadOnlyCollection<TranslationSource> sources,
+        WhatsAppConversationLanguageProfile profile,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await TranslateBatchAsync(sources, profile, cancellationToken);
+        }
+        catch (DeepSeekException error) when (
+            error.Code.Equals("invalid_structured_output", StringComparison.OrdinalIgnoreCase) &&
+            sources.Count > 1)
+        {
+            var ordered = sources.ToList();
+            var split = ordered.Count / 2;
+            var first = await TranslateBatchWithRecoveryAsync(ordered.Take(split).ToList(), profile, cancellationToken);
+            var second = await TranslateBatchWithRecoveryAsync(ordered.Skip(split).ToList(), profile, cancellationToken);
+            first.AddRange(second);
+            return first;
+        }
     }
 
     private async Task<List<WhatsAppMessageTranslation>> TranslateBatchAsync(
@@ -396,6 +438,96 @@ public sealed partial class WhatsAppTranslationService
         return response.Items.Any(item => !LanguageCodeRegex().IsMatch(item.SourceLanguageCode?.Trim() ?? ""))
             ? "sourceLanguageCode 必须是 BCP-47 语言标签。"
             : null;
+    }
+
+    private static WhatsAppConversationLanguageProfile BuildFallbackProfile(
+        string conversationId,
+        IReadOnlyCollection<string> samples,
+        (string Code, string Name) local,
+        string model,
+        string fingerprint,
+        WhatsAppConversationLanguageProfile? existing)
+    {
+        var detected = existing is not null && !string.IsNullOrWhiteSpace(existing.CustomerLanguageCode)
+            ? (NormalizeLanguageCode(existing.CustomerLanguageCode), existing.CustomerLanguageName, existing.Confidence)
+            : DetectLanguageLocally(samples, local.Code);
+        return new WhatsAppConversationLanguageProfile
+        {
+            ConversationId = conversationId,
+            LocalLanguageCode = local.Code,
+            LocalLanguageName = local.Name,
+            CustomerLanguageCode = detected.Item1,
+            CustomerLanguageName = string.IsNullOrWhiteSpace(detected.Item2)
+                ? LanguageName(detected.Item1, local.Code)
+                : detected.Item2,
+            Confidence = Math.Clamp(detected.Item3, 0, 1),
+            SampleCount = samples.Count,
+            SourceFingerprint = fingerprint,
+            Model = model,
+            UpdatedAt = DateTimeOffset.Now
+        };
+    }
+
+    private static (string Code, string Name, double Confidence) DetectLanguageLocally(
+        IEnumerable<string> samples,
+        string localLanguageCode)
+    {
+        var text = string.Join(' ', samples).Trim();
+        if (Regex.IsMatch(text, @"[\u3040-\u30ff]"))
+            return ("ja", LanguageName("ja", localLanguageCode), .72);
+        if (Regex.IsMatch(text, @"[\uac00-\ud7af]"))
+            return ("ko", LanguageName("ko", localLanguageCode), .72);
+        if (Regex.IsMatch(text, @"[\u4e00-\u9fff]"))
+            return ("zh-Hans", LanguageName("zh-Hans", localLanguageCode), .68);
+        if (Regex.IsMatch(text, @"[\u0400-\u04ff]"))
+            return ("ru", LanguageName("ru", localLanguageCode), .68);
+        if (Regex.IsMatch(text, @"[\u0600-\u06ff]"))
+            return ("ar", LanguageName("ar", localLanguageCode), .68);
+        if (Regex.IsMatch(text, @"[\u0900-\u097f]"))
+            return ("hi", LanguageName("hi", localLanguageCode), .68);
+
+        var normalized = $" {Regex.Replace(text.ToLowerInvariant(), @"[^\p{L}]+", " ")} ";
+        var candidates = new[]
+        {
+            ("es", new[] { " el ", " la ", " que ", " para ", " por ", " gracias ", " precio ", " pedido " }),
+            ("fr", new[] { " le ", " la ", " que ", " pour ", " merci ", " prix ", " commande ", " avec " }),
+            ("de", new[] { " der ", " die ", " das ", " und ", " für ", " danke ", " preis ", " bestellung " }),
+            ("pt", new[] { " o ", " a ", " que ", " para ", " obrigado ", " preço ", " pedido ", " com " }),
+            ("it", new[] { " il ", " la ", " che ", " per ", " grazie ", " prezzo ", " ordine ", " con " }),
+            ("tr", new[] { " ve ", " için ", " teşekkür ", " fiyat ", " sipariş ", " ile ", " bir ", " bu " })
+        };
+        var scored = candidates
+            .Select(candidate => (
+                candidate.Item1,
+                Score: candidate.Item2.Count(token => normalized.Contains(token, StringComparison.Ordinal))))
+            .OrderByDescending(candidate => candidate.Score)
+            .First();
+        var code = scored.Score >= 2 ? scored.Item1 : "en";
+        return (code, LanguageName(code, localLanguageCode), scored.Score >= 2 ? .58 : .42);
+    }
+
+    private static string LanguageName(string code, string localLanguageCode)
+    {
+        if (!localLanguageCode.StartsWith("zh", StringComparison.OrdinalIgnoreCase))
+            return code;
+        return NormalizeLanguageCode(code).ToLowerInvariant() switch
+        {
+            "zh-hans" => "简体中文",
+            "zh-hant" => "繁体中文",
+            "en" => "英语",
+            "es" => "西班牙语",
+            "fr" => "法语",
+            "de" => "德语",
+            "pt" or "pt-br" => "葡萄牙语",
+            "it" => "意大利语",
+            "ru" => "俄语",
+            "ar" => "阿拉伯语",
+            "hi" => "印地语",
+            "ja" => "日语",
+            "ko" => "韩语",
+            "tr" => "土耳其语",
+            _ => code
+        };
     }
 
     private static string NormalizeLanguageCode(string value)

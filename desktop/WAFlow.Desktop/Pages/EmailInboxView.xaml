@@ -9,12 +9,17 @@
                 <TextBlock Text="邮件 Inbox" Style="{StaticResource PageTitle}" Margin="0,5,0,0"/>
                 <TextBlock Text="连接邮箱、收发邮件、保存历史，并通过邮箱地址与客户列表和商机智能共享同一客户资料。" Foreground="{DynamicResource Muted}" Margin="0,6,0,0"/>
             </StackPanel>
-            <WrapPanel Grid.Column="1" VerticalAlignment="Center">
-                <ComboBox x:Name="AccountBox" Width="235" DisplayMemberPath="DisplayLabel" SelectionChanged="AccountBox_SelectionChanged" Margin="0,0,8,0"/>
-                <Button Content="＋ 连接邮箱" Style="{StaticResource SecondaryButton}" Click="AddAccount_Click" Margin="0,0,8,0"/>
-                <Button Content="管理账号" Style="{StaticResource SecondaryButton}" Click="ManageAccount_Click" Margin="0,0,8,0"/>
-                <Button x:Name="SyncButton" Content="同步收件箱" Style="{StaticResource PrimaryButton}" Click="Sync_Click"/>
-            </WrapPanel>
+            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                <WrapPanel HorizontalAlignment="Right">
+                    <ComboBox x:Name="AccountBox" Width="235" DisplayMemberPath="DisplayLabel" SelectionChanged="AccountBox_SelectionChanged" Margin="0,0,8,0"/>
+                    <Button Content="＋ 连接邮箱" Style="{StaticResource SecondaryButton}" Click="AddAccount_Click" Margin="0,0,8,0"/>
+                    <Button Content="管理账号" Style="{StaticResource SecondaryButton}" Click="ManageAccount_Click" Margin="0,0,8,0"/>
+                    <Button x:Name="SyncButton" Content="同步收件箱" Style="{StaticResource PrimaryButton}" Click="Sync_Click"/>
+                </WrapPanel>
+                <TextBlock x:Name="EmailSyncStatusText" Text="" Foreground="{DynamicResource Muted}" FontSize="10"
+                           TextAlignment="Right" TextWrapping="Wrap" MaxWidth="620" Margin="0,6,0,0"
+                           AutomationProperties.LiveSetting="Polite"/>
+            </StackPanel>
         </Grid>
 
         <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition Width="285"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition x:Name="CustomerDrawerColumn" Width="380"/></Grid.ColumnDefinitions>

@@ -370,9 +370,7 @@ public sealed class EmailService : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         var password = RequirePassword(account);
-        using var client = new ImapClient();
-        await client.ConnectAsync(account.ImapHost, account.ImapPort, SocketOptions(account.ImapPort, account.ImapUseSsl), cancellationToken);
-        await client.AuthenticateAsync(account.UserName, password, cancellationToken);
+        using var client = await ConnectImapAsync(account, password, cancellationToken);
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadOnly, cancellationToken);
 
@@ -516,9 +514,7 @@ public sealed class EmailService : IAsyncDisposable
 
         try
         {
-            using var client = new SmtpClient();
-            await client.ConnectAsync(account.SmtpHost, account.SmtpPort, SocketOptions(account.SmtpPort, account.SmtpUseSsl), cancellationToken);
-            await client.AuthenticateAsync(account.UserName, password, cancellationToken);
+            using var client = await ConnectSmtpAsync(account, password, cancellationToken);
             await client.SendAsync(mime, cancellationToken);
             await client.DisconnectAsync(true, cancellationToken);
             var stored = await StoreOutgoingAsync(account, recipient, mime, leadId, cancellationToken);
@@ -640,20 +636,130 @@ public sealed class EmailService : IAsyncDisposable
         return conversation;
     }
 
+    private static async Task<ImapClient> ConnectImapAsync(
+        EmailAccount account,
+        string password,
+        CancellationToken cancellationToken)
+    {
+        var route = NetworkProxyResolver.Resolve(new UriBuilder("https", account.ImapHost).Uri);
+        Exception? proxyFailure = null;
+        foreach (var candidate in ConnectionRoutes(route))
+        {
+            var client = new ImapClient();
+            client.ProxyClient = NetworkProxyResolver.CreateMailKitProxy(candidate);
+            try
+            {
+                using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                attempt.CancelAfter(TimeSpan.FromSeconds(25));
+                await client.ConnectAsync(
+                    account.ImapHost,
+                    account.ImapPort,
+                    SocketOptions(account.ImapPort, account.ImapUseSsl),
+                    attempt.Token);
+                await client.AuthenticateAsync(account.UserName, password, attempt.Token);
+                return client;
+            }
+            catch (MailKit.Security.AuthenticationException)
+            {
+                client.Dispose();
+                throw;
+            }
+            catch (Exception error) when (candidate.HasProxy && !cancellationToken.IsCancellationRequested)
+            {
+                proxyFailure = error;
+                client.Dispose();
+            }
+            catch (OperationCanceledException error) when (!cancellationToken.IsCancellationRequested)
+            {
+                client.Dispose();
+                throw new TimeoutException(
+                    proxyFailure is null
+                        ? "IMAP 连接超时。"
+                        : "Windows 系统代理与直连均未能建立 IMAP 连接。",
+                    error);
+            }
+            catch
+            {
+                client.Dispose();
+                throw;
+            }
+        }
+
+        throw new InvalidOperationException(
+            proxyFailure is null
+                ? "无法建立 IMAP 连接。"
+                : $"系统代理未能建立 IMAP 连接：{Safe(proxyFailure.Message)}",
+            proxyFailure);
+    }
+
+    private static async Task<SmtpClient> ConnectSmtpAsync(
+        EmailAccount account,
+        string password,
+        CancellationToken cancellationToken)
+    {
+        var route = NetworkProxyResolver.Resolve(new UriBuilder("https", account.SmtpHost).Uri);
+        Exception? proxyFailure = null;
+        foreach (var candidate in ConnectionRoutes(route))
+        {
+            var client = new SmtpClient();
+            client.ProxyClient = NetworkProxyResolver.CreateMailKitProxy(candidate);
+            try
+            {
+                using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                attempt.CancelAfter(TimeSpan.FromSeconds(25));
+                await client.ConnectAsync(
+                    account.SmtpHost,
+                    account.SmtpPort,
+                    SocketOptions(account.SmtpPort, account.SmtpUseSsl),
+                    attempt.Token);
+                await client.AuthenticateAsync(account.UserName, password, attempt.Token);
+                return client;
+            }
+            catch (MailKit.Security.AuthenticationException)
+            {
+                client.Dispose();
+                throw;
+            }
+            catch (Exception error) when (candidate.HasProxy && !cancellationToken.IsCancellationRequested)
+            {
+                proxyFailure = error;
+                client.Dispose();
+            }
+            catch (OperationCanceledException error) when (!cancellationToken.IsCancellationRequested)
+            {
+                client.Dispose();
+                throw new TimeoutException(
+                    proxyFailure is null
+                        ? "SMTP 连接超时。"
+                        : "Windows 系统代理与直连均未能建立 SMTP 连接。",
+                    error);
+            }
+            catch
+            {
+                client.Dispose();
+                throw;
+            }
+        }
+
+        throw new InvalidOperationException(
+            proxyFailure is null
+                ? "无法建立 SMTP 连接。"
+                : $"系统代理未能建立 SMTP 连接：{Safe(proxyFailure.Message)}",
+            proxyFailure);
+    }
+
+    private static IEnumerable<NetworkProxyRoute> ConnectionRoutes(NetworkProxyRoute route)
+    {
+        if (route.HasProxy) yield return route;
+        yield return new NetworkProxyRoute("", "direct", false);
+    }
+
     private static async Task TestConnectionsAsync(EmailAccount account, string password, CancellationToken cancellationToken)
     {
-        using (var imap = new ImapClient())
-        {
-            await imap.ConnectAsync(account.ImapHost, account.ImapPort, SocketOptions(account.ImapPort, account.ImapUseSsl), cancellationToken);
-            await imap.AuthenticateAsync(account.UserName, password, cancellationToken);
+        using (var imap = await ConnectImapAsync(account, password, cancellationToken))
             await imap.DisconnectAsync(true, cancellationToken);
-        }
-        using (var smtp = new SmtpClient())
-        {
-            await smtp.ConnectAsync(account.SmtpHost, account.SmtpPort, SocketOptions(account.SmtpPort, account.SmtpUseSsl), cancellationToken);
-            await smtp.AuthenticateAsync(account.UserName, password, cancellationToken);
+        using (var smtp = await ConnectSmtpAsync(account, password, cancellationToken))
             await smtp.DisconnectAsync(true, cancellationToken);
-        }
     }
 
     private async Task<EmailAccount> RequireAccountAsync(string accountId, CancellationToken cancellationToken)
@@ -689,6 +795,13 @@ public sealed class EmailService : IAsyncDisposable
 
     private static string FriendlyConnectionError(EmailProviderKind provider, Exception error)
     {
+        if (error is OperationCanceledException or TimeoutException
+            || error.Message.Contains("connect", StringComparison.OrdinalIgnoreCase)
+            || error.Message.Contains("network", StringComparison.OrdinalIgnoreCase)
+            || error.Message.Contains("socket", StringComparison.OrdinalIgnoreCase)
+            || error.Message.Contains("host", StringComparison.OrdinalIgnoreCase))
+            return NetworkProxyResolver.FriendlyNetworkFailure(error, "邮箱");
+
         var technical = Safe(error.Message);
         var guidance = provider switch
         {

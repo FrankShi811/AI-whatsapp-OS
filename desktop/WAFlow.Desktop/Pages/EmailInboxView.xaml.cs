@@ -193,18 +193,18 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         try
         {
             SyncButton.IsEnabled = false; SyncButton.Content = "正在同步…";
+            EmailSyncStatusText.Text = "正在通过 Windows 网络设置连接邮箱…";
             var count = await _services.Email.SyncInboxAsync(account.Id, 500);
             await RefreshAsync(); DataChanged?.Invoke(this, EventArgs.Empty);
             SyncButton.Content = $"已同步 {count} 封";
+            EmailSyncStatusText.Text = count > 0
+                ? $"同步完成：新增或更新 {count} 封邮件。"
+                : "同步完成：当前没有新邮件。";
             await Task.Delay(900);
         }
         catch (Exception error)
         {
-            MessageBox.Show(
-                $"{error.Message}\n\n程序会继续在后台重连；无需删除或重新添加邮箱账号。",
-                "邮件暂时无法同步",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
+            EmailSyncStatusText.Text = $"{error.Message} 无需删除或重新添加账号，程序会继续在后台重连。";
         }
         finally { SyncButton.IsEnabled = true; SyncButton.Content = "同步收件箱"; }
     }

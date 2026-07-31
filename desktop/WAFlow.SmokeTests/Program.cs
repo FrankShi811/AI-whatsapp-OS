@@ -1293,6 +1293,26 @@ Check(
     && iCloudGuide.PasswordLabel.Contains("专用密码"),
     "Microsoft limitations, Yahoo app password and iCloud app-specific password are explicit");
 
+var originalProxyOverride = Environment.GetEnvironmentVariable("WAFLOW_PROXY_URL");
+try
+{
+    Environment.SetEnvironmentVariable("WAFLOW_PROXY_URL", "http://proxy-user:proxy-secret@127.0.0.1:7890");
+    var networkRoute = NetworkProxyResolver.Resolve(new Uri("https://web.whatsapp.com/"));
+    var routeLabel = NetworkProxyResolver.SafeRouteLabel(networkRoute);
+    var mailProxy = NetworkProxyResolver.CreateMailKitProxy(networkRoute);
+    Check(
+        networkRoute is { HasProxy: true, Source: "environment:WAFLOW_PROXY_URL", AllowDirectFallback: true }
+        && networkRoute.ProxyUrl.Contains("proxy-secret", StringComparison.Ordinal)
+        && !routeLabel.Contains("proxy-secret", StringComparison.Ordinal)
+        && routeLabel.Contains("127.0.0.1:7890", StringComparison.Ordinal)
+        && mailProxy is not null,
+        "new-computer network routing inherits an explicit proxy, redacts credentials and keeps direct fallback");
+}
+finally
+{
+    Environment.SetEnvironmentVariable("WAFLOW_PROXY_URL", originalProxyOverride);
+}
+
 var emailAccount = new EmailAccount
 {
     Id="sales-email", DisplayName="Sales Team", EmailAddress="sales@example.com", UserName="sales@example.com",
@@ -3447,6 +3467,28 @@ Check(bilingualMessages.Count == 2
       && untouchedTranslationMessages.Any(item => item.ProviderMessageId == "translation-in" && item.Body.StartsWith("Hola", StringComparison.Ordinal))
       && untouchedTranslationMessages.Any(item => item.ProviderMessageId == "translation-out" && item.Body == "我会确认报价。"),
     "WhatsApp bilingual translations are cached without overwriting original message bodies");
+await translationRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id = "primary:translation-newest",
+    ProviderMessageId = "translation-newest",
+    AccountId = "primary",
+    ConversationId = translationConversation.Id,
+    Phone = translationConversation.Phone,
+    Direction = WhatsAppMessageDirection.Incoming,
+    Status = WhatsAppMessageStatus.Received,
+    Kind = "text",
+    Body = "Gracias, necesito el precio para 750 unidades.",
+    Timestamp = DateTimeOffset.Now
+});
+translationProvider.InvalidDetectionResponsesRemaining = 1;
+var refreshedBilingualMessages = await translationService.TranslateRecentMessagesAsync(translationConversation.Id);
+var refreshedBilingualMessagesAgain = await translationService.TranslateRecentMessagesAsync(translationConversation.Id);
+Check(refreshedBilingualMessages.Count == 3
+      && refreshedBilingualMessages.Any(item => item.MessageId == "translation-newest" && item.TargetLanguageCode == "zh-Hans")
+      && refreshedBilingualMessagesAgain.Count == 3
+      && translationProvider.DetectionCalls == 2
+      && translationProvider.TranslationCalls == 2,
+    "WhatsApp translation keeps the verified language profile after malformed detection output and repeated clicks refresh the newest message");
 var translatedDraft = await translationService.TranslateOutgoingAsync(
     translationConversation.Id,
     "我明天给你正式报价。");
@@ -3456,9 +3498,90 @@ var translatedDraftAgain = await translationService.TranslateOutgoingAsync(
 Check(translatedDraft.TargetLanguageCode == "es"
       && translatedDraft.TranslatedText.Contains("cotización", StringComparison.OrdinalIgnoreCase)
       && translatedDraftAgain.TranslatedText == translatedDraft.TranslatedText
-      && translationProvider.TranslationCalls == 2
-      && (await translationRepository.GetWhatsAppMessagesAsync(translationConversation.Id)).Count == 2,
+      && translationProvider.TranslationCalls == 3
+      && (await translationRepository.GetWhatsAppMessagesAsync(translationConversation.Id)).Count == 3,
     "WhatsApp outgoing translation creates a cached preview and never sends or inserts a message");
+
+var recentTranslationConversation = new WhatsAppConversation
+{
+    Id = "primary:translation-recent",
+    AccountId = "primary",
+    Phone = "34600000001",
+    DisplayName = "Recent Cliente",
+    LastMessageAt = DateTimeOffset.Now,
+    UpdatedAt = DateTimeOffset.Now
+};
+await translationRepository.UpsertWhatsAppConversationAsync(recentTranslationConversation);
+for (var index = 0; index < 45; index++)
+{
+    await translationRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+    {
+        Id = $"primary:translation-recent-{index:00}",
+        ProviderMessageId = $"translation-recent-{index:00}",
+        AccountId = "primary",
+        ConversationId = recentTranslationConversation.Id,
+        Phone = recentTranslationConversation.Phone,
+        Direction = WhatsAppMessageDirection.Incoming,
+        Status = WhatsAppMessageStatus.Received,
+        Kind = "text",
+        Body = $"Mensaje reciente número {index}; gracias por el precio.",
+        Timestamp = DateTimeOffset.Now.AddMinutes(index - 45)
+    });
+}
+var recentTranslationProvider = new FakeWhatsAppTranslationProvider();
+var recentTranslationService = new WhatsAppTranslationService(
+    translationRepository,
+    recentTranslationProvider,
+    () => System.Globalization.CultureInfo.GetCultureInfo("zh-CN"));
+var recentTranslations = await recentTranslationService.TranslateRecentMessagesAsync(recentTranslationConversation.Id);
+Check(recentTranslations.Count == 30
+      && recentTranslations.Any(item => item.MessageId == "translation-recent-44")
+      && recentTranslations.Any(item => item.MessageId == "translation-recent-15")
+      && recentTranslations.All(item => item.MessageId != "translation-recent-14")
+      && recentTranslationProvider.TranslationCalls == 3,
+    "WhatsApp translate-recent selects only the latest 30 text messages and batches them in chronological order");
+
+var recoveryTranslationConversation = new WhatsAppConversation
+{
+    Id = "primary:translation-recovery",
+    AccountId = "primary",
+    Phone = "34600000002",
+    DisplayName = "Recovery Cliente",
+    LastMessageAt = DateTimeOffset.Now,
+    UpdatedAt = DateTimeOffset.Now
+};
+await translationRepository.UpsertWhatsAppConversationAsync(recoveryTranslationConversation);
+for (var index = 0; index < 5; index++)
+{
+    await translationRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+    {
+        Id = $"primary:translation-recovery-{index}",
+        ProviderMessageId = $"translation-recovery-{index}",
+        AccountId = "primary",
+        ConversationId = recoveryTranslationConversation.Id,
+        Phone = recoveryTranslationConversation.Phone,
+        Direction = WhatsAppMessageDirection.Incoming,
+        Status = WhatsAppMessageStatus.Received,
+        Kind = "text",
+        Body = $"Gracias, necesito el precio para el pedido {index}.",
+        Timestamp = DateTimeOffset.Now.AddMinutes(index - 5)
+    });
+}
+var recoveryTranslationProvider = new FakeWhatsAppTranslationProvider
+{
+    InvalidDetectionResponsesRemaining = 1,
+    MaxAcceptedTranslationBatch = 2
+};
+var recoveryTranslationService = new WhatsAppTranslationService(
+    translationRepository,
+    recoveryTranslationProvider,
+    () => System.Globalization.CultureInfo.GetCultureInfo("zh-CN"));
+var recoveredTranslations = await recoveryTranslationService.TranslateRecentMessagesAsync(recoveryTranslationConversation.Id);
+Check(recoveredTranslations.Count == 5
+      && recoveredTranslations.Select(item => item.MessageId).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 5
+      && recoveryTranslationProvider.DetectionCalls == 1
+      && recoveryTranslationProvider.TranslationCalls == 5,
+    "WhatsApp translation falls back to local language detection and recursively repairs malformed multi-message batches");
 
 try { File.Delete(database); Directory.Delete(root, true); } catch { }
 Console.WriteLine(failures.Count == 0 ? "\nAI Sales OS native core smoke tests passed." : $"\n{failures.Count} smoke test(s) failed.");
@@ -3628,6 +3751,8 @@ sealed class FakeWhatsAppTranslationProvider : IStructuredAiProvider
 {
     public int DetectionCalls { get; private set; }
     public int TranslationCalls { get; private set; }
+    public int InvalidDetectionResponsesRemaining { get; set; }
+    public int MaxAcceptedTranslationBatch { get; set; } = int.MaxValue;
 
     public bool HasApiKey() => true;
     public bool HasApiKey(string moduleKey) => moduleKey == AiModuleKeys.WhatsAppInbox;
@@ -3653,6 +3778,14 @@ sealed class FakeWhatsAppTranslationProvider : IStructuredAiProvider
         if (typeof(T) == typeof(WhatsAppLanguageDetectionResponse))
         {
             DetectionCalls++;
+            if (InvalidDetectionResponsesRemaining > 0)
+            {
+                InvalidDetectionResponsesRemaining--;
+                throw new DeepSeekException(
+                    "invalid_structured_output",
+                    "AI 返回的结构化 JSON 无法解析。",
+                    true);
+            }
             response = new WhatsAppLanguageDetectionResponse
             {
                 LanguageCode = "es",
@@ -3664,10 +3797,18 @@ sealed class FakeWhatsAppTranslationProvider : IStructuredAiProvider
         {
             TranslationCalls++;
             using var document = JsonDocument.Parse(JsonSerializer.Serialize(payload));
+            var suppliedMessages = document.RootElement.GetProperty("suppliedMessages")
+                .EnumerateArray()
+                .Select(item => item.Clone())
+                .ToList();
+            if (suppliedMessages.Count > MaxAcceptedTranslationBatch)
+                throw new DeepSeekException(
+                    "invalid_structured_output",
+                    "AI 返回的结构化 JSON 无法解析。",
+                    true);
             response = new WhatsAppTranslationBatchResponse
             {
-                Items = document.RootElement.GetProperty("suppliedMessages")
-                    .EnumerateArray()
+                Items = suppliedMessages
                     .Select(item =>
                     {
                         var target = item.GetProperty("targetLanguageCode").GetString() ?? "";

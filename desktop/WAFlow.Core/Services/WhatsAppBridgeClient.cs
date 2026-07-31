@@ -101,12 +101,21 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
             }
         }
         ConnectionState = "connecting";
+        var networkRoute = NetworkProxyResolver.Resolve(new Uri("https://web.whatsapp.com/"));
         var result = sendConnectCommand
-            ? await SendCommandAsync("connect", null, cancellationToken)
+            ? await SendCommandAsync(
+                "connect",
+                new
+                {
+                    proxyUrl = networkRoute.ProxyUrl,
+                    proxySource = networkRoute.Source,
+                    allowDirectFallback = networkRoute.AllowDirectFallback
+                },
+                cancellationToken)
             : default;
         try
         {
-            await milestone.Task.WaitAsync(TimeSpan.FromSeconds(75), cancellationToken);
+            await milestone.Task.WaitAsync(TimeSpan.FromSeconds(95), cancellationToken);
             return result;
         }
         catch (TimeoutException)
@@ -120,7 +129,7 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
             ConnectionState = "disconnected";
             throw new WhatsAppBridgeException(
                 "qr_generation_timeout",
-                "WhatsApp 二维码未能在限定时间内生成。程序已停止本次连接，请检查网络、防火墙或代理后点击重试。");
+                "WhatsApp 二维码未能在限定时间内生成。程序已自动尝试 Windows 系统代理与直连；请检查防火墙、公司网络或代理是否允许访问 WhatsApp 后点击重试。");
         }
     }
     public async Task<JsonElement> DisconnectAsync(CancellationToken cancellationToken = default)

@@ -1,6 +1,6 @@
 allowBuilds:
-  '@whiskeysockets/baileys': set this to true or false
-  protobufjs: set this to true or false
+  '@whiskeysockets/baileys': true
+  protobufjs: true
 blockExoticSubdeps: false
 onlyBuiltDependencies:
   - '@whiskeysockets/baileys'
