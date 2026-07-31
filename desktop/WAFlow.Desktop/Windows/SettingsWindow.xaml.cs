@@ -640,6 +640,8 @@ public partial class SettingsWindow : Window
                 var restart = BuildWorkspaceMigrationRestart();
                 if (Process.Start(restart) is null)
                     throw new InvalidOperationException("未能启动迁移重启进程。");
+                if (Application.Current is App app)
+                    app.RequestWorkspaceMigrationShutdown();
                 Application.Current.Shutdown();
             }
             catch

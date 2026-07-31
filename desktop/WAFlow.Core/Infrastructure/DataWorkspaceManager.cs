@@ -144,6 +144,13 @@ public sealed class DataWorkspaceManager
     public string BuildSuggestedTargetRoot(string selectedDirectory)
     {
         var selected = NormalizeDirectory(selectedDirectory);
+        var installedRoot = TryGetInstalledApplicationRoot();
+        if (!string.IsNullOrWhiteSpace(installedRoot)
+            && PathsEqual(selected, installedRoot))
+        {
+            selected = Path.GetPathRoot(selected)
+                ?? throw new InvalidOperationException("无法识别安装目录所在磁盘。");
+        }
         var leaf = new DirectoryInfo(selected).Name;
         return leaf.Equals(SuggestedFolderName, StringComparison.OrdinalIgnoreCase)
             ? selected
@@ -566,12 +573,31 @@ public sealed class DataWorkspaceManager
         {
             using var process = Process.GetProcessById(processId);
             await process.WaitForExitAsync(cancellationToken)
-                .WaitAsync(TimeSpan.FromMinutes(2), cancellationToken);
+                .WaitAsync(TimeSpan.FromMinutes(3), cancellationToken);
         }
         catch (ArgumentException)
         {
             // The source process already exited.
         }
+        catch (TimeoutException error)
+        {
+            throw new TimeoutException(
+                "原程序未能在 3 分钟内安全退出，工作区尚未复制或切换。请安装修复版本后重新迁移。",
+                error);
+        }
+    }
+
+    private static string? TryGetInstalledApplicationRoot()
+    {
+        var processPath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(processPath)
+            || !Path.GetFileName(processPath).Equals("AISalesOS.exe", StringComparison.OrdinalIgnoreCase))
+            return null;
+        var currentDirectory = Path.GetDirectoryName(processPath);
+        if (string.IsNullOrWhiteSpace(currentDirectory)
+            || !new DirectoryInfo(currentDirectory).Name.Equals("current", StringComparison.OrdinalIgnoreCase))
+            return null;
+        return Directory.GetParent(currentDirectory)?.FullName;
     }
 
     private static FileStream AcquireMigrationLock(string sourceRoot)

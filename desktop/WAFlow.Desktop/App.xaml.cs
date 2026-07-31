@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Threading;
+using System.Diagnostics;
 using System.IO;
 using Velopack;
 using WAFlow.Core;
@@ -10,11 +11,13 @@ namespace WAFlow.Desktop;
 
 public partial class App : Application
 {
+    private static readonly TimeSpan MigrationShutdownStepTimeout = TimeSpan.FromSeconds(10);
     public AppServices Services { get; private set; } = null!;
     public IApplicationUpdateService Updates { get; private set; } = null!;
     public DataWorkspaceManager DataWorkspaceManager { get; private set; } = null!;
     private DataWorkspaceMigrationResult _startupMigration = new(false, true, "");
     private DataWorkspaceLease? _workspaceLease;
+    private bool _workspaceMigrationShutdownRequested;
 
     [STAThread]
     public static void Main(string[] args)
@@ -25,11 +28,14 @@ public partial class App : Application
             .Run();
 
         var workspaceManager = new DataWorkspaceManager();
+        var waitForProcessId = ParseWaitForProcessId(args);
+        var isMigrationWorker = args.Any(argument =>
+            argument.Equals("--apply-workspace-migration", StringComparison.OrdinalIgnoreCase));
         DataWorkspaceMigrationResult startupMigration;
         try
         {
             startupMigration = workspaceManager
-                .ApplyPendingMigrationAsync(ParseWaitForProcessId(args))
+                .ApplyPendingMigrationAsync(waitForProcessId)
                 .GetAwaiter()
                 .GetResult();
         }
@@ -41,6 +47,19 @@ public partial class App : Application
                 "AI Sales OS",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
+            return;
+        }
+        if (isMigrationWorker
+            && startupMigration.Attempted
+            && !startupMigration.Succeeded
+            && IsProcessRunning(waitForProcessId))
+        {
+            MessageBox.Show(
+                startupMigration.Message +
+                "\n\n原程序仍在运行，本次迁移辅助进程不会再启动第二个程序窗口。请更新后重新执行迁移。",
+                "工作区迁移未完成",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
             return;
         }
         var app = new App
@@ -141,6 +160,23 @@ public partial class App : Application
         return null;
     }
 
+    private static bool IsProcessRunning(int? processId)
+    {
+        if (processId is not > 0) return false;
+        try
+        {
+            using var process = Process.GetProcessById(processId.Value);
+            return !process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    public void RequestWorkspaceMigrationShutdown() =>
+        _workspaceMigrationShutdownRequested = true;
+
     private static void OnUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         LogException("dispatcher", e.Exception);
@@ -165,19 +201,50 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        if (Updates is not null)
-            Updates.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        if (Services is not null)
+        try
         {
-            Services.LeadAutomation.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            Services.Campaigns.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            Services.MessagingSync.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            Services.WhatsAppNumberValidation.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            Services.Email.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            Services.WhatsApp.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            if (Updates is not null)
+                DisposeForExit("updates", () => Updates.DisposeAsync());
+            if (Services is not null)
+            {
+                DisposeForExit("lead-automation", () => Services.LeadAutomation.DisposeAsync());
+                DisposeForExit("campaigns", () => Services.Campaigns.DisposeAsync());
+                DisposeForExit("messaging-sync", () => Services.MessagingSync.DisposeAsync());
+                DisposeForExit("whatsapp-number-validation", () => Services.WhatsAppNumberValidation.DisposeAsync());
+                DisposeForExit("email", () => Services.Email.DisposeAsync());
+                DisposeForExit("whatsapp", () => Services.WhatsApp.DisposeAsync());
+            }
         }
-        _workspaceLease?.Dispose();
-        _workspaceLease = null;
-        base.OnExit(e);
+        finally
+        {
+            _workspaceLease?.Dispose();
+            _workspaceLease = null;
+            base.OnExit(e);
+        }
+    }
+
+    private void DisposeForExit(string area, Func<ValueTask> dispose)
+    {
+        try
+        {
+            var task = dispose().AsTask();
+            if (_workspaceMigrationShutdownRequested
+                && !task.Wait(MigrationShutdownStepTimeout))
+            {
+                LogException(
+                    $"workspace-migration-shutdown-{area}",
+                    new TimeoutException(
+                        $"后台服务 {area} 未能在 {MigrationShutdownStepTimeout.TotalSeconds:0} 秒内停止；" +
+                        "程序将继续退出，迁移进程会在数据库句柄释放后再开始复制。"));
+                return;
+            }
+            task.GetAwaiter().GetResult();
+        }
+        catch (Exception error)
+        {
+            LogException($"shutdown-{area}", error);
+            if (!_workspaceMigrationShutdownRequested)
+                throw;
+        }
     }
 }

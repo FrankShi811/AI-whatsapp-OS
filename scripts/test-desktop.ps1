@@ -433,7 +433,7 @@ if ($mainWindowSource -notmatch [regex]::Escape('_updates.StartMonitoring();') -
     $updateServiceSource -notmatch [regex]::Escape('private async Task MonitorAsync') -or
     $updateServiceSource -notmatch [regex]::Escape('await CheckAndDownloadAsync(cancellationToken: cancellationToken);') -or
     $updateServiceSource -notmatch [regex]::Escape('if (versionComparison <= 0)') -or
-    $appStartupSource -notmatch [regex]::Escape('Updates.DisposeAsync().AsTask().GetAwaiter().GetResult();')) {
+    $appStartupSource -notmatch [regex]::Escape('DisposeForExit("updates", () => Updates.DisposeAsync())')) {
   throw 'The app must continuously monitor GitHub Releases, download only newer versions, expose a direct update-and-restart action and stop the monitor cleanly.'
 }
 Write-Host 'PASS  continuous GitHub update monitoring, automatic download and one-click restart contract'
@@ -932,6 +932,7 @@ if ($settingsXaml -notmatch 'x:Name="WorkspaceUsageText"' -or
 if ($settingsSource -notmatch [regex]::Escape('PreviewMigrationAsync') -or
     $settingsSource -notmatch [regex]::Escape('ScheduleMigrationAsync') -or
     $settingsSource -notmatch [regex]::Escape('--wait-for-pid') -or
+    $settingsSource -notmatch [regex]::Escape('RequestWorkspaceMigrationShutdown') -or
     $settingsSource -notmatch [regex]::Escape('Application.Current.Shutdown()')) {
   $workspaceMigrationFailures += 'settings_restart_flow'
 }
@@ -949,6 +950,8 @@ if ($dataWorkspaceSource -notmatch [regex]::Escape('WAFLOW_DATABASE_PATH') -or
 if ($appStartupSource -notmatch [regex]::Escape('ApplyPendingMigrationAsync') -or
     $appStartupSource -notmatch [regex]::Escape('AcquireLease') -or
     $appStartupSource -notmatch [regex]::Escape('CompletePendingMigrationAsync') -or
+    $appStartupSource -notmatch [regex]::Escape('MigrationShutdownStepTimeout') -or
+    $appStartupSource -notmatch [regex]::Escape('IsProcessRunning') -or
     $appStartupSource -notmatch [regex]::Escape('RollbackAfterStartupFailureAsync')) {
   $workspaceMigrationFailures += 'startup_switch'
 }
