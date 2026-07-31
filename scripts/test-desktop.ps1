@@ -64,6 +64,7 @@ $campaignAutomationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-P
 $customerSuccessSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerSuccessAgentCoordinator.cs')
 $emailServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\EmailService.cs')
 $networkProxyResolverSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\NetworkProxyResolver.cs')
+$windowsCredentialStoreSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Infrastructure\WindowsCredentialStore.cs')
 $emailAssistantSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\EmailAssistantService.cs')
 $messagingSyncSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\MessagingSyncService.cs')
 $emailAccountXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\EmailAccountWindow.xaml')
@@ -754,10 +755,27 @@ if ($emailAccountXaml -notmatch 'x:Name="GuideStepsText"' -or
     -not ($emailAccountSource.Contains('UserNameBox.Text = EmailBox.Text.Trim()')) -or
     -not ($emailAccountSource.Contains('ImapHostBox.Clear()')) -or
     -not ($emailAccountSource.Contains('UseShellExecute = true')) -or
-    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 5'))) {
+    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 6'))) {
   throw 'Email account window must provide provider steps, direct official links, field hints, username sync and preset recovery.'
 }
 Write-Host 'PASS  provider-specific email onboarding and compatibility guidance contract'
+
+if ($windowsCredentialStoreSource -notmatch [regex]::Escape('public bool Exists()') -or
+    $emailServiceSource -notmatch [regex]::Escape('HasLocalCredential') -or
+    $emailServiceSource -notmatch [regex]::Escape('LocalAuthorizationMessage') -or
+    $emailInboxSource -notmatch [regex]::Escape('UpdateSelectedAccountAuthorizationStatus') -or
+    $emailAccountSource -notmatch [regex]::Escape('_hasStoredCredential') -or
+    $whatsAppManagerSource -notmatch [regex]::Escape('RequiresLocalAuthorization') -or
+    $whatsAppManagerSource -notmatch [regex]::Escape('WAFlow/WhatsAppSessionKey/{accountId}') -or
+    $whatsAppBridgeClientSource -notmatch [regex]::Escape('PrepareFreshLocalSession') -or
+    $whatsAppBridgeClientSource -notmatch [regex]::Escape('local_authorization_required') -or
+    $networkProxyResolverSource -notmatch [regex]::Escape('WinHttpGetIEProxyConfigForCurrentUser') -or
+    $networkProxyResolverSource -notmatch [regex]::Escape('WinHttpGetProxyForUrl') -or
+    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 8')) -or
+    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 6'))) {
+  throw 'A copied workspace on a new computer must detect missing machine-local Gmail/WhatsApp credentials, require safe reauthorization and inherit Windows PAC/WPAD proxy routing.'
+}
+Write-Host 'PASS  new-computer credential reauthorization and Windows automatic-proxy contract'
 
 if ($appStartupSource -notmatch [regex]::Escape('Services.MessagingSync.StartAsync()') -or
     $appStartupSource -notmatch [regex]::Escape('Services.MessagingSync.DisposeAsync()') -or
@@ -825,7 +843,7 @@ if ($whatsAppInboxXaml -notmatch 'x:Name="TranslationBar"' -or
     $whatsAppInboxSource -notmatch [regex]::Escape('CompleteTranslationRun(cts)') -or
     $whatsAppTranslationModelsSource -notmatch [regex]::Escape('SourceTextHash') -or
     $localRepositorySource -notmatch [regex]::Escape('whatsapp_translation:{conversationId}') -or
-    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 7'))) {
+    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 8'))) {
   throw 'WhatsApp Inbox must translate only the latest message window, recover malformed structured output, separate context/run cancellation, cache bilingual translations, preserve originals and require manual adoption plus send.'
 }
 Write-Host 'PASS  WhatsApp latest-message translation, structured-output recovery, repeat-click state and manual-send contract'
@@ -877,8 +895,8 @@ if ($whatsAppInboxXaml -match 'x:Name="CompanyBox"' -or
     $customerAnalysisSource -notmatch [regex]::Escape('_customerBrain.UpdateConversationContextAsync') -or
     $customerAnalysisSource -notmatch [regex]::Escape('ConversationContext = customerBrain?.ConversationContext') -or
     $customerAnalysisSource -notmatch [regex]::Escape('manualNotes = lead.ManualNotes') -or
-    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 7')) -or
-    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 5'))) {
+    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 8')) -or
+    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 6'))) {
   throw 'Customer Intelligence must separate manual notes from AI context, remove company/source blanks, update cross-channel context incrementally and feed both into customer analysis.'
 }
 Write-Host 'PASS  Customer Intelligence manual-note and cross-channel AI-context contract'

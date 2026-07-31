@@ -104,6 +104,7 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         {
             _accounts.ReplaceAll(snapshot.Accounts);
             AccountBox.SelectedItem = _accounts.FirstOrDefault(item => item.Id == snapshot.SelectedAccountId);
+            UpdateSelectedAccountAuthorizationStatus();
             _conversations.ReplaceAll(snapshot.Conversations);
             if (!_isNewEmail)
                 ConversationList.SelectedItem = _conversations.FirstOrDefault(item => item.Id == selectedConversationId);
@@ -190,6 +191,14 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     private async void Sync_Click(object sender, RoutedEventArgs e)
     {
         if (AccountBox.SelectedItem is not EmailAccount account) { MessageBox.Show("请先连接邮件账号。", "邮件 Inbox", MessageBoxButton.OK, MessageBoxImage.Information); return; }
+        if (!_services.Email.HasLocalCredential(account.Id))
+        {
+            EmailSyncStatusText.Text = EmailService.LocalAuthorizationMessage(account);
+            if (new EmailAccountWindow(_services, account) { Owner = Window.GetWindow(this) }.ShowDialog() != true)
+                return;
+            await RefreshAsync();
+            account = AccountBox.SelectedItem as EmailAccount ?? account;
+        }
         try
         {
             SyncButton.IsEnabled = false; SyncButton.Content = "正在同步…";
@@ -212,11 +221,25 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     private async void AccountBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loading) return;
+        UpdateSelectedAccountAuthorizationStatus();
         await RefreshConversationsAsync();
         if (_isNewEmail && AccountBox.SelectedItem is EmailAccount account)
             ConversationSubtitle.Text = $"发件账号：{account.EmailAddress}";
         await UpdateEmailAssistantModelAsync();
         UpdateComposerState();
+    }
+
+    private void UpdateSelectedAccountAuthorizationStatus()
+    {
+        if (AccountBox.SelectedItem is not EmailAccount account)
+        {
+            EmailSyncStatusText.Text = "";
+            return;
+        }
+        if (!_services.Email.HasLocalCredential(account.Id))
+            EmailSyncStatusText.Text = EmailService.LocalAuthorizationMessage(account);
+        else if (EmailSyncStatusText.Text.Contains("此电脑尚未保存", StringComparison.Ordinal))
+            EmailSyncStatusText.Text = "此电脑已保存邮箱凭据，可以同步收件箱。";
     }
 
     private async void ConversationList_SelectionChanged(object sender, SelectionChangedEventArgs e)

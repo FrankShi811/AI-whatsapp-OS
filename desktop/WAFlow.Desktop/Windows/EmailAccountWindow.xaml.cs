@@ -13,6 +13,7 @@ public partial class EmailAccountWindow : Window
     private readonly AppServices _services;
     private readonly EmailAccount _account;
     private readonly bool _isEditing;
+    private bool _hasStoredCredential;
     private bool _loading = true;
     private bool _userNameFollowsEmail;
 
@@ -22,6 +23,7 @@ public partial class EmailAccountWindow : Window
         _services = services;
         _account = account ?? new EmailAccount();
         _isEditing = account is not null;
+        _hasStoredCredential = account is not null && _services.Email.HasLocalCredential(account.Id);
         _loading = true;
         ProviderBox.ItemsSource = EmailService.ProviderPresets;
         var initialProvider = account?.Provider ?? EmailProviderKind.Gmail;
@@ -38,7 +40,9 @@ public partial class EmailAccountWindow : Window
         SmtpHostBox.Text = _account.SmtpHost;
         SmtpPortBox.Text = _account.SmtpPort.ToString(CultureInfo.InvariantCulture);
         SmtpSslBox.IsChecked = _account.SmtpUseSsl;
-        StatusText.Text = string.IsNullOrWhiteSpace(_account.LastError) ? _account.StatusLabel : $"上次状态：{_account.LastError}";
+        StatusText.Text = _isEditing && !_hasStoredCredential
+            ? "此电脑尚未保存该邮箱凭据。历史邮件仍保留；请重新填写下方应用专用密码并测试保存。"
+            : string.IsNullOrWhiteSpace(_account.LastError) ? _account.StatusLabel : $"上次状态：{_account.LastError}";
         DeleteButton.Visibility = account is null ? Visibility.Collapsed : Visibility.Visible;
         _loading = false;
         if (account is null) ApplyPreset(initialProvider);
@@ -85,8 +89,14 @@ public partial class EmailAccountWindow : Window
         GuideCompatibilityText.Text = guide.CompatibilityNote;
         EmailHintText.Text = guide.EmailHint;
         UserNameHintText.Text = guide.UserNameHint;
-        PasswordLabelText.Text = _isEditing ? $"{guide.PasswordLabel}（留空则保留现有凭据）" : guide.PasswordLabel;
-        PasswordHintText.Text = _isEditing ? $"{guide.PasswordHint} 本次不更换凭据时可留空。" : guide.PasswordHint;
+        PasswordLabelText.Text = _isEditing && _hasStoredCredential
+            ? $"{guide.PasswordLabel}（留空则保留本机现有凭据）"
+            : guide.PasswordLabel;
+        PasswordHintText.Text = _isEditing && _hasStoredCredential
+            ? $"{guide.PasswordHint} 本次不更换凭据时可留空。"
+            : _isEditing
+                ? $"{guide.PasswordHint} 此账号资料来自其他电脑或本机凭据已丢失，必须重新填写。"
+                : guide.PasswordHint;
         ProviderSetupButton.Content = guide.SetupButtonLabel;
         ProviderSetupButton.Visibility = string.IsNullOrWhiteSpace(guide.SetupUrl) ? Visibility.Collapsed : Visibility.Visible;
         ProviderHelpButton.Content = guide.HelpButtonLabel;
@@ -150,6 +160,7 @@ public partial class EmailAccountWindow : Window
             _account.ImapPort = imapPort; _account.SmtpPort = smtpPort;
             _account.ImapUseSsl = ImapSslBox.IsChecked == true; _account.SmtpUseSsl = SmtpSslBox.IsChecked == true;
             await _services.Email.SaveAndTestAccountAsync(_account, PasswordBox.Password);
+            _hasStoredCredential = true;
             DialogResult = true;
         }
         catch (Exception error) { StatusText.Text = error.Message; MessageBox.Show(error.Message, "邮件连接失败", MessageBoxButton.OK, MessageBoxImage.Warning); }

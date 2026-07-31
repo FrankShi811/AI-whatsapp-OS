@@ -56,6 +56,22 @@ public sealed class WindowsCredentialStore : ISecretStore
         finally { CredFree(pointer); }
     }
 
+    public bool Exists()
+    {
+        if (!CredRead(_target, CredTypeGeneric, 0, out var pointer))
+        {
+            var error = Marshal.GetLastWin32Error();
+            if (error == 1168) return false;
+            throw new Win32Exception(error, "无法检查 Windows 凭据管理器。");
+        }
+        try
+        {
+            var credential = Marshal.PtrToStructure<NativeCredential>(pointer);
+            return credential.CredentialBlobSize > 0;
+        }
+        finally { CredFree(pointer); }
+    }
+
     public void Delete()
     {
         if (CredDelete(_target, CredTypeGeneric, 0)) return;

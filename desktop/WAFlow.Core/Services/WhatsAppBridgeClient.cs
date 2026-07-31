@@ -45,6 +45,19 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     {
         if (IsRunning) return;
         CurrentAccountId = string.IsNullOrWhiteSpace(accountId) ? "primary" : accountId;
+        var sessionSecrets = new WindowsCredentialStore($"WAFlow/WhatsAppSessionKey/{CurrentAccountId}");
+        var encryptionKey = sessionSecrets.Read();
+        var requiresLocalAuthorization = string.IsNullOrWhiteSpace(encryptionKey)
+            && HasEncryptedSession(CurrentAccountId);
+        string? sessionBackupName = null;
+        if (requiresLocalAuthorization)
+            sessionBackupName = PrepareFreshLocalSession(CurrentAccountId);
+        if (string.IsNullOrWhiteSpace(encryptionKey))
+        {
+            encryptionKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            sessionSecrets.Save(encryptionKey);
+        }
+
         var launch = BridgeLaunch.Resolve(_dataRoot);
         _ready = NewSignal();
         _lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -70,14 +83,36 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
         _ = ObserveExitAsync(_process, _lifetime.Token);
 
         await _ready.Task.WaitAsync(TimeSpan.FromSeconds(15), cancellationToken);
-        var sessionSecrets = new WindowsCredentialStore($"WAFlow/WhatsAppSessionKey/{CurrentAccountId}");
-        var encryptionKey = sessionSecrets.Read();
-        if (string.IsNullOrWhiteSpace(encryptionKey))
-        {
-            encryptionKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-            sessionSecrets.Save(encryptionKey);
-        }
         await SendCommandAsync("initialize", new { accountId = CurrentAccountId, encryptionKey }, cancellationToken);
+        if (requiresLocalAuthorization)
+        {
+            EventReceived?.Invoke(this, new WhatsAppBridgeEvent(
+                "local_authorization_required",
+                CurrentAccountId,
+                JsonSerializer.SerializeToElement(new
+                {
+                    reason = "machine_local_session_key_missing",
+                    backupName = sessionBackupName ?? "",
+                    requiresQr = true
+                })));
+        }
+    }
+
+    private bool HasEncryptedSession(string accountId) =>
+        File.Exists(Path.Combine(_dataRoot, "whatsapp-sessions", accountId, "creds.json.enc"));
+
+    private string PrepareFreshLocalSession(string accountId)
+    {
+        var sessionDirectory = Path.Combine(_dataRoot, "whatsapp-sessions", accountId);
+        if (!Directory.Exists(sessionDirectory)) return "";
+        var suffix = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
+        var backupDirectory = $"{sessionDirectory}.other-device-{suffix}";
+        var counter = 1;
+        while (Directory.Exists(backupDirectory))
+            backupDirectory = $"{sessionDirectory}.other-device-{suffix}-{counter++}";
+        Directory.Move(sessionDirectory, backupDirectory);
+        Directory.CreateDirectory(sessionDirectory);
+        return Path.GetFileName(backupDirectory);
     }
 
     public Task<JsonElement> PingAsync(CancellationToken cancellationToken = default) => SendCommandAsync("ping", null, cancellationToken);

@@ -1,4 +1,5 @@
 using System.Net;
+using System.Runtime.InteropServices;
 using MailKit.Net.Proxy;
 
 namespace WAFlow.Core.Services;
@@ -52,6 +53,9 @@ public static class NetworkProxyResolver
             // A malformed PAC or unavailable Windows proxy service must not prevent direct access.
         }
 
+        if (TryResolveWindowsAutoProxy(destination, out var windowsRoute))
+            return windowsRoute;
+
         return new NetworkProxyRoute("", "direct", false);
     }
 
@@ -79,7 +83,7 @@ public static class NetworkProxyResolver
     {
         if (!route.HasProxy) return "直连";
         if (!Uri.TryCreate(route.ProxyUrl, UriKind.Absolute, out var proxy)) return "系统代理";
-        return $"{(route.Source == "windows" ? "Windows 系统代理" : "环境代理")} ({proxy.Scheme}://{proxy.Host}:{EffectivePort(proxy)})";
+        return $"{(route.Source.StartsWith("windows", StringComparison.OrdinalIgnoreCase) ? "Windows 系统代理" : "环境代理")} ({proxy.Scheme}://{proxy.Host}:{EffectivePort(proxy)})";
     }
 
     public static string FriendlyNetworkFailure(Exception error, string serviceName)
@@ -120,6 +124,133 @@ public static class NetworkProxyResolver
         return true;
     }
 
+    private static bool TryResolveWindowsAutoProxy(Uri destination, out NetworkProxyRoute route)
+    {
+        route = new NetworkProxyRoute("", "direct", false);
+        if (!OperatingSystem.IsWindows()) return false;
+
+        WinHttpCurrentUserIeProxyConfig config = default;
+        var hasConfig = false;
+        IntPtr session = IntPtr.Zero;
+        try
+        {
+            hasConfig = WinHttpGetIEProxyConfigForCurrentUser(out config);
+            var manualProxy = PointerText(config.Proxy);
+            if (TryNormalizeWindowsProxyList(manualProxy, destination.Scheme, out var manualProxyUrl))
+            {
+                route = new NetworkProxyRoute(manualProxyUrl, "windows:manual", true);
+                return true;
+            }
+
+            var autoConfigUrl = PointerText(config.AutoConfigUrl);
+            if (!hasConfig || (!config.AutoDetect && string.IsNullOrWhiteSpace(autoConfigUrl)))
+                return false;
+
+            session = WinHttpOpen(
+                "AI Sales OS/WAFlow",
+                WinHttpAccessTypeNoProxy,
+                null,
+                null,
+                0);
+            if (session == IntPtr.Zero) return false;
+            _ = WinHttpSetTimeouts(session, 3000, 3000, 5000, 5000);
+
+            var options = new WinHttpAutoProxyOptions
+            {
+                Flags = (config.AutoDetect ? WinHttpAutoproxyAutoDetect : 0)
+                    | (!string.IsNullOrWhiteSpace(autoConfigUrl) ? WinHttpAutoproxyConfigUrl : 0),
+                AutoDetectFlags = WinHttpAutoDetectTypeDhcp | WinHttpAutoDetectTypeDnsA,
+                AutoConfigUrl = config.AutoConfigUrl,
+                AutoLogonIfChallenged = true
+            };
+            if (options.Flags == 0
+                || !WinHttpGetProxyForUrl(session, destination.AbsoluteUri, ref options, out var proxyInfo))
+                return false;
+            try
+            {
+                if (proxyInfo.AccessType != WinHttpAccessTypeNamedProxy
+                    || !TryNormalizeWindowsProxyList(PointerText(proxyInfo.Proxy), destination.Scheme, out var proxyUrl))
+                    return false;
+                route = new NetworkProxyRoute(proxyUrl, "windows:auto", true);
+                return true;
+            }
+            finally
+            {
+                FreeGlobal(proxyInfo.Proxy);
+                FreeGlobal(proxyInfo.ProxyBypass);
+            }
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            if (session != IntPtr.Zero) WinHttpCloseHandle(session);
+            if (hasConfig)
+            {
+                FreeGlobal(config.AutoConfigUrl);
+                FreeGlobal(config.Proxy);
+                FreeGlobal(config.ProxyBypass);
+            }
+        }
+    }
+
+    private static bool TryNormalizeWindowsProxyList(string? value, string destinationScheme, out string proxyUrl)
+    {
+        proxyUrl = "";
+        var entries = new List<string>();
+        foreach (var segment in (value ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var entry = segment.Trim();
+            if (entry.StartsWith("PROXY ", StringComparison.OrdinalIgnoreCase))
+                entry = entry[6..].Trim();
+            if (entry.Equals("DIRECT", StringComparison.OrdinalIgnoreCase) || entry.Length == 0)
+                continue;
+
+            if (entry.Contains('='))
+            {
+                entries.Add(entry);
+                continue;
+            }
+
+            var firstProxy = entry
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .FirstOrDefault(item => !item.Equals("DIRECT", StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(firstProxy))
+                entries.Add(firstProxy);
+        }
+        if (entries.Count == 0) return false;
+
+        string? selected = null;
+        foreach (var entry in entries)
+        {
+            var separator = entry.IndexOf('=');
+            if (separator <= 0) continue;
+            var scheme = entry[..separator].Trim();
+            if (scheme.Equals(destinationScheme, StringComparison.OrdinalIgnoreCase))
+            {
+                selected = entry[(separator + 1)..].Trim();
+                break;
+            }
+        }
+        selected ??= entries.FirstOrDefault(entry => !entry.Contains('='));
+        selected ??= entries
+            .Select(entry => entry.Split('=', 2))
+            .Where(parts => parts.Length == 2)
+            .Select(parts => parts[1])
+            .FirstOrDefault();
+        return TryNormalizeProxy(selected, out proxyUrl);
+    }
+
+    private static string PointerText(IntPtr pointer) =>
+        pointer == IntPtr.Zero ? "" : Marshal.PtrToStringUni(pointer) ?? "";
+
+    private static void FreeGlobal(IntPtr pointer)
+    {
+        if (pointer != IntPtr.Zero) _ = GlobalFree(pointer);
+    }
+
     private static NetworkCredential? ParseCredentials(Uri proxy)
     {
         if (string.IsNullOrWhiteSpace(proxy.UserInfo)) return null;
@@ -144,4 +275,75 @@ public static class NetworkProxyResolver
         var text = (value ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
         return text.Length <= 240 ? text : text[..240];
     }
+
+    private const uint WinHttpAccessTypeNoProxy = 1;
+    private const uint WinHttpAccessTypeNamedProxy = 3;
+    private const uint WinHttpAutoproxyAutoDetect = 0x00000001;
+    private const uint WinHttpAutoproxyConfigUrl = 0x00000002;
+    private const uint WinHttpAutoDetectTypeDhcp = 0x00000001;
+    private const uint WinHttpAutoDetectTypeDnsA = 0x00000002;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WinHttpCurrentUserIeProxyConfig
+    {
+        [MarshalAs(UnmanagedType.Bool)] public bool AutoDetect;
+        public IntPtr AutoConfigUrl;
+        public IntPtr Proxy;
+        public IntPtr ProxyBypass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WinHttpAutoProxyOptions
+    {
+        public uint Flags;
+        public uint AutoDetectFlags;
+        public IntPtr AutoConfigUrl;
+        public IntPtr Reserved;
+        public uint ReservedFlags;
+        [MarshalAs(UnmanagedType.Bool)] public bool AutoLogonIfChallenged;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WinHttpProxyInfo
+    {
+        public uint AccessType;
+        public IntPtr Proxy;
+        public IntPtr ProxyBypass;
+    }
+
+    [DllImport("winhttp.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool WinHttpGetIEProxyConfigForCurrentUser(out WinHttpCurrentUserIeProxyConfig proxyConfig);
+
+    [DllImport("winhttp.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr WinHttpOpen(
+        string userAgent,
+        uint accessType,
+        string? proxyName,
+        string? proxyBypass,
+        uint flags);
+
+    [DllImport("winhttp.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool WinHttpSetTimeouts(
+        IntPtr session,
+        int resolveTimeout,
+        int connectTimeout,
+        int sendTimeout,
+        int receiveTimeout);
+
+    [DllImport("winhttp.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool WinHttpGetProxyForUrl(
+        IntPtr session,
+        string url,
+        ref WinHttpAutoProxyOptions options,
+        out WinHttpProxyInfo proxyInfo);
+
+    [DllImport("winhttp.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool WinHttpCloseHandle(IntPtr internet);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GlobalFree(IntPtr memory);
 }

@@ -318,7 +318,11 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private async void Connect_Click(object sender, RoutedEventArgs e)
     {
         SetConnectionText("正在启动本地桥…", false);
-        ShowQrProgress("正在准备安全登录会话，请稍候…", clearQr: true);
+        ShowQrProgress(
+            _services.WhatsApp.RequiresLocalAuthorization(CurrentAccountId)
+                ? "检测到这是另一台电脑：旧会话密钥不会跨设备迁移，正在安全建立新的扫码会话…"
+                : "正在准备安全登录会话，请稍候…",
+            clearQr: true);
         ConnectButton.IsEnabled = false;
         _ = RefreshPublicIpAsync();
         try
@@ -539,7 +543,12 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         {
             SetConnectionText("请重新扫码", false);
             QrHintText.Text = "旧登录凭据已损坏或密钥不匹配，软件已安全备份旧会话。请扫描新二维码重新登录。";
-            MessageBox.Show("旧 WhatsApp 登录凭据无法解密，已安全备份并创建新会话。接下来请重新扫码；客户和历史消息数据库不会被删除。", "WhatsApp 会话已恢复", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (e.Name == "local_authorization_required")
+        {
+            SetConnectionText("此电脑需扫码", false);
+            ShowQrProgress("账号资料来自另一台电脑；为保护登录安全，本机不会复制旧密钥，正在生成新的真实 WhatsApp 二维码…");
             return;
         }
         if (e.Name == "qr" && e.Data.TryGetProperty("dataUrl", out var dataUrl))
