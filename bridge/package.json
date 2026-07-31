@@ -12,13 +12,16 @@
     "smoke:outbound-routing": "node scripts/outbound-routing-smoke.mjs",
     "smoke:conversation-routing": "node scripts/conversation-routing-smoke.mjs",
     "smoke:connection-bootstrap": "node scripts/connection-bootstrap-smoke.mjs",
+    "smoke:network-routing": "node scripts/network-routing-smoke.mjs",
     "build:exe": "node scripts/build-sea.mjs",
     "smoke:exe": "node scripts/smoke.mjs dist/WAFlow.WhatsApp.Bridge.exe"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc13",
+    "https-proxy-agent": "7.0.6",
     "pino": "10.3.1",
-    "qrcode": "1.5.4"
+    "qrcode": "1.5.4",
+    "socks-proxy-agent": "8.0.5"
   },
   "engines": {
     "node": ">=20"

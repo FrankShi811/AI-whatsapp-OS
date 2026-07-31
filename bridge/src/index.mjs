@@ -19,6 +19,7 @@ import { isDisplayableMessage, messageContent, messageKind, messageText } from '
 import { normalizeOutboundUserJid, summarizeOutboundDeviceFanout } from './outbound-routing.mjs'
 import { isGroupJid, isSupportedInboundJid, normalizeGroupJid } from './conversation-routing.mjs'
 import { resolveBaileysVersion } from './connection-bootstrap.mjs'
+import { createProxyAgent, normalizeProxyUrl, safeProxyLabel } from './network-routing.mjs'
 
 const logger = pino({ level: 'silent' })
 const QR_GENERATION_WATCHDOG_MS = 35000
@@ -32,6 +33,12 @@ const state = {
   connectionAttempt: 0,
   qrSeen: false,
   manualDisconnect: false,
+  proxyUrl: '',
+  currentProxyUrl: '',
+  proxySource: '',
+  allowDirectFallback: false,
+  directFallbackUsed: false,
+  immediateReconnect: false,
   authKey: null,
   existingSession: false,
   contacts: new Map(),
@@ -1015,6 +1022,8 @@ async function connect() {
     data: { state: 'checking_protocol', attempt, message: '正在检查 WhatsApp 兼容协议' }
   })
   const versionInfo = await resolveBaileysVersion(fetchLatestBaileysVersion)
+  const networkAgent = createProxyAgent(state.currentProxyUrl)
+  const routeLabel = safeProxyLabel(state.currentProxyUrl, state.proxySource)
   emit({
     type: 'event', event: 'connection_stage', accountId: state.accountId,
     data: {
@@ -1023,8 +1032,8 @@ async function connect() {
       versionSource: versionInfo.source,
       warning: versionInfo.warning,
       message: versionInfo.source === 'remote'
-        ? '正在建立 WhatsApp 安全连接'
-        : '在线协议检查不可用，正在使用内置兼容协议连接'
+        ? `正在通过${routeLabel}建立 WhatsApp 安全连接`
+        : `在线协议检查不可用，正在通过${routeLabel}使用内置兼容协议连接`
     }
   })
   const socket = makeWASocket({
@@ -1038,6 +1047,7 @@ async function connect() {
     connectTimeoutMs: 20000,
     defaultQueryTimeoutMs: 30000,
     qrTimeout: 60000,
+    ...(networkAgent ? { agent: networkAgent, fetchAgent: networkAgent } : {}),
     shouldSyncHistoryMessage: () => true,
     generateHighQualityLinkPreview: false
   })
@@ -1046,6 +1056,27 @@ async function connect() {
   emit({ type: 'event', event: 'connection', accountId: state.accountId, data: { state: 'connecting' } })
   state.pairingTimer = setTimeout(() => {
     if (state.socket !== socket || state.connection !== 'connecting' || state.qrSeen) return
+    if (state.currentProxyUrl && state.allowDirectFallback && !state.directFallbackUsed) {
+      state.directFallbackUsed = true
+      state.currentProxyUrl = ''
+      state.immediateReconnect = true
+      state.connection = 'retrying'
+      emit({
+        type: 'event', event: 'connection_issue', accountId: state.accountId,
+        data: {
+          code: 'proxy_route_timeout',
+          recoverable: true,
+          attempt,
+          message: 'Windows 系统代理未能生成二维码，正在自动切换为直连'
+        }
+      })
+      emit({
+        type: 'event', event: 'connection', accountId: state.accountId,
+        data: { state: 'retrying', attempt }
+      })
+      try { socket.end(new Error('proxy_route_timeout')) } catch { }
+      return
+    }
     state.connection = 'retrying'
     emit({
       type: 'event', event: 'connection_issue', accountId: state.accountId,
@@ -1261,14 +1292,23 @@ async function connect() {
       data: { state: loggedOut ? 'logged_out' : 'disconnected', statusCode, error: safeError(update.lastDisconnect?.error) }
     })
     if (!loggedOut && !state.manualDisconnect) {
+      const reconnectImmediately = state.immediateReconnect
+      state.immediateReconnect = false
+      const retryDelay = reconnectImmediately ? 1000 : 5000
       emit({
         type: 'event', event: 'connection_stage', accountId: state.accountId,
-        data: { state: 'retrying', attempt, message: '连接暂时中断，5 秒后自动重试' }
+        data: {
+          state: 'retrying',
+          attempt,
+          message: reconnectImmediately
+            ? '正在切换网络路线并重新连接'
+            : '连接暂时中断，5 秒后自动重试'
+        }
       })
       state.reconnectTimer = setTimeout(() => connect().catch(error => emit({
         type: 'event', event: 'bridge_error', accountId: state.accountId,
         data: { error: safeError(error), code: 'automatic_reconnect_failed' }
-      })), 5000)
+      })), retryDelay)
     }
   })
 }
@@ -1290,6 +1330,12 @@ async function handle(command) {
         return
       }
       case 'connect':
+        state.proxyUrl = normalizeProxyUrl(command.proxyUrl)
+        state.currentProxyUrl = state.proxyUrl
+        state.proxySource = String(command.proxySource ?? '')
+        state.allowDirectFallback = Boolean(command.allowDirectFallback && state.proxyUrl)
+        state.directFallbackUsed = false
+        state.immediateReconnect = false
         await connect()
         reply(requestId, true, { state: state.connection })
         return

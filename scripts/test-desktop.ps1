@@ -52,6 +52,7 @@ $bridgeConnectionBootstrapSource = Get-Content -Raw -Encoding utf8 -LiteralPath 
 $bridgeMessageSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\message-content.mjs')
 $bridgeOutboundRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\outbound-routing.mjs')
 $bridgeConversationRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\conversation-routing.mjs')
+$bridgeNetworkRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\network-routing.mjs')
 $whatsAppInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml.cs')
 $emailInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\EmailInboxView.xaml.cs')
 $batchCollectionSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Collections\BatchObservableCollection.cs')
@@ -62,6 +63,7 @@ $whatsAppNumberValidationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (
 $campaignAutomationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CampaignAutomationService.cs')
 $customerSuccessSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerSuccessAgentCoordinator.cs')
 $emailServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\EmailService.cs')
+$networkProxyResolverSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\NetworkProxyResolver.cs')
 $emailAssistantSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\EmailAssistantService.cs')
 $messagingSyncSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\MessagingSyncService.cs')
 $emailAccountXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\EmailAccountWindow.xaml')
@@ -611,7 +613,7 @@ if ($bridgeConnectionBootstrapSource -notmatch 'version_lookup_timeout' -or
     $bridgeSource -notmatch 'qr_render_failed' -or
     $bridgeSource -notmatch 'state\.socket !== socket' -or
     $whatsAppBridgeClientSource -notmatch 'LatestQrDataUrl' -or
-    $whatsAppBridgeClientSource -notmatch 'TimeSpan\.FromSeconds\(75\)' -or
+    $whatsAppBridgeClientSource -notmatch 'TimeSpan\.FromSeconds\(95\)' -or
     $whatsAppBridgeClientSource -notmatch 'qr_generation_timeout' -or
     $whatsAppManagerSource -match 'ConnectionState is "connected" or "connecting"' -or
     $whatsAppInboxXaml -notmatch 'x:Name="QrProgressBar"' -or
@@ -624,6 +626,23 @@ if ($bridgeConnectionBootstrapSource -notmatch 'version_lookup_timeout' -or
 & $node (Join-Path $root 'bridge\scripts\connection-bootstrap-smoke.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'WhatsApp connection-bootstrap smoke test failed.' }
 Write-Host 'PASS  WhatsApp first-connect QR timeout, fallback, retry and visible recovery contract'
+
+if ($networkProxyResolverSource -notmatch 'WAFLOW_PROXY_URL' -or
+    $networkProxyResolverSource -notmatch 'WebRequest\.DefaultWebProxy' -or
+    $networkProxyResolverSource -notmatch 'AllowDirectFallback' -or
+    $emailServiceSource -notmatch 'ConnectImapAsync' -or
+    $emailServiceSource -notmatch 'ConnectionRoutes' -or
+    $whatsAppBridgeClientSource -notmatch 'proxyUrl = networkRoute\.ProxyUrl' -or
+    $bridgeNetworkRoutingSource -notmatch 'HttpsProxyAgent' -or
+    $bridgeNetworkRoutingSource -notmatch 'SocksProxyAgent' -or
+    $bridgeSource -notmatch 'proxy_route_timeout' -or
+    $emailInboxXaml -notmatch 'x:Name="EmailSyncStatusText"' -or
+    $emailInboxSource -match '"邮件暂时无法同步"') {
+  throw 'New-computer Gmail and WhatsApp connections must inherit Windows/environment proxies, fall back to direct access and report recovery inline.'
+}
+& $node (Join-Path $root 'bridge\scripts\network-routing-smoke.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Network proxy routing smoke test failed.' }
+Write-Host 'PASS  Gmail and WhatsApp Windows proxy inheritance, direct fallback and non-blocking recovery contract'
 
 if ($bridgeOutboundRoutingSource -notmatch 'jidNormalizedUser' -or
     $bridgeSource -notmatch [regex]::Escape('getUSyncDevices([senderIdentity, targetJid], false, false)') -or
@@ -735,7 +754,7 @@ if ($emailAccountXaml -notmatch 'x:Name="GuideStepsText"' -or
     -not ($emailAccountSource.Contains('UserNameBox.Text = EmailBox.Text.Trim()')) -or
     -not ($emailAccountSource.Contains('ImapHostBox.Clear()')) -or
     -not ($emailAccountSource.Contains('UseShellExecute = true')) -or
-    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 4'))) {
+    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 5'))) {
   throw 'Email account window must provide provider steps, direct official links, field hints, username sync and preset recovery.'
 }
 Write-Host 'PASS  provider-specific email onboarding and compatibility guidance contract'
@@ -795,13 +814,21 @@ if ($whatsAppInboxXaml -notmatch 'x:Name="TranslationBar"' -or
     $whatsAppTranslationSource -notmatch [regex]::Escape('AiModuleKeys.WhatsAppInbox') -or
     $whatsAppTranslationSource -notmatch [regex]::Escape('message.Direction == WhatsAppMessageDirection.Incoming') -or
     $whatsAppTranslationSource -notmatch [regex]::Escape('Where(IsTranslatableMessage)') -or
+    $whatsAppTranslationSource -notmatch [regex]::Escape('RecentTranslationLimit = 30') -or
+    $whatsAppTranslationSource -notmatch [regex]::Escape('Take(RecentTranslationLimit)') -or
+    $whatsAppTranslationSource -notmatch [regex]::Escape('TranslateBatchWithRecoveryAsync') -or
+    $whatsAppTranslationSource -notmatch [regex]::Escape('BuildFallbackProfile') -or
     $whatsAppTranslationSource -notmatch [regex]::Escape('GetWhatsAppTranslationStateAsync') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('_translationContextCts') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('_translationRunCts') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('ScrollMessages(conversation)') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('CompleteTranslationRun(cts)') -or
     $whatsAppTranslationModelsSource -notmatch [regex]::Escape('SourceTextHash') -or
     $localRepositorySource -notmatch [regex]::Escape('whatsapp_translation:{conversationId}') -or
-    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 5'))) {
-  throw 'WhatsApp Inbox must detect the Windows UI language and customer dominant incoming language, cache bilingual translations, preserve originals and require manual adoption plus send.'
+    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 7'))) {
+  throw 'WhatsApp Inbox must translate only the latest message window, recover malformed structured output, separate context/run cancellation, cache bilingual translations, preserve originals and require manual adoption plus send.'
 }
-Write-Host 'PASS  WhatsApp per-conversation language detection, bilingual cache and manual-send translation contract'
+Write-Host 'PASS  WhatsApp latest-message translation, structured-output recovery, repeat-click state and manual-send contract'
 
 if ($emailInboxXaml -notmatch [regex]::Escape('Visibility="{Binding UnreadVisibility}"') -or
     $emailInboxXaml -notmatch [regex]::Escape('Text="{Binding UnreadLabel}"') -or
@@ -850,8 +877,8 @@ if ($whatsAppInboxXaml -match 'x:Name="CompanyBox"' -or
     $customerAnalysisSource -notmatch [regex]::Escape('_customerBrain.UpdateConversationContextAsync') -or
     $customerAnalysisSource -notmatch [regex]::Escape('ConversationContext = customerBrain?.ConversationContext') -or
     $customerAnalysisSource -notmatch [regex]::Escape('manualNotes = lead.ManualNotes') -or
-    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 5')) -or
-    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 4'))) {
+    -not ($guideCatalogSource.Contains('["inbox"] = ModuleGuideVersion + 7')) -or
+    -not ($guideCatalogSource.Contains('["email"] = ModuleGuideVersion + 5'))) {
   throw 'Customer Intelligence must separate manual notes from AI context, remove company/source blanks, update cross-channel context incrementally and feed both into customer analysis.'
 }
 Write-Host 'PASS  Customer Intelligence manual-note and cross-channel AI-context contract'
