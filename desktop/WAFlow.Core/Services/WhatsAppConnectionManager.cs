@@ -31,7 +31,16 @@ public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLooku
     {
         accountId = Normalize(accountId);
         var directory = Path.Combine(_dataRoot, "whatsapp-sessions", accountId);
-        return File.Exists(Path.Combine(directory, "creds.json.enc"));
+        return File.Exists(Path.Combine(directory, "creds.json.enc"))
+            && new WindowsCredentialStore($"WAFlow/WhatsAppSessionKey/{accountId}").Exists();
+    }
+
+    public bool RequiresLocalAuthorization(string accountId)
+    {
+        accountId = Normalize(accountId);
+        var directory = Path.Combine(_dataRoot, "whatsapp-sessions", accountId);
+        return File.Exists(Path.Combine(directory, "creds.json.enc"))
+            && !new WindowsCredentialStore($"WAFlow/WhatsAppSessionKey/{accountId}").Exists();
     }
 
     public async Task StartAsync(string accountId = "primary", CancellationToken cancellationToken = default)

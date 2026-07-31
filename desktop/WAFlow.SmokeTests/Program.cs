@@ -1,6 +1,7 @@
 using System.Text;
 using System.Net;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text.Json;
 using ClosedXML.Excel;
 using DocumentFormat.OpenXml;
@@ -1311,6 +1312,69 @@ try
 finally
 {
     Environment.SetEnvironmentVariable("WAFLOW_PROXY_URL", originalProxyOverride);
+}
+
+var windowsProxyParser = typeof(NetworkProxyResolver).GetMethod(
+    "TryNormalizeWindowsProxyList",
+    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+object?[] windowsProxyArguments = ["http=127.0.0.1:8080;https=127.0.0.1:8443", "https", null];
+var windowsProxyParsed = (bool)windowsProxyParser.Invoke(null, windowsProxyArguments)!;
+Check(
+    windowsProxyParsed
+    && string.Equals(windowsProxyArguments[2]?.ToString(), "http://127.0.0.1:8443/", StringComparison.Ordinal),
+    "Windows PAC and automatic-proxy result selects the destination-specific route");
+
+var portableEmailId = $"portable-email-{Guid.NewGuid():N}";
+var portableEmail = new EmailAccount
+{
+    Id=portableEmailId, DisplayName="Portable Gmail", EmailAddress="portable@gmail.com",
+    Provider=EmailProviderKind.Gmail
+};
+var portableEmailStore = new WindowsCredentialStore($"WAFlow/EmailPassword/{portableEmailId}");
+portableEmailStore.Delete();
+await using (var portableEmailService = new EmailService(repository))
+{
+    Check(
+        !portableEmailService.HasLocalCredential(portableEmailId)
+        && EmailService.LocalAuthorizationMessage(portableEmail).Contains("此电脑尚未保存", StringComparison.Ordinal)
+        && EmailService.LocalAuthorizationMessage(portableEmail).Contains("历史邮件仍保留", StringComparison.Ordinal),
+        "email account metadata copied to another computer requires explicit local credential authorization");
+    portableEmailStore.Save("test-app-password");
+    Check(portableEmailService.HasLocalCredential(portableEmailId), "email local credential readiness is detected after authorization");
+}
+portableEmailStore.Delete();
+
+var portableWhatsAppRoot = Path.Combine(root, "portable-whatsapp");
+var portableWhatsAppId = $"portable_{Guid.NewGuid():N}";
+var portableWhatsAppSession = Path.Combine(portableWhatsAppRoot, "whatsapp-sessions", portableWhatsAppId);
+Directory.CreateDirectory(portableWhatsAppSession);
+await File.WriteAllTextAsync(Path.Combine(portableWhatsAppSession, "creds.json.enc"), "{\"encrypted\":true}");
+var portableWhatsAppStore = new WindowsCredentialStore($"WAFlow/WhatsAppSessionKey/{portableWhatsAppId}");
+portableWhatsAppStore.Delete();
+await using (var portableWhatsApp = new WhatsAppConnectionManager(portableWhatsAppRoot))
+{
+    Check(
+        portableWhatsApp.RequiresLocalAuthorization(portableWhatsAppId)
+        && !portableWhatsApp.HasStoredSession(portableWhatsAppId),
+        "WhatsApp session copied without its machine-local key is never background-reconnected as a valid session");
+    portableWhatsAppStore.Save(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
+    Check(
+        portableWhatsApp.HasStoredSession(portableWhatsAppId)
+        && !portableWhatsApp.RequiresLocalAuthorization(portableWhatsAppId),
+        "WhatsApp session becomes background-eligible only when the matching local key exists");
+}
+portableWhatsAppStore.Delete();
+await using (var portableWhatsAppClient = new WhatsAppBridgeClient(portableWhatsAppRoot))
+{
+    var prepareFreshSession = typeof(WhatsAppBridgeClient).GetMethod(
+        "PrepareFreshLocalSession",
+        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    var backupName = (string)prepareFreshSession.Invoke(portableWhatsAppClient, [portableWhatsAppId])!;
+    Check(
+        Directory.Exists(portableWhatsAppSession)
+        && !File.Exists(Path.Combine(portableWhatsAppSession, "creds.json.enc"))
+        && Directory.Exists(Path.Combine(portableWhatsAppRoot, "whatsapp-sessions", backupName)),
+        "WhatsApp other-computer session is recoverably archived before a fresh QR session is created");
 }
 
 var emailAccount = new EmailAccount

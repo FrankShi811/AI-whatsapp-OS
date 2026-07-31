@@ -54,6 +54,12 @@ public sealed class EmailService : IAsyncDisposable
 
     public event EventHandler<EmailSynchronizationState>? SynchronizationChanged;
 
+    public bool HasLocalCredential(string accountId) =>
+        !string.IsNullOrWhiteSpace(accountId) && PasswordStore(accountId).Exists();
+
+    public static string LocalAuthorizationMessage(EmailAccount account) =>
+        $"此电脑尚未保存“{account.DisplayLabel}”的{Guide(account.Provider).PasswordLabel}。历史邮件仍保留，请点击“管理账号”，重新填写后测试保存。";
+
     public static IReadOnlyList<EmailProviderPreset> ProviderPresets { get; } =
     [
         new(EmailProviderKind.Gmail, "Gmail", "imap.gmail.com", 993, "smtp.gmail.com", 465, true),
@@ -275,7 +281,7 @@ public sealed class EmailService : IAsyncDisposable
         account.Status != EmailConnectionStatus.NotConfigured
         && !string.IsNullOrWhiteSpace(account.ImapHost)
         && !string.IsNullOrWhiteSpace(account.UserName)
-        && !string.IsNullOrWhiteSpace(PasswordStore(account.Id).Read());
+        && HasLocalCredential(account.Id);
 
     private BackgroundAccountMonitor? EnsureBackgroundMonitor(string accountId)
     {
@@ -769,7 +775,8 @@ public sealed class EmailService : IAsyncDisposable
     }
 
     private static string RequirePassword(EmailAccount account) =>
-        PasswordStore(account.Id).Read() ?? throw new InvalidOperationException("邮箱凭据不存在，请重新连接邮箱。");
+        PasswordStore(account.Id).Read()
+        ?? throw new InvalidOperationException(LocalAuthorizationMessage(account));
 
     private static WindowsCredentialStore PasswordStore(string accountId) => new($"WAFlow/EmailPassword/{accountId}");
 

@@ -9,10 +9,21 @@ public static class ReleaseCatalog
     public static string CurrentVersion =>
         Assembly.GetExecutingAssembly().GetName().Version is { } version
             ? $"{version.Major}.{version.Minor}.{version.Build}"
-            : "1.15.0";
+            : "5.15.1";
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("5.15.1", "2026-07-31", "新电脑 Gmail 重新授权与 WhatsApp 二维码恢复",
+        [
+            "明确区分“网络暂时断开”和“此电脑缺少本机授权”：邮箱账号资料与历史邮件可以随本地数据工作区迁移，但 Gmail 等平台的应用专用密码仍由当前电脑的 Windows 凭据管理器独立保护。",
+            "换电脑后若邮箱账号仍在但本机凭据缺失，邮件 Inbox 会直接提示重新授权；点击同步会打开原账号设置，要求重新填写应用专用密码并完成 IMAP / SMTP 测试，不再把缺少凭据误报为后台重连。",
+            "WhatsApp 加密会话若来自另一台电脑且缺少对应本机密钥，不再被后台当成有效会话反复连接；程序会保留账号与本地聊天数据、安全备份旧加密登录目录，并建立新的扫码会话。",
+            "WhatsApp Inbox 会显示“此电脑需扫码”的可操作状态并继续等待真实二维码；旧会话损坏或跨电脑密钥不匹配时不再弹阻塞式错误窗口，也无需用户反复退出或删除账号。",
+            "网络路由补齐 Windows 当前用户的手动代理、自动代理、PAC 与 WPAD 解析；Gmail IMAP / SMTP 和 WhatsApp 会在同一套安全路线中先尝试已识别的代理，再按既有规则回退直连。",
+            "自动代理与错误提示不会显示代理账号密码；PAC 解析失败、代理不可达或企业网络阻断时仍保留直接连接与后台恢复路径，不会把一次网络失败写成永久账号失效。",
+            "更新 WhatsApp 与邮件 Inbox 使用手册，并新增本机凭据缺失、跨电脑 WhatsApp 会话备份、后台连接资格、Windows PAC/WPAD 及目标协议代理选择的原生回归。",
+            "Release 构建与原生回归继续验证客户、消息、WhatsApp/邮箱账号资料、API Key、知识库、自动化、报告、本地数据工作区和 SQLite 数据不被覆盖；本版本只发布 GitHub Windows 中文安装包与 Velopack 自动更新资产，不关闭、重启、安装或覆盖本机正式程序，安装或更新继续创建或修复桌面快捷方式，更新缓存继续仅保留当前、待安装新版本及最近 3 个回滚版本，macOS 继续暂停。"
+        ], true),
         new("5.15.0", "2026-07-31", "新电脑网络自适应与 WhatsApp 最新消息翻译修复",
         [
             "Gmail、其他 IMAP / SMTP 邮箱和 WhatsApp 首次连接会自动读取 WAFLOW_PROXY_URL、HTTPS_PROXY、ALL_PROXY、HTTP_PROXY 及 Windows 当前系统代理；新电脑、代理/VPN或公司网络环境不再默认强制直连。",
@@ -24,7 +35,7 @@ public static class ReleaseCatalog
             "WhatsApp 翻译把语言识别与按钮运行状态完全分离；AI 结构化结果偶发异常时会沿用已验证语言，并把翻译批次自动拆小重试，不再因一次坏 JSON 锁住后续翻译。",
             "更新 WhatsApp 与邮件 Inbox 使用手册，并新增代理解析、凭据脱敏、HTTP/SOCKS 路由、代理到直连回退及新电脑连接契约回归。",
             "升级不覆盖客户、原始字段、消息、WhatsApp/邮箱账号、API Key、知识库、自动化、报告、本地数据工作区或 SQLite 数据；本版本仅发布 GitHub Windows 中文安装包和 Velopack 自动更新资产，不直接覆盖、关闭、重启或安装本机正式程序，安装或更新继续创建或修复桌面快捷方式，更新缓存继续只保留当前、待安装新版本及最近 3 个回滚版本，macOS 继续暂停。"
-        ], true),
+        ]),
         new("5.14.2", "2026-07-30", "WhatsApp 首次连接二维码自愈",
         [
             "修复新电脑首次连接 WhatsApp 时可能长期停留在“连接中”却不显示二维码的问题：在线兼容协议查询增加明确超时，网络受限或查询失败时自动使用随安装包验证过的内置协议继续连接。",
