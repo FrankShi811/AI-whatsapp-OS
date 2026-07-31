@@ -43,6 +43,10 @@ $customerBrainModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-
 $leadIntelligenceXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\LeadIntelligenceView.xaml')
 $leadIntelligenceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\LeadIntelligenceView.xaml.cs')
 $leadAutomationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\LeadIntelligenceAutomationService.cs')
+$opportunityImportModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Domain\OpportunitySupplementModels.cs')
+$opportunityImportServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Imports\OpportunitySupplementImportService.cs')
+$opportunityImportXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\OpportunitySupplementImportWindow.xaml')
+$opportunityImportSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Windows\OpportunitySupplementImportWindow.xaml.cs')
 $whatsAppInboxXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml')
 $whatsAppTranslationSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\WhatsAppTranslationService.cs')
 $whatsAppTranslationModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Domain\WhatsAppTranslationModels.cs')
@@ -454,10 +458,27 @@ if (-not ($leadIntelligenceSource.Contains('var allLeads = await _services.Repos
     -not ($leadIntelligenceSource.Contains('UpdateBulkAnalyzeButtonRunningContent(0, allLeads.Count);')) -or
     -not ($leadIntelligenceSource.Contains('UpdateBulkAnalyzeButtonRunningContent(progress.Completed, progress.Total);')) -or
     -not ($leadIntelligenceSource.Contains('if (_bulkCancellation is null) return;')) -or
-    -not ($guideCatalogSource.Contains('["intelligence"] = ModuleGuideVersion + 3'))) {
+    -not ($guideCatalogSource.Contains('["intelligence"] = ModuleGuideVersion + 4'))) {
   throw 'Lead Intelligence bulk action must show global idle counts, live running progress, ignore late callbacks and explain filter scope.'
 }
 Write-Host 'PASS  Lead Intelligence global retry count and live bulk-action text contract'
+
+if (-not ($leadIntelligenceXaml.Contains('x:Name="OpportunityImportButton"')) -or
+    -not ($leadIntelligenceXaml.Contains('x:Name="OpportunitySignalFilter"')) -or
+    -not ($leadIntelligenceXaml.Contains('x:Name="OpportunityActivityFilter"')) -or
+    -not ($leadIntelligenceXaml.Contains('x:Name="OpportunityCategoryFilter"')) -or
+    -not ($leadIntelligenceXaml.Contains('x:Name="OpportunityAmountFilter"')) -or
+    -not ($opportunityImportModelsSource.Contains('class OpportunityImportPreview')) -or
+    -not ($opportunityImportServiceSource.Contains('BuildPreviewAsync')) -or
+    -not ($opportunityImportServiceSource.Contains('CommitAsync')) -or
+    -not ($opportunityImportServiceSource.Contains('ConflictBuyerIds')) -or
+    -not ($opportunityImportServiceSource.Contains('BuildSnapshot')) -or
+    -not ($opportunityImportXaml.Contains('AutomationProperties.Name="商机补充数据导入"')) -or
+    -not ($opportunityImportXaml.Contains('重复交易零写入')) -or
+    -not ($opportunityImportSource.Contains('BrowseButton.IsEnabled = !busy;'))) {
+  throw 'Opportunity supplement import must preserve the exact-Buyer-ID preview/commit contract, local evidence filters, deduplication and accessible non-reentrant UI.'
+}
+Write-Host 'PASS  opportunity supplement import whitelist, evidence and accessible preview contract'
 
 function Convert-HexToRgb([string]$hex) {
   $value = $hex.TrimStart('#')

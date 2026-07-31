@@ -18,13 +18,19 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     private int _customerBrainRefreshGeneration;
     private int _currentPage = 1;
     private int _pageSize = 30;
+    private bool _updatingOpportunityFilters;
     public event EventHandler? ImportRequested;
+    public event EventHandler? OpportunityImportRequested;
     public event EventHandler? DataChanged;
 
     public LeadIntelligenceView(AppServices services)
     {
         InitializeComponent(); _services = services;
         GradeFilter.ItemsSource = new[] { "全部", "A", "B", "C", "D" }; GradeFilter.SelectedIndex = 0;
+        OpportunitySignalFilter.ItemsSource = new[] { "全部交易信号", "有未付款订单", "有支付失败", "有纠纷风险" }; OpportunitySignalFilter.SelectedIndex = 0;
+        OpportunityActivityFilter.ItemsSource = new[] { "全部更新时间", "最近 7 天有交易", "最近 30 天有交易", "最近 90 天有交易" }; OpportunityActivityFilter.SelectedIndex = 0;
+        OpportunityCategoryFilter.ItemsSource = new[] { "全部一级品类" }; OpportunityCategoryFilter.SelectedIndex = 0;
+        OpportunityAmountFilter.ItemsSource = new[] { "全部成交金额", "尚无成交", "0–1,000", "1,000–10,000", "10,000 以上" }; OpportunityAmountFilter.SelectedIndex = 0;
         PageSizeBox.ItemsSource = new[] { new PageSizeOption("10 条/页", 10), new PageSizeOption("30 条/页", 30), new PageSizeOption("50 条/页", 50) };
         PageSizeBox.SelectedIndex = 1;
     }
@@ -33,10 +39,15 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     {
         var selectedId = (LeadGrid.SelectedItem as Lead)?.Id;
         _leads = await _services.Repository.GetLeadsAsync(SearchBox.Text, GradeFilter.SelectedItem as string);
+        var snapshotList = await _services.Repository.GetOpportunitySnapshotsAsync();
+        UpdateCategoryFilter(snapshotList);
+        var snapshots = snapshotList
+            .ToDictionary(item => item.LeadId, StringComparer.OrdinalIgnoreCase);
+        _leads = ApplyOpportunityFilters(_leads, snapshots);
         await RefreshAiRouteAsync();
         ApplyPagination(selectedId);
         var selectedLead = LeadGrid.SelectedItem as Lead;
-        UpdateInspector(selectedLead);
+        await UpdateInspectorAsync(selectedLead);
         await UpdateCustomerBrainAsync(selectedLead);
     }
 
@@ -90,14 +101,17 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         BulkAnalyzeButton.Content = $"正在分析 {Math.Min(completed, total)} / {total}";
     }
 
-    private void UpdateInspector(Lead? lead)
+    private async Task UpdateInspectorAsync(Lead? lead)
     {
         if (lead is null)
         {
             LeadNameText.Text = "选择一个商机"; CompanyText.Text = ""; GradeText.Text = "—"; ScoreText.Text = "0"; StageText.Text = "—"; AmountText.Text = "—";
             BaseScoreText.Text = "0 / 100"; BehaviorScoreText.Text = "0";
             ProfileText.Text = "尚未选择客户"; AnalysisMetaText.Text = ""; CustomerBrainMetaText.Text = "CUSTOMER BRAIN · 等待选择客户"; SignalItems.ItemsSource = null; NextActionText.Text = "—"; FactorItems.ItemsSource = null; RiskItems.ItemsSource = null; AnalysisErrorText.Text = "";
-            ConfidenceText.Text = "0%"; ConfidenceBar.Value = 0; ScoreRing.SetScore(0, "D", 0); RadarChart.SetValues([]); return;
+            ConfidenceText.Text = "0%"; ConfidenceBar.Value = 0; ScoreRing.SetScore(0, "D", 0); RadarChart.SetValues([]);
+            OpportunityEvidenceCard.Visibility = Visibility.Collapsed;
+            OpportunityEventItems.ItemsSource = null;
+            return;
         }
         LeadNameText.Text = lead.DisplayName; CompanyText.Text = $"{lead.Company} · {lead.Country}"; GradeText.Text = $"{lead.Grade}级"; ScoreText.Text = lead.Score.ToString();
         StageText.Text = lead.StageLabel; AmountText.Text = lead.AmountLabel; ProfileText.Text = lead.ProfileSummary; NextActionText.Text = lead.NextAction;
@@ -106,7 +120,13 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         ConfidenceText.Text = $"{lead.AnalysisConfidence:P0}";
         ConfidenceBar.Value = Math.Clamp(lead.AnalysisConfidence * 100, 0, 100);
         ScoreRing.SetScore(lead.Score, lead.Grade, lead.AnalysisConfidence);
-        var trigger = lead.AnalysisTrigger == "whatsapp_reply" ? "WhatsApp 新回复自动触发" : lead.AnalysisTrigger == "manual" ? "人工触发" : "尚未触发";
+        var trigger = lead.AnalysisTrigger switch
+        {
+            "whatsapp_reply" => "WhatsApp 新回复自动触发",
+            "opportunity_supplement_import" => "商机补充数据变化自动触发",
+            "manual" => "人工触发",
+            _ => "尚未触发"
+        };
         var analyzedAt = lead.LastAnalyzedAt is null ? "尚未完成 AI 分析" : $"最近完成 {lead.LastAnalyzedAt.Value.LocalDateTime:yyyy-MM-dd HH:mm}";
         var contract = lead.HasCurrentAiScore ? $"V{lead.AnalysisContractVersion}" : "等待 V2";
         AnalysisMetaText.Text = $"{contract} · {trigger} · {analyzedAt} · {lead.AnalysisStateLabel}";
@@ -124,6 +144,34 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         RiskItems.ItemsSource = lead.Risks.Count > 0 ? lead.Risks : !lead.PhoneValid ? new[] { "号码无效，禁止打开 WhatsApp。" } : lead.AiScoreApplied ? new[] { "AI 分析结论仍需人工核对。" } : new[] { "当前 D 级是未分析初始值，不代表低价值客户。" };
         AnalysisErrorText.Text = lead.AnalysisError;
         GradeBadge.Background = (System.Windows.Media.Brush)FindResource(lead.Grade is "A" or "B" ? "SuccessSoft" : lead.Grade == "C" ? "WarningSoft" : "DangerSoft");
+        var opportunity = await _services.Repository.GetOpportunitySnapshotAsync(lead.Id);
+        if (opportunity is null)
+        {
+            OpportunityEvidenceCard.Visibility = Visibility.Collapsed;
+            OpportunityEventItems.ItemsSource = null;
+        }
+        else
+        {
+            OpportunityEvidenceCard.Visibility = Visibility.Visible;
+            OpportunityUpdatedText.Text = opportunity.UpdatedAt.LocalDateTime.ToString("MM-dd HH:mm");
+            OpportunityValueText.Text = opportunity.ValueSummary
+                + $"\n近 30 / 90 / 365 天：{opportunity.PaidAmount30Days:N2} / {opportunity.PaidAmount90Days:N2} / {opportunity.PaidAmount365Days:N2}";
+            OpportunityIntentText.Text = opportunity.IntentSummary
+                + (string.IsNullOrWhiteSpace(opportunity.LatestFailureReason) ? "" : $"\n最近障碍：{opportunity.LatestFailureReason}");
+            OpportunityCategoryText.Text =
+                $"一级：{Fallback(opportunity.PrimaryCategory)} · 二级：{Fallback(opportunity.SecondaryCategory)}\n高频商品：{Fallback(opportunity.FrequentProduct)} · 最近商品：{Fallback(opportunity.LatestProduct)}";
+            OpportunityRiskText.Text = opportunity.RiskSummary
+                + (string.IsNullOrWhiteSpace(opportunity.PrimaryDisputeReason) ? "" : $"\n主要原因：{opportunity.PrimaryDisputeReason}")
+                + (opportunity.HasChargeback ? "\n含拒付订单，需人工核对。" : "");
+            var recentEvents = (await _services.Repository.GetOpportunityEventsAsync([lead.Id]))
+                .OrderByDescending(item => item.OccurredAt ?? item.DataDate)
+                .Take(6)
+                .Select(FormatOpportunityEvidence)
+                .ToList();
+            OpportunityEventItems.ItemsSource = recentEvents.Count > 0
+                ? recentEvents
+                : ["尚无可核对的订单明细。"];
+        }
     }
 
     private async Task UpdateCustomerBrainAsync(Lead? lead)
@@ -241,7 +289,7 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     private async void LeadGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         var lead = LeadGrid.SelectedItem as Lead;
-        UpdateInspector(lead);
+        await UpdateInspectorAsync(lead);
         await UpdateCustomerBrainAsync(lead);
     }
     private void ToggleDecisionDrawer_Click(object sender, RoutedEventArgs e)
@@ -253,10 +301,17 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     }
 
     private void Import_Click(object sender, RoutedEventArgs e) => ImportRequested?.Invoke(this, EventArgs.Empty);
+    private void OpportunityImport_Click(object sender, RoutedEventArgs e) => OpportunityImportRequested?.Invoke(this, EventArgs.Empty);
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await RefreshAsync();
     private async void GradeFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!IsLoaded) return;
+        _currentPage = 1;
+        await RefreshAsync();
+    }
+    private async void OpportunityFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded || _updatingOpportunityFilters) return;
         _currentPage = 1;
         await RefreshAsync();
     }
@@ -290,4 +345,81 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     private sealed record FactorMetric(string Label, int Score, int Max, string Reason, string Evidence) { public double Percent => Max == 0 ? 0 : 100d * Score / Max; public string Value => $"{Score}/{Max}"; }
     private sealed record PageSizeOption(string Label, int Value);
     private static class LeadScoringLabel { public static readonly string[] Order = ["paid_marketing_willingness","supply_stability","ecommerce_foundation","private_traffic","existing_sales","materials_readiness"]; }
+    private List<Lead> ApplyOpportunityFilters(List<Lead> leads, IReadOnlyDictionary<string, OpportunitySnapshot> snapshots)
+    {
+        var signal = OpportunitySignalFilter.SelectedItem as string ?? "全部交易信号";
+        var activity = OpportunityActivityFilter.SelectedItem as string ?? "全部更新时间";
+        var category = OpportunityCategoryFilter.SelectedItem as string ?? "全部一级品类";
+        var amount = OpportunityAmountFilter.SelectedItem as string ?? "全部成交金额";
+        var threshold = activity switch
+        {
+            "最近 7 天有交易" => DateTimeOffset.Now.AddDays(-7),
+            "最近 30 天有交易" => DateTimeOffset.Now.AddDays(-30),
+            "最近 90 天有交易" => DateTimeOffset.Now.AddDays(-90),
+            _ => (DateTimeOffset?)null
+        };
+        return leads.Where(lead =>
+        {
+            snapshots.TryGetValue(lead.Id, out var snapshot);
+            var signalMatch = signal switch
+            {
+                "有未付款订单" => snapshot?.AwaitingPaymentCount > 0,
+                "有支付失败" => snapshot?.FailedPaymentCount > 0,
+                "有纠纷风险" => snapshot?.HasRisk == true,
+                _ => true
+            };
+            var activityMatch = threshold is null || snapshot?.LatestActivityAt >= threshold;
+            var categoryMatch = category == "全部一级品类"
+                || snapshot?.PrimaryCategory.Equals(category, StringComparison.OrdinalIgnoreCase) == true;
+            var amountMatch = amount switch
+            {
+                "尚无成交" => snapshot is null || snapshot.SuccessfulPaymentTotal <= 0,
+                "0–1,000" => snapshot is { SuccessfulPaymentTotal: > 0 and < 1000 },
+                "1,000–10,000" => snapshot is { SuccessfulPaymentTotal: >= 1000 and < 10000 },
+                "10,000 以上" => snapshot?.SuccessfulPaymentTotal >= 10000,
+                _ => true
+            };
+            return signalMatch && activityMatch && categoryMatch && amountMatch;
+        }).ToList();
+    }
+    private void UpdateCategoryFilter(IReadOnlyCollection<OpportunitySnapshot> snapshots)
+    {
+        var selected = OpportunityCategoryFilter.SelectedItem as string ?? "全部一级品类";
+        var options = new[] { "全部一级品类" }
+            .Concat(snapshots.Select(item => item.PrimaryCategory)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
+            .ToList();
+        _updatingOpportunityFilters = true;
+        try
+        {
+            OpportunityCategoryFilter.ItemsSource = options;
+            OpportunityCategoryFilter.SelectedItem = options.Contains(selected, StringComparer.OrdinalIgnoreCase)
+                ? options.First(item => item.Equals(selected, StringComparison.OrdinalIgnoreCase))
+                : options[0];
+        }
+        finally
+        {
+            _updatingOpportunityFilters = false;
+        }
+    }
+    private static string FormatOpportunityEvidence(OpportunityTransactionEvent item)
+    {
+        var kind = item.Kind switch
+        {
+            OpportunityEventKind.PaymentSucceeded => "支付成功",
+            OpportunityEventKind.PaymentFailed => "支付失败",
+            OpportunityEventKind.AwaitingPayment => "下单未付款",
+            OpportunityEventKind.Dispute => "纠纷订单",
+            _ => "交易事件"
+        };
+        var time = (item.OccurredAt ?? item.DataDate)?.LocalDateTime.ToString("yyyy-MM-dd HH:mm") ?? "时间未知";
+        var order = string.IsNullOrWhiteSpace(item.OrderId) ? "订单号缺失" : $"订单 {item.OrderId}";
+        var amount = item.Amount == 0
+            ? ""
+            : $" · {Fallback(item.Currency)} {item.Amount:N2}";
+        return $"{kind} · {time}\n{order}{amount}";
+    }
+    private static string Fallback(string value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
 }

@@ -64,6 +64,18 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
         foreach (var leadId in pending) _queue.Writer.TryWrite(leadId);
     }
 
+    public void QueueOpportunitySupplementAnalysis(IEnumerable<string> leadIds)
+    {
+        foreach (var leadId in leadIds.Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            AnalysisChanged?.Invoke(this, new LeadAnalysisAutomationEventArgs(
+                leadId,
+                AnalysisStatus.Queued,
+                "新增交易证据已进入商机智能增量分析队列"));
+            _queue.Writer.TryWrite(leadId);
+        }
+    }
+
     public async Task<LeadBulkAnalysisResult> AnalyzeAllLeadsAsync(IProgress<LeadBulkAnalysisProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         if (!_provider.HasApiKey()) throw new DeepSeekException("provider_not_configured", "请先在 API 对接中配置 API Key。", false);
@@ -254,7 +266,12 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
             var lead = await _repository.GetLeadAsync(leadId, cancellationToken);
             if (lead is null || lead.AnalysisStatus != AnalysisStatus.Queued) continue;
             var requestMarker = lead.AnalysisRequestedAt;
-            AnalysisChanged?.Invoke(this, new LeadAnalysisAutomationEventArgs(lead.Id, AnalysisStatus.Running, "AI 正在分析 WhatsApp 回复"));
+            AnalysisChanged?.Invoke(this, new LeadAnalysisAutomationEventArgs(
+                lead.Id,
+                AnalysisStatus.Running,
+                lead.AnalysisTrigger == "opportunity_supplement_import"
+                    ? "AI 正在分析新增交易证据"
+                    : "AI 正在分析 WhatsApp 回复"));
             try
             {
                 var analyzed = await _provider.AnalyzeLeadAsync(lead, cancellationToken);

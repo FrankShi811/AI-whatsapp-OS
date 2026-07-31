@@ -136,6 +136,50 @@ public sealed class LocalRepository
               invalid_phones INTEGER NOT NULL,
               created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS opportunity_import_files (
+              id TEXT PRIMARY KEY,
+              file_hash TEXT NOT NULL UNIQUE,
+              file_name TEXT NOT NULL,
+              source_modified_at TEXT NOT NULL,
+              status TEXT NOT NULL,
+              total_rows INTEGER NOT NULL,
+              matched_customers INTEGER NOT NULL,
+              inserted_events INTEGER NOT NULL,
+              changed_customers INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS opportunity_transaction_events (
+              id TEXT PRIMARY KEY,
+              event_key TEXT NOT NULL UNIQUE,
+              kind TEXT NOT NULL,
+              buyer_id TEXT NOT NULL COLLATE NOCASE,
+              lead_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+              occurred_at TEXT,
+              order_id TEXT NOT NULL,
+              transaction_id TEXT NOT NULL,
+              amount TEXT NOT NULL,
+              source_file_hash TEXT NOT NULL,
+              source_sheet TEXT NOT NULL,
+              source_row INTEGER NOT NULL,
+              imported_at TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_opportunity_events_lead ON opportunity_transaction_events(lead_id, occurred_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_opportunity_events_buyer ON opportunity_transaction_events(buyer_id, occurred_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_opportunity_events_kind ON opportunity_transaction_events(kind, occurred_at DESC);
+            CREATE TABLE IF NOT EXISTS opportunity_snapshots (
+              lead_id TEXT PRIMARY KEY REFERENCES leads(id) ON DELETE CASCADE,
+              buyer_id TEXT NOT NULL COLLATE NOCASE,
+              latest_activity_at TEXT,
+              primary_category TEXT NOT NULL,
+              successful_payment_total TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              data_fingerprint TEXT NOT NULL,
+              data_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_opportunity_snapshots_category ON opportunity_snapshots(primary_category COLLATE NOCASE);
+            CREATE INDEX IF NOT EXISTS ix_opportunity_snapshots_activity ON opportunity_snapshots(latest_activity_at DESC);
             CREATE TABLE IF NOT EXISTS whatsapp_conversations (
               id TEXT PRIMARY KEY,
               account_id TEXT NOT NULL,
@@ -4306,5 +4350,210 @@ public sealed class LocalRepository
         await using var command = db.CreateCommand(); command.CommandText = "INSERT INTO import_jobs(id,file_name,status,total_rows,created,updated,invalid_phones,created_at) VALUES($id,$file,'completed',$total,$created,$updated,$invalid,$at)";
         command.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N")); command.Parameters.AddWithValue("$file", fileName); command.Parameters.AddWithValue("$total", total); command.Parameters.AddWithValue("$created", created); command.Parameters.AddWithValue("$updated", updated); command.Parameters.AddWithValue("$invalid", invalid); command.Parameters.AddWithValue("$at", DateTimeOffset.Now.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<bool> HasOpportunityImportFileAsync(string fileHash, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT 1 FROM opportunity_import_files WHERE file_hash=$hash AND status='completed' LIMIT 1";
+        command.Parameters.AddWithValue("$hash", fileHash);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
+
+    public async Task<HashSet<string>> GetOpportunityEventKeysAsync(CancellationToken cancellationToken = default)
+    {
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT event_key FROM opportunity_transaction_events";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken)) keys.Add(reader.GetString(0));
+        return keys;
+    }
+
+    public async Task<List<OpportunityTransactionEvent>> GetOpportunityEventsAsync(
+        IReadOnlyCollection<string>? leadIds = null,
+        CancellationToken cancellationToken = default)
+    {
+        var items = new List<OpportunityTransactionEvent>();
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        if (leadIds is { Count: > 0 })
+        {
+            var parameters = leadIds.Select((_, index) => $"$lead{index}").ToList();
+            command.CommandText = $"SELECT data_json FROM opportunity_transaction_events WHERE lead_id IN ({string.Join(',', parameters)}) ORDER BY occurred_at";
+            var index = 0;
+            foreach (var leadId in leadIds) command.Parameters.AddWithValue(parameters[index++], leadId);
+        }
+        else
+        {
+            command.CommandText = "SELECT data_json FROM opportunity_transaction_events ORDER BY occurred_at";
+        }
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<OpportunityTransactionEvent>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task<OpportunitySnapshot?> GetOpportunitySnapshotAsync(
+        string leadId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM opportunity_snapshots WHERE lead_id=$lead";
+        command.Parameters.AddWithValue("$lead", leadId);
+        return Json.Deserialize<OpportunitySnapshot>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
+    public async Task<List<OpportunitySnapshot>> GetOpportunitySnapshotsAsync(CancellationToken cancellationToken = default)
+    {
+        var items = new List<OpportunitySnapshot>();
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM opportunity_snapshots ORDER BY latest_activity_at DESC";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (Json.Deserialize<OpportunitySnapshot>(reader.GetString(0)) is { } item) items.Add(item);
+        return items;
+    }
+
+    public async Task<OpportunityImportResult> CommitOpportunityImportAsync(
+        OpportunityImportPreview preview,
+        CancellationToken cancellationToken = default)
+    {
+        if (preview.IsPreviouslyImportedFile)
+            return new OpportunityImportResult();
+
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var transaction = await db.BeginTransactionAsync(cancellationToken);
+        var insertedEvents = 0;
+        try
+        {
+            foreach (var item in preview.NewEvents)
+            {
+                await using var command = db.CreateCommand();
+                command.Transaction = transaction as SqliteTransaction;
+                command.CommandText = """
+                    INSERT OR IGNORE INTO opportunity_transaction_events(
+                      id,event_key,kind,buyer_id,lead_id,occurred_at,order_id,transaction_id,amount,
+                      source_file_hash,source_sheet,source_row,imported_at,data_json)
+                    VALUES($id,$key,$kind,$buyer,$lead,$occurred,$order,$transaction,$amount,$hash,$sheet,$row,$imported,$json)
+                    """;
+                command.Parameters.AddWithValue("$id", item.Id);
+                command.Parameters.AddWithValue("$key", item.EventKey);
+                command.Parameters.AddWithValue("$kind", item.Kind.ToString());
+                command.Parameters.AddWithValue("$buyer", item.BuyerId);
+                command.Parameters.AddWithValue("$lead", item.LeadId);
+                command.Parameters.AddWithValue("$occurred", (object?)item.OccurredAt?.ToString("O") ?? DBNull.Value);
+                command.Parameters.AddWithValue("$order", item.OrderId);
+                command.Parameters.AddWithValue("$transaction", item.TransactionId);
+                command.Parameters.AddWithValue("$amount", item.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                command.Parameters.AddWithValue("$hash", item.SourceFileHash);
+                command.Parameters.AddWithValue("$sheet", item.SourceSheet);
+                command.Parameters.AddWithValue("$row", item.SourceRow);
+                command.Parameters.AddWithValue("$imported", item.ImportedAt.ToString("O"));
+                command.Parameters.AddWithValue("$json", Json.Serialize(item));
+                insertedEvents += await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            foreach (var snapshot in preview.ChangedSnapshots)
+            {
+                snapshot.UpdatedAt = DateTimeOffset.Now;
+                await using var command = db.CreateCommand();
+                command.Transaction = transaction as SqliteTransaction;
+                command.CommandText = """
+                    INSERT INTO opportunity_snapshots(
+                      lead_id,buyer_id,latest_activity_at,primary_category,successful_payment_total,updated_at,data_fingerprint,data_json)
+                    VALUES($lead,$buyer,$activity,$category,$total,$updated,$fingerprint,$json)
+                    ON CONFLICT(lead_id) DO UPDATE SET buyer_id=excluded.buyer_id,latest_activity_at=excluded.latest_activity_at,
+                      primary_category=excluded.primary_category,successful_payment_total=excluded.successful_payment_total,
+                      updated_at=excluded.updated_at,data_fingerprint=excluded.data_fingerprint,data_json=excluded.data_json
+                    """;
+                command.Parameters.AddWithValue("$lead", snapshot.LeadId);
+                command.Parameters.AddWithValue("$buyer", snapshot.BuyerId);
+                command.Parameters.AddWithValue("$activity", (object?)snapshot.LatestActivityAt?.ToString("O") ?? DBNull.Value);
+                command.Parameters.AddWithValue("$category", snapshot.PrimaryCategory);
+                command.Parameters.AddWithValue("$total", snapshot.SuccessfulPaymentTotal.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                command.Parameters.AddWithValue("$updated", snapshot.UpdatedAt.ToString("O"));
+                command.Parameters.AddWithValue("$fingerprint", snapshot.DataFingerprint);
+                command.Parameters.AddWithValue("$json", Json.Serialize(snapshot));
+                await command.ExecuteNonQueryAsync(cancellationToken);
+
+                await using var selectLead = db.CreateCommand();
+                selectLead.Transaction = transaction as SqliteTransaction;
+                selectLead.CommandText = "SELECT data_json FROM leads WHERE id=$id";
+                selectLead.Parameters.AddWithValue("$id", snapshot.LeadId);
+                if (Json.Deserialize<Lead>(await selectLead.ExecuteScalarAsync(cancellationToken) as string) is { } lead)
+                {
+                    lead.AnalysisStatus = AnalysisStatus.Queued;
+                    lead.AnalysisTrigger = "opportunity_supplement_import";
+                    lead.AnalysisRequestedAt = DateTimeOffset.Now;
+                    lead.AnalysisError = "";
+                    await UpsertLeadInternalAsync(db, lead, cancellationToken, transaction);
+                }
+            }
+
+            var compactSummary = new OpportunityImportPreview
+            {
+                SourceFileName = preview.SourceFileName,
+                SourceFileHash = preview.SourceFileHash,
+                SourceModifiedAt = preview.SourceModifiedAt,
+                TotalRows = preview.TotalRows,
+                MatchedCustomers = preview.MatchedCustomers,
+                MatchedEvents = preview.MatchedEvents,
+                UnmatchedRows = preview.UnmatchedRows,
+                InvalidBuyerIdRows = preview.InvalidBuyerIdRows,
+                DuplicateEvents = preview.DuplicateEvents,
+                ChangedCustomers = preview.ChangedCustomers,
+                UnchangedCustomers = preview.UnchangedCustomers,
+                BuyerIdConflicts = preview.BuyerIdConflicts,
+                ReanalysisCount = preview.ReanalysisCount,
+                UnmatchedBuyerIds = preview.UnmatchedBuyerIds.Take(100).ToList(),
+                ConflictBuyerIds = preview.ConflictBuyerIds
+            };
+            await using (var fileCommand = db.CreateCommand())
+            {
+                fileCommand.Transaction = transaction as SqliteTransaction;
+                fileCommand.CommandText = """
+                    INSERT INTO opportunity_import_files(
+                      id,file_hash,file_name,source_modified_at,status,total_rows,matched_customers,
+                      inserted_events,changed_customers,created_at,data_json)
+                    VALUES($id,$hash,$name,$modified,'completed',$rows,$matched,$events,$changed,$created,$json)
+                    """;
+                fileCommand.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
+                fileCommand.Parameters.AddWithValue("$hash", preview.SourceFileHash);
+                fileCommand.Parameters.AddWithValue("$name", preview.SourceFileName);
+                fileCommand.Parameters.AddWithValue("$modified", preview.SourceModifiedAt.ToString("O"));
+                fileCommand.Parameters.AddWithValue("$rows", preview.TotalRows);
+                fileCommand.Parameters.AddWithValue("$matched", preview.MatchedCustomers);
+                fileCommand.Parameters.AddWithValue("$events", insertedEvents);
+                fileCommand.Parameters.AddWithValue("$changed", preview.ChangedSnapshots.Count);
+                fileCommand.Parameters.AddWithValue("$created", DateTimeOffset.Now.ToString("O"));
+                fileCommand.Parameters.AddWithValue("$json", Json.Serialize(compactSummary));
+                await fileCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return new OpportunityImportResult
+            {
+                InsertedEvents = insertedEvents,
+                ChangedCustomers = preview.ChangedSnapshots.Count,
+                QueuedForAnalysis = preview.ChangedSnapshots.Count,
+                ChangedLeadIds = preview.ChangedSnapshots.Select(item => item.LeadId).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            };
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
     }
 }

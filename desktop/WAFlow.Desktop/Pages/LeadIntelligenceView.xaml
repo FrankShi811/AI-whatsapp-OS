@@ -17,7 +17,14 @@
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                     <Button x:Name="BulkAnalyzeButton" Content="✦  AI 分析 / 重试全部" Style="{StaticResource AiButton}" Click="BulkAnalyze_Click" Margin="0,0,8,0"/>
                     <Button x:Name="CancelBulkButton" Content="停止分析" Style="{StaticResource DangerButton}" Click="CancelBulk_Click" Margin="0,0,8,0" Visibility="Collapsed"/>
-                    <Button x:Name="ImportButton" Content="＋  导入客户" Style="{StaticResource SecondaryButton}" Click="Import_Click"/>
+                    <Button x:Name="OpportunityImportButton"
+                            Content="＋  导入商机数据"
+                            Style="{StaticResource SecondaryButton}"
+                            Click="OpportunityImport_Click"
+                            Margin="0,0,8,0"
+                            ToolTip="只为 Buyer ID 完全匹配的现有客户补充支付、未付款和纠纷证据"
+                            AutomationProperties.Name="导入现有客户的商机补充数据"/>
+                    <Button x:Name="ImportButton" Content="导入客户" Style="{StaticResource SecondaryButton}" Click="Import_Click"/>
                 </StackPanel>
                 <StackPanel x:Name="BulkProgressPanel" Margin="0,9,0,0" Visibility="Collapsed">
                     <ProgressBar x:Name="BulkProgressBar" Height="5" Minimum="0" Maximum="1" Value="0" Foreground="{DynamicResource AiAccent}"/>
@@ -29,13 +36,25 @@
 
         <Border Grid.Row="1" Style="{StaticResource Card}" Padding="12" Margin="0,19,0,14">
             <Grid>
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="150"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="115"/>
+                    <ColumnDefinition Width="140"/>
+                    <ColumnDefinition Width="140"/>
+                    <ColumnDefinition Width="145"/>
+                    <ColumnDefinition Width="130"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
                 <Grid>
                     <TextBlock Text="⌕" FontSize="16" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="11,0,0,0" Panel.ZIndex="1" IsHitTestVisible="False"/>
                     <TextBox x:Name="SearchBox" ToolTip="搜索客户、市场或号码" Padding="34,8,11,8" Margin="0,0,10,0" KeyDown="SearchBox_KeyDown"/>
                 </Grid>
                 <ComboBox x:Name="GradeFilter" Grid.Column="1" SelectionChanged="GradeFilter_SelectionChanged" Margin="0,0,10,0"/>
-                <Button Grid.Column="2" Content="↻  刷新" Style="{StaticResource SecondaryButton}" Click="Refresh_Click"/>
+                <ComboBox x:Name="OpportunitySignalFilter" Grid.Column="2" SelectionChanged="OpportunityFilter_SelectionChanged" Margin="0,0,10,0" ToolTip="按交易意图或风险信号筛选" AutomationProperties.Name="商机交易意图与风险筛选"/>
+                <ComboBox x:Name="OpportunityActivityFilter" Grid.Column="3" SelectionChanged="OpportunityFilter_SelectionChanged" Margin="0,0,10,0" ToolTip="按最近交易活动筛选" AutomationProperties.Name="商机最近交易活动筛选"/>
+                <ComboBox x:Name="OpportunityCategoryFilter" Grid.Column="4" SelectionChanged="OpportunityFilter_SelectionChanged" Margin="0,0,10,0" ToolTip="按累计支付金额最高的一级品类筛选" AutomationProperties.Name="商机一级品类筛选"/>
+                <ComboBox x:Name="OpportunityAmountFilter" Grid.Column="5" SelectionChanged="OpportunityFilter_SelectionChanged" Margin="0,0,10,0" ToolTip="按累计支付金额区间筛选" AutomationProperties.Name="商机累计支付金额筛选"/>
+                <Button Grid.Column="6" Content="↻  刷新" Style="{StaticResource SecondaryButton}" Click="Refresh_Click"/>
             </Grid>
         </Border>
 
@@ -121,6 +140,32 @@
                             </Grid>
 
                             <TextBlock x:Name="AnalysisMetaText" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,9,0,0" TextWrapping="Wrap"/>
+                            <Border x:Name="OpportunityEvidenceCard" Background="{DynamicResource SurfaceMuted}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="11" Padding="14" Margin="0,13,0,0" Visibility="Collapsed">
+                                <StackPanel>
+                                    <Grid>
+                                        <TextBlock Text="交易与商机证据" Style="{StaticResource SectionTitle}"/>
+                                        <TextBlock x:Name="OpportunityUpdatedText" HorizontalAlignment="Right" Style="{StaticResource LabelText}"/>
+                                    </Grid>
+                                    <TextBlock Text="交易价值" Style="{StaticResource LabelText}" Margin="0,10,0,0"/>
+                                    <TextBlock x:Name="OpportunityValueText" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                    <TextBlock Text="当前意图" Style="{StaticResource LabelText}" Margin="0,10,0,0"/>
+                                    <TextBlock x:Name="OpportunityIntentText" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                    <TextBlock Text="品类画像" Style="{StaticResource LabelText}" Margin="0,10,0,0"/>
+                                    <TextBlock x:Name="OpportunityCategoryText" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                    <TextBlock Text="风险阻力" Style="{StaticResource LabelText}" Margin="0,10,0,0"/>
+                                    <TextBlock x:Name="OpportunityRiskText" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                    <TextBlock Text="最近订单证据" Style="{StaticResource LabelText}" Margin="0,10,0,0"/>
+                                    <ItemsControl x:Name="OpportunityEventItems" Margin="0,4,0,0">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="0,7,0,2">
+                                                    <TextBlock Text="{Binding}" TextWrapping="Wrap" FontSize="9.5" Foreground="{DynamicResource InkSecondary}"/>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
                             <TextBlock x:Name="CustomerBrainMetaText"
                                        Text="CUSTOMER BRAIN · 等待物化"
                                        Foreground="{DynamicResource AiAccent}"

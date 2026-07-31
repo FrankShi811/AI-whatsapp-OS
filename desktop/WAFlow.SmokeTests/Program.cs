@@ -16,6 +16,17 @@ using WAFlow.Core.Services;
 
 var failures = new List<string>();
 void Check(bool condition, string name) { if (condition) Console.WriteLine($"PASS  {name}"); else { Console.WriteLine($"FAIL  {name}"); failures.Add(name); } }
+void WriteHeaders(IXLWorksheet sheet, IReadOnlyList<string> headers)
+{
+    for (var index = 0; index < headers.Count; index++) sheet.Cell(1, index + 1).Value = headers[index];
+}
+void WriteRow(IXLWorksheet sheet, int rowNumber, IReadOnlyList<string> values)
+{
+    for (var index = 0; index < values.Count; index++)
+    {
+        sheet.Cell(rowNumber, index + 1).Value = values[index];
+    }
+}
 
 var root = Path.Combine(Path.GetTempPath(), "WAFlow-smoke-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -608,6 +619,151 @@ catch (InvalidOperationException error) when (error.Message.Contains("Buyer ID",
     duplicateBuyerBlocked = true;
 }
 Check(duplicateBuyerBlocked, "repository prevents a second customer master record from claiming the same Buyer ID");
+
+var opportunityRoot = Path.Combine(root, "opportunity-supplement");
+var opportunityRepository = new LocalRepository(Path.Combine(opportunityRoot, "opportunity.db"));
+await opportunityRepository.InitializeAsync();
+var opportunityLead = new Lead
+{
+    Id = "opportunity-existing",
+    BuyerId = "BUYER-OPP-001",
+    Name = "Existing Customer",
+    PhoneE164 = "+14155554001",
+    PhoneValid = true,
+    Email = "existing@example.com",
+    Owner = "Sales Owner",
+    ManualNotes = "人工备注必须保留",
+    Stage = LeadStage.Negotiation
+};
+var opportunityUntouchedLead = new Lead
+{
+    Id = "opportunity-untouched",
+    BuyerId = "BUYER-OPP-002",
+    Name = "Untouched Customer",
+    PhoneE164 = "+14155554002",
+    PhoneValid = true
+};
+await opportunityRepository.UpsertLeadAsync(opportunityLead);
+await opportunityRepository.UpsertLeadAsync(opportunityUntouchedLead);
+var opportunityCustomerCountBefore = (await opportunityRepository.GetLeadsAsync()).Count;
+var opportunityWorkbookPath = Path.Combine(opportunityRoot, "opportunity-supplement.xlsx");
+Directory.CreateDirectory(opportunityRoot);
+using (var workbook = new XLWorkbook())
+{
+    var failed = workbook.AddWorksheet("1、支付失败");
+    WriteHeaders(failed, ["更新日期", "买家id", "支付日期", "支付流水号", "订单币种", "是否3D支付（1是，0否）", "支付通道", "国家", "订单号", "支付金额", "支付失败原因"]);
+    WriteRow(failed, 2, ["2026-07-30", "BUYER-OPP-001", "2026-07-29 10:00", "TX-FAIL-1", "USD", "1", "Card", "US", "ORDER-FAIL-1", "60.50", "3D verification"]);
+
+    var unpaid = workbook.AddWorksheet("2、下单未付款");
+    WriteHeaders(unpaid, ["更新日期", "买家ID", "订单编号", "状态英文名", "中文描述", "下单时的买家级别", "下单时间", "收货国家", "订单GMV"]);
+    WriteRow(unpaid, 2, ["2026-07-30", "BUYER-OPP-001", "ORDER-UNPAID-1", "awaiting_payment", "待付款", "V4", "2026-07-29 11:00", "US", "300"]);
+
+    var dispute = workbook.AddWorksheet("3、纠纷订单");
+    WriteHeaders(dispute, ["更新日期", "买家ID", "订单编号", "订单确认时间", "备货截止时间", "发货时间", "订单GMV", "纠纷开启一级原因中文描述", "纠纷开启二级原因中文描述", "dispute_subtype", "是否拒付订单", "协议纠纷的开启时间"]);
+    WriteRow(dispute, 2, ["2026-07-30", "BUYER-OPP-001", "ORDER-DISPUTE-1", "2026-07-01", "2026-07-02", "2026-07-03", "120", "物流问题", "未收到货", "logistics", "1", "2026-07-28 12:00"]);
+
+    var paid = workbook.AddWorksheet("5、支付成功");
+    WriteHeaders(paid, ["更新日期", "买家id", "下单时买家等级", "下单的产品总价最高的一级发布类目id", "下单的产品总价最高的二级发布类目id", "价格最高的商品名称", "卖家ID", "订单一级渠道", "订单二级渠道", "支付日期", "支付流水号", "支付币种", "支付通道", "国家", "订单号", "支付金额"]);
+    WriteRow(paid, 2, ["2026-07-30", "BUYER-OPP-001", "V4", "Shoes", "Sneakers", "Running shoes", "SELLER-1", "Web", "Desktop", "2026-07-25 09:00", "TX-PAID-1", "USD", "Card", "US", "ORDER-PAID-1", "120"]);
+    WriteRow(paid, 3, ["2026-07-30", "BUYER-OPP-001", "V4", "Electronics", "Accessories", "USB hub", "SELLER-2", "App", "Android", "2026-07-26 09:00", "TX-PAID-2", "USD", "Wallet", "US", "ORDER-PAID-2", "80"]);
+    WriteRow(paid, 4, ["2026-07-30", "BUYER-OPP-001", "V4", "Electronics", "Accessories", "USB hub", "SELLER-2", "App", "Android", "2026-07-26 09:00", "TX-PAID-2", "USD", "Wallet", "US", "ORDER-PAID-2", "80"]);
+    WriteRow(paid, 5, ["2026-07-30", "BUYER-NOT-IN-CRM", "V5", "Furniture", "Office", "Desk", "SELLER-X", "Web", "Desktop", "2026-07-27 09:00", "TX-UNKNOWN", "USD", "Card", "US", "ORDER-UNKNOWN", "999"]);
+    workbook.SaveAs(opportunityWorkbookPath);
+}
+var opportunityImports = new OpportunitySupplementImportService(opportunityRepository);
+var opportunityPreview = await opportunityImports.BuildPreviewAsync(opportunityWorkbookPath);
+Check(opportunityPreview is
+      {
+          TotalRows: 7,
+          MatchedCustomers: 1,
+          MatchedEvents: 6,
+          UnmatchedRows: 1,
+          DuplicateEvents: 1,
+          ChangedCustomers: 1,
+          ReanalysisCount: 1
+      }
+      && opportunityPreview.NewEvents.Count == 5
+      && opportunityPreview.UnmatchedBuyerIds.SequenceEqual(["BUYER-NOT-IN-CRM"]),
+    "opportunity supplement preview enforces the exact Buyer ID whitelist and deduplicates transaction events locally");
+var opportunityCommit = await opportunityImports.CommitAsync(opportunityPreview);
+var opportunitySnapshot = await opportunityRepository.GetOpportunitySnapshotAsync(opportunityLead.Id);
+var opportunityCustomers = await opportunityRepository.GetLeadsAsync();
+var opportunityLeadAfterImport = await opportunityRepository.GetLeadAsync(opportunityLead.Id);
+Check(opportunityCommit is { InsertedEvents: 5, ChangedCustomers: 1, QueuedForAnalysis: 1 }
+      && opportunitySnapshot is
+      {
+          SuccessfulPaymentCount: 2,
+          SuccessfulPaymentTotal: 200,
+          AverageOrderValue: 100,
+          FailedPaymentCount: 1,
+          AwaitingPaymentCount: 1,
+          DisputeCount: 1,
+          HasChargeback: true,
+          PrimaryCategory: "Shoes"
+      },
+    "opportunity supplement commit creates a customer-level value intent category and risk snapshot");
+Check(opportunityCustomers.Count == opportunityCustomerCountBefore
+      && opportunityCustomers.All(item => !item.BuyerId.Equals("BUYER-NOT-IN-CRM", StringComparison.OrdinalIgnoreCase))
+      && opportunityLeadAfterImport is
+      {
+          Name: "Existing Customer",
+          PhoneE164: "+14155554001",
+          Email: "existing@example.com",
+          Owner: "Sales Owner",
+          ManualNotes: "人工备注必须保留",
+          Stage: LeadStage.Negotiation,
+          AnalysisStatus: AnalysisStatus.Queued,
+          AnalysisTrigger: "opportunity_supplement_import"
+      },
+    "opportunity supplement never creates customers or overwrites identity profile notes owner and manual stage");
+var repeatedOpportunityPreview = await opportunityImports.BuildPreviewAsync(opportunityWorkbookPath);
+Check(repeatedOpportunityPreview.IsPreviouslyImportedFile
+      && repeatedOpportunityPreview.NewEvents.Count == 0
+      && repeatedOpportunityPreview.ReanalysisCount == 0,
+    "re-uploading an identical opportunity workbook causes zero writes and zero AI requests");
+
+var duplicateEventsWorkbookPath = Path.Combine(opportunityRoot, "opportunity-supplement-duplicate-events.xlsx");
+File.Copy(opportunityWorkbookPath, duplicateEventsWorkbookPath);
+using (var duplicateEventsWorkbook = new XLWorkbook(duplicateEventsWorkbookPath))
+{
+    duplicateEventsWorkbook.AddWorksheet("导入说明").Cell("A1").Value = "相同交易事件，不同文件哈希";
+    duplicateEventsWorkbook.Save();
+}
+var duplicateEventsPreview = await opportunityImports.BuildPreviewAsync(duplicateEventsWorkbookPath);
+var duplicateEventsCommit = await opportunityImports.CommitAsync(duplicateEventsPreview);
+Check(!duplicateEventsPreview.IsPreviouslyImportedFile
+      && duplicateEventsPreview.NewEvents.Count == 0
+      && duplicateEventsPreview.ChangedCustomers == 0
+      && duplicateEventsPreview.ReanalysisCount == 0
+      && duplicateEventsCommit is { InsertedEvents: 0, ChangedCustomers: 0, QueuedForAnalysis: 0 }
+      && (await opportunityRepository.GetOpportunityEventsAsync()).Count == 5,
+    "a different workbook containing only known event keys causes zero transaction writes and zero AI requests");
+
+var rollbackWorkbookPath = Path.Combine(opportunityRoot, "opportunity-supplement-rollback.xlsx");
+File.Copy(opportunityWorkbookPath, rollbackWorkbookPath);
+using (var rollbackWorkbook = new XLWorkbook(rollbackWorkbookPath))
+{
+    var paid = rollbackWorkbook.Worksheet("5、支付成功");
+    WriteRow(paid, 6, ["2026-07-31", "BUYER-OPP-001", "V4", "Shoes", "Sneakers", "Trail shoes", "SELLER-1", "Web", "Desktop", "2026-07-31 09:00", "TX-PAID-3", "USD", "Card", "US", "ORDER-PAID-3", "50"]);
+    rollbackWorkbook.Save();
+}
+var rollbackPreview = await opportunityImports.BuildPreviewAsync(rollbackWorkbookPath);
+rollbackPreview.SourceFileHash = opportunityPreview.SourceFileHash;
+var rollbackFailed = false;
+try
+{
+    await opportunityImports.CommitAsync(rollbackPreview);
+}
+catch (SqliteException)
+{
+    rollbackFailed = true;
+}
+var eventsAfterRollback = await opportunityRepository.GetOpportunityEventsAsync();
+var snapshotAfterRollback = await opportunityRepository.GetOpportunitySnapshotAsync(opportunityLead.Id);
+Check(rollbackFailed
+      && eventsAfterRollback.Count == 5
+      && snapshotAfterRollback?.DataFingerprint == opportunitySnapshot?.DataFingerprint,
+    "opportunity supplement import rolls back every event and snapshot when the transaction cannot complete");
 
 var scientificPhonePath = Path.Combine(root, "scientific-phone.xlsx");
 using (var scientificWorkbook = new XLWorkbook())

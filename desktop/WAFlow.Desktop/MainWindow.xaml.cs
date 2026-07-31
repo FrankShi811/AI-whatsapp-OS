@@ -72,6 +72,7 @@ public partial class MainWindow : Window
         _analytics = new AnalyticsView(services);
         _dashboard.NavigateRequested += Dashboard_NavigateRequested;
         _intelligence.ImportRequested += OpenImport;
+        _intelligence.OpportunityImportRequested += OpenOpportunityImport;
         _intelligence.DataChanged += View_DataChanged;
         _customers.ImportRequested += OpenImport;
         _customers.DataChanged += View_DataChanged;
@@ -649,6 +650,14 @@ public partial class MainWindow : Window
         if (ContentHost.Content is IRefreshableView currentView)
             await currentView.RefreshAsync();
         await UpdateUnreadBadgesAsync();
+    }
+
+    private async void OpenOpportunityImport(object? sender, EventArgs e)
+    {
+        var window = new OpportunitySupplementImportWindow(_services) { Owner = this };
+        if (window.ShowDialog() != true) return;
+        await _intelligence.RefreshAsync();
+        _dashboard.NotifyUnreadChanged();
     }
 
     private async Task UpdateProviderStateAsync()

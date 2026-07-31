@@ -11,6 +11,7 @@ public sealed class AppServices
     public LocalRepository Repository { get; }
     public LeadScoringService Scoring { get; }
     public ImportService Imports { get; }
+    public OpportunitySupplementImportService OpportunitySupplements { get; }
     public WindowsCredentialStore Secrets { get; }
     public DeepSeekService DeepSeek { get; }
     public WhatsAppConnectionManager WhatsApp { get; }
@@ -60,6 +61,7 @@ public sealed class AppServices
             Repository,
             new CompositeKnowledgeDocumentParser(new AiProviderImageTextExtractor(DeepSeek)));
         Imports = new ImportService(Repository);
+        OpportunitySupplements = new OpportunitySupplementImportService(Repository);
         WhatsApp = new WhatsAppConnectionManager(DataWorkspace.RootDirectory);
         WhatsAppNumberValidation = new WhatsAppNumberValidationService(Repository, WhatsApp);
         WhatsAppSync = new WhatsAppSyncService(Repository, WhatsApp);
