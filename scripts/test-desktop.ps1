@@ -313,8 +313,10 @@ if ($customerEnrichmentServiceSource -notmatch 'RequestState\.Equals\("reserved"
     $customerEnrichmentServiceSource -notmatch 'ResolveReviewedJobStatus\(reviewedFacts\)[\s\S]{0,500}?SaveCustomerEnrichmentJobAsync\(job, cancellationToken\)') {
   $customerEnrichmentUsageGateFailures += 'restart_and_review_status'
 }
-if ($customerExternalFactPolicySource -notmatch 'GetDisplaySelectionRank\(fact, now\)' -or
-    $customerExternalFactPolicySource -notmatch 'HumanConfirmed when current => 600[\s\S]{0,120}?Verified when current => 500[\s\S]{0,120}?PossibleMatch => 300') {
+if (-not $customerExternalFactPolicySource.Contains('GetDisplaySelectionRank(fact, now)') -or
+    -not $customerExternalFactPolicySource.Contains('HumanConfirmed when current => 600') -or
+    -not $customerExternalFactPolicySource.Contains('Verified when current => 500') -or
+    -not $customerExternalFactPolicySource.Contains('PossibleMatch => 300')) {
   $customerEnrichmentUsageGateFailures += 'verified_fact_precedence'
 }
 if ($customerEnrichmentAnalyzerSource -notmatch 'Where\(source => ContainsEvidence\(source, fact\.EvidenceQuote\)\)' -or
