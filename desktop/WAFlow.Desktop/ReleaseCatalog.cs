@@ -9,10 +9,20 @@ public static class ReleaseCatalog
     public static string CurrentVersion =>
         Assembly.GetExecutingAssembly().GetName().Version is { } version
             ? $"{version.Major}.{version.Minor}.{version.Build}"
-            : "5.16.1";
+            : "5.17.0";
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("5.17.0", "2026-08-03", "推理深度校准与 Claude 原生接口",
+        [
+            "修复 DeepSeek 官方 /models 只返回模型 ID 时推理深度被误显示为“API 未声明档位”的问题：实时 API 元数据优先，缺少能力字段时再按官方模型规格补全 low、high、max 等已经确认支持的档位。",
+            "推理深度选择统一改为“自动（模型默认）”加模型实际支持档位；不再把简略模型目录误认为模型没有推理能力，也不会给未知或自定义模型猜测并发送未经确认的参数。",
+            "同步校准 OpenAI、Google Gemini、xAI Grok、Groq 和 OpenRouter 的推理能力解析；Provider 返回明确能力元数据时始终覆盖内置规格，后续模型能力变化可以随实时目录更新。",
+            "设置新增 Anthropic Claude Provider，使用原生 /v1/models 与 Messages API、x-api-key 和 anthropic-version 鉴权；Claude API Key 独立写入 Windows 凭据管理器，不与其他 Provider 共用。",
+            "Claude 模型支持全域或分板块路由、模型选择、官方 effort 档位和结构化分析；图片 OCR 也走 Claude 原生视觉消息格式，设置保存后新 AI 请求立即按对应路由执行。",
+            "更新设置使用手册和状态提示，明确“实时 API 元数据优先、官方规格兜底、未知模型保持默认”的安全边界；新增 DeepSeek 简略目录、多 Provider 能力、元数据优先级、Claude 原生鉴权与请求协议回归。",
+            "本版本仅发布 GitHub Windows 中文安装包与 Velopack 自动更新资产，不关闭、重启、安装或覆盖本机正式程序；安装或更新继续创建或修复桌面快捷方式，更新缓存继续只保留当前、待安装新版本及最近 3 个回滚版本，macOS 继续暂停。"
+        ], true),
         new("5.16.1", "2026-07-31", "本地数据工作区迁移重启修复",
         [
             "修复点击“迁移工作区”并重启后仍继续显示 C 盘原位置的问题：迁移重启会对常驻 WhatsApp、邮件、自动化、号码校验与更新服务执行有上限的安全收尾，避免后台服务长期阻止旧进程退出。",
@@ -22,7 +32,7 @@ public static class ReleaseCatalog
             "迁移继续使用先复制后校验策略：验证全部文件哈希、SQLite 完整性、外键和内部文件路径后才写入工作区定位文件；新位置成功启动后再清理原位置，失败则保留并回退原数据。",
             "新增迁移重启收尾、重复窗口拦截和路径选择回归；完整原生测试实际验证活动数据库拒绝迁移、客户与 SQLite 数据保留、WhatsApp 会话和媒体复制、内部路径改写、成功切换及原位置安全清理。",
             "本版本仅发布 GitHub Windows 中文安装包与 Velopack 自动更新资产，不关闭、重启、安装或覆盖本机正式程序；安装或更新继续创建或修复桌面快捷方式，更新缓存继续仅保留当前、待安装新版本及最近 3 个回滚版本，macOS 继续暂停。"
-        ], true),
+        ]),
         new("5.16.0", "2026-07-31", "商机交易证据补充导入",
         [
             "商机智能新增独立“导入商机数据”入口，支持 Myybiz 同类工作簿中的支付成功、支付失败、下单未付款和纠纷订单四类明细；它只补充现有客户交易证据，不复用客户主档导入。",

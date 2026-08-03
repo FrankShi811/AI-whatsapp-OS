@@ -601,7 +601,7 @@ public sealed class DashboardSnapshot
 public sealed class AppSettings
 {
     public string DeepSeekBaseUrl { get; set; } = "https://api.deepseek.com";
-    public string DeepSeekModel { get; set; } = "deepseek-chat";
+    public string DeepSeekModel { get; set; } = "deepseek-v4-flash";
     public string ActiveProviderId { get; set; } = "deepseek";
     public List<AiProviderProfile> ConfiguredAiProviders { get; set; } = [];
     public bool UseGlobalAiConfiguration { get; set; } = true;

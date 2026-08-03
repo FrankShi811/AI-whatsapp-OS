@@ -93,6 +93,8 @@ $bridgeBootstrapSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path
 $modulePreferencePersistenceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\AiModulePreferencePersistence.cs')
 $domainModelsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Domain\Models.cs')
 $deepSeekSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\DeepSeekService.cs')
+$aiProviderCatalogSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\AiProviderCatalog.cs')
+$aiModelCapabilityResolverSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\AiModelCapabilityResolver.cs')
 $conversationAssistantSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\ConversationAssistantService.cs')
 $customerAnalysisSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerAnalysisService.cs')
 $customerBrainSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerBrainService.cs')
@@ -898,7 +900,7 @@ if ($emailInboxXaml -notmatch 'x:Name="NewEmailButton"' -or
     $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 6') -or
     $guideCatalogSource -notmatch [regex]::Escape('["broadcast"] = ModuleGuideVersion + 2') -or
     $guideCatalogSource -notmatch [regex]::Escape('["analytics"] = ModuleGuideVersion + 2') -or
-    $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 7')) {
+    $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 8')) {
   throw 'Email Inbox must support new-message composition, CRM/Customer Brain-aware AI drafting, manual-send safety and current module guidance.'
 }
 Write-Host 'PASS  Email Inbox new-message, Customer Intelligence, AI draft and all-module guide audit contract'
@@ -960,7 +962,7 @@ if ($bridgeSource -notmatch [regex]::Escape('WAFLOW_DATA_ROOT') -or
     $whatsAppBridgeClientSource -notmatch [regex]::Escape('start.Environment["WAFLOW_DATA_ROOT"]')) {
   $workspaceMigrationFailures += 'whatsapp_root'
 }
-if ($guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 7') -or
+if ($guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 8') -or
     $guideCatalogSource -notmatch [regex]::Escape('迁移本地数据工作区')) {
   $workspaceMigrationFailures += 'settings_guide'
 }
@@ -1046,6 +1048,25 @@ if (-not $conversationAssistantSource.Contains('AiModuleKeys.WhatsAppInbox') -or
   throw 'Every current AI workload, including Lead Intelligence, must route through its own module key.'
 }
 Write-Host 'PASS  global/per-module AI model, token-cost and declared reasoning-depth routing contract'
+
+if (-not $aiProviderCatalogSource.Contains('"anthropic", "Anthropic Claude"') -or
+    -not $aiProviderCatalogSource.Contains('AiProviderProtocol.AnthropicMessages') -or
+    -not $deepSeekSource.Contains('"x-api-key"') -or
+    -not $deepSeekSource.Contains('"anthropic-version"') -or
+    -not $deepSeekSource.Contains('execution.BaseUrl + "/messages"') -or
+    -not $deepSeekSource.Contains('"output_config.effort"') -or
+    -not $aiModelCapabilityResolverSource.Contains('ResolveDeepSeek') -or
+    -not $aiModelCapabilityResolverSource.Contains('["low", "high", "max"]') -or
+    -not $aiModelCapabilityResolverSource.Contains('ResolveOpenAi') -or
+    -not $aiModelCapabilityResolverSource.Contains('ResolveAnthropic') -or
+    -not $aiModelCapabilityResolverSource.Contains('ResolveGemini') -or
+    -not $aiModelCapabilityResolverSource.Contains('ResolveXai') -or
+    -not $aiModelCapabilityResolverSource.Contains('ResolveGroq') -or
+    -not $settingsSource.Contains('自动（模型默认）') -or
+    $settingsSource.Contains('自动（API 未声明档位）')) {
+  throw 'Provider settings must combine live capability metadata with official fallbacks and route Anthropic through the native Claude protocol.'
+}
+Write-Host 'PASS  live-first provider reasoning catalog and native Anthropic Claude protocol contract'
 
 if (-not $leadIntelligenceSource.Contains('ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence') -or
     -not $leadIntelligenceSource.Contains('execution.Model') -or

@@ -382,9 +382,7 @@ public partial class SettingsWindow : Window
             && capability.ReasoningEfforts.Count > 0;
         var options = new List<ReasoningOption>
         {
-            new(
-                adjustable ? "自动（模型默认）" : "自动（API 未声明档位）",
-                AiReasoningEfforts.Auto)
+            new("自动（模型默认）", AiReasoningEfforts.Auto)
         };
         if (adjustable)
             options.AddRange(capability!.ReasoningEfforts
@@ -729,7 +727,7 @@ public partial class SettingsWindow : Window
         {
             var selected = ModelBox.Text.Trim();
             var normalizedBaseUrl = baseUri.ToString().TrimEnd('/');
-            var catalog = await _services.DeepSeek.DiscoverModelsAsync(normalizedBaseUrl, key, _modelFetchCancellation.Token);
+            var catalog = await _services.DeepSeek.DiscoverModelsAsync(_currentProviderId, normalizedBaseUrl, key, _modelFetchCancellation.Token);
             _pendingKeys[_currentProviderId] = key;
             _availableModels = catalog.Models.ToList();
             _profiles[_currentProviderId].ModelCapabilities = catalog.ModelCapabilities.Select(Clone).ToList();
@@ -739,7 +737,7 @@ public partial class SettingsWindow : Window
             CaptureCurrentProvider();
             _profiles[_currentProviderId].IsConfigured = true;
             ApiStatusText.Text = "验证通过";
-            ModelStatusText.Text = $"API Key 验证通过 · 已拉取 {_availableModels.Count} 个模型 · {catalog.FetchedAt.LocalDateTime:yyyy-MM-dd HH:mm:ss}";
+            ModelStatusText.Text = $"API Key 验证通过 · 已拉取 {_availableModels.Count} 个模型 · 推理档位已校准 · {catalog.FetchedAt.LocalDateTime:yyyy-MM-dd HH:mm:ss}";
             RefreshConfiguredProviders();
             BuildModuleRoutingRows();
             return true;

@@ -2104,6 +2104,111 @@ Check(
     reasonerCapability.ReasoningEfforts.SequenceEqual(["low", "medium", "high", "ultra"])
     && reasonerCapability.ReasoningParameter == "reasoning_effort",
     "AI model discovery reads declared reasoning depth metadata without guessing unsupported levels");
+var deepSeekIdOnlyHandler = new ProviderProtocolHandler(
+    """{"data":[{"id":"deepseek-v4-flash"},{"id":"deepseek-v4-pro"}]}""",
+    []);
+var deepSeekIdOnlyProvider = new DeepSeekService(
+    repository,
+    new FakeSecretStore("sk-deepseek-id-only"),
+    new HttpClient(deepSeekIdOnlyHandler) { Timeout=TimeSpan.FromSeconds(5) });
+var deepSeekIdOnlyCatalog = await deepSeekIdOnlyProvider.DiscoverModelsAsync(
+    "deepseek",
+    "https://api.deepseek.com",
+    "sk-deepseek-id-only");
+Check(
+    deepSeekIdOnlyCatalog.ModelCapabilities.All(capability =>
+        capability.ReasoningEfforts.SequenceEqual(["low", "high", "max"])
+        && capability.ReasoningParameter == "reasoning_effort"
+        && capability.Source == "provider_spec"),
+    "DeepSeek v4 models expose official reasoning-depth controls even when /models returns IDs only");
+
+var officialFallbackCases = new[]
+{
+    (Provider: "openai", Model: "gpt-5.6-sol", Efforts: new[] { "none", "low", "medium", "high", "xhigh", "max" }, Parameter: "reasoning_effort"),
+    (Provider: "gemini", Model: "gemini-3-flash-preview", Efforts: new[] { "minimal", "low", "medium", "high" }, Parameter: "reasoning_effort"),
+    (Provider: "xai", Model: "grok-4.5", Efforts: new[] { "low", "medium", "high" }, Parameter: "reasoning_effort"),
+    (Provider: "groq", Model: "openai/gpt-oss-120b", Efforts: new[] { "low", "medium", "high" }, Parameter: "reasoning_effort")
+};
+Check(
+    officialFallbackCases.All(test =>
+    {
+        var normalized = AiModelCapabilityResolver.Normalize(
+            test.Provider,
+            new AiModelCapability { ModelId=test.Model, Source="api_default" });
+        return normalized.ReasoningEfforts.SequenceEqual(test.Efforts)
+            && normalized.ReasoningParameter == test.Parameter
+            && normalized.Source == "provider_spec";
+    }),
+    "known OpenAI, Gemini, xAI and Groq models use provider specifications when their catalogs omit reasoning metadata");
+var metadataWinsCapability = AiModelCapabilityResolver.Normalize(
+    "deepseek",
+    new AiModelCapability
+    {
+        ModelId="deepseek-v4-flash",
+        ReasoningEfforts=["ultra"],
+        ReasoningParameter="reasoning_effort",
+        Source="api_metadata"
+    });
+Check(
+    metadataWinsCapability.ReasoningEfforts.SequenceEqual(["ultra"])
+    && metadataWinsCapability.Source == "api_metadata",
+    "live API reasoning metadata overrides the built-in provider specification without inventing extra levels");
+
+var anthropicRoot = Path.Combine(root, "anthropic-provider");
+var anthropicRepository = new LocalRepository(Path.Combine(anthropicRoot, "anthropic.db"));
+await anthropicRepository.InitializeAsync();
+var anthropicHandler = new ProviderProtocolHandler(
+    """{"data":[{"id":"claude-opus-4-6","capabilities":{"effort":{"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},"max":{"supported":true}}}}]}""",
+    ["""{"content":[{"type":"text","text":"{\"value\":\"claude-route\"}"}],"stop_reason":"end_turn"}"""]);
+var anthropicProvider = new DeepSeekService(
+    anthropicRepository,
+    new FakeSecretStore("sk-legacy"),
+    new HttpClient(anthropicHandler) { Timeout=TimeSpan.FromSeconds(5) },
+    providerSecretResolver: _ => new FakeSecretStore("sk-ant-test"));
+var anthropicCatalog = await anthropicProvider.DiscoverModelsAsync(
+    "anthropic",
+    "https://api.anthropic.com/v1",
+    "sk-ant-test");
+await anthropicRepository.SaveAppSettingsAsync(new AppSettings
+{
+    ActiveProviderId="anthropic",
+    DeepSeekBaseUrl="https://api.anthropic.com/v1",
+    DeepSeekModel="claude-opus-4-6",
+    DefaultReasoningEffort="high",
+    UseGlobalAiConfiguration=true,
+    ConfiguredAiProviders=
+    [
+        new AiProviderProfile
+        {
+            ProviderId="anthropic",
+            DisplayName="Anthropic Claude",
+            BaseUrl="https://api.anthropic.com/v1",
+            Model="claude-opus-4-6",
+            AvailableModels=anthropicCatalog.Models.ToList(),
+            ModelCapabilities=anthropicCatalog.ModelCapabilities.ToList(),
+            IsConfigured=true
+        }
+    ]
+});
+var anthropicResult = await anthropicProvider.CompleteStructuredAsync<RoutingProbe>(
+    AiModuleKeys.CustomerAnalytics,
+    "Return a routing probe.",
+    new { source="smoke" },
+    probe => string.IsNullOrWhiteSpace(probe.Value) ? "value is required" : null);
+Check(
+    anthropicCatalog.Models.SequenceEqual(["claude-opus-4-6"])
+    && anthropicCatalog.ModelCapabilities.Single().ReasoningEfforts.SequenceEqual(["low", "medium", "high", "max"])
+    && anthropicCatalog.ModelCapabilities.Single().ReasoningParameter == "output_config.effort"
+    && anthropicResult.Value == "claude-route"
+    && anthropicHandler.Requests.Count == 2
+    && anthropicHandler.Requests[0].Uri == "https://api.anthropic.com/v1/models?limit=1000"
+    && anthropicHandler.Requests[1].Uri == "https://api.anthropic.com/v1/messages"
+    && anthropicHandler.Requests.All(request => string.IsNullOrWhiteSpace(request.Authorization))
+    && anthropicHandler.Requests.All(request => request.Headers.GetValueOrDefault("x-api-key") == "sk-ant-test")
+    && anthropicHandler.Requests.All(request => request.Headers.GetValueOrDefault("anthropic-version") == "2023-06-01")
+    && anthropicHandler.RequestBodies.Single().Contains("\"output_config\":{\"effort\":\"high\"}")
+    && !anthropicHandler.RequestBodies.Single().Contains("chat/completions", StringComparison.Ordinal),
+    "Anthropic Claude uses native model discovery, authentication, Messages API and model-declared effort controls");
 var analyzed = await deepSeek.AnalyzeLeadAsync((await repository.GetLeadAsync("lead_elena"))!);
 Check(analyzed is { AnalysisStatus: AnalysisStatus.Succeeded, Score: 88, BaseProfileScore: 78, BehaviorSignalScore: 10, PurchaseProbability: 76, AnalysisContractVersion: 2, AiScoreApplied: true } && analyzed.ScoreFactors.Count == 6 && analyzed.Evidence.Count >= 7, "DeepSeek V2 structured analysis success");
 var analyzedDashboard = await repository.GetDashboardAsync();
@@ -4081,6 +4186,45 @@ sealed class QueueHandler(IEnumerable<string> responses) : HttpMessageHandler
         return new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent(_responses.Dequeue(), Encoding.UTF8, "application/json") };
     }
 }
+
+sealed class ProviderProtocolHandler(string modelCatalog, IEnumerable<string> responses) : HttpMessageHandler
+{
+    private readonly Queue<string> _responses = new(responses);
+    public List<ProviderProtocolRequest> Requests { get; } = [];
+    public List<string> RequestBodies { get; } = [];
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        var headers = request.Headers
+            .ToDictionary(
+                header => header.Key,
+                header => string.Join(",", header.Value),
+                StringComparer.OrdinalIgnoreCase);
+        Requests.Add(new ProviderProtocolRequest(
+            request.Method.Method,
+            request.RequestUri!.ToString(),
+            request.Headers.Authorization?.ToString() ?? "",
+            headers));
+        if (request.Method == HttpMethod.Get)
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content=new StringContent(modelCatalog, Encoding.UTF8, "application/json")
+            };
+        RequestBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content=new StringContent(_responses.Dequeue(), Encoding.UTF8, "application/json")
+        };
+    }
+}
+
+sealed record ProviderProtocolRequest(
+    string Method,
+    string Uri,
+    string Authorization,
+    IReadOnlyDictionary<string, string> Headers);
 
 sealed class IpMonitorHandler : HttpMessageHandler
 {
