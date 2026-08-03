@@ -1324,22 +1324,52 @@ public sealed class DeepSeekService : IStructuredAiProvider
             || string.IsNullOrWhiteSpace(execution.ReasoningParameter))
             return;
 
+        var providerId = execution.ProviderId.Trim().ToLowerInvariant();
+        var disableThinking = execution.ReasoningEffort is "none" or "minimal";
         requestBody.Remove("temperature");
+        if (providerId == "deepseek")
+        {
+            requestBody.Remove("top_p");
+            requestBody.Remove("presence_penalty");
+            requestBody.Remove("frequency_penalty");
+        }
+        if (providerId == "xai")
+        {
+            requestBody.Remove("presence_penalty");
+            requestBody.Remove("frequency_penalty");
+            requestBody.Remove("stop");
+        }
 
         switch (execution.ReasoningParameter)
         {
             case "reasoning_effort":
+                if (providerId == "qwen" && disableThinking)
+                {
+                    requestBody.Remove("reasoning_effort");
+                    requestBody["enable_thinking"] = false;
+                    break;
+                }
                 requestBody["reasoning_effort"] = execution.ReasoningEffort;
-                if (execution.ProviderId.Equals("deepseek", StringComparison.OrdinalIgnoreCase))
+                if (providerId == "qwen")
+                    requestBody["enable_thinking"] = true;
+                if (providerId == "deepseek")
                     requestBody["thinking"] = new JsonObject { ["type"] = "enabled" };
+                else if (providerId == "zhipu")
+                    requestBody["thinking"] = new JsonObject { ["type"] = disableThinking ? "disabled" : "enabled" };
                 break;
             case "reasoning.effort":
                 requestBody["reasoning"] = new JsonObject { ["effort"] = execution.ReasoningEffort };
                 break;
+            case "thinking.type":
+                requestBody["thinking"] = new JsonObject
+                {
+                    ["type"] = disableThinking ? "disabled" : "enabled"
+                };
+                break;
             case "thinking.effort":
                 requestBody["thinking"] = new JsonObject
                 {
-                    ["type"] = "enabled",
+                    ["type"] = disableThinking ? "disabled" : "enabled",
                     ["effort"] = execution.ReasoningEffort
                 };
                 break;
@@ -1393,6 +1423,12 @@ public sealed class DeepSeekService : IStructuredAiProvider
                 efforts.Add(effort);
             parameter = "reasoning.effort";
         }
+        if (openRouter
+            && item.TryGetProperty("reasoning", out var openRouterReasoning)
+            && openRouterReasoning.ValueKind == JsonValueKind.Object
+            && openRouterReasoning.TryGetProperty("mandatory", out var mandatory)
+            && mandatory.ValueKind == JsonValueKind.True)
+            efforts.Remove("none");
         return new AiModelCapability
         {
             ModelId = modelId?.Trim() ?? "",

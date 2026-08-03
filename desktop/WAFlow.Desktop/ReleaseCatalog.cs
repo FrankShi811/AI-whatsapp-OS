@@ -9,10 +9,20 @@ public static class ReleaseCatalog
     public static string CurrentVersion =>
         Assembly.GetExecutingAssembly().GetName().Version is { } version
             ? $"{version.Major}.{version.Minor}.{version.Build}"
-            : "5.17.0";
+            : "5.17.1";
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("5.17.1", "2026-08-03", "商机批量状态与多模型推理档位完善",
+        [
+            "商机智能批量操作不再显示容易误读的“重试失败 1”：存在失败客户时明确显示“重试 N 位分析失败客户”，未完成队列则显示“继续 N 位未完成客户”。",
+            "商机智能状态栏统一拆分为已完成、总客户、本轮失败、全局待重试和待继续五个口径；历史失败与本轮结果不再混成同一个数字。",
+            "DeepSeek V4 Flash / Pro 按官方 Thinking Mode 发送 reasoning_effort 与 thinking.enabled；显式使用思考档位时移除 temperature、top_p、presence_penalty 和 frequency_penalty 等思考模式不兼容或被忽略的参数。",
+            "设置中的 DeepSeek 自动档位明确显示官方默认 high；实时模型能力元数据仍然优先，目录只返回模型 ID 时使用官方 low、high、max 规格兜底。",
+            "补齐 Mistral、智谱 GLM、通义千问 Qwen、Together 的官方推理档位映射，并继续校准 OpenAI、Claude、Gemini、xAI、Groq 与 OpenRouter；未知或自定义模型仍保持自动，不猜测参数。",
+            "OpenRouter 模型声明推理必选时不再显示关闭选项；Qwen 与智谱的关闭/启用参数按各自协议生成，推理模型同时移除已确认不兼容的采样参数。",
+            "新增 DeepSeek 请求体、多 Provider 官方兜底、OpenRouter 必选推理和商机状态文案回归；本版本仅发布 GitHub Windows 中文安装包与 Velopack 自动更新资产，不关闭、重启、安装或覆盖本机正式程序，安装或更新继续创建或修复桌面快捷方式，更新缓存继续只保留当前、待安装新版本及最近 3 个回滚版本，macOS 继续暂停。"
+        ], true),
         new("5.17.0", "2026-08-03", "推理深度校准与 Claude 原生接口",
         [
             "修复 DeepSeek 官方 /models 只返回模型 ID 时推理深度被误显示为“API 未声明档位”的问题：实时 API 元数据优先，缺少能力字段时再按官方模型规格补全 low、high、max 等已经确认支持的档位。",
@@ -22,7 +32,7 @@ public static class ReleaseCatalog
             "Claude 模型支持全域或分板块路由、模型选择、官方 effort 档位和结构化分析；图片 OCR 也走 Claude 原生视觉消息格式，设置保存后新 AI 请求立即按对应路由执行。",
             "更新设置使用手册和状态提示，明确“实时 API 元数据优先、官方规格兜底、未知模型保持默认”的安全边界；新增 DeepSeek 简略目录、多 Provider 能力、元数据优先级、Claude 原生鉴权与请求协议回归。",
             "本版本仅发布 GitHub Windows 中文安装包与 Velopack 自动更新资产，不关闭、重启、安装或覆盖本机正式程序；安装或更新继续创建或修复桌面快捷方式，更新缓存继续只保留当前、待安装新版本及最近 3 个回滚版本，macOS 继续暂停。"
-        ], true),
+        ]),
         new("5.16.1", "2026-07-31", "本地数据工作区迁移重启修复",
         [
             "修复点击“迁移工作区”并重启后仍继续显示 C 盘原位置的问题：迁移重启会对常驻 WhatsApp、邮件、自动化、号码校验与更新服务执行有上限的安全收尾，避免后台服务长期阻止旧进程退出。",

@@ -2122,12 +2122,83 @@ Check(
         && capability.Source == "provider_spec"),
     "DeepSeek v4 models expose official reasoning-depth controls even when /models returns IDs only");
 
+var deepSeekReasoningRoot = Path.Combine(root, "deepseek-reasoning-request");
+var deepSeekReasoningRepository = new LocalRepository(Path.Combine(deepSeekReasoningRoot, "reasoning.db"));
+await deepSeekReasoningRepository.InitializeAsync();
+var deepSeekReasoningHandler = new ProviderProtocolHandler(
+    """{"data":[{"id":"deepseek-v4-flash"}]}""",
+    [Envelope("""{"value":"deepseek-thinking"}""")]);
+var deepSeekReasoningProvider = new DeepSeekService(
+    deepSeekReasoningRepository,
+    new FakeSecretStore("sk-deepseek-thinking"),
+    new HttpClient(deepSeekReasoningHandler) { Timeout=TimeSpan.FromSeconds(5) });
+await deepSeekReasoningRepository.SaveAppSettingsAsync(new AppSettings
+{
+    ActiveProviderId="deepseek",
+    DeepSeekBaseUrl="https://api.deepseek.com",
+    DeepSeekModel="deepseek-v4-flash",
+    DefaultReasoningEffort="high",
+    UseGlobalAiConfiguration=true,
+    ConfiguredAiProviders=
+    [
+        new AiProviderProfile
+        {
+            ProviderId="deepseek",
+            DisplayName="DeepSeek",
+            BaseUrl="https://api.deepseek.com",
+            Model="deepseek-v4-flash",
+            AvailableModels=["deepseek-v4-flash"],
+            ModelCapabilities=deepSeekIdOnlyCatalog.ModelCapabilities
+                .Where(item => item.ModelId == "deepseek-v4-flash")
+                .ToList(),
+            IsConfigured=true
+        }
+    ]
+});
+var deepSeekReasoningResult = await deepSeekReasoningProvider.CompleteStructuredAsync<RoutingProbe>(
+    AiModuleKeys.LeadIntelligence,
+    "Return a routing probe.",
+    new { value="input" },
+    _ => null);
+var deepSeekReasoningBody = deepSeekReasoningHandler.RequestBodies.Single();
+Check(
+    deepSeekReasoningResult.Value == "deepseek-thinking"
+    && deepSeekReasoningBody.Contains("\"reasoning_effort\":\"high\"")
+    && deepSeekReasoningBody.Contains("\"thinking\":{\"type\":\"enabled\"}")
+    && !deepSeekReasoningBody.Contains("\"temperature\"")
+    && !deepSeekReasoningBody.Contains("\"top_p\"")
+    && !deepSeekReasoningBody.Contains("\"presence_penalty\"")
+    && !deepSeekReasoningBody.Contains("\"frequency_penalty\""),
+    "DeepSeek explicit reasoning depth enables thinking and omits parameters ignored by thinking mode");
+
+var openRouterMandatoryHandler = new ProviderProtocolHandler(
+    """{"data":[{"id":"vendor/mandatory-reasoner","reasoning":{"supported_efforts":null,"mandatory":true}}]}""",
+    []);
+var openRouterMandatoryProvider = new DeepSeekService(
+    repository,
+    new FakeSecretStore("sk-openrouter-mandatory"),
+    new HttpClient(openRouterMandatoryHandler) { Timeout=TimeSpan.FromSeconds(5) });
+var openRouterMandatoryCatalog = await openRouterMandatoryProvider.DiscoverModelsAsync(
+    "openrouter",
+    "https://openrouter.ai/api/v1",
+    "sk-openrouter-mandatory");
+var mandatoryReasoner = openRouterMandatoryCatalog.ModelCapabilities.Single();
+Check(
+    mandatoryReasoner.ReasoningEfforts.SequenceEqual(["minimal", "low", "medium", "high", "xhigh", "max"])
+    && mandatoryReasoner.ReasoningParameter == "reasoning.effort",
+    "OpenRouter live metadata removes the disable option when reasoning is mandatory");
+
 var officialFallbackCases = new[]
 {
     (Provider: "openai", Model: "gpt-5.6-sol", Efforts: new[] { "none", "low", "medium", "high", "xhigh", "max" }, Parameter: "reasoning_effort"),
     (Provider: "gemini", Model: "gemini-3-flash-preview", Efforts: new[] { "minimal", "low", "medium", "high" }, Parameter: "reasoning_effort"),
     (Provider: "xai", Model: "grok-4.5", Efforts: new[] { "low", "medium", "high" }, Parameter: "reasoning_effort"),
-    (Provider: "groq", Model: "openai/gpt-oss-120b", Efforts: new[] { "low", "medium", "high" }, Parameter: "reasoning_effort")
+    (Provider: "groq", Model: "openai/gpt-oss-120b", Efforts: new[] { "low", "medium", "high" }, Parameter: "reasoning_effort"),
+    (Provider: "mistral", Model: "mistral-small-latest", Efforts: new[] { "none", "minimal", "low", "medium", "high", "xhigh" }, Parameter: "reasoning_effort"),
+    (Provider: "zhipu", Model: "glm-5.2", Efforts: new[] { "none", "minimal", "low", "medium", "high", "xhigh", "max" }, Parameter: "reasoning_effort"),
+    (Provider: "zhipu", Model: "glm-4.7", Efforts: new[] { "none" }, Parameter: "thinking.type"),
+    (Provider: "qwen", Model: "qwen3.8-max-preview", Efforts: new[] { "low", "medium", "xhigh" }, Parameter: "reasoning_effort"),
+    (Provider: "together", Model: "deepseek-ai/DeepSeek-V4-Pro", Efforts: new[] { "high", "max" }, Parameter: "reasoning_effort")
 };
 Check(
     officialFallbackCases.All(test =>
@@ -2139,7 +2210,7 @@ Check(
             && normalized.ReasoningParameter == test.Parameter
             && normalized.Source == "provider_spec";
     }),
-    "known OpenAI, Gemini, xAI and Groq models use provider specifications when their catalogs omit reasoning metadata");
+    "known provider models use official reasoning specifications when their catalogs omit capability metadata");
 var metadataWinsCapability = AiModelCapabilityResolver.Normalize(
     "deepseek",
     new AiModelCapability

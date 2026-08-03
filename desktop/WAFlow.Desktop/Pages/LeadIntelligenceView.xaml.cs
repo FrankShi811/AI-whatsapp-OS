@@ -76,24 +76,48 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     {
         var allLeads = await _services.Repository.GetLeadsAsync();
         var execution = await _services.DeepSeek.ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence);
+        var runState = await _services.Repository.GetLeadBulkAnalysisRunStateAsync();
         UpdateBulkAnalyzeButtonIdleContent(
             execution.ProviderId,
             execution.Model,
             execution.ReasoningEffort,
-            allLeads.Count(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed));
+            allLeads,
+            runState);
     }
 
     private void UpdateBulkAnalyzeButtonIdleContent(
         string providerId,
         string model,
         string reasoningEffort,
-        int retryableCount)
+        IReadOnlyList<Lead> allLeads,
+        LeadBulkAnalysisRunState? runState)
     {
+        var retryableCount = allLeads.Count(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed);
+        var total = allLeads.Count;
+        var completed = allLeads.Count(lead => lead.HasCurrentAiScore);
+        var currentIds = allLeads.Select(lead => lead.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var matchingRun = runState is not null
+            && runState.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase)
+            && runState.Model.Equals(model, StringComparison.OrdinalIgnoreCase)
+                ? runState
+                : null;
+        var pending = matchingRun is { IsComplete: false }
+            ? matchingRun.PendingLeadIds.Count(currentIds.Contains)
+            : 0;
+        var failedThisRun = matchingRun?.Failed ?? 0;
+
         BulkAnalyzeButton.Content = retryableCount > 0
-            ? $"使用 {model} 重试失败 {retryableCount}"
-            : $"使用 {model} 分析全部";
+            ? $"使用 {model} 重试 {retryableCount:N0} 位分析失败客户"
+            : pending > 0
+                ? $"使用 {model} 继续 {pending:N0} 位未完成客户"
+                : $"使用 {model} 分析全部";
         BulkAnalyzeButton.ToolTip =
-            $"商机智能实际路由：{providerId} · {model} · 推理深度 {reasoningEffort}";
+            $"商机智能实际路由：{providerId} · {model} · 推理深度 {reasoningEffort}。点击后优先继续已保存队列并重试失败客户。";
+        BulkProgressPanel.Visibility = Visibility.Visible;
+        BulkProgressBar.Maximum = Math.Max(1, total);
+        BulkProgressBar.Value = Math.Min(completed, total);
+        BulkProgressText.Text =
+            $"已完成 {completed:N0} / {total:N0} · 本轮失败 {failedThisRun:N0} · 全局待重试 {retryableCount:N0} · 待继续 {pending:N0}";
     }
 
     private void UpdateBulkAnalyzeButtonRunningContent(int completed, int total)

@@ -45,6 +45,10 @@ public static class AiModelCapabilityResolver
             "gemini" => ResolveGemini(modelId, model),
             "xai" => ResolveXai(modelId, model),
             "groq" => ResolveGroq(modelId, model),
+            "mistral" => ResolveMistral(modelId, model),
+            "zhipu" => ResolveZhipu(modelId, model),
+            "qwen" => ResolveQwen(modelId, model),
+            "together" => ResolveTogether(modelId, model),
             _ => null
         };
     }
@@ -56,14 +60,18 @@ public static class AiModelCapabilityResolver
 
     private static AiModelCapability? ResolveOpenAi(string id, string model)
     {
+        if (StartsWithFamily(model, "gpt-5-pro"))
+            return Known(id, ["high"], "reasoning_effort");
         if (StartsWithFamily(model, "gpt-5.6"))
             return Known(id, ["none", "low", "medium", "high", "xhigh", "max"], "reasoning_effort");
         if (StartsWithFamily(model, "gpt-5.5") && !model.Contains("-pro", StringComparison.Ordinal))
             return Known(id, ["none", "low", "medium", "high", "xhigh"], "reasoning_effort");
         if (StartsWithFamily(model, "gpt-5.4") && !model.Contains("-pro", StringComparison.Ordinal))
             return Known(id, ["none", "low", "medium", "high", "xhigh"], "reasoning_effort");
-        if (StartsWithFamily(model, "gpt-5.2") || StartsWithFamily(model, "gpt-5.1"))
+        if (StartsWithFamily(model, "gpt-5.2"))
             return Known(id, ["none", "low", "medium", "high", "xhigh"], "reasoning_effort");
+        if (StartsWithFamily(model, "gpt-5.1"))
+            return Known(id, ["none", "low", "medium", "high"], "reasoning_effort");
         if (model.Equals("gpt-5", StringComparison.Ordinal)
             || StartsWithFamily(model, "gpt-5-mini")
             || StartsWithFamily(model, "gpt-5-nano"))
@@ -116,6 +124,43 @@ public static class AiModelCapabilityResolver
             return Known(id, ["low", "medium", "high"], "reasoning_effort");
         if (model.Contains("qwen", StringComparison.Ordinal) && model.Contains("3", StringComparison.Ordinal))
             return Known(id, ["none"], "reasoning_effort");
+        return null;
+    }
+
+    private static AiModelCapability? ResolveMistral(string id, string model) =>
+        model is "mistral-small-latest" or "mistral-medium-latest" or "mistral-medium-3.5" or "mistral-medium-3-5"
+            ? Known(id, ["none", "minimal", "low", "medium", "high", "xhigh"], "reasoning_effort")
+            : null;
+
+    private static AiModelCapability? ResolveZhipu(string id, string model)
+    {
+        if (model.Contains("glm-5.2", StringComparison.Ordinal)
+            || model.Contains("glm-5-2", StringComparison.Ordinal))
+            return Known(id, ["none", "minimal", "low", "medium", "high", "xhigh", "max"], "reasoning_effort");
+        if (model.Contains("glm-4.5", StringComparison.Ordinal)
+            || model.Contains("glm-4-5", StringComparison.Ordinal)
+            || model.Contains("glm-4.6", StringComparison.Ordinal)
+            || model.Contains("glm-4-6", StringComparison.Ordinal)
+            || model.Contains("glm-4.7", StringComparison.Ordinal)
+            || model.Contains("glm-4-7", StringComparison.Ordinal)
+            || model.Contains("glm-5", StringComparison.Ordinal))
+            return Known(id, ["none"], "thinking.type");
+        return null;
+    }
+
+    private static AiModelCapability? ResolveQwen(string id, string model) =>
+        (model.Contains("qwen3.8-max", StringComparison.Ordinal)
+            || model.Contains("qwen3-8-max", StringComparison.Ordinal))
+            ? Known(id, ["low", "medium", "xhigh"], "reasoning_effort")
+            : null;
+
+    private static AiModelCapability? ResolveTogether(string id, string model)
+    {
+        if (model.Contains("gpt-oss-20b", StringComparison.Ordinal)
+            || model.Contains("gpt-oss-120b", StringComparison.Ordinal))
+            return Known(id, ["low", "medium", "high"], "reasoning_effort");
+        if (model.Contains("deepseek-v4-pro", StringComparison.Ordinal))
+            return Known(id, ["high", "max"], "reasoning_effort");
         return null;
     }
 

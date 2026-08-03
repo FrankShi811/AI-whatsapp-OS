@@ -239,9 +239,14 @@ public partial class SettingsWindow : Window
         }
         finally { _updatingRoutingUi = false; }
 
+        var capability = profile?.ModelCapabilities?.FirstOrDefault(item =>
+            item.ModelId.Equals(ModelBox?.Text, StringComparison.OrdinalIgnoreCase));
         var adjustable = options.Count > 1;
+        var capabilitySource = capability?.Source.Equals("provider_spec", StringComparison.OrdinalIgnoreCase) == true
+            ? "官方模型规格"
+            : "API 模型目录";
         ReasoningStatusText.Text = adjustable
-            ? $"该模型由 API 声明支持：{string.Join("、", options.Skip(1).Select(item => item.Label))}。请求时只发送所选档位。"
+            ? $"根据{capabilitySource}支持：{string.Join("、", options.Skip(1).Select(item => item.Label))}。请求时只发送所选档位。"
             : "API 模型目录未声明可调推理档位，系统使用模型默认值且不发送未知参数。";
         if (_loaded) UpdateRoutingModeUi();
     }
@@ -382,12 +387,38 @@ public partial class SettingsWindow : Window
             && capability.ReasoningEfforts.Count > 0;
         var options = new List<ReasoningOption>
         {
-            new("自动（模型默认）", AiReasoningEfforts.Auto)
+            new(ReasoningAutoLabel(profile?.ProviderId, model), AiReasoningEfforts.Auto)
         };
         if (adjustable)
             options.AddRange(capability!.ReasoningEfforts
                 .Select(value => new ReasoningOption(ReasoningLabel(value), value)));
         return options;
+    }
+
+    private static string ReasoningAutoLabel(string? providerId, string? model)
+    {
+        var provider = providerId?.Trim().ToLowerInvariant() ?? "";
+        var normalizedModel = model?.Trim().ToLowerInvariant() ?? "";
+        if (provider == "deepseek" && normalizedModel is "deepseek-v4-flash" or "deepseek-v4-pro")
+            return "自动（官方默认 high）";
+        if (provider == "zhipu" && (normalizedModel.Contains("glm-5.2") || normalizedModel.Contains("glm-5-2")))
+            return "自动（官方默认 max）";
+        if (provider == "qwen" && (normalizedModel.Contains("qwen3.8-max") || normalizedModel.Contains("qwen3-8-max")))
+            return "自动（官方默认 xhigh）";
+        if (provider == "anthropic"
+            && (normalizedModel.Contains("claude-opus-5")
+                || normalizedModel.Contains("claude-sonnet-5")
+                || normalizedModel.Contains("claude-fable-5")
+                || normalizedModel.Contains("claude-mythos-5")
+                || normalizedModel.Contains("claude-opus-4-8")
+                || normalizedModel.Contains("claude-opus-4-7")
+                || normalizedModel.Contains("claude-opus-4-6")
+                || normalizedModel.Contains("claude-sonnet-4-6")
+                || normalizedModel.Contains("claude-opus-4-5")))
+            return "自动（官方默认 high）";
+        if (provider == "xai" && normalizedModel.StartsWith("grok-4.5", StringComparison.Ordinal))
+            return "自动（官方默认 high）";
+        return "自动（模型默认）";
     }
 
     private static string ReasoningLabel(string? value) => AiReasoningEfforts.Normalize(value) switch
