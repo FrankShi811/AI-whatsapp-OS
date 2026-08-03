@@ -11,7 +11,7 @@
              Unloaded="UserControl_Unloaded"
              SizeChanged="Root_SizeChanged"
              PreviewKeyDown="UserControl_PreviewKeyDown"
-             AutomationProperties.Name="客户公开商业信息调查">
+             AutomationProperties.Name="客户外部调查">
     <UserControl.Resources>
         <Style x:Key="CompactButton" TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
             <Setter Property="MinHeight" Value="40"/>
@@ -81,9 +81,9 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel VerticalAlignment="Center">
                     <TextBlock Style="{StaticResource PageEyebrow}" Text="CUSTOMER OPERATIONS · OPEN WEB INTELLIGENCE"/>
-                    <TextBlock Style="{StaticResource PageTitle}" FontSize="25" LineHeight="33" Text="客户公开商业信息调查"/>
+                    <TextBlock Style="{StaticResource PageTitle}" FontSize="25" LineHeight="33" Text="客户外部调查"/>
                     <TextBlock Style="{StaticResource BodyText}" Margin="0,3,0,0"
-                               Text="将公开来源、可核验证据与人工判断连接成客户事实，不自动覆盖客户档案。"/>
+                               Text="选择客户后点击一次即可开始；系统自动使用可用的联网搜索，并保留来源供你核对。"/>
                 </StackPanel>
                 <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="18,0,0,0">
                     <CheckBox x:Name="ForceRefreshCheckBox" Content="忽略缓存" Margin="0,0,14,0"
@@ -109,9 +109,9 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" MinWidth="112" Margin="0,0,16,0">
-                    <TextBlock Style="{StaticResource MicroText}" Text="搜索服务"/>
+                    <TextBlock Style="{StaticResource MicroText}" Text="联网调查"/>
                     <TextBlock x:Name="ProviderText" FontWeight="SemiBold" Text="正在检查" TextTrimming="CharacterEllipsis"
-                               AutomationProperties.Name="搜索服务状态"/>
+                               AutomationProperties.Name="联网调查可用状态"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" MinWidth="92" Margin="0,0,16,0">
                     <TextBlock Style="{StaticResource MicroText}" Text="任务状态"/>
@@ -131,7 +131,7 @@
                     <TextBlock x:Name="SourceCountText" FontWeight="SemiBold" Text="0 个"/>
                 </StackPanel>
                 <StackPanel Grid.Column="5" MinWidth="76" Margin="0,0,16,0">
-                    <TextBlock Style="{StaticResource MicroText}" Text="本次费用"/>
+                    <TextBlock Style="{StaticResource MicroText}" Text="本次本地估算"/>
                     <TextBlock x:Name="CostText" FontWeight="SemiBold" Text="$0.000"
                                AutomationProperties.Name="本次公开调查预估费用"/>
                 </StackPanel>
@@ -146,8 +146,8 @@
                 <StackPanel Grid.Column="7" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button Style="{StaticResource CompactButton}" Content="导入客户" Margin="0,0,7,0"
                             Click="Import_Click" AutomationProperties.Name="导入客户"/>
-                    <Button Style="{StaticResource CompactButton}" Content="调查设置"
-                            Click="Settings_Click" AutomationProperties.Name="打开客户调查设置"/>
+                    <Button x:Name="EnrichmentSettingsButton" Style="{StaticResource CompactButton}" Content="高级设置"
+                            Click="Settings_Click" AutomationProperties.Name="打开客户外部调查高级设置"/>
                 </StackPanel>
             </Grid>
         </Border>

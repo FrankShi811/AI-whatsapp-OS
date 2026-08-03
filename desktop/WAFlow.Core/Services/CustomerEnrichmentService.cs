@@ -137,6 +137,27 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         var snapshot = await _repository.GetCustomerEnrichmentSnapshotAsync(customerId, cancellationToken);
+        var currentIdentityHash = await CustomerExternalFactPolicy.GetCurrentIdentityHashAsync(
+            _repository,
+            customerId,
+            cancellationToken);
+        snapshot.LatestJob = snapshot.Jobs.FirstOrDefault(job =>
+            job.IdentityHash.Equals(currentIdentityHash, StringComparison.Ordinal));
+        snapshot.Sources = snapshot.LatestJob is null
+            ? []
+            : (await _repository.GetCustomerEnrichmentSourcesAsync(
+                customerId,
+                snapshot.LatestJob.Id,
+                cancellationToken)).ToList();
+        snapshot.Facts = await CustomerExternalFactPolicy.GetFactsForCurrentIdentityAsync(
+            _repository,
+            customerId,
+            cancellationToken);
+        snapshot.ActiveFacts = await CustomerExternalFactPolicy.GetCurrentFactsAsync(
+            _repository,
+            customerId,
+            _timeProvider.GetUtcNow(),
+            cancellationToken);
         var settings = await GetSettingsAsync(cancellationToken);
         ApplyFreeRemaining(snapshot.Usage, settings);
         return snapshot;
@@ -157,8 +178,19 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
             .ToList();
         settings.MonthlyBudgetUsd = Math.Max(0, settings.MonthlyBudgetUsd);
         settings.AiAnalysisReservationUsd = Math.Clamp(settings.AiAnalysisReservationUsd, 0, 1_000m);
-        if (!settings.AllowPaidRequests || settings.MonthlyBudgetUsd <= 0 || settings.AiAnalysisReservationUsd <= 0)
+        if (settings.MonthlyBudgetUsd <= 0)
+        {
+            settings.AllowPaidRequests = false;
             settings.AllowAiAnalysisRequests = false;
+        }
+        else if (settings.AllowAiAnalysisRequests)
+        {
+            if (settings.AiAnalysisReservationUsd <= 0)
+                settings.AiAnalysisReservationUsd = CustomerEnrichmentSettings.DefaultAiAnalysisReservationUsd;
+            settings.AiAnalysisReservationUsd = Math.Min(
+                settings.AiAnalysisReservationUsd,
+                settings.MonthlyBudgetUsd);
+        }
         settings.TavilyMonthlyFreeRequests = Math.Clamp(settings.TavilyMonthlyFreeRequests, 0, 1_000_000);
         settings.BraveMonthlyFreeRequests = Math.Clamp(settings.BraveMonthlyFreeRequests, 0, 1_000_000);
         settings.MaxQueriesPerCustomer = Math.Clamp(settings.MaxQueriesPerCustomer, 1, 6);
@@ -181,7 +213,7 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
             "customer_enrichment_settings_saved",
             null,
             null,
-            $"providers={string.Join(',', settings.ProviderOrder)};searxng={settings.SearXngEnabled};budget_usd={settings.MonthlyBudgetUsd:0.####};paid={settings.AllowPaidRequests};ai_analysis={settings.AllowAiAnalysisRequests};limits={settings.MaxQueriesPerCustomer}/{settings.MaxResultsPerQuery}/{settings.MaxPagesPerCustomer}",
+            $"providers={string.Join(',', settings.ProviderOrder)};searxng={settings.SearXngEnabled};local_estimate_notice_usd={settings.MonthlyBudgetUsd:0.####};paid_search={settings.AllowPaidRequests};ai_analysis={settings.AllowAiAnalysisRequests};limits={settings.MaxQueriesPerCustomer}/{settings.MaxResultsPerQuery}/{settings.MaxPagesPerCustomer}",
             cancellationToken);
     }
 
@@ -218,8 +250,8 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
             var configured = IsConfigured(providerId, settings);
             var message = providerId switch
             {
-                "tavily" when configured => "Tavily 已安全配置；点击测试后才会发起联网请求并计入额度。",
-                "brave" when configured => "Brave Search 已安全配置；点击测试后才会发起联网请求并计入额度。",
+                "tavily" when configured => "Tavily 已安全配置；点击测试后才会发起联网请求，并可能计入 Provider 账号用量。",
+                "brave" when configured => "Brave Search 已安全配置；点击测试后才会发起联网请求，并可能计入 Provider 账号用量。",
                 "searxng" when configured => $"SearXNG 已启用：{settings.SearXngBaseUrl}",
                 "searxng" => "本地 SearXNG 未启用。",
                 _ => $"{ProviderDisplayName(providerId)} 尚未配置 API Key。"
@@ -285,9 +317,9 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
                 EstimatedCostUsd = reservedCost,
                 Succeeded = false,
                 ErrorCode = "REQUEST_RESERVED",
-                ErrorMessage = "搜索连接测试已在联网前预留本地额度。",
+                ErrorMessage = "搜索连接测试已在联网前记录本地用量与费用估算预留。",
                 RequestState = "reserved",
-                CreatedAt = _timeProvider.GetUtcNow()
+                CreatedAt = _timeProvider.GetLocalNow()
             };
             await _repository.SaveCustomerEnrichmentUsageAsync(usage, cancellationToken);
             var health = await provider.CheckHealthAsync(cancellationToken);
@@ -331,7 +363,9 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
             var identity = CustomerEnrichmentIdentityService.Build(lead);
             var configurationHash = BuildConfigurationHash(settings);
             var jobs = await _repository.GetCustomerEnrichmentJobsAsync(customerId, cancellationToken);
-            var active = jobs.FirstOrDefault(item => item.Status is CustomerEnrichmentJobStatus.Queued or CustomerEnrichmentJobStatus.Running);
+            var active = jobs.FirstOrDefault(item =>
+                (item.Status is CustomerEnrichmentJobStatus.Queued or CustomerEnrichmentJobStatus.Running)
+                && item.IdentityHash.Equals(identity.IdentityHash, StringComparison.Ordinal));
             if (active is not null) return active;
 
             if (!force)
@@ -405,6 +439,18 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
     {
         var fact = await _repository.GetCustomerEnrichmentFactAsync(factId, cancellationToken)
             ?? throw new InvalidOperationException("待审核的客户调查事实不存在。");
+        if (action is CustomerEnrichmentReviewAction.Confirm or CustomerEnrichmentReviewAction.EditAndConfirm)
+        {
+            var factJob = await _repository.GetCustomerEnrichmentJobAsync(fact.JobId, cancellationToken)
+                ?? throw new InvalidOperationException("待审核事实对应的调查任务不存在。");
+            var currentIdentityHash = await CustomerExternalFactPolicy.GetCurrentIdentityHashAsync(
+                _repository,
+                fact.CustomerId,
+                cancellationToken);
+            if (currentIdentityHash.Length == 0
+                || !factJob.IdentityHash.Equals(currentIdentityHash, StringComparison.Ordinal))
+                throw new InvalidOperationException("客户身份资料已在本次调查后发生变化。旧调查只能保留为历史，不能确认成当前事实；请重新发起调查。");
+        }
         var previousValue = fact.FieldValue;
         switch (action)
         {
@@ -480,6 +526,10 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
         }
         // The fact/review transaction is already durable. Do not let a UI
         // cancellation suppress the corresponding Brain invalidation/refresh.
+        await CustomerAnalysisFreshness.SynchronizeAsync(
+            _repository,
+            fact.CustomerId,
+            CancellationToken.None);
         await RefreshBrainSafelyAsync(fact.CustomerId, CancellationToken.None);
         Changed?.Invoke(this, new CustomerEnrichmentChangedEventArgs(
             fact.CustomerId,
@@ -521,6 +571,12 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
             ?? throw new CustomerEnrichmentException(CustomerEnrichmentErrorCodes.CustomerIdentityMissing, "客户不存在或已经删除。");
         var settings = await GetSettingsAsync(cancellationToken);
         var identity = CustomerEnrichmentIdentityService.Build(lead);
+        if (!string.IsNullOrWhiteSpace(job.IdentityHash)
+            && !job.IdentityHash.Equals(identity.IdentityHash, StringComparison.Ordinal))
+        {
+            await MarkIdentityChangedAsync(job, cancellationToken);
+            return;
+        }
         var queryTexts = CustomerEnrichmentQueryGenerator.Generate(identity, settings.MaxQueriesPerCustomer);
         if (queryTexts.Count == 0)
             throw new CustomerEnrichmentException(CustomerEnrichmentErrorCodes.CustomerIdentityMissing, "客户缺少可用于公开商业调查的邮箱、电话、姓名或公司信息。");
@@ -593,7 +649,7 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
                             ErrorCode = blocked.Code,
                             ErrorMessage = blocked.Message,
                             RequestState = "blocked",
-                            CreatedAt = _timeProvider.GetUtcNow()
+                            CreatedAt = _timeProvider.GetLocalNow()
                         }, cancellationToken);
                         continue;
                     }
@@ -606,9 +662,9 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
                         EstimatedCostUsd = reservedCost,
                         Succeeded = false,
                         ErrorCode = "REQUEST_RESERVED",
-                        ErrorMessage = "外部搜索请求已在联网前预留本地额度。",
+                        ErrorMessage = "外部搜索请求已在联网前记录本地用量与费用估算预留。",
                         RequestState = "reserved",
-                        CreatedAt = _timeProvider.GetUtcNow()
+                        CreatedAt = _timeProvider.GetLocalNow()
                     };
                     await _repository.SaveCustomerEnrichmentUsageAsync(usage, cancellationToken);
                     try
@@ -707,9 +763,7 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
             job.Status = CustomerEnrichmentJobStatus.NoResults;
             job.CompletedAt = _timeProvider.GetUtcNow();
             job.ErrorCode = CustomerEnrichmentErrorCodes.NoPublicResults;
-            job.ErrorMessage = job.CostUsd == 0
-                ? "未找到与该客户可靠关联的公开商业信息；未产生费用。"
-                : "未找到与该客户可靠关联的公开商业信息。";
+            job.ErrorMessage = "未找到与该客户可靠关联的公开商业信息；本程序未记录付费估算不代表 Provider 未计费，实际账单以 Provider 为准。";
             await _repository.SaveCustomerEnrichmentJobAsync(job, cancellationToken);
             Changed?.Invoke(this, new CustomerEnrichmentChangedEventArgs(job.CustomerId, job.Id, job.Status, job.ErrorMessage));
             return;
@@ -724,9 +778,7 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
             job.Status = CustomerEnrichmentJobStatus.NoResults;
             job.CompletedAt = _timeProvider.GetUtcNow();
             job.ErrorCode = CustomerEnrichmentErrorCodes.NoPublicResults;
-            job.ErrorMessage = job.CostUsd == 0
-                ? "搜索结果未通过公开网页与主体匹配安全检查；未产生费用。"
-                : "搜索结果未通过公开网页与主体匹配安全检查。";
+            job.ErrorMessage = "搜索结果未通过公开网页与主体匹配安全检查；本程序未记录付费估算不代表 Provider 未计费，实际账单以 Provider 为准。";
             await _repository.SaveCustomerEnrichmentJobAsync(job, cancellationToken);
             Changed?.Invoke(this, new CustomerEnrichmentChangedEventArgs(job.CustomerId, job.Id, job.Status, job.ErrorMessage));
             return;
@@ -743,13 +795,13 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
             return;
         }
 
-        if (!settings.AllowPaidRequests || !settings.AllowAiAnalysisRequests
+        if (!settings.AllowAiAnalysisRequests
             || settings.MonthlyBudgetUsd <= 0 || settings.AiAnalysisReservationUsd <= 0)
         {
             job.Status = CustomerEnrichmentJobStatus.NeedsReview;
             job.CompletedAt = _timeProvider.GetUtcNow();
             job.ErrorCode = CustomerEnrichmentErrorCodes.AiAnalysisPaymentNotAuthorized;
-            job.ErrorMessage = "公开来源已保存；板块 AI 分析可能产生模型费用，当前未获得明确授权，因此未发起 AI 请求、未生成推断事实。";
+            job.ErrorMessage = "公开来源已保存；AI 事实整理可能产生 Provider 费用。当前未启用 AI 事实整理或未设置正数本地月度估算提醒额度，因此未发起 AI 请求、未生成推断事实。";
             await _repository.SaveCustomerEnrichmentJobAsync(job, cancellationToken);
             Changed?.Invoke(this, new CustomerEnrichmentChangedEventArgs(job.CustomerId, job.Id, job.Status, job.ErrorMessage));
             return;
@@ -767,7 +819,7 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
                 job.Status = CustomerEnrichmentJobStatus.NeedsReview;
                 job.CompletedAt = _timeProvider.GetUtcNow();
                 job.ErrorCode = CustomerEnrichmentErrorCodes.PaidRequestBlocked;
-                job.ErrorMessage = $"公开来源已保存；AI 分析预算预留 ${settings.AiAnalysisReservationUsd:0.####} 超过本月剩余预算 ${remainingBudget:0.####}，已在联网前阻止。";
+                job.ErrorMessage = $"公开来源已保存；本次 AI 本地估算预留 ${settings.AiAnalysisReservationUsd:0.####} 超过本程序本月剩余提醒额度 ${remainingBudget:0.####}，已停止新的 AI 调用。实际账单以 Provider 为准。";
                 await _repository.SaveCustomerEnrichmentJobAsync(job, cancellationToken);
                 Changed?.Invoke(this, new CustomerEnrichmentChangedEventArgs(job.CustomerId, job.Id, job.Status, job.ErrorMessage));
                 return;
@@ -781,9 +833,9 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
                 EstimatedCostUsd = settings.AiAnalysisReservationUsd,
                 Succeeded = false,
                 ErrorCode = "REQUEST_RESERVED",
-                ErrorMessage = "AI 分析已在联网前预留本地月预算。",
+                ErrorMessage = "AI 分析已在联网前记录本地月度估算预留；实际账单以 Provider 为准。",
                 RequestState = "reserved",
-                CreatedAt = _timeProvider.GetUtcNow()
+                CreatedAt = _timeProvider.GetLocalNow()
             };
             await _repository.SaveCustomerEnrichmentUsageAsync(aiUsage, cancellationToken);
             job.CostUsd += settings.AiAnalysisReservationUsd;
@@ -820,6 +872,16 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
             }
         }
         finally { _usageGate.Release(); }
+        var latestLead = await _repository.GetLeadAsync(job.CustomerId, cancellationToken);
+        var latestIdentityHash = latestLead is null
+            ? ""
+            : CustomerEnrichmentIdentityService.Build(latestLead).IdentityHash;
+        if (!job.IdentityHash.Equals(latestIdentityHash, StringComparison.Ordinal))
+        {
+            await MarkIdentityChangedAsync(job, cancellationToken);
+            return;
+        }
+
         var facts = BuildFacts(job, lead, analysis, sources, settings);
         await _repository.SaveCustomerEnrichmentFactsAsync(facts, cancellationToken);
         job.FactsCount = facts.Count;
@@ -1005,6 +1067,34 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
         catch { /* The enrichment worker must never take down the host application. */ }
     }
 
+    private async Task MarkIdentityChangedAsync(
+        CustomerEnrichmentJob job,
+        CancellationToken cancellationToken)
+    {
+        job.Status = CustomerEnrichmentJobStatus.NeedsReview;
+        job.CompletedAt = _timeProvider.GetUtcNow();
+        job.ErrorCode = CustomerEnrichmentErrorCodes.CustomerIdentityChanged;
+        job.ErrorMessage = "客户身份资料已在调查期间发生变化。公开来源已保留为历史审计，但不会生成或启用当前事实；系统下次将按最新资料重新调查。";
+        job.FactsCount = 0;
+        await _repository.SaveCustomerEnrichmentJobAsync(job, cancellationToken);
+        await CustomerAnalysisFreshness.SynchronizeAsync(
+            _repository,
+            job.CustomerId,
+            CancellationToken.None);
+        await RefreshBrainSafelyAsync(job.CustomerId, CancellationToken.None);
+        await _repository.LogEventAsync(
+            "customer_enrichment_identity_changed",
+            job.CustomerId,
+            null,
+            $"job_id={job.Id};identity_hash={ShortHash(job.IdentityHash)}",
+            CancellationToken.None);
+        Changed?.Invoke(this, new CustomerEnrichmentChangedEventArgs(
+            job.CustomerId,
+            job.Id,
+            job.Status,
+            job.ErrorMessage));
+    }
+
     private async Task MarkCancelledAsync(string jobId)
     {
         try
@@ -1173,13 +1263,12 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
             if (reservedAttempts > 0) return true;
             blocked = new CustomerEnrichmentException(
                 CustomerEnrichmentErrorCodes.ProviderQuotaExhausted,
-                $"{ProviderDisplayName(normalized)} 的本地免费请求额度不足以安全预留本次调用，本次调查未产生费用。");
+                $"{ProviderDisplayName(normalized)} 的本地账号额度估算不足，本程序未继续发起该次请求；账号实际额度和账单以 Provider 为准。");
             return false;
         }
 
-        // Basic-search public list prices verified in August 2026. These are
-        // conservative estimates used only for the local hard budget gate;
-        // users can keep paid requests disabled (the default) for a zero-cost run.
+        // Public list prices captured in August 2026 are only a local estimate.
+        // Provider plans, account-side usage and billing can differ at any time.
         var unitCost = normalized switch
         {
             "tavily" => 0.008m,
@@ -1200,7 +1289,7 @@ public sealed partial class CustomerEnrichmentService : IAsyncDisposable
         }
         blocked = new CustomerEnrichmentException(
             CustomerEnrichmentErrorCodes.PaidRequestBlocked,
-            $"{ProviderDisplayName(normalized)} 的下一次请求预算超过本月剩余预算 ${remaining:0.####}，已在发请求前阻止。");
+            $"{ProviderDisplayName(normalized)} 的下一次本地费用估算超过本程序本月剩余提醒额度 ${remaining:0.####}，已停止新请求；实际账单以 Provider 为准。");
         return false;
     }
 

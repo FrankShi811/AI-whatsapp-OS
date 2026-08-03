@@ -30,6 +30,7 @@ public static partial class CustomerEnrichmentIdentityService
         var identity = new CustomerEnrichmentIdentity
         {
             CustomerId = lead.Id,
+            BuyerId = BuyerIdentity.Canonicalize(lead.BuyerId),
             Name = lead.Name.Trim(),
             Company = lead.Company.Trim(),
             Country = lead.Country.Trim(),
@@ -45,6 +46,7 @@ public static partial class CustomerEnrichmentIdentityService
             PhoneTail8 = digits.Length >= 8 ? digits[^8..] : ""
         };
         identity.IdentityHash = Hash(string.Join('|',
+            identity.BuyerId.ToLowerInvariant(),
             identity.Email,
             identity.PhoneE164,
             identity.Name.ToLowerInvariant(),

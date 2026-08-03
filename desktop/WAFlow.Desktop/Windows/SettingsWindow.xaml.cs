@@ -22,6 +22,7 @@ public partial class SettingsWindow : Window
 {
     private readonly AppServices _services;
     private readonly IApplicationUpdateService _updates;
+    private readonly bool _focusCustomerEnrichment;
     private readonly DispatcherTimer _modelFetchTimer;
     private readonly Dictionary<string, AiProviderProfile> _profiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _pendingKeys = new(StringComparer.OrdinalIgnoreCase);
@@ -38,11 +39,20 @@ public partial class SettingsWindow : Window
     private bool _hadConfiguredProviderAtLoad;
     private OnboardingState _onboardingState = new();
 
-    public SettingsWindow(AppServices services, IApplicationUpdateService updates)
+    public SettingsWindow(
+        AppServices services,
+        IApplicationUpdateService updates,
+        bool focusCustomerEnrichment = false)
     {
         InitializeComponent();
         _services = services;
         _updates = updates;
+        _focusCustomerEnrichment = focusCustomerEnrichment;
+        if (_focusCustomerEnrichment)
+        {
+            SettingsTitleText.Text = "启用客户外部调查";
+            SettingsSubtitleText.Text = "填写一个联网搜索密钥即可收集公开来源；需要生成事实时，再启用 AI 并设置本程序的月度估算提醒额度。";
+        }
         _modelFetchTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
         _modelFetchTimer.Tick += async (_, _) =>
         {
@@ -106,7 +116,17 @@ public partial class SettingsWindow : Window
 
         if (HasProviderKey(_currentProviderId))
             await FetchModelsAsync(false);
-        if (!GuideCatalog.IsSeen(_onboardingState, "settings"))
+        if (_focusCustomerEnrichment)
+        {
+            await Dispatcher.InvokeAsync(
+                () =>
+                {
+                    EnrichmentSettingsSection.BringIntoView();
+                    TavilySearchKeyBox.Focus();
+                },
+                DispatcherPriority.ContextIdle);
+        }
+        else if (!GuideCatalog.IsSeen(_onboardingState, "settings"))
             SettingsGuide.ShowGuide(GuideCatalog.ForModule("settings"));
     }
 
@@ -131,7 +151,7 @@ public partial class SettingsWindow : Window
         EnrichmentAllowAiAnalysisBox.IsChecked = _enrichmentSettings.AllowAiAnalysisRequests;
         EnrichmentAiReservationBox.Text = _enrichmentSettings.AiAnalysisReservationUsd.ToString("0.####", CultureInfo.InvariantCulture);
         EnrichmentAiStatusText.Text = _services.DeepSeek.HasApiKey(AiModuleKeys.CustomerEnrichment)
-            ? "板块 AI 路由已配置。Provider 定价随账号和模型变化，系统按预留额做本地预算门禁。"
+            ? "板块 AI 路由已配置。本程序仅按预留额进行本地估算并停止超额新调用；Provider 定价和实际账单可能不同。"
             : "板块 AI 路由未配置；调查仍会保存公开来源，但不会生成推断事实。";
         EnrichmentMaxQueriesBox.Text = _enrichmentSettings.MaxQueriesPerCustomer.ToString(CultureInfo.InvariantCulture);
         EnrichmentMaxResultsBox.Text = _enrichmentSettings.MaxResultsPerQuery.ToString(CultureInfo.InvariantCulture);
@@ -145,22 +165,19 @@ public partial class SettingsWindow : Window
         EnrichmentAllowPaidBox.IsChecked = _enrichmentSettings.AllowPaidRequests;
         var tavilyConfigured = _services.CustomerEnrichment.HasProviderKey("tavily");
         var braveConfigured = _services.CustomerEnrichment.HasProviderKey("brave");
-        TavilySearchStatusText.Text = tavilyConfigured ? "已安全保存在 Windows 凭据管理器；留空会保留" : "未配置；留空不会写入任何 Key";
-        BraveSearchStatusText.Text = braveConfigured ? "已安全保存在 Windows 凭据管理器；留空会保留" : "未配置；留空不会写入任何 Key";
+        TavilySearchStatusText.Text = tavilyConfigured ? "已安全保存；留空会继续使用" : "未填写；与下方选项任选一个即可";
+        BraveSearchStatusText.Text = braveConfigured ? "已安全保存；留空会继续使用" : "未填写；与上方选项任选一个即可";
         var configuredCount = (tavilyConfigured ? 1 : 0) + (braveConfigured ? 1 : 0) + (_enrichmentSettings.SearXngEnabled ? 1 : 0);
-        EnrichmentProviderStatusText.Text = configuredCount == 0 ? "未配置 · 主程序不受影响" : $"{configuredCount} 个检索源可用";
+        EnrichmentProviderStatusText.Text = configuredCount == 0 ? "需要填写一项" : "联网调查已就绪";
         await RefreshCustomerEnrichmentUsageAsync();
     }
 
     private async Task RefreshCustomerEnrichmentUsageAsync()
     {
         var usage = await _services.Repository.GetCustomerEnrichmentUsageSummaryAsync();
-        var providers = usage.ProviderRequests.Count == 0
-            ? "暂无调用"
-            : string.Join(" · ", usage.ProviderRequests.Select(item => $"{item.Key} {item.Value} 次"));
         var tavilyRemaining = Math.Max(0, _enrichmentSettings.TavilyMonthlyFreeRequests - usage.ProviderRequests.GetValueOrDefault("tavily"));
         var braveRemaining = Math.Max(0, _enrichmentSettings.BraveMonthlyFreeRequests - usage.ProviderRequests.GetValueOrDefault("brave"));
-        EnrichmentUsageText.Text = $"今日 {usage.TodayRequests} 次 · 本月 {usage.MonthRequests} 次 · 预算预留/预估 ${usage.MonthEstimatedCostUsd:0.####} · Tavily 免费剩余 {tavilyRemaining} · Brave 免费剩余 {braveRemaining} · {providers}";
+        EnrichmentUsageText.Text = $"本程序本地估算：今日 {usage.TodayRequests} 次，本月 {usage.MonthRequests} 次，累计预留或估算 ${usage.MonthEstimatedCostUsd:0.####}；选项一账号额度估算剩余 {tavilyRemaining}，选项二剩余 {braveRemaining}。不含账号在其他工具中的用量，实际账单以 Provider 为准。";
     }
 
     private bool CaptureCustomerEnrichmentSettings()
@@ -168,18 +185,18 @@ public partial class SettingsWindow : Window
         if (!decimal.TryParse(EnrichmentBudgetBox.Text.Trim(), NumberStyles.Number, CultureInfo.InvariantCulture, out var budget)
             && !decimal.TryParse(EnrichmentBudgetBox.Text.Trim(), NumberStyles.Number, CultureInfo.CurrentCulture, out budget))
         {
-            MessageBox.Show("客户外部调查月预算必须是有效数字。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("本地月度估算提醒额度必须是有效数字。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
         if ((!decimal.TryParse(EnrichmentAiReservationBox.Text.Trim(), NumberStyles.Number, CultureInfo.InvariantCulture, out var aiReservation)
                 && !decimal.TryParse(EnrichmentAiReservationBox.Text.Trim(), NumberStyles.Number, CultureInfo.CurrentCulture, out aiReservation))
             || aiReservation < 0)
         {
-            MessageBox.Show("每任务 AI 分析预算预留必须是大于或等于 0 的有效数字。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("每次 AI 本地估算预留必须是大于或等于 0 的有效数字。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
-        if (!TryReadEnrichmentInteger(TavilyFreeRequestsBox, "Tavily 每月本地免费请求上限", 0, 1_000_000, out var tavilyFreeRequests)
-            || !TryReadEnrichmentInteger(BraveFreeRequestsBox, "Brave 每月本地免费请求上限", 0, 1_000_000, out var braveFreeRequests)
+        if (!TryReadEnrichmentInteger(TavilyFreeRequestsBox, "Tavily 每月账号额度估算", 0, 1_000_000, out var tavilyFreeRequests)
+            || !TryReadEnrichmentInteger(BraveFreeRequestsBox, "Brave 每月账号额度估算", 0, 1_000_000, out var braveFreeRequests)
             || !TryReadEnrichmentInteger(EnrichmentMaxQueriesBox, "每位客户最大查询数", 1, 6, out var maxQueries)
             || !TryReadEnrichmentInteger(EnrichmentMaxResultsBox, "每条查询最大结果数", 1, 8, out var maxResults)
             || !TryReadEnrichmentInteger(EnrichmentMaxPagesBox, "每位客户最大网页数", 1, 12, out var maxPages)
@@ -189,24 +206,24 @@ public partial class SettingsWindow : Window
             return false;
         if (budget < 0)
         {
-            MessageBox.Show("客户外部调查月预算不能小于 0。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("本地月度估算提醒额度不能小于 0。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
         if (EnrichmentAllowPaidBox.IsChecked == true && budget <= 0)
         {
-            MessageBox.Show("允许付费请求前，必须设置大于 0 的明确月预算。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("允许继续付费搜索前，必须设置大于 0 的本地月度估算提醒额度。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
-        if (EnrichmentAllowAiAnalysisBox.IsChecked == true
-            && (EnrichmentAllowPaidBox.IsChecked != true || budget <= 0 || aiReservation <= 0))
+        if (EnrichmentAllowAiAnalysisBox.IsChecked == true && budget <= 0)
         {
-            MessageBox.Show("启用板块 AI 分析前，必须同时允许付费请求，并设置大于 0 的月预算和每任务预算预留。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("启用 AI 事实整理前，请设置大于 0 的本地月度估算提醒额度。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
-        if (EnrichmentAllowAiAnalysisBox.IsChecked == true && aiReservation > budget)
+        if (EnrichmentAllowAiAnalysisBox.IsChecked == true)
         {
-            MessageBox.Show("每任务 AI 分析预算预留不能高于月预算。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
+            if (aiReservation <= 0)
+                aiReservation = CustomerEnrichmentSettings.DefaultAiAnalysisReservationUsd;
+            aiReservation = Math.Min(aiReservation, budget);
         }
         _enrichmentSettings.SearXngEnabled = SearXngEnabledBox.IsChecked == true;
         _enrichmentSettings.ProviderOrder = ((EnrichmentProviderOrderBox.SelectedValue as string)
@@ -255,14 +272,16 @@ public partial class SettingsWindow : Window
             _ => null
         };
         button.IsEnabled = false;
-        EnrichmentConnectionStatusText.Text = $"正在测试 {providerId}；本次会真实联网并计入调用量…";
+        EnrichmentConnectionStatusText.Text = "正在测试联网连接；本次会计入对应账号调用量…";
         try
         {
             var health = await _services.CustomerEnrichment.TestProviderConfigurationAsync(
                 providerId,
                 keyOverride,
                 SearXngBaseUrlBox.Text.Trim());
-            EnrichmentConnectionStatusText.Text = health.Message;
+            EnrichmentConnectionStatusText.Text = health.Available
+                ? "联网连接正常。保存并应用后即可回到客户外部调查。"
+                : "联网连接不可用。请检查密钥或网络后重试。";
             EnrichmentConnectionStatusText.SetResourceReference(
                 TextBlock.ForegroundProperty,
                 health.Available ? "Success" : "Danger");
@@ -434,9 +453,9 @@ public partial class SettingsWindow : Window
         var definitions = new[]
         {
             new ModuleDefinition(AiModuleKeys.LeadIntelligence, "Command Center · 商机智能", "客户价值、成交可能性、证据、风险与下一步的结构化分析；查看列表和筛选不耗 Token。"),
-            new ModuleDefinition(AiModuleKeys.Customers, "Customer Operations · 客户列表", "Customer Brain 人工分析；查看、编辑和同步客户资料不耗 Token。"),
-            new ModuleDefinition(AiModuleKeys.WhatsAppInbox, "Customer Operations · WhatsApp Inbox", "AI 会话助理与 Customer Success Agent；普通消息同步不耗 Token。"),
-            new ModuleDefinition(AiModuleKeys.EmailInbox, "Customer Operations · 邮件 Inbox", "Email Sales Copilot 根据 CRM、Customer Brain、邮件上下文和你的写信意图生成新邮件或回复草稿；同步和手写收发不耗 Token。"),
+            new ModuleDefinition(AiModuleKeys.Customers, "Command Center · 客户列表", "Customer Brain 人工分析；查看、编辑和同步客户资料不耗 Token。"),
+            new ModuleDefinition(AiModuleKeys.WhatsAppInbox, "Customer Operations · WhatsApp", "AI 会话助理与 Customer Success Agent；普通消息同步不耗 Token。"),
+            new ModuleDefinition(AiModuleKeys.EmailInbox, "Customer Operations · 邮件箱", "Email Sales Copilot 根据 CRM、Customer Brain、邮件上下文和你的写信意图生成新邮件或回复草稿；同步和手写收发不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.Campaigns, "Customer Operations · 自动化群发", "AI 触达话术生成；普通群发、排期和投递本身不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.CustomerEnrichment, "Customer Operations · 客户外部调查", "公开来源的主体匹配与证据事实提取；查看缓存、来源和人工审核不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.KnowledgeBase, "Insights · 知识库", "图片资料 OCR 调用视觉模型；文本入库、审批和检索不耗 Token。"),

@@ -9,6 +9,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
+using WAFlow.Core.Infrastructure;
 using WAFlow.Core.Services;
 
 namespace WAFlow.Desktop.Pages;
@@ -23,6 +24,7 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
     private readonly DispatcherTimer _pollTimer;
     private readonly CustomerEnrichmentService _enrichmentService;
     private List<Lead> _allLeads = [];
+    private Dictionary<string, CustomerEnrichmentQueueSummary> _queueSummaries = new(StringComparer.OrdinalIgnoreCase);
     private List<FactRow> _filteredFacts = [];
     private CustomerEnrichmentSnapshot _snapshot = new();
     private Lead? _selectedLead;
@@ -37,7 +39,9 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
     private bool _evidenceExpanded = true;
     private bool _providerAvailable;
     private int _factPage;
-    private string _availabilityMessage = "正在检查搜索服务";
+    private string _availabilityMessage = "正在检查联网调查状态";
+    private bool _queueSummaryRefreshRunning;
+    private bool _queueSummaryRefreshPending;
 
     public event EventHandler? DataChanged;
     public event EventHandler? ImportRequested;
@@ -66,11 +70,18 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
         var selectedId = _selectedLead?.Id;
         try
         {
-            await RefreshAvailabilityAsync();
-            _allLeads = (await _services.Repository.GetLeadsAsync()).
+            var availabilityTask = RefreshAvailabilityAsync();
+            var leadsTask = _services.Repository.GetLeadsAsync();
+            var summariesTask = _services.Repository.GetCustomerEnrichmentQueueSummariesAsync();
+            await Task.WhenAll(availabilityTask, leadsTask, summariesTask);
+            _allLeads = (await leadsTask).
                 OrderBy(lead => GradeOrder(lead.Grade))
                 .ThenByDescending(lead => lead.UpdatedAt)
                 .ToList();
+            _queueSummaries = (await summariesTask).ToDictionary(
+                item => item.Key,
+                item => item.Value,
+                StringComparer.OrdinalIgnoreCase);
             ApplyCustomerFilter(selectedId);
 
             if (CustomerList.SelectedItem is CustomerRow selected)
@@ -138,7 +149,7 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
              || Contains(lead.Country, search)
              || Contains(lead.Email, search))
             && (string.IsNullOrWhiteSpace(grade) || string.Equals(lead.Grade, grade, StringComparison.OrdinalIgnoreCase)))
-            .Select(lead => new CustomerRow(lead))
+            .Select(lead => new CustomerRow(lead, _queueSummaries.GetValueOrDefault(lead.Id)))
             .ToList();
 
         _customers.Clear();
@@ -447,6 +458,7 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
         if (!_providerAvailable)
         {
             SetInlineStatus(_availabilityMessage, "warning");
+            SettingsRequested?.Invoke(this, EventArgs.Empty);
             return;
         }
 
@@ -609,23 +621,60 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
     {
         try
         {
+            var localSearch = await PrepareLocalSearchAsync(CancellationToken.None);
             var healthItems = await _enrichmentService.GetAvailabilityAsync(CancellationToken.None);
-            var available = healthItems.Where(item => item.Available).ToList();
-            _providerAvailable = available.Count > 0;
+            _providerAvailable = healthItems.Any(item => item.Available) && !localSearch.OnlyLocalUnavailable;
             ProviderText.Text = _providerAvailable
-                ? string.Join(" / ", available.Select(item => ProviderDisplayName(item.Provider)).Distinct())
-                : "无可用服务";
+                ? localSearch.AutoEnabled ? "本机已自动启用" : "已就绪"
+                : "需要启用";
             _availabilityMessage = _providerAvailable
-                ? $"可用搜索服务：{ProviderText.Text}"
-                : healthItems.Select(item => item.Message).FirstOrDefault(message => !string.IsNullOrWhiteSpace(message))
-                  ?? "当前未配置可用搜索服务。";
+                ? localSearch.AutoEnabled
+                    ? "已自动启用本机搜索服务，可以直接开始调查。"
+                    : "联网调查已就绪，系统会自动选择可用的搜索方式。"
+                : "联网调查尚未启用。点击“立即启用”，填写任一联网搜索密钥并保存；这一步只收集公开来源。";
+            EnrichmentSettingsButton.Content = _providerAvailable ? "高级设置" : "立即启用";
+            AutomationProperties.SetName(
+                EnrichmentSettingsButton,
+                _providerAvailable ? "打开客户外部调查高级设置" : "立即启用联网调查");
         }
         catch (Exception ex)
         {
             _providerAvailable = false;
-            _availabilityMessage = ToUserMessage(ex);
+            _availabilityMessage = $"联网调查状态检查失败。{ToUserMessage(ex)}";
             ProviderText.Text = "检查失败";
+            EnrichmentSettingsButton.Content = "立即启用";
+            AutomationProperties.SetName(EnrichmentSettingsButton, "立即启用联网调查");
         }
+    }
+
+    private async Task<(bool AutoEnabled, bool OnlyLocalUnavailable)> PrepareLocalSearchAsync(
+        CancellationToken cancellationToken)
+    {
+        var settings = await _enrichmentService.GetSettingsAsync(cancellationToken);
+        var remoteConfigured = _enrichmentService.HasProviderKey("tavily")
+                               || _enrichmentService.HasProviderKey("brave");
+        if (remoteConfigured) return (false, false);
+
+        var provider = new SearXngSearchProvider(
+            settings.SearXngBaseUrl,
+            options: new CustomerSearchProviderOptions
+            {
+                RequestTimeout = TimeSpan.FromMilliseconds(1200),
+                MinimumRequestInterval = TimeSpan.Zero,
+                MaximumAttempts = 1,
+                CircuitFailureThreshold = 1
+            });
+        var health = await provider.CheckHealthAsync(cancellationToken);
+        if (!health.Available) return (false, settings.SearXngEnabled);
+        if (settings.SearXngEnabled) return (false, false);
+
+        settings.SearXngEnabled = true;
+        settings.ProviderOrder = new[] { "searxng" }
+            .Concat(settings.ProviderOrder)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        await _enrichmentService.SaveSettingsAsync(settings, cancellationToken);
+        return (true, false);
     }
 
     private void SubscribeToServiceChanges()
@@ -644,9 +693,49 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
     {
         Dispatcher.InvokeAsync(async () =>
         {
-            if (!_loaded || _selectedLead is null || !string.Equals(_selectedLead.Id, e.CustomerId, StringComparison.OrdinalIgnoreCase)) return;
+            if (!_loaded) return;
+            QueueCustomerSummaryRefresh();
+            if (_selectedLead is null || !string.Equals(_selectedLead.Id, e.CustomerId, StringComparison.OrdinalIgnoreCase)) return;
             SetInlineStatus(string.IsNullOrWhiteSpace(e.Message) ? JobStatusLabel(e.Status) : e.Message, StatusTone(e.Status));
             await LoadCustomerSnapshotAsync(_selectedLead, showLoading: false);
+        });
+    }
+
+    private void QueueCustomerSummaryRefresh()
+    {
+        _ = Dispatcher.InvokeAsync(async () =>
+        {
+            if (_queueSummaryRefreshRunning)
+            {
+                _queueSummaryRefreshPending = true;
+                return;
+            }
+
+            _queueSummaryRefreshRunning = true;
+            try
+            {
+                do
+                {
+                    _queueSummaryRefreshPending = false;
+                    await Task.Delay(120);
+                    var summaries = await _services.Repository.GetCustomerEnrichmentQueueSummariesAsync();
+                    _queueSummaries = summaries.ToDictionary(
+                        item => item.Key,
+                        item => item.Value,
+                        StringComparer.OrdinalIgnoreCase);
+                    foreach (var row in _customers)
+                        row.ApplySummary(_queueSummaries.GetValueOrDefault(row.Lead.Id));
+                }
+                while (_queueSummaryRefreshPending && _loaded);
+            }
+            catch
+            {
+                // A later service event, manual refresh or page navigation retries the local summary read.
+            }
+            finally
+            {
+                _queueSummaryRefreshRunning = false;
+            }
         });
     }
 
@@ -678,17 +767,19 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
         FactCountText.Text = $"{_snapshot.Facts.Count} 条";
         SourceCountText.Text = $"{_snapshot.Sources.Count} 个";
         CostText.Text = $"${job?.CostUsd ?? 0m:0.000}";
-        CostText.ToolTip = $"本月预计费用：${_snapshot.Usage.MonthEstimatedCostUsd:0.000}；本月请求：{_snapshot.Usage.MonthRequests} 次";
+        CostText.ToolTip = $"本程序本月本地估算：${_snapshot.Usage.MonthEstimatedCostUsd:0.000}；本月请求：{_snapshot.Usage.MonthRequests} 次。不含账号在其他工具中的用量，实际账单以 Provider 为准。";
         JobStatusText.Text = job is null ? "尚未调查" : JobStatusLabel(job.Status);
         LastUpdatedText.Text = job is null ? "暂无" : job.UpdatedAt.LocalDateTime.ToString("MM-dd HH:mm");
-        if (!string.IsNullOrWhiteSpace(job?.Provider)) ProviderText.Text = ProviderDisplayName(job.Provider);
-
         if (job is null)
             SetInlineStatus(_providerAvailable ? "已就绪，选择客户后可开始调查。" : _availabilityMessage, _providerAvailable ? "neutral" : "warning");
         else if (job.Status == CustomerEnrichmentJobStatus.Failed)
             SetInlineStatus(ToJobFailureMessage(job), "danger");
         else if (job.Status == CustomerEnrichmentJobStatus.NoResults)
             SetInlineStatus("未找到足够可靠的公开结果，本次调查未形成事实。", "warning");
+        else if (job.Status == CustomerEnrichmentJobStatus.NeedsReview
+                 && _snapshot.Facts.Count == 0
+                 && _snapshot.Sources.Count > 0)
+            SetInlineStatus(SourceOnlyGuidance(job), "warning");
         else if (job.Status == CustomerEnrichmentJobStatus.Succeeded)
             SetInlineStatus(job.ReusedCache ? "已载入缓存调查结果。" : $"调查完成，形成 {_snapshot.Facts.Count} 条事实。", "success");
         else
@@ -700,9 +791,28 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
         if (_selectedLead is null) return;
         var row = _customers.FirstOrDefault(item => string.Equals(item.Lead.Id, _selectedLead.Id, StringComparison.OrdinalIgnoreCase));
         if (row is null) return;
-        row.InvestigationLabel = _snapshot.LatestJob is null
-            ? "尚未调查"
-            : $"{JobStatusLabel(_snapshot.LatestJob.Status)} · {_snapshot.Facts.Count} 条事实";
+        if (_queueSummaries.TryGetValue(_selectedLead.Id, out var current)
+            && string.Equals(current.LatestJob?.Id, _snapshot.LatestJob?.Id, StringComparison.OrdinalIgnoreCase))
+        {
+            row.ApplySummary(current);
+            return;
+        }
+
+        var latestHistoricalJob = _snapshot.Jobs
+            .OrderByDescending(job => job.CreatedAt)
+            .FirstOrDefault();
+        var factCount = _snapshot.Facts
+            .Select(fact => $"{fact.FieldType}|{fact.NormalizedValue}")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        var summary = new CustomerEnrichmentQueueSummary(
+            _selectedLead.Id,
+            _snapshot.LatestJob,
+            factCount,
+            latestHistoricalJob);
+        _queueSummaries[_selectedLead.Id] = summary;
+        row.ApplySummary(summary);
+        QueueCustomerSummaryRefresh();
     }
 
     private void ShowNoCustomerState()
@@ -732,7 +842,11 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
         FactEmptyTitle.Text = title;
         FactEmptyMessage.Text = message;
         FactEmptyActionButton.Visibility = showAction ? Visibility.Visible : Visibility.Collapsed;
-        FactEmptyActionButton.IsEnabled = showAction && _selectedLead is not null && _providerAvailable;
+        FactEmptyActionButton.Content = _providerAvailable ? "开始调查" : "立即启用";
+        AutomationProperties.SetName(
+            FactEmptyActionButton,
+            _providerAvailable ? "从空状态开始调查" : "从空状态立即启用联网调查");
+        FactEmptyActionButton.IsEnabled = showAction && _selectedLead is not null && !_refreshing;
         FactEmptyState.Visibility = Visibility.Visible;
         FactGrid.Visibility = Visibility.Collapsed;
         FactPager.Visibility = Visibility.Collapsed;
@@ -778,7 +892,7 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
         EvidenceValueText.Text = "尚未形成可审核事实";
         EvidenceConfidenceBar.Value = 0;
         EvidenceConfidenceText.Text = "待提取";
-        EvidenceQuoteText.Text = "以下公开来源已完成读取，但当前没有满足证据约束的事实。请先核对来源，补齐 AI 配置后可重新调查。";
+        EvidenceQuoteText.Text = SourceOnlyGuidance(_snapshot.LatestJob);
         EvidenceFreshnessText.Text = _snapshot.LatestJob is null
             ? "时效信息：来源抓取时间见下方详情"
             : $"时效信息：最近任务更新于 {_snapshot.LatestJob.UpdatedAt.LocalDateTime:yyyy-MM-dd HH:mm}";
@@ -798,7 +912,11 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
     private void UpdateActionAvailability()
     {
         var running = _snapshot.LatestJob?.Status is CustomerEnrichmentJobStatus.Queued or CustomerEnrichmentJobStatus.Running;
-        InvestigateButton.IsEnabled = _selectedLead is not null && _providerAvailable && !running && !_refreshing;
+        InvestigateButton.Content = _providerAvailable ? "开始调查" : "立即启用";
+        AutomationProperties.SetName(
+            InvestigateButton,
+            _providerAvailable ? "开始调查当前客户" : "立即启用联网调查");
+        InvestigateButton.IsEnabled = _selectedLead is not null && !running && !_refreshing;
         FactEmptyActionButton.IsEnabled = InvestigateButton.IsEnabled;
         SetReviewButtonsEnabled(_selectedFact is not null && !running);
     }
@@ -919,6 +1037,29 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
         _ => status.ToString()
     };
 
+    private static bool NeedsAiBudgetAuthorization(CustomerEnrichmentJob? job) =>
+        job is { Status: CustomerEnrichmentJobStatus.NeedsReview }
+        && string.Equals(
+            job.ErrorCode,
+            CustomerEnrichmentErrorCodes.AiAnalysisPaymentNotAuthorized,
+            StringComparison.OrdinalIgnoreCase);
+
+    private static bool NeedsAiProviderSetup(CustomerEnrichmentJob? job) =>
+        job is { Status: CustomerEnrichmentJobStatus.NeedsReview }
+        && string.Equals(
+            job.ErrorCode,
+            CustomerEnrichmentErrorCodes.AnalysisProviderUnavailable,
+            StringComparison.OrdinalIgnoreCase);
+
+    private static string SourceOnlyGuidance(CustomerEnrichmentJob? job)
+    {
+        if (NeedsAiProviderSetup(job))
+            return "公开来源已保存，尚未生成事实。请打开左侧“设置”，完成 AI API 对接，并为“客户外部调查”选择可用模型后重新调查。";
+        if (NeedsAiBudgetAuthorization(job))
+            return "公开来源已保存，尚未生成事实。请打开“设置”，启用 AI 事实整理并填写本程序本地月度估算提醒额度后重新调查。";
+        return "公开来源已保存，但尚未形成可审核事实。请核对右侧来源，并按页面提示补齐条件后重新调查。";
+    }
+
     private static string StatusTone(CustomerEnrichmentJobStatus status) => status switch
     {
         CustomerEnrichmentJobStatus.Succeeded => "success",
@@ -941,11 +1082,13 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
     private static string ToJobFailureMessage(CustomerEnrichmentJob job)
     {
         if (string.Equals(job.ErrorCode, CustomerEnrichmentErrorCodes.ProviderQuotaExhausted, StringComparison.OrdinalIgnoreCase))
-            return "免费额度已用完，本次调查未产生费用。";
+            return "本地账号额度估算已用完，程序已停止额外调用；实际额度与账单以 Provider 为准。";
         if (string.Equals(job.ErrorCode, CustomerEnrichmentErrorCodes.PaidRequestBlocked, StringComparison.OrdinalIgnoreCase))
-            return "付费搜索请求已被预算规则阻止，本次调查未产生费用。";
+            return "下一次付费搜索已被本地估算提醒规则阻止；实际账单以 Provider 为准。";
         if (string.Equals(job.ErrorCode, CustomerEnrichmentErrorCodes.SearchProviderUnavailable, StringComparison.OrdinalIgnoreCase))
             return "当前未配置可用搜索服务。";
+        if (string.Equals(job.ErrorCode, CustomerEnrichmentErrorCodes.AiAnalysisPaymentNotAuthorized, StringComparison.OrdinalIgnoreCase))
+            return "公开来源已保存。如需整理为客户事实，请打开设置，启用 AI 事实整理并填写本程序本地月度估算提醒额度。";
         return string.IsNullOrWhiteSpace(job.ErrorMessage) ? "调查失败，请稍后重试。" : job.ErrorMessage;
     }
 
@@ -955,15 +1098,16 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
         {
             return enrichment.Code switch
             {
-                CustomerEnrichmentErrorCodes.ProviderQuotaExhausted => "免费额度已用完，本次调查未产生费用。",
-                CustomerEnrichmentErrorCodes.PaidRequestBlocked => "付费搜索请求已被预算规则阻止，本次调查未产生费用。",
-                CustomerEnrichmentErrorCodes.SearchProviderUnavailable => "当前未配置可用搜索服务。",
-                CustomerEnrichmentErrorCodes.SearXngNotRunning => "本机 SearXNG 未运行，请启动服务或调整搜索设置。",
+                CustomerEnrichmentErrorCodes.ProviderQuotaExhausted => "本地账号额度估算已用完，程序已停止额外调用；实际额度与账单以 Provider 为准。",
+                CustomerEnrichmentErrorCodes.PaidRequestBlocked => "下一次付费搜索已被本地估算提醒规则阻止；实际账单以 Provider 为准。",
+                CustomerEnrichmentErrorCodes.SearchProviderUnavailable => "联网调查尚未启用。点击“立即启用”，填写任一联网搜索密钥并保存；这一步只收集公开来源。",
+                CustomerEnrichmentErrorCodes.SearXngNotRunning => "本机搜索服务未运行。点击“立即启用”选择另一种联网搜索方式，或启动本机服务。",
                 CustomerEnrichmentErrorCodes.CustomerIdentityMissing => "客户身份信息不足，请先补充姓名、公司、国家或联系方式。",
                 CustomerEnrichmentErrorCodes.NoPublicResults => "没有找到足够可靠的公开结果。",
                 CustomerEnrichmentErrorCodes.WebFetchTimeout => "部分公开网页读取超时，请稍后重试。",
                 CustomerEnrichmentErrorCodes.WebFetchBlocked => "公开网页拒绝访问，系统未绕过站点限制。",
                 CustomerEnrichmentErrorCodes.InvalidModelResponse => "事实提取结果格式异常，可重新调查。",
+                CustomerEnrichmentErrorCodes.AiAnalysisPaymentNotAuthorized => "公开来源已保存。如需整理为客户事实，请打开设置，启用 AI 事实整理并填写本程序本地月度估算提醒额度。",
                 _ => string.IsNullOrWhiteSpace(enrichment.Message) ? "调查操作失败，请稍后重试。" : enrichment.Message
             };
         }
@@ -990,7 +1134,7 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
 
     private sealed class CustomerRow : INotifyPropertyChanged
     {
-        private string _investigationLabel = "待选择";
+        private string _investigationLabel = "正在读取状态";
         public Lead Lead { get; }
         public string DisplayName => string.IsNullOrWhiteSpace(Lead.DisplayName) ? "未命名客户" : Lead.DisplayName;
         public string CompanyAndCountry
@@ -1014,7 +1158,23 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
                 PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AutomationName)));
             }
         }
-        public CustomerRow(Lead lead) => Lead = lead;
+        public CustomerRow(Lead lead, CustomerEnrichmentQueueSummary? summary)
+        {
+            Lead = lead;
+            ApplySummary(summary);
+        }
+
+        public void ApplySummary(CustomerEnrichmentQueueSummary? summary)
+        {
+            InvestigationLabel = summary switch
+            {
+                { NeedsRefresh: true } => "资料已变化 · 请重新调查",
+                null or { LatestJob: null } => "尚未调查",
+                { LatestJob: { } job } when NeedsAiProviderSetup(job) => "来源已保存 · 待完成 AI 对接",
+                { LatestJob: { } job } when NeedsAiBudgetAuthorization(job) => "来源已保存 · 待启用 AI 整理",
+                _ => $"{JobStatusLabel(summary.LatestJob!.Status)} · {summary.FactCount} 条事实"
+            };
+        }
         public event PropertyChangedEventHandler? PropertyChanged;
     }
 

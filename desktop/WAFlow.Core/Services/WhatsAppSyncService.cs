@@ -103,16 +103,23 @@ public sealed class WhatsAppSyncService
         await _repository.UpsertWhatsAppContactAsync(contact);
         if (string.IsNullOrWhiteSpace(phone)) return;
         var ownedPeer = await _repository.GetOwnedWhatsAppPeerAccountAsync(accountId, phone);
-        var lead = ownedPeer is null ? await _repository.GetLeadByPhoneAsync(phone) : null;
         var conversation = await _repository.GetWhatsAppConversationAsync(accountId, phone) ?? new WhatsAppConversation
         {
             Id = $"{accountId}:{phone}", AccountId = accountId, Phone = phone
         };
+        var resolution = ownedPeer is null
+            ? await ResolveConversationLeadAsync(accountId, conversation.Id, phone)
+            : (HasIdentityDecision: false, Lead: (Lead?)null);
+        var lead = resolution.Lead;
         if (lead is not null)
         {
             conversation.LeadId = lead.Id;
         }
         else if (ownedPeer is not null)
+        {
+            conversation.LeadId = "";
+        }
+        else if (resolution.HasIdentityDecision)
         {
             conversation.LeadId = "";
         }
@@ -163,17 +170,24 @@ public sealed class WhatsAppSyncService
         var phone = Digits(Text(data, "phone"));
         if (string.IsNullOrWhiteSpace(phone)) return;
         var ownedPeer = await _repository.GetOwnedWhatsAppPeerAccountAsync(accountId, phone);
-        var lead = ownedPeer is null ? await _repository.GetLeadByPhoneAsync(phone) : null;
         var conversation = await _repository.GetWhatsAppConversationAsync(accountId, phone) ?? new WhatsAppConversation
         {
             Id = $"{accountId}:{phone}", AccountId = accountId, Phone = phone
         };
+        var resolution = ownedPeer is null
+            ? await ResolveConversationLeadAsync(accountId, conversation.Id, phone)
+            : (HasIdentityDecision: false, Lead: (Lead?)null);
+        var lead = resolution.Lead;
         var displayName = WhatsAppTextEncodingRepair.Repair(Text(data, "displayName"));
         if (lead is not null)
         {
             conversation.LeadId = lead.Id;
         }
         else if (ownedPeer is not null)
+        {
+            conversation.LeadId = "";
+        }
+        else if (resolution.HasIdentityDecision)
         {
             conversation.LeadId = "";
         }
@@ -216,7 +230,6 @@ public sealed class WhatsAppSyncService
         var source = Text(data, "source");
         var historical = source.StartsWith("history:", StringComparison.OrdinalIgnoreCase);
         var ownedPeer = isGroup ? null : await _repository.GetOwnedWhatsAppPeerAccountAsync(accountId, phone);
-        var lead = isGroup || ownedPeer is not null ? null : await _repository.GetLeadByPhoneAsync(phone);
         var conversationId = isGroup ? $"{accountId}:{jid}" : $"{accountId}:{phone}";
         var conversation = isGroup
             ? await _repository.GetWhatsAppConversationByIdAsync(conversationId)
@@ -234,6 +247,10 @@ public sealed class WhatsAppSyncService
                     ? WhatsAppTextEncodingRepair.Repair(Text(data, "pushName"))
                     : ownedPeer?.Name ?? $"+{phone}"
         };
+        var resolution = isGroup || ownedPeer is not null
+            ? (HasIdentityDecision: false, Lead: (Lead?)null)
+            : await ResolveConversationLeadAsync(accountId, conversationId, phone);
+        var lead = resolution.Lead;
         if (string.IsNullOrWhiteSpace(conversation.Jid)) conversation.Jid = jid;
         conversation.IsGroup = isGroup;
         if (isGroup)
@@ -249,6 +266,10 @@ public sealed class WhatsAppSyncService
             conversation.LeadId = lead.Id;
         }
         else if (ownedPeer is not null)
+        {
+            conversation.LeadId = "";
+        }
+        else if (resolution.HasIdentityDecision)
         {
             conversation.LeadId = "";
         }
@@ -301,6 +322,7 @@ public sealed class WhatsAppSyncService
                                && !HasUsableContent(existingMessage)
                                && HasUsableContent(message);
         var inserted = await _repository.UpsertWhatsAppMessageAsync(message);
+        message = await _repository.GetWhatsAppMessageByProviderIdAsync(accountId, providerId) ?? message;
         var usableContent = HasUsableContent(message);
         if (timestamp >= conversation.LastMessageAt)
         {
@@ -327,11 +349,13 @@ public sealed class WhatsAppSyncService
                                     or WhatsAppMessageStatus.Delivered
                                     or WhatsAppMessageStatus.Read;
         var newlyAvailable = (inserted && usableContent) || contentRecovered;
-        if (lead is not null && newlyAvailable && !message.IsStatusUpdate && confirmedOutgoing)
+        if (newlyAvailable && !message.IsStatusUpdate && confirmedOutgoing)
         {
-            LeadConnectionStatus.ApplyFromMessage(lead, message);
-            await _repository.UpsertLeadAsync(lead);
-            await _repository.LogEventAsync(fromMe ? "whatsapp_message_sent" : "whatsapp_message_received", lead.Id, null, $"message_id={providerId}; account={accountId}");
+            message = await _repository.ApplySynchronizedWhatsAppMessageOutcomeAsync(
+                          message.Id,
+                          fromMe ? "whatsapp_message_sent" : "whatsapp_message_received",
+                          $"message_id={providerId}; account={accountId}")
+                      ?? message;
         }
         if (newlyAvailable && !historical) MessageSynchronized?.Invoke(this, message);
     }
@@ -340,6 +364,21 @@ public sealed class WhatsAppSyncService
         !string.IsNullOrWhiteSpace(message.Body)
         || message.Kind is "image" or "video" or "audio" or "document" or "sticker"
             or "contact" or "location" or "poll" or "reaction" or "event";
+
+    private async Task<(bool HasIdentityDecision, Lead? Lead)> ResolveConversationLeadAsync(
+        string accountId,
+        string conversationId,
+        string phone)
+    {
+        var identityLink = await _repository.GetWhatsAppIdentityLinkAsync(accountId, conversationId);
+        if (identityLink is not null)
+            return (
+                true,
+                identityLink.IsActive && !string.IsNullOrWhiteSpace(identityLink.CustomerId)
+                    ? await _repository.GetLeadAsync(identityLink.CustomerId)
+                    : null);
+        return (false, await _repository.GetLeadByPhoneAsync(phone));
+    }
 
     private static string MessagePreview(WhatsAppMessage message)
     {
@@ -376,9 +415,11 @@ public sealed class WhatsAppSyncService
             conversation.LastMessageAt = message.Timestamp;
             await _repository.UpsertWhatsAppConversationAsync(conversation);
         }
+        message = await _repository.ApplySynchronizedWhatsAppMessageOutcomeAsync(
+            message.Id,
+            "whatsapp_message_revoked",
+            $"message_id={providerId}; account={accountId}") ?? message;
         MessageSynchronized?.Invoke(this, message);
-        if (!string.IsNullOrWhiteSpace(message.LeadId))
-            await _repository.LogEventAsync("whatsapp_message_revoked", message.LeadId, null, $"message_id={providerId}; account={accountId}");
     }
 
     private async Task IngestStatusAsync(WhatsAppBridgeEvent e)
@@ -406,11 +447,9 @@ public sealed class WhatsAppSyncService
             readAt,
             Text(e.Data, "failureReason"));
         if (message is null) return;
+        if (message.Direction == WhatsAppMessageDirection.Outgoing)
+            message = await _repository.ApplySynchronizedWhatsAppMessageOutcomeAsync(message.Id, "", "") ?? message;
         MessageSynchronized?.Invoke(this, message);
-        if (string.IsNullOrWhiteSpace(message.LeadId) || message.Direction != WhatsAppMessageDirection.Outgoing) return;
-        var lead = await _repository.GetLeadAsync(message.LeadId);
-        if (lead is null || !LeadConnectionStatus.ApplyFromMessage(lead, message)) return;
-        await _repository.UpsertLeadAsync(lead);
     }
 
     private static WhatsAppMessageStatus ParseOutgoingStatus(JsonElement data, DateTimeOffset? deliveredAt, DateTimeOffset? readAt)

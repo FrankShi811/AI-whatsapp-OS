@@ -63,7 +63,7 @@
                     <StackPanel>
                         <TextBlock Text="COMMAND CENTER" Style="{StaticResource SidebarSectionLabel}" Margin="13,3,0,7"/>
                         <Button x:Name="DashboardButton" Tag="dashboard" Click="Navigate_Click" Style="{StaticResource NavButton}"
-                                ToolTip="销售指挥中心" AutomationProperties.Name="销售指挥中心">
+                                ToolTip="看板" AutomationProperties.Name="看板">
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Viewbox Style="{StaticResource NavIconFrame}">
@@ -74,7 +74,7 @@
                                         <Rectangle Canvas.Left="3" Canvas.Top="16" Width="7" Height="5" RadiusX="1" RadiusY="1" Style="{StaticResource NavIconRectangle}"/>
                                     </Canvas>
                                 </Viewbox>
-                                <TextBlock Grid.Column="1" Text="Dashboard" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="1" Text="看板" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
                             </Grid>
                         </Button>
                         <Button x:Name="IntelligenceButton" Tag="intelligence" Click="Navigate_Click" Style="{StaticResource NavButton}"
@@ -94,7 +94,6 @@
                             </Grid>
                         </Button>
 
-                        <TextBlock Text="CUSTOMER OPERATIONS" Style="{StaticResource SidebarSectionLabel}" Margin="13,20,0,7"/>
                         <Button x:Name="CustomersButton" Tag="customers" Click="Navigate_Click" Style="{StaticResource NavButton}"
                                 ToolTip="客户列表" AutomationProperties.Name="客户列表">
                             <Grid>
@@ -109,6 +108,7 @@
                                 <TextBlock Grid.Column="1" Text="客户列表" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
                             </Grid>
                         </Button>
+                        <TextBlock Text="CUSTOMER OPERATIONS" Style="{StaticResource SidebarSectionLabel}" Margin="13,20,0,7"/>
                         <Button x:Name="CustomerEnrichmentButton" Tag="customer-enrichment" Click="Navigate_Click" Style="{StaticResource NavButton}"
                                 ToolTip="客户外部调查" AutomationProperties.Name="客户外部调查">
                             <Grid>
@@ -123,7 +123,7 @@
                             </Grid>
                         </Button>
                         <Button x:Name="InboxButton" Tag="inbox" Click="Navigate_Click" Style="{StaticResource NavButton}" HorizontalContentAlignment="Stretch"
-                                ToolTip="WhatsApp Inbox" AutomationProperties.Name="WhatsApp Inbox">
+                                ToolTip="WhatsApp" AutomationProperties.Name="WhatsApp">
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                 <Viewbox Style="{StaticResource NavIconFrame}">
@@ -132,7 +132,7 @@
                                         <Rectangle Canvas.Left="4" Canvas.Top="8" Width="16" Height="12" RadiusX="2" RadiusY="2" Style="{StaticResource NavIconRectangle}"/>
                                     </Canvas>
                                 </Viewbox>
-                                <TextBlock Grid.Column="1" Text="WhatsApp Inbox" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="1" Text="WhatsApp" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
                                 <Border x:Name="WhatsAppUnreadBadge" Grid.Column="2" MinWidth="22" Height="20" Margin="8,0,0,0" Padding="6,0"
                                         CornerRadius="10" Background="{DynamicResource UnreadBadgeBackground}" Visibility="Collapsed"
                                         Tag="SidebarReveal" Opacity="0">
@@ -143,7 +143,7 @@
                             </Grid>
                         </Button>
                         <Button x:Name="EmailButton" Tag="email" Click="Navigate_Click" Style="{StaticResource NavButton}" HorizontalContentAlignment="Stretch"
-                                ToolTip="邮件 Inbox" AutomationProperties.Name="邮件 Inbox">
+                                ToolTip="邮件箱" AutomationProperties.Name="邮件箱">
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                 <Viewbox Style="{StaticResource NavIconFrame}">
@@ -152,7 +152,7 @@
                                         <Path Data="M22 7l-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" Style="{StaticResource NavIconPath}"/>
                                     </Canvas>
                                 </Viewbox>
-                                <TextBlock Grid.Column="1" Text="邮件 Inbox" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="1" Text="邮件箱" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
                                 <Border x:Name="EmailUnreadBadge" Grid.Column="2" MinWidth="22" Height="20" Margin="8,0,0,0" Padding="6,0"
                                         CornerRadius="10" Background="{DynamicResource UnreadBadgeBackground}" Visibility="Collapsed"
                                         Tag="SidebarReveal" Opacity="0">
@@ -244,7 +244,7 @@
                 <Grid Margin="28,0,26,0">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                     <StackPanel VerticalAlignment="Center">
-                        <TextBlock x:Name="TopTitle" Text="Dashboard" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource Ink}"/>
+                        <TextBlock x:Name="TopTitle" Text="看板" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource Ink}"/>
                         <TextBlock x:Name="TopSubtitle" Text="今天最值得推进的商机与动作" Foreground="{DynamicResource Muted}" FontSize="10.5" Margin="0,2,0,0"/>
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
@@ -295,7 +295,7 @@
                         <TextBlock Text="建议操作" Style="{StaticResource PageEyebrow}" Margin="12,4,0,7"/>
                         <Button x:Name="FirstQuickActionButton" Tag="import" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="＋" FontSize="18" Foreground="{DynamicResource Primary}"/><StackPanel Grid.Column="1"><TextBlock Text="导入客户数据" FontWeight="SemiBold"/><TextBlock Text="保留 Excel / CSV 原始字段" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel><TextBlock Grid.Column="2" Text="Enter" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/></Grid></Button>
                         <Button Tag="intelligence" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="✦" FontSize="15" Foreground="{DynamicResource AiAccent}"/><StackPanel Grid.Column="1"><TextBlock Text="打开商机智能" FontWeight="SemiBold"/><TextBlock Text="查看 AI 评分证据与下一步" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid></Button>
-                        <Button Tag="inbox" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="◉" FontSize="15" Foreground="{DynamicResource Primary}"/><StackPanel Grid.Column="1"><TextBlock Text="打开 WhatsApp Inbox" FontWeight="SemiBold"/><TextBlock Text="处理最新客户回复" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid></Button>
+                        <Button Tag="inbox" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="◉" FontSize="15" Foreground="{DynamicResource Primary}"/><StackPanel Grid.Column="1"><TextBlock Text="打开 WhatsApp" FontWeight="SemiBold"/><TextBlock Text="处理最新客户回复" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid></Button>
                         <Button Tag="broadcast" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="◌" FontSize="15" Foreground="{DynamicResource Warning}"/><StackPanel Grid.Column="1"><TextBlock Text="建立自动化群发任务" FontWeight="SemiBold"/><TextBlock Text="模板、受众、节奏与人工批准" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid></Button>
                         <Button Tag="knowledge" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="▤" FontSize="15" Foreground="{DynamicResource Primary}"/><StackPanel Grid.Column="1"><TextBlock Text="管理业务知识与 RAG" FontWeight="SemiBold"/><TextBlock Text="上传、审核、检索测试与来源审计" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid></Button>
                         <Button Tag="analytics" Click="QuickAction_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Stretch"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="◫" FontSize="15" Foreground="{DynamicResource AiAccent}"/><StackPanel Grid.Column="1"><TextBlock Text="生成客户情报报告" FontWeight="SemiBold"/><TextBlock Text="整合全部客户数据并导出 Word / PDF" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid></Button>

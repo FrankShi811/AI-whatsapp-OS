@@ -4,7 +4,7 @@ using WAFlow.Core.Infrastructure;
 
 namespace WAFlow.Core.Services;
 
-public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLookup, IAsyncDisposable
+public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLookup, ICustomerSuccessMessageSender, IAsyncDisposable
 {
     private readonly string _dataRoot;
     private readonly ConcurrentDictionary<string, WhatsAppBridgeClient> _clients = new(StringComparer.OrdinalIgnoreCase);

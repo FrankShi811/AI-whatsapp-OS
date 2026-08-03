@@ -301,7 +301,7 @@ public sealed class ImportService
         }
         var writeProgress = new Progress<int>(completed => progress?.Report(new("正在分批写入本地数据库", completed, pending.Count)));
         await _repository.UpsertLeadsAsync(pending.Values.ToList(), WriteBatchSize, writeProgress, cancellationToken);
-        progress?.Report(new("\u6b63\u5728\u540c\u6b65 WhatsApp Inbox \u5efa\u8054\u60c5\u51b5", 0, pending.Count));
+        progress?.Report(new("\u6b63\u5728\u540c\u6b65 WhatsApp \u5efa\u8054\u60c5\u51b5", 0, pending.Count));
         await _repository.SynchronizeLeadConnectionsFromInboxAsync(pending.Values.ToList(), cancellationToken);
         var invalid = preview.Count(x => !x.PhoneValid);
         await _repository.SaveImportSummaryAsync(fileName, preview.Count, created, updated, invalid, cancellationToken);

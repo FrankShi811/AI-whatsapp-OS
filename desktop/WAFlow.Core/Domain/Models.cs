@@ -27,7 +27,7 @@ public enum DraftStatus { Draft, Approved, Superseded }
 public enum CampaignStatus { Draft, Scheduled, Running, Paused, SafetyStopped, Completed, Cancelled }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum CampaignRecipientStatus { Queued, Sending, Sent, Skipped, Failed, Cancelled }
+public enum CampaignRecipientStatus { Queued, Sending, Sent, Skipped, Failed, Cancelled, DeliveryAcknowledged }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum CampaignScheduleMode { Immediate, Scheduled }
@@ -49,6 +49,9 @@ public enum EmailMessageDirection { Incoming, Outgoing }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum EmailMessageStatus { Draft, Sending, Sent, Received, Failed }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum EmailSendBindingSource { ExistingConversation, UniqueEmail, ExplicitUnbound }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum WhatsAppRegistrationStatus { Pending, Checking, Registered, NotRegistered, RetryableFailed }
@@ -94,6 +97,7 @@ public sealed class Lead
     public int Score { get; set; }
     public string Grade { get; set; } = "D";
     public int AnalysisContractVersion { get; set; }
+    public string AnalysisDependencyHash { get; set; } = "";
     public int BaseProfileScore { get; set; }
     public int BehaviorSignalScore { get; set; }
     public Dictionary<string, int> ScoreBreakdown { get; set; } = [];
@@ -253,7 +257,15 @@ public sealed class WhatsAppMessage
     public DateTimeOffset? FailedAt { get; set; }
     public string FailureReason { get; set; } = "";
     public string Source { get; set; } = "notify";
+    public bool LeadAttributionFinal { get; set; }
+    public string LeadAttributionNote { get; set; } = "";
 }
+
+public sealed record WhatsAppOutgoingAckCommitResult(
+    WhatsAppMessage Message,
+    string AttributedCustomerId,
+    bool ContextChanged,
+    string ContextChangeReason);
 
 public sealed class WhatsAppIpState
 {
@@ -415,6 +427,9 @@ public sealed class EmailMessage
     public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.Now;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
     public string FailureReason { get; set; } = "";
+    public bool DeliveryAcknowledged { get; set; }
+    public bool ContextChangedAfterSend { get; set; }
+    public string ContextChangeReason { get; set; } = "";
 
     [JsonIgnore] public string TimeLabel => Timestamp.LocalDateTime.ToString("yyyy-MM-dd HH:mm");
     [JsonIgnore] public string DirectionLabel => Direction == EmailMessageDirection.Outgoing ? "已发送" : "已接收";
@@ -496,13 +511,16 @@ public sealed class CampaignRecipient
     public string LastError { get; set; } = "";
     public string SkipReason { get; set; } = "";
     public DateTimeOffset? SentAt { get; set; }
+    public bool CustomerAttributionIsolated { get; set; }
+    public string CustomerAttributionNote { get; set; } = "";
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
 
     [JsonIgnore] public string StatusLabel => Status switch
     {
         CampaignRecipientStatus.Queued => "等待发送", CampaignRecipientStatus.Sending => "正在发送",
         CampaignRecipientStatus.Sent => "已发送", CampaignRecipientStatus.Skipped => "已跳过",
-        CampaignRecipientStatus.Failed => "失败", CampaignRecipientStatus.Cancelled => "已取消", _ => Status.ToString()
+        CampaignRecipientStatus.Failed => "失败", CampaignRecipientStatus.Cancelled => "已取消",
+        CampaignRecipientStatus.DeliveryAcknowledged => "服务器已确认（客户归属隔离）", _ => Status.ToString()
     };
     [JsonIgnore] public string ScheduledLabel => ScheduledAt.LocalDateTime.ToString("MM-dd HH:mm");
 }
@@ -533,6 +551,7 @@ public sealed class LeadBehaviorSignal
 public sealed class LeadAnalysis
 {
     public int ContractVersion { get; set; } = LeadIntelligenceContract.Version;
+    public string DependencyHash { get; set; } = "";
     public int Score { get; set; }
     public int BaseProfileScore { get; set; }
     public int BehaviorSignalScore { get; set; }

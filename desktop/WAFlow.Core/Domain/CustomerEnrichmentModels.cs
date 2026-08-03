@@ -61,6 +61,7 @@ public static class CustomerEnrichmentErrorCodes
     public const string EntityMatchInsufficient = "ENTITY_MATCH_INSUFFICIENT";
     public const string NoPublicResults = "NO_PUBLIC_RESULTS";
     public const string CustomerIdentityMissing = "CUSTOMER_IDENTITY_MISSING";
+    public const string CustomerIdentityChanged = "CUSTOMER_IDENTITY_CHANGED";
     public const string JobCancelled = "JOB_CANCELLED";
     public const string RecoveryReviewRequired = "RECOVERY_REVIEW_REQUIRED";
     public const string AiAnalysisPaymentNotAuthorized = "AI_ANALYSIS_PAYMENT_NOT_AUTHORIZED";
@@ -68,13 +69,15 @@ public static class CustomerEnrichmentErrorCodes
 
 public sealed class CustomerEnrichmentSettings
 {
+    public const decimal DefaultAiAnalysisReservationUsd = 0.05m;
+
     public List<string> ProviderOrder { get; set; } = ["tavily", "brave", "searxng"];
     public bool SearXngEnabled { get; set; }
     public string SearXngBaseUrl { get; set; } = "http://127.0.0.1:8080";
     public decimal MonthlyBudgetUsd { get; set; }
     public bool AllowPaidRequests { get; set; }
     public bool AllowAiAnalysisRequests { get; set; }
-    public decimal AiAnalysisReservationUsd { get; set; } = 0.05m;
+    public decimal AiAnalysisReservationUsd { get; set; } = DefaultAiAnalysisReservationUsd;
     public int TavilyMonthlyFreeRequests { get; set; } = 1000;
     public int BraveMonthlyFreeRequests { get; set; } = 1000;
     public int MaxQueriesPerCustomer { get; set; } = 6;
@@ -94,6 +97,7 @@ public sealed class CustomerEnrichmentSettings
 public sealed class CustomerEnrichmentIdentity
 {
     public string CustomerId { get; set; } = "";
+    public string BuyerId { get; set; } = "";
     public string Name { get; set; } = "";
     public string Company { get; set; } = "";
     public string Country { get; set; } = "";
@@ -255,6 +259,7 @@ public sealed class CustomerEnrichmentSnapshot
     public CustomerEnrichmentJob? LatestJob { get; set; }
     public List<CustomerEnrichmentJob> Jobs { get; set; } = [];
     public List<CustomerEnrichmentFact> Facts { get; set; } = [];
+    public List<CustomerEnrichmentFact> ActiveFacts { get; set; } = [];
     public List<CustomerEnrichmentSource> Sources { get; set; } = [];
     public CustomerEnrichmentUsageSummary Usage { get; set; } = new();
 }

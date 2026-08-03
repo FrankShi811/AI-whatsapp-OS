@@ -217,11 +217,15 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
             var inferences = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.Inference);
             var recommendations = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.Recommendation);
             var gaps = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.InformationGap);
-            CustomerBrainMetaText.Text =
-                $"CUSTOMER BRAIN V{brain.Version} · 覆盖 {brain.Coverage.Percentage}% · 事实 {facts} · AI 判断 {inferences} · 建议 {recommendations} · 缺口 {gaps}";
-            if (!string.IsNullOrWhiteSpace(brain.Summary)) ProfileText.Text = brain.Summary;
-            if (!string.IsNullOrWhiteSpace(brain.NextBestAction)) NextActionText.Text = brain.NextBestAction;
-            if (brain.Risks.Count > 0) RiskItems.ItemsSource = brain.Risks;
+            CustomerBrainMetaText.Text = brain.HasCurrentDecision
+                ? $"CUSTOMER BRAIN V{brain.Version} · 覆盖 {brain.Coverage.Percentage}% · 事实 {facts} · AI 判断 {inferences} · 建议 {recommendations} · 缺口 {gaps}"
+                : $"CUSTOMER BRAIN V{brain.Version} · 结论已过期 · 资料已变化；打开客户详情，点击“AI 分析并生成行动”";
+            if (brain.HasCurrentDecision)
+            {
+                if (!string.IsNullOrWhiteSpace(brain.Summary)) ProfileText.Text = brain.Summary;
+                if (!string.IsNullOrWhiteSpace(brain.NextBestAction)) NextActionText.Text = brain.NextBestAction;
+                if (brain.Risks.Count > 0) RiskItems.ItemsSource = brain.Risks;
+            }
         }
         catch (Exception error)
         {

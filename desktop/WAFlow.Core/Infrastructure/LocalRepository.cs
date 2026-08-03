@@ -13,15 +13,17 @@ public sealed partial class LocalRepository
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> ConversationWriteGates = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _connectionString;
     private readonly SemaphoreSlim _conversationWriteGate;
+    private readonly TimeProvider _timeProvider;
     public string DatabasePath { get; }
     public DatabaseRecoveryNotice? LastRecoveryNotice { get; private set; }
 
-    public LocalRepository(string? databasePath = null)
+    public LocalRepository(string? databasePath = null, TimeProvider? timeProvider = null)
     {
         DatabasePath = databasePath ?? new DataWorkspaceManager().Resolve().DatabasePath;
         Directory.CreateDirectory(Path.GetDirectoryName(DatabasePath)!);
         _connectionString = new SqliteConnectionStringBuilder { DataSource = DatabasePath, ForeignKeys = true, Pooling = true }.ToString();
         _conversationWriteGate = ConversationWriteGates.GetOrAdd(Path.GetFullPath(DatabasePath), _ => new SemaphoreSlim(1, 1));
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     private SqliteConnection Open() => new(_connectionString);
@@ -1587,117 +1589,164 @@ public sealed partial class LocalRepository
                 group => group.Key,
                 group => group.Select(item => item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase),
                 StringComparer.Ordinal);
-        var byPhone = leads
-            .SelectMany(lead => Services.PhoneIdentity.LeadPhoneCandidates(lead).Select(phone => (Phone: phone, Lead: lead)))
-            .Where(item => item.Phone.Length > 0)
-            .GroupBy(item => item.Phone, StringComparer.OrdinalIgnoreCase)
-            .Select(group => new { group.Key, Leads = group.Select(item => item.Lead).DistinctBy(lead => lead.Id).ToList() })
-            .Where(group => group.Leads.Count == 1)
-            .ToDictionary(group => group.Key, group => group.Leads[0], StringComparer.OrdinalIgnoreCase);
-        if (byPhone.Count == 0) return 0;
+        // The caller's objects define only the reconciliation scope. They may be
+        // stale by the time the write gate is acquired, so the transaction must
+        // never project them back over a newer customer row.
+        var scopeLeadFallbacks = leads
+            .GroupBy(lead => lead.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
-        await using var db = Open();
-        await db.OpenAsync(cancellationToken);
-        await using var transaction = await db.BeginTransactionAsync(cancellationToken);
-        var linked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var latestMessages = new Dictionary<string, WhatsAppMessage>(StringComparer.OrdinalIgnoreCase);
-        var latestConversations = new Dictionary<string, WhatsAppConversation>(StringComparer.OrdinalIgnoreCase);
+        await _conversationWriteGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var db = Open();
+            await db.OpenAsync(cancellationToken);
+            await using var transaction = db.BeginTransaction(deferred: false);
+            var linked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var latestMessages = new Dictionary<string, WhatsAppMessage>(StringComparer.OrdinalIgnoreCase);
+            var latestConversations = new Dictionary<string, WhatsAppConversation>(StringComparer.OrdinalIgnoreCase);
 
-        var conversations = new List<WhatsAppConversation>();
-        await using (var select = db.CreateCommand())
-        {
-            select.Transaction = transaction as SqliteTransaction;
-            select.CommandText = "SELECT data_json FROM whatsapp_conversations";
-            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-                if (Json.Deserialize<WhatsAppConversation>(reader.GetString(0)) is { } item) conversations.Add(item);
-        }
-        var messages = new List<WhatsAppMessage>();
-        await using (var select = db.CreateCommand())
-        {
-            select.Transaction = transaction as SqliteTransaction;
-            select.CommandText = "SELECT data_json FROM whatsapp_messages";
-            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-                if (Json.Deserialize<WhatsAppMessage>(reader.GetString(0)) is { } item) messages.Add(item);
-        }
-        var resolvedPhones = conversations.Select(item => item.Phone).Concat(messages.Select(item => item.Phone))
-            .Select(Services.PhoneIdentity.Digits).Where(value => value.Length > 0).Distinct(StringComparer.Ordinal)
-            .ToDictionary(value => value, value => byPhone.TryGetValue(value, out var exactLead) ? exactLead : Services.PhoneIdentity.FindUniqueLead(leads, value), StringComparer.Ordinal);
-        foreach (var conversation in conversations)
-        {
-            var digits = Services.PhoneIdentity.Digits(conversation.Phone);
-            if (IsOwnedWhatsAppPeer(accountPhones, digits))
+            var conversations = new List<WhatsAppConversation>();
+            await using (var select = db.CreateCommand())
             {
-                if (!string.IsNullOrWhiteSpace(conversation.LeadId))
+                select.Transaction = transaction;
+                select.CommandText = "SELECT data_json FROM whatsapp_conversations";
+                await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                    if (Json.Deserialize<WhatsAppConversation>(reader.GetString(0)) is { } item) conversations.Add(item);
+            }
+            var messages = new List<WhatsAppMessage>();
+            await using (var select = db.CreateCommand())
+            {
+                select.Transaction = transaction;
+                select.CommandText = "SELECT data_json FROM whatsapp_messages";
+                await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                    if (Json.Deserialize<WhatsAppMessage>(reader.GetString(0)) is { } item) messages.Add(item);
+            }
+            var leadsById = new Dictionary<string, Lead>(StringComparer.OrdinalIgnoreCase);
+            await using (var select = db.CreateCommand())
+            {
+                select.Transaction = transaction;
+                select.CommandText = "SELECT data_json FROM leads";
+                await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                    if (Json.Deserialize<Lead>(reader.GetString(0)) is { } lead)
+                        leadsById[lead.Id] = lead;
+            }
+            foreach (var (leadId, fallback) in scopeLeadFallbacks)
+                leadsById.TryAdd(leadId, fallback);
+            var scopedLeads = scopeLeadFallbacks.Keys
+                .Select(leadsById.GetValueOrDefault)
+                .Where(lead => lead is not null)
+                .Cast<Lead>()
+                .ToList();
+            var byPhone = scopedLeads
+                .SelectMany(lead => Services.PhoneIdentity.LeadPhoneCandidates(lead).Select(phone => (Phone: phone, Lead: lead)))
+                .Where(item => item.Phone.Length > 0)
+                .GroupBy(item => item.Phone, StringComparer.OrdinalIgnoreCase)
+                .Select(group => new { group.Key, Leads = group.Select(item => item.Lead).DistinctBy(lead => lead.Id).ToList() })
+                .Where(group => group.Leads.Count == 1)
+                .ToDictionary(group => group.Key, group => group.Leads[0], StringComparer.OrdinalIgnoreCase);
+            var identityLinks = new Dictionary<string, WhatsAppIdentityLink>(StringComparer.OrdinalIgnoreCase);
+            await using (var select = db.CreateCommand())
+            {
+                select.Transaction = transaction;
+                select.CommandText = "SELECT data_json FROM whatsapp_identity_links";
+                await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                    if (Json.Deserialize<WhatsAppIdentityLink>(reader.GetString(0)) is { } link)
+                        identityLinks[$"{link.AccountId}|{link.ConversationId}"] = link;
+            }
+            var resolvedPhones = conversations.Select(item => item.Phone).Concat(messages.Select(item => item.Phone))
+                .Select(Services.PhoneIdentity.Digits).Where(value => value.Length > 0).Distinct(StringComparer.Ordinal)
+                .ToDictionary(value => value, value => byPhone.TryGetValue(value, out var exactLead) ? exactLead : Services.PhoneIdentity.FindUniqueLead(scopedLeads, value), StringComparer.Ordinal);
+
+            Lead? ResolveLead(string accountId, string conversationId, string digits)
+            {
+                if (identityLinks.TryGetValue($"{accountId}|{conversationId}", out var link))
+                    return link.IsActive && leadsById.TryGetValue(link.CustomerId, out var linkedLead)
+                        ? linkedLead
+                        : null;
+                return resolvedPhones.TryGetValue(digits, out var phoneLead) ? phoneLead : null;
+            }
+
+            foreach (var conversation in conversations)
+            {
+                var digits = Services.PhoneIdentity.Digits(conversation.Phone);
+                var owned = IsOwnedWhatsAppPeer(accountPhones, digits);
+                var lead = owned ? null : ResolveLead(conversation.AccountId, conversation.Id, digits);
+                var hasIdentityDecision = identityLinks.ContainsKey($"{conversation.AccountId}|{conversation.Id}");
+                if (lead is null && !owned && !hasIdentityDecision) continue;
+
+                conversation.LeadId = lead?.Id ?? "";
+                if (lead is not null)
                 {
-                    conversation.LeadId = "";
-                    await using var clear = db.CreateCommand();
-                    clear.Transaction = transaction as SqliteTransaction;
-                    clear.CommandText = "UPDATE whatsapp_conversations SET lead_id=NULL,data_json=$json WHERE id=$id";
-                    clear.Parameters.AddWithValue("$json", Json.Serialize(conversation));
-                    clear.Parameters.AddWithValue("$id", conversation.Id);
-                    await clear.ExecuteNonQueryAsync(cancellationToken);
+                    conversation.DisplayName = Services.WhatsAppConversationNaming.Resolve(
+                        lead,
+                        conversation.Phone,
+                        conversation.DisplayName);
+                    linked.Add(lead.Id);
+                    if (!latestConversations.TryGetValue(lead.Id, out var previous) || conversation.LastMessageAt > previous.LastMessageAt)
+                        latestConversations[lead.Id] = conversation;
                 }
-                continue;
+                await using var update = db.CreateCommand();
+                update.Transaction = transaction;
+                update.CommandText = "UPDATE whatsapp_conversations SET lead_id=$lead,data_json=$json WHERE id=$id";
+                update.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(conversation.LeadId) ? DBNull.Value : conversation.LeadId);
+                update.Parameters.AddWithValue("$json", Json.Serialize(conversation));
+                update.Parameters.AddWithValue("$id", conversation.Id);
+                await update.ExecuteNonQueryAsync(cancellationToken);
             }
-            if (!resolvedPhones.TryGetValue(digits, out var lead) || lead is null) continue;
-            conversation.LeadId = lead.Id;
-            conversation.DisplayName = Services.WhatsAppConversationNaming.Resolve(
-                lead,
-                conversation.Phone,
-                conversation.DisplayName);
-            linked.Add(lead.Id);
-            if (!latestConversations.TryGetValue(lead.Id, out var previous) || conversation.LastMessageAt > previous.LastMessageAt) latestConversations[lead.Id] = conversation;
-            await using var update = db.CreateCommand();
-            update.Transaction = transaction as SqliteTransaction;
-            update.CommandText = "UPDATE whatsapp_conversations SET lead_id=$lead,data_json=$json WHERE id=$id";
-            update.Parameters.AddWithValue("$lead", lead.Id); update.Parameters.AddWithValue("$json", Json.Serialize(conversation)); update.Parameters.AddWithValue("$id", conversation.Id);
-            await update.ExecuteNonQueryAsync(cancellationToken);
-        }
 
-        foreach (var message in messages)
-        {
-            var digits = Services.PhoneIdentity.Digits(message.Phone);
-            if (IsOwnedWhatsAppPeer(accountPhones, digits))
+            foreach (var message in messages)
             {
-                if (!string.IsNullOrWhiteSpace(message.LeadId))
+                Lead? lead;
+                if (message.LeadAttributionFinal)
                 {
-                    message.LeadId = "";
-                    await using var clear = db.CreateCommand();
-                    clear.Transaction = transaction as SqliteTransaction;
-                    clear.CommandText = "UPDATE whatsapp_messages SET lead_id=NULL,data_json=$json WHERE id=$id";
-                    clear.Parameters.AddWithValue("$json", Json.Serialize(message));
-                    clear.Parameters.AddWithValue("$id", message.Id);
-                    await clear.ExecuteNonQueryAsync(cancellationToken);
+                    lead = leadsById.GetValueOrDefault(message.LeadId);
                 }
-                continue;
+                else
+                {
+                    var digits = Services.PhoneIdentity.Digits(message.Phone);
+                    var owned = IsOwnedWhatsAppPeer(accountPhones, digits);
+                    lead = owned ? null : ResolveLead(message.AccountId, message.ConversationId, digits);
+                    var hasIdentityDecision = identityLinks.ContainsKey($"{message.AccountId}|{message.ConversationId}");
+                    if (lead is null && !owned && !hasIdentityDecision) continue;
+                    message.LeadId = lead?.Id ?? "";
+                    await using var update = db.CreateCommand();
+                    update.Transaction = transaction;
+                    update.CommandText = "UPDATE whatsapp_messages SET lead_id=$lead,data_json=$json WHERE id=$id";
+                    update.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(message.LeadId) ? DBNull.Value : message.LeadId);
+                    update.Parameters.AddWithValue("$json", Json.Serialize(message));
+                    update.Parameters.AddWithValue("$id", message.Id);
+                    await update.ExecuteNonQueryAsync(cancellationToken);
+                }
+                if (lead is null) continue;
+                linked.Add(lead.Id);
+                if (!latestMessages.TryGetValue(lead.Id, out var previous) || message.Timestamp > previous.Timestamp)
+                    latestMessages[lead.Id] = message;
             }
-            if (!resolvedPhones.TryGetValue(digits, out var lead) || lead is null) continue;
-            message.LeadId = lead.Id;
-            linked.Add(lead.Id);
-            if (!latestMessages.TryGetValue(lead.Id, out var previous) || message.Timestamp > previous.Timestamp) latestMessages[lead.Id] = message;
-            await using var update = db.CreateCommand();
-            update.Transaction = transaction as SqliteTransaction;
-            update.CommandText = "UPDATE whatsapp_messages SET lead_id=$lead,data_json=$json WHERE id=$id";
-            update.Parameters.AddWithValue("$lead", lead.Id); update.Parameters.AddWithValue("$json", Json.Serialize(message)); update.Parameters.AddWithValue("$id", message.Id);
-            await update.ExecuteNonQueryAsync(cancellationToken);
-        }
 
-        foreach (var leadId in linked)
-        {
-            var lead = byPhone.Values.First(item => item.Id.Equals(leadId, StringComparison.OrdinalIgnoreCase));
-            if (latestMessages.TryGetValue(leadId, out var message)) Services.LeadConnectionStatus.ApplyFromMessage(lead, message);
-            else if (latestConversations.TryGetValue(leadId, out var conversation))
+            foreach (var leadId in linked)
             {
-                lead.LastContactAt = conversation.LastMessageAt;
-                if (!string.IsNullOrWhiteSpace(conversation.LastMessage)) lead.LatestMessage = conversation.LastMessage;
-                Services.LeadConnectionStatus.Apply(lead, "\u5df2\u5efa\u8054", conversation.LastMessageAt);
+                if (!leadsById.TryGetValue(leadId, out var lead)) continue;
+                if (latestMessages.TryGetValue(leadId, out var message)) Services.LeadConnectionStatus.ApplyFromMessage(lead, message);
+                else if (latestConversations.TryGetValue(leadId, out var conversation))
+                {
+                    lead.LastContactAt = conversation.LastMessageAt;
+                    if (!string.IsNullOrWhiteSpace(conversation.LastMessage)) lead.LatestMessage = conversation.LastMessage;
+                    Services.LeadConnectionStatus.Apply(lead, "\u5df2\u5efa\u8054", conversation.LastMessageAt);
+                }
+                await UpsertLeadInternalAsync(db, lead, cancellationToken, transaction);
             }
-            await UpsertLeadInternalAsync(db, lead, cancellationToken, transaction);
+            await transaction.CommitAsync(cancellationToken);
+            return linked.Count;
         }
-        await transaction.CommitAsync(cancellationToken);
-        return linked.Count;
+        finally
+        {
+            _conversationWriteGate.Release();
+        }
     }
 
     private static bool IsOwnedWhatsAppPeer(
@@ -1803,8 +1852,10 @@ public sealed partial class LocalRepository
         {
             conversation.UpdatedAt = DateTimeOffset.Now;
             await using var db = Open(); await db.OpenAsync(cancellationToken);
+            await using var transaction = db.BeginTransaction(deferred: false);
             await using (var existingCommand = db.CreateCommand())
             {
+                existingCommand.Transaction = transaction;
                 existingCommand.CommandText = "SELECT data_json FROM whatsapp_conversations WHERE id=$id";
                 existingCommand.Parameters.AddWithValue("$id", conversation.Id);
                 if (Json.Deserialize<WhatsAppConversation>(await existingCommand.ExecuteScalarAsync(cancellationToken) as string) is { } existing &&
@@ -1821,7 +1872,20 @@ public sealed partial class LocalRepository
                     if (!verifiedLiveIncrease) conversation.UnreadCount = existing.UnreadCount;
                 }
             }
+            await using (var identityCommand = db.CreateCommand())
+            {
+                identityCommand.Transaction = transaction;
+                identityCommand.CommandText = "SELECT data_json FROM whatsapp_identity_links WHERE account_id=$account AND conversation_id=$conversation";
+                identityCommand.Parameters.AddWithValue("$account", conversation.AccountId);
+                identityCommand.Parameters.AddWithValue("$conversation", conversation.Id);
+                if (Json.Deserialize<WhatsAppIdentityLink>(
+                        await identityCommand.ExecuteScalarAsync(cancellationToken) as string) is { } identityLink)
+                    conversation.LeadId = identityLink.IsActive && !conversation.IsGroup
+                        ? identityLink.CustomerId.Trim()
+                        : "";
+            }
             await using var command = db.CreateCommand();
+            command.Transaction = transaction;
             command.CommandText = """
                 INSERT INTO whatsapp_conversations(id,account_id,phone,lead_id,last_message_at,unread_count,updated_at,data_json)
                 VALUES($id,$account,$phone,$lead,$last,$unread,$updated,$json)
@@ -1831,6 +1895,7 @@ public sealed partial class LocalRepository
             command.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(conversation.LeadId) ? DBNull.Value : conversation.LeadId); command.Parameters.AddWithValue("$last", conversation.LastMessageAt.ToString("O"));
             command.Parameters.AddWithValue("$unread", conversation.UnreadCount); command.Parameters.AddWithValue("$updated", conversation.UpdatedAt.ToString("O")); command.Parameters.AddWithValue("$json", Json.Serialize(conversation));
             await command.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
         }
         finally
         {
@@ -1840,48 +1905,555 @@ public sealed partial class LocalRepository
 
     public async Task<bool> UpsertWhatsAppMessageAsync(WhatsAppMessage message, CancellationToken cancellationToken = default)
     {
-        await using var db = Open(); await db.OpenAsync(cancellationToken);
-        await using var command = db.CreateCommand();
-        command.CommandText = """
-            INSERT OR IGNORE INTO whatsapp_messages(id,provider_message_id,account_id,conversation_id,lead_id,phone,direction,status,timestamp,data_json)
-            VALUES($id,$provider,$account,$conversation,$lead,$phone,$direction,$status,$timestamp,$json)
-            """;
-        command.Parameters.AddWithValue("$id", message.Id); command.Parameters.AddWithValue("$provider", message.ProviderMessageId); command.Parameters.AddWithValue("$account", message.AccountId);
-        command.Parameters.AddWithValue("$conversation", message.ConversationId); command.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(message.LeadId) ? DBNull.Value : message.LeadId); command.Parameters.AddWithValue("$phone", message.Phone);
-        command.Parameters.AddWithValue("$direction", message.Direction.ToString()); command.Parameters.AddWithValue("$status", message.Status.ToString()); command.Parameters.AddWithValue("$timestamp", message.Timestamp.ToString("O")); command.Parameters.AddWithValue("$json", Json.Serialize(message));
-        var inserted = await command.ExecuteNonQueryAsync(cancellationToken) == 1;
-        if (!inserted)
+        await _conversationWriteGate.WaitAsync(cancellationToken);
+        try
         {
-            await using var select = db.CreateCommand();
-            select.CommandText = "SELECT data_json FROM whatsapp_messages WHERE id=$id";
-            select.Parameters.AddWithValue("$id", message.Id);
-            if (Json.Deserialize<WhatsAppMessage>(await select.ExecuteScalarAsync(cancellationToken) as string) is { } existing)
+            await using var db = Open(); await db.OpenAsync(cancellationToken);
+            await using var transaction = db.BeginTransaction(deferred: false);
+            if (message.IsGroup)
             {
-                if (!CanAdvanceStatus(existing.Status, message.Status)) message.Status = existing.Status;
-                MergeWhatsAppMessageContent(existing, message);
+                message.LeadId = "";
+            }
+            else
+            {
+                await using var identityCommand = db.CreateCommand();
+                identityCommand.Transaction = transaction;
+                identityCommand.CommandText = "SELECT data_json FROM whatsapp_identity_links WHERE account_id=$account AND conversation_id=$conversation";
+                identityCommand.Parameters.AddWithValue("$account", message.AccountId);
+                identityCommand.Parameters.AddWithValue("$conversation", message.ConversationId);
+                if (Json.Deserialize<WhatsAppIdentityLink>(
+                        await identityCommand.ExecuteScalarAsync(cancellationToken) as string) is { } identityLink)
+                    message.LeadId = identityLink.IsActive ? identityLink.CustomerId.Trim() : "";
+            }
+            await using var command = db.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT OR IGNORE INTO whatsapp_messages(id,provider_message_id,account_id,conversation_id,lead_id,phone,direction,status,timestamp,data_json)
+                VALUES($id,$provider,$account,$conversation,$lead,$phone,$direction,$status,$timestamp,$json)
+                """;
+            command.Parameters.AddWithValue("$id", message.Id); command.Parameters.AddWithValue("$provider", message.ProviderMessageId); command.Parameters.AddWithValue("$account", message.AccountId);
+            command.Parameters.AddWithValue("$conversation", message.ConversationId); command.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(message.LeadId) ? DBNull.Value : message.LeadId); command.Parameters.AddWithValue("$phone", message.Phone);
+            command.Parameters.AddWithValue("$direction", message.Direction.ToString()); command.Parameters.AddWithValue("$status", message.Status.ToString()); command.Parameters.AddWithValue("$timestamp", message.Timestamp.ToString("O")); command.Parameters.AddWithValue("$json", Json.Serialize(message));
+            var inserted = await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+            if (!inserted)
+            {
+                await using var select = db.CreateCommand();
+                select.Transaction = transaction;
+                select.CommandText = "SELECT data_json FROM whatsapp_messages WHERE id=$id";
+                select.Parameters.AddWithValue("$id", message.Id);
+                if (Json.Deserialize<WhatsAppMessage>(await select.ExecuteScalarAsync(cancellationToken) as string) is { } existing)
+                {
+                    if (!CanAdvanceStatus(existing.Status, message.Status)) message.Status = existing.Status;
+                    MergeWhatsAppMessageContent(existing, message);
+                    if (string.IsNullOrWhiteSpace(message.MediaPath))
+                    {
+                        if (!string.IsNullOrWhiteSpace(existing.MediaPath)) message.MediaPath = existing.MediaPath;
+                        else if (string.IsNullOrWhiteSpace(message.MediaDownloadError) && !string.IsNullOrWhiteSpace(existing.MediaDownloadError)) message.MediaDownloadError = existing.MediaDownloadError;
+                    }
+                    if (string.IsNullOrWhiteSpace(message.QuotedMessageId))
+                    {
+                        message.QuotedMessageId = existing.QuotedMessageId;
+                        message.QuotedFromMe = existing.QuotedFromMe;
+                    }
+                    if (string.IsNullOrWhiteSpace(message.QuotedText)) message.QuotedText = existing.QuotedText;
+                    if (existing.IsRevoked)
+                    {
+                        message.IsRevoked = true;
+                        message.RevokedAt ??= existing.RevokedAt;
+                    }
+                    if (existing.LeadAttributionFinal)
+                    {
+                        message.LeadId = existing.LeadId;
+                        message.LeadAttributionFinal = true;
+                        message.LeadAttributionNote = existing.LeadAttributionNote;
+                    }
+                }
+                await using var update = db.CreateCommand();
+                update.Transaction = transaction;
+                update.CommandText = "UPDATE whatsapp_messages SET status=$status,lead_id=$lead,data_json=$json WHERE id=$id";
+                update.Parameters.AddWithValue("$id", message.Id); update.Parameters.AddWithValue("$status", message.Status.ToString()); update.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(message.LeadId) ? DBNull.Value : message.LeadId); update.Parameters.AddWithValue("$json", Json.Serialize(message));
+                await update.ExecuteNonQueryAsync(cancellationToken);
+            }
+            await transaction.CommitAsync(cancellationToken);
+            return inserted;
+        }
+        finally
+        {
+            _conversationWriteGate.Release();
+        }
+    }
+
+    public async Task<WhatsAppMessage?> ApplySynchronizedWhatsAppMessageOutcomeAsync(
+        string messageId,
+        string eventType,
+        string eventDetail,
+        CancellationToken cancellationToken = default)
+    {
+        await _conversationWriteGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var db = Open();
+            await db.OpenAsync(cancellationToken);
+            await using var transaction = db.BeginTransaction(deferred: false);
+
+            WhatsAppMessage? message;
+            await using (var readMessage = db.CreateCommand())
+            {
+                readMessage.Transaction = transaction;
+                readMessage.CommandText = "SELECT data_json FROM whatsapp_messages WHERE id=$id";
+                readMessage.Parameters.AddWithValue("$id", messageId);
+                message = Json.Deserialize<WhatsAppMessage>(
+                    await readMessage.ExecuteScalarAsync(cancellationToken) as string);
+            }
+            if (message is null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return null;
+            }
+
+            if (!message.LeadAttributionFinal)
+            {
+                WhatsAppIdentityLink? link;
+                await using (var readLink = db.CreateCommand())
+                {
+                    readLink.Transaction = transaction;
+                    readLink.CommandText = "SELECT data_json FROM whatsapp_identity_links WHERE account_id=$account AND conversation_id=$conversation";
+                    readLink.Parameters.AddWithValue("$account", message.AccountId);
+                    readLink.Parameters.AddWithValue("$conversation", message.ConversationId);
+                    link = Json.Deserialize<WhatsAppIdentityLink>(
+                        await readLink.ExecuteScalarAsync(cancellationToken) as string);
+                }
+                if (link is not null)
+                {
+                    message.LeadId = link.IsActive ? link.CustomerId.Trim() : "";
+                }
+                else
+                {
+                    await using var readConversation = db.CreateCommand();
+                    readConversation.Transaction = transaction;
+                    readConversation.CommandText = "SELECT lead_id FROM whatsapp_conversations WHERE id=$id";
+                    readConversation.Parameters.AddWithValue("$id", message.ConversationId);
+                    var conversationLeadId = await readConversation.ExecuteScalarAsync(cancellationToken) as string;
+                    message.LeadId = (conversationLeadId ?? "").Trim();
+                }
+                await using var updateMessage = db.CreateCommand();
+                updateMessage.Transaction = transaction;
+                updateMessage.CommandText = "UPDATE whatsapp_messages SET lead_id=$lead,data_json=$json WHERE id=$id";
+                updateMessage.Parameters.AddWithValue("$id", message.Id);
+                updateMessage.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(message.LeadId) ? DBNull.Value : message.LeadId);
+                updateMessage.Parameters.AddWithValue("$json", Json.Serialize(message));
+                await updateMessage.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            if (!string.IsNullOrWhiteSpace(message.LeadId))
+            {
+                Lead? lead;
+                await using (var readLead = db.CreateCommand())
+                {
+                    readLead.Transaction = transaction;
+                    readLead.CommandText = "SELECT data_json FROM leads WHERE id=$id";
+                    readLead.Parameters.AddWithValue("$id", message.LeadId);
+                    lead = Json.Deserialize<Lead>(await readLead.ExecuteScalarAsync(cancellationToken) as string);
+                }
+                if (lead is not null)
+                {
+                    if (!message.IsRevoked && LeadConnectionStatus.ApplyFromMessage(lead, message))
+                        await UpsertLeadInternalAsync(db, lead, cancellationToken, transaction);
+                    // Outgoing messages that have not reached an ACK finalization
+                    // may still be rebound. Do not emit a customer audit that a
+                    // later ACK would have to retract.
+                    if (!string.IsNullOrWhiteSpace(eventType) &&
+                        (message.Direction != WhatsAppMessageDirection.Outgoing || message.LeadAttributionFinal))
+                    {
+                        await using var audit = db.CreateCommand();
+                        audit.Transaction = transaction;
+                        audit.CommandText = "INSERT INTO audit_events(event_type,lead_id,draft_id,detail,created_at) VALUES($type,$lead,NULL,$detail,$at)";
+                        audit.Parameters.AddWithValue("$type", eventType);
+                        audit.Parameters.AddWithValue("$lead", lead.Id);
+                        audit.Parameters.AddWithValue("$detail", eventDetail);
+                        audit.Parameters.AddWithValue("$at", DateTimeOffset.Now.ToString("O"));
+                        await audit.ExecuteNonQueryAsync(cancellationToken);
+                    }
+                }
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return message;
+        }
+        finally
+        {
+            _conversationWriteGate.Release();
+        }
+    }
+
+    public async Task<WhatsAppOutgoingAckCommitResult> PersistAcknowledgedOutgoingWhatsAppAsync(
+        WhatsAppConversation proposedConversation,
+        WhatsAppMessage message,
+        string expectedCustomerId,
+        string expectedBindingToken,
+        bool sourceContextCurrent,
+        bool updateLeadConnection,
+        string expectedCustomerIdentityHash = "",
+        string expectedActiveFactSetToken = "",
+        string expectedRunContextToken = "",
+        string expectedConversationTargetToken = "",
+        string expectedSourceMessageId = "",
+        string expectedSourceMessageToken = "",
+        CancellationToken cancellationToken = default)
+    {
+        expectedCustomerId = expectedCustomerId.Trim();
+        expectedBindingToken = expectedBindingToken.Trim();
+        await _conversationWriteGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var db = Open();
+            await db.OpenAsync(cancellationToken);
+            await using var transaction = db.BeginTransaction(deferred: false);
+
+            WhatsAppConversation? currentConversation;
+            await using (var readConversation = db.CreateCommand())
+            {
+                readConversation.Transaction = transaction;
+                readConversation.CommandText = "SELECT data_json FROM whatsapp_conversations WHERE id=$id";
+                readConversation.Parameters.AddWithValue("$id", proposedConversation.Id);
+                currentConversation = Json.Deserialize<WhatsAppConversation>(
+                    await readConversation.ExecuteScalarAsync(cancellationToken) as string);
+            }
+
+            WhatsAppIdentityLink? currentLink;
+            await using (var readLink = db.CreateCommand())
+            {
+                readLink.Transaction = transaction;
+                readLink.CommandText = "SELECT data_json FROM whatsapp_identity_links WHERE account_id=$account AND conversation_id=$conversation";
+                readLink.Parameters.AddWithValue("$account", proposedConversation.AccountId);
+                readLink.Parameters.AddWithValue("$conversation", proposedConversation.Id);
+                currentLink = Json.Deserialize<WhatsAppIdentityLink>(
+                    await readLink.ExecuteScalarAsync(cancellationToken) as string);
+            }
+
+            Lead? expectedLead = null;
+            if (expectedCustomerId.Length > 0)
+            {
+                await using var readLead = db.CreateCommand();
+                readLead.Transaction = transaction;
+                readLead.CommandText = "SELECT data_json FROM leads WHERE id=$id";
+                readLead.Parameters.AddWithValue("$id", expectedCustomerId);
+                expectedLead = Json.Deserialize<Lead>(await readLead.ExecuteScalarAsync(cancellationToken) as string);
+            }
+
+            var currentBindingToken = currentLink is { IsActive: true }
+                ? BuildWhatsAppIdentityLinkToken(currentLink)
+                : "";
+            // The active cross-channel identity link is the sole durable authority.
+            // conversation.LeadId is a materialized projection that older builds may
+            // have left stale, so an ACK transaction also repairs that projection.
+            var currentLeadId = currentLink is { IsActive: true, CustomerId.Length: > 0 }
+                ? currentLink.CustomerId.Trim()
+                : "";
+            var dependencyCurrent = sourceContextCurrent;
+            if (!string.IsNullOrWhiteSpace(expectedCustomerIdentityHash) ||
+                !string.IsNullOrWhiteSpace(expectedActiveFactSetToken))
+            {
+                var dependency = await CaptureCustomerExternalFactDependencyAsync(
+                    db,
+                    transaction,
+                    expectedCustomerId,
+                    DateTimeOffset.Now,
+                    cancellationToken);
+                dependencyCurrent = dependencyCurrent &&
+                                    !string.IsNullOrWhiteSpace(expectedCustomerIdentityHash) &&
+                                    !string.IsNullOrWhiteSpace(expectedActiveFactSetToken) &&
+                                    dependency.IdentityHash.Equals(expectedCustomerIdentityHash, StringComparison.Ordinal) &&
+                                    dependency.Hash.Equals(expectedActiveFactSetToken, StringComparison.Ordinal);
+            }
+            var agentSourceCurrent = true;
+            if (!string.IsNullOrWhiteSpace(expectedRunContextToken) ||
+                !string.IsNullOrWhiteSpace(expectedConversationTargetToken) ||
+                !string.IsNullOrWhiteSpace(expectedSourceMessageId) ||
+                !string.IsNullOrWhiteSpace(expectedSourceMessageToken))
+            {
+                ConversationAgentState? state;
+                await using (var readState = db.CreateCommand())
+                {
+                    readState.Transaction = transaction;
+                    readState.CommandText = "SELECT data_json FROM conversation_agent_states WHERE account_id=$account AND conversation_id=$conversation";
+                    readState.Parameters.AddWithValue("$account", proposedConversation.AccountId);
+                    readState.Parameters.AddWithValue("$conversation", proposedConversation.Id);
+                    state = Json.Deserialize<ConversationAgentState>(
+                        await readState.ExecuteScalarAsync(cancellationToken) as string);
+                }
+                var incoming = new List<WhatsAppMessage>();
+                await using (var readMessages = db.CreateCommand())
+                {
+                    readMessages.Transaction = transaction;
+                    readMessages.CommandText = "SELECT data_json FROM whatsapp_messages WHERE conversation_id=$conversation";
+                    readMessages.Parameters.AddWithValue("$conversation", proposedConversation.Id);
+                    await using var reader = await readMessages.ExecuteReaderAsync(cancellationToken);
+                    while (await reader.ReadAsync(cancellationToken))
+                    {
+                        if (Json.Deserialize<WhatsAppMessage>(reader.GetString(0)) is { } candidate &&
+                            candidate.Direction == WhatsAppMessageDirection.Incoming &&
+                            !candidate.IsRevoked && !candidate.IsStatusUpdate &&
+                            !string.IsNullOrWhiteSpace(candidate.Body) &&
+                            candidate.AccountId.Equals(proposedConversation.AccountId, StringComparison.OrdinalIgnoreCase) &&
+                            candidate.ConversationId.Equals(proposedConversation.Id, StringComparison.OrdinalIgnoreCase))
+                            incoming.Add(candidate);
+                    }
+                }
+                var source = incoming.FirstOrDefault(candidate =>
+                    candidate.Id.Equals(expectedSourceMessageId, StringComparison.OrdinalIgnoreCase));
+                var latest = incoming.OrderBy(candidate => candidate.Timestamp)
+                    .ThenBy(candidate => candidate.Id, StringComparer.Ordinal)
+                    .LastOrDefault();
+                agentSourceCurrent = !string.IsNullOrWhiteSpace(expectedRunContextToken) &&
+                                     !string.IsNullOrWhiteSpace(expectedConversationTargetToken) &&
+                                     !string.IsNullOrWhiteSpace(expectedSourceMessageId) &&
+                                     !string.IsNullOrWhiteSpace(expectedSourceMessageToken) &&
+                                     state is not null &&
+                                     state.CustomerId.Equals(expectedCustomerId, StringComparison.OrdinalIgnoreCase) &&
+                                     state.PendingRunContextToken.Equals(expectedRunContextToken, StringComparison.Ordinal) &&
+                                     currentConversation is not null &&
+                                     CustomerSuccessAgentService.BuildConversationTargetToken(currentConversation)
+                                         .Equals(expectedConversationTargetToken, StringComparison.Ordinal) &&
+                                     source is not null && latest is not null &&
+                                     latest.Id.Equals(expectedSourceMessageId, StringComparison.OrdinalIgnoreCase) &&
+                                     CustomerSuccessAgentService.BuildSourceMessageToken(source)
+                                         .Equals(expectedSourceMessageToken, StringComparison.Ordinal);
+            }
+            var sameTransportTarget = currentConversation is not null &&
+                                      currentConversation.AccountId.Equals(proposedConversation.AccountId, StringComparison.OrdinalIgnoreCase) &&
+                                      DigitsOnly(currentConversation.Phone).Equals(DigitsOnly(proposedConversation.Phone), StringComparison.Ordinal);
+            var contextIsCurrent = dependencyCurrent && agentSourceCurrent &&
+                                   expectedLead is not null &&
+                                   sameTransportTarget &&
+                                   currentLink is { IsActive: true } &&
+                                   currentLink.CustomerId.Equals(expectedCustomerId, StringComparison.OrdinalIgnoreCase) &&
+                                   currentBindingToken.Equals(expectedBindingToken, StringComparison.Ordinal);
+            var intentionallyUnbound = dependencyCurrent &&
+                                       expectedCustomerId.Length == 0 &&
+                                       currentLeadId.Length == 0 &&
+                                       currentLink is not { IsActive: true, CustomerId.Length: > 0 };
+            var contextChanged = !contextIsCurrent && !intentionallyUnbound;
+            var contextReason = contextChanged
+                ? "WhatsApp 已确认发送，但会话客户、身份链接或 AI 调查事实上下文在发送期间发生变化；消息按未关联记录保存。"
+                : intentionallyUnbound
+                    ? "发送时会话未绑定客户；消息按未关联记录保存。"
+                    : "";
+
+            var now = DateTimeOffset.Now;
+            var storedConversation = currentConversation ?? new WhatsAppConversation
+            {
+                Id = proposedConversation.Id,
+                AccountId = proposedConversation.AccountId,
+                Phone = proposedConversation.Phone,
+                Jid = proposedConversation.Jid,
+                DisplayName = proposedConversation.DisplayName,
+                LeadId = ""
+            };
+            if (currentConversation is null || message.Timestamp >= currentConversation.LastMessageAt)
+            {
+                if (string.IsNullOrWhiteSpace(storedConversation.DisplayName))
+                    storedConversation.DisplayName = proposedConversation.DisplayName;
+                storedConversation.LastMessage = proposedConversation.LastMessage;
+                storedConversation.LastMessageAt = message.Timestamp;
+            }
+            // Customer association is owned by the current durable conversation and
+            // identity link. An outgoing ACK may update transport metadata, never LeadId.
+            storedConversation.LeadId = currentLeadId;
+            storedConversation.UpdatedAt = now;
+            await using (var saveConversation = db.CreateCommand())
+            {
+                saveConversation.Transaction = transaction;
+                saveConversation.CommandText = """
+                    INSERT INTO whatsapp_conversations(id,account_id,phone,lead_id,last_message_at,unread_count,updated_at,data_json)
+                    VALUES($id,$account,$phone,$lead,$last,$unread,$updated,$json)
+                    ON CONFLICT(id) DO UPDATE SET lead_id=excluded.lead_id,last_message_at=excluded.last_message_at,
+                      unread_count=excluded.unread_count,updated_at=excluded.updated_at,data_json=excluded.data_json
+                    """;
+                saveConversation.Parameters.AddWithValue("$id", storedConversation.Id);
+                saveConversation.Parameters.AddWithValue("$account", storedConversation.AccountId);
+                saveConversation.Parameters.AddWithValue("$phone", storedConversation.Phone);
+                saveConversation.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(storedConversation.LeadId) ? DBNull.Value : storedConversation.LeadId);
+                saveConversation.Parameters.AddWithValue("$last", storedConversation.LastMessageAt.ToString("O"));
+                saveConversation.Parameters.AddWithValue("$unread", storedConversation.UnreadCount);
+                saveConversation.Parameters.AddWithValue("$updated", storedConversation.UpdatedAt.ToString("O"));
+                saveConversation.Parameters.AddWithValue("$json", Json.Serialize(storedConversation));
+                await saveConversation.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            WhatsAppMessage? existingMessage;
+            await using (var readMessage = db.CreateCommand())
+            {
+                readMessage.Transaction = transaction;
+                readMessage.CommandText = "SELECT data_json FROM whatsapp_messages WHERE id=$id";
+                readMessage.Parameters.AddWithValue("$id", message.Id);
+                existingMessage = Json.Deserialize<WhatsAppMessage>(
+                    await readMessage.ExecuteScalarAsync(cancellationToken) as string);
+            }
+            if (existingMessage is not null)
+            {
+                if (!CanAdvanceStatus(existingMessage.Status, message.Status)) message.Status = existingMessage.Status;
+                MergeWhatsAppMessageContent(existingMessage, message);
                 if (string.IsNullOrWhiteSpace(message.MediaPath))
                 {
-                    if (!string.IsNullOrWhiteSpace(existing.MediaPath)) message.MediaPath = existing.MediaPath;
-                    else if (string.IsNullOrWhiteSpace(message.MediaDownloadError) && !string.IsNullOrWhiteSpace(existing.MediaDownloadError)) message.MediaDownloadError = existing.MediaDownloadError;
+                    if (!string.IsNullOrWhiteSpace(existingMessage.MediaPath)) message.MediaPath = existingMessage.MediaPath;
+                    else if (string.IsNullOrWhiteSpace(message.MediaDownloadError) && !string.IsNullOrWhiteSpace(existingMessage.MediaDownloadError))
+                        message.MediaDownloadError = existingMessage.MediaDownloadError;
                 }
                 if (string.IsNullOrWhiteSpace(message.QuotedMessageId))
                 {
-                    message.QuotedMessageId = existing.QuotedMessageId;
-                    message.QuotedFromMe = existing.QuotedFromMe;
+                    message.QuotedMessageId = existingMessage.QuotedMessageId;
+                    message.QuotedFromMe = existingMessage.QuotedFromMe;
                 }
-                if (string.IsNullOrWhiteSpace(message.QuotedText)) message.QuotedText = existing.QuotedText;
-                if (existing.IsRevoked)
+                if (string.IsNullOrWhiteSpace(message.QuotedText)) message.QuotedText = existingMessage.QuotedText;
+                if (existingMessage.IsRevoked)
                 {
                     message.IsRevoked = true;
-                    message.RevokedAt ??= existing.RevokedAt;
+                    message.RevokedAt ??= existingMessage.RevokedAt;
                 }
             }
-            await using var update = db.CreateCommand();
-            update.CommandText = "UPDATE whatsapp_messages SET status=$status,lead_id=$lead,data_json=$json WHERE id=$id";
-            update.Parameters.AddWithValue("$id", message.Id); update.Parameters.AddWithValue("$status", message.Status.ToString()); update.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(message.LeadId) ? DBNull.Value : message.LeadId); update.Parameters.AddWithValue("$json", Json.Serialize(message));
-            await update.ExecuteNonQueryAsync(cancellationToken);
+
+            if (existingMessage?.LeadAttributionFinal == true)
+            {
+                message.LeadId = existingMessage.LeadId;
+                message.LeadAttributionNote = existingMessage.LeadAttributionNote;
+                contextChanged = message.LeadAttributionNote.StartsWith("context_changed:", StringComparison.Ordinal);
+                contextReason = contextChanged
+                    ? message.LeadAttributionNote["context_changed:".Length..].Trim()
+                    : contextReason;
+            }
+            else
+            {
+                message.LeadId = contextIsCurrent ? expectedCustomerId : "";
+                message.LeadAttributionNote = contextChanged
+                    ? $"context_changed: {contextReason}"
+                    : intentionallyUnbound
+                        ? $"unbound: {contextReason}"
+                        : "verified";
+            }
+            message.LeadAttributionFinal = true;
+
+            await using (var saveMessage = db.CreateCommand())
+            {
+                saveMessage.Transaction = transaction;
+                saveMessage.CommandText = """
+                    INSERT INTO whatsapp_messages(id,provider_message_id,account_id,conversation_id,lead_id,phone,direction,status,timestamp,data_json)
+                    VALUES($id,$provider,$account,$conversation,$lead,$phone,$direction,$status,$timestamp,$json)
+                    ON CONFLICT(id) DO UPDATE SET lead_id=excluded.lead_id,status=excluded.status,data_json=excluded.data_json
+                    """;
+                saveMessage.Parameters.AddWithValue("$id", message.Id);
+                saveMessage.Parameters.AddWithValue("$provider", message.ProviderMessageId);
+                saveMessage.Parameters.AddWithValue("$account", message.AccountId);
+                saveMessage.Parameters.AddWithValue("$conversation", message.ConversationId);
+                saveMessage.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(message.LeadId) ? DBNull.Value : message.LeadId);
+                saveMessage.Parameters.AddWithValue("$phone", message.Phone);
+                saveMessage.Parameters.AddWithValue("$direction", message.Direction.ToString());
+                saveMessage.Parameters.AddWithValue("$status", message.Status.ToString());
+                saveMessage.Parameters.AddWithValue("$timestamp", message.Timestamp.ToString("O"));
+                saveMessage.Parameters.AddWithValue("$json", Json.Serialize(message));
+                await saveMessage.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            if (contextIsCurrent && updateLeadConnection && expectedLead is not null &&
+                LeadConnectionStatus.ApplyFromMessage(expectedLead, message))
+                await UpsertLeadInternalAsync(db, expectedLead, cancellationToken, transaction);
+
+            if (contextChanged && existingMessage?.LeadAttributionFinal != true)
+            {
+                await using var audit = db.CreateCommand();
+                audit.Transaction = transaction;
+                audit.CommandText = "INSERT INTO audit_events(event_type,lead_id,draft_id,detail,created_at) VALUES($type,NULL,NULL,$detail,$at)";
+                audit.Parameters.AddWithValue("$type", "whatsapp_send_context_changed");
+                audit.Parameters.AddWithValue("$detail", Json.Serialize(new
+                {
+                    message.AccountId,
+                    message.ConversationId,
+                    message.ProviderMessageId,
+                    message.Phone,
+                    expectedCustomerId,
+                    currentLeadId,
+                    expectedBindingToken,
+                    currentBindingToken,
+                    sourceContextCurrent,
+                    dependencyCurrent,
+                    agentSourceCurrent,
+                    expectedCustomerIdentityHash,
+                    expectedActiveFactSetToken,
+                    expectedRunContextToken,
+                    expectedConversationTargetToken,
+                    expectedSourceMessageId,
+                    expectedSourceMessageToken,
+                    reason = contextReason
+                }));
+                audit.Parameters.AddWithValue("$at", now.ToString("O"));
+                await audit.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return new WhatsAppOutgoingAckCommitResult(
+                message,
+                message.LeadId,
+                contextChanged,
+                contextReason);
         }
-        return inserted;
+        finally
+        {
+            _conversationWriteGate.Release();
+        }
+    }
+
+    private static string BuildWhatsAppIdentityLinkToken(WhatsAppIdentityLink link) => string.Join("|",
+        link.Id,
+        link.CustomerId,
+        link.ContactJid,
+        link.ContactLid,
+        link.PhoneIdentityId,
+        link.MatchResult,
+        link.MatchMethod,
+        link.ManuallyConfirmed,
+        link.UpdatedAt.ToUniversalTime().ToString("O"));
+
+    private static string DigitsOnly(string? value) => new((value ?? "").Where(char.IsDigit).ToArray());
+
+    private static async Task<CustomerExternalFactDependencySnapshot> CaptureCustomerExternalFactDependencyAsync(
+        SqliteConnection db,
+        SqliteTransaction transaction,
+        string customerId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        Lead? lead;
+        await using (var readLead = db.CreateCommand())
+        {
+            readLead.Transaction = transaction;
+            readLead.CommandText = "SELECT data_json FROM leads WHERE id=$id";
+            readLead.Parameters.AddWithValue("$id", customerId);
+            lead = Json.Deserialize<Lead>(await readLead.ExecuteScalarAsync(cancellationToken) as string);
+        }
+
+        var jobs = new List<CustomerEnrichmentJob>();
+        await using (var readJobs = db.CreateCommand())
+        {
+            readJobs.Transaction = transaction;
+            readJobs.CommandText = "SELECT data_json FROM customer_enrichment_jobs WHERE customer_id=$customer";
+            readJobs.Parameters.AddWithValue("$customer", customerId);
+            await using var reader = await readJobs.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<CustomerEnrichmentJob>(reader.GetString(0)) is { } job) jobs.Add(job);
+        }
+
+        var facts = new List<CustomerEnrichmentFact>();
+        await using (var readFacts = db.CreateCommand())
+        {
+            readFacts.Transaction = transaction;
+            readFacts.CommandText = "SELECT data_json FROM customer_enrichment_facts WHERE customer_id=$customer";
+            readFacts.Parameters.AddWithValue("$customer", customerId);
+            await using var reader = await readFacts.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<CustomerEnrichmentFact>(reader.GetString(0)) is { } fact) facts.Add(fact);
+        }
+
+        return CustomerExternalFactPolicy.BuildDependency(lead, jobs, facts, now);
     }
 
     private static void MergeWhatsAppMessageContent(WhatsAppMessage existing, WhatsAppMessage incoming)
@@ -1928,22 +2500,43 @@ public sealed partial class LocalRepository
         DateTimeOffset? revokedAt = null,
         CancellationToken cancellationToken = default)
     {
-        await using var db = Open(); await db.OpenAsync(cancellationToken);
-        await using var select = db.CreateCommand();
-        select.CommandText = "SELECT id,data_json FROM whatsapp_messages WHERE account_id=$account AND provider_message_id=$provider LIMIT 1";
-        select.Parameters.AddWithValue("$account", accountId); select.Parameters.AddWithValue("$provider", providerMessageId);
-        await using var reader = await select.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken)) return null;
-        var id = reader.GetString(0); var message = Json.Deserialize<WhatsAppMessage>(reader.GetString(1));
-        await reader.DisposeAsync();
-        if (message is null) return null;
-        message.IsRevoked = true;
-        message.RevokedAt ??= revokedAt ?? DateTimeOffset.Now;
-        await using var update = db.CreateCommand();
-        update.CommandText = "UPDATE whatsapp_messages SET data_json=$json WHERE id=$id";
-        update.Parameters.AddWithValue("$json", Json.Serialize(message)); update.Parameters.AddWithValue("$id", id);
-        await update.ExecuteNonQueryAsync(cancellationToken);
-        return message;
+        await _conversationWriteGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var db = Open(); await db.OpenAsync(cancellationToken);
+            await using var transaction = db.BeginTransaction(deferred: false);
+            WhatsAppMessage? message;
+            await using (var select = db.CreateCommand())
+            {
+                select.Transaction = transaction;
+                select.CommandText = "SELECT data_json FROM whatsapp_messages WHERE account_id=$account AND provider_message_id=$provider LIMIT 1";
+                select.Parameters.AddWithValue("$account", accountId);
+                select.Parameters.AddWithValue("$provider", providerMessageId);
+                message = Json.Deserialize<WhatsAppMessage>(await select.ExecuteScalarAsync(cancellationToken) as string);
+            }
+            if (message is null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return null;
+            }
+            message.IsRevoked = true;
+            message.RevokedAt ??= revokedAt ?? DateTimeOffset.Now;
+            await using (var update = db.CreateCommand())
+            {
+                update.Transaction = transaction;
+                update.CommandText = "UPDATE whatsapp_messages SET lead_id=$lead,data_json=$json WHERE id=$id";
+                update.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(message.LeadId) ? DBNull.Value : message.LeadId);
+                update.Parameters.AddWithValue("$json", Json.Serialize(message));
+                update.Parameters.AddWithValue("$id", message.Id);
+                await update.ExecuteNonQueryAsync(cancellationToken);
+            }
+            await transaction.CommitAsync(cancellationToken);
+            return message;
+        }
+        finally
+        {
+            _conversationWriteGate.Release();
+        }
     }
 
     public async Task<List<WhatsAppMessage>> GetWhatsAppMessagesAsync(string conversationId, int limit = 500, CancellationToken cancellationToken = default)
@@ -1999,31 +2592,39 @@ public sealed partial class LocalRepository
         string failureReason = "",
         CancellationToken cancellationToken = default)
     {
-        await using var db = Open(); await db.OpenAsync(cancellationToken);
-        await using var select = db.CreateCommand();
-        select.CommandText = "SELECT id,data_json FROM whatsapp_messages WHERE account_id=$account AND provider_message_id=$provider LIMIT 1";
-        select.Parameters.AddWithValue("$account", accountId); select.Parameters.AddWithValue("$provider", providerMessageId);
-        await using var reader = await select.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken)) return null;
-        var id = reader.GetString(0); var message = Json.Deserialize<WhatsAppMessage>(reader.GetString(1));
-        await reader.DisposeAsync();
-        if (message is null) return null;
-        var canAdvance = CanAdvanceStatus(message.Status, status);
-        if (canAdvance) message.Status = status;
-        if (statusAt is not null && (message.StatusUpdatedAt is null || statusAt > message.StatusUpdatedAt)) message.StatusUpdatedAt = statusAt;
-        if (deliveredAt is not null && (message.DeliveredAt is null || deliveredAt < message.DeliveredAt)) message.DeliveredAt = deliveredAt;
-        if (readAt is not null && (message.ReadAt is null || readAt < message.ReadAt)) message.ReadAt = readAt;
-        if (message.Status == WhatsAppMessageStatus.Read && message.DeliveredAt is null) message.DeliveredAt = message.ReadAt ?? statusAt;
-        if (status == WhatsAppMessageStatus.Failed && canAdvance)
+        await _conversationWriteGate.WaitAsync(cancellationToken);
+        try
         {
-            message.FailedAt = statusAt ?? DateTimeOffset.Now;
-            if (!string.IsNullOrWhiteSpace(failureReason)) message.FailureReason = failureReason;
+            await using var db = Open(); await db.OpenAsync(cancellationToken);
+            await using var select = db.CreateCommand();
+            select.CommandText = "SELECT id,data_json FROM whatsapp_messages WHERE account_id=$account AND provider_message_id=$provider LIMIT 1";
+            select.Parameters.AddWithValue("$account", accountId); select.Parameters.AddWithValue("$provider", providerMessageId);
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken)) return null;
+            var id = reader.GetString(0); var message = Json.Deserialize<WhatsAppMessage>(reader.GetString(1));
+            await reader.DisposeAsync();
+            if (message is null) return null;
+            var canAdvance = CanAdvanceStatus(message.Status, status);
+            if (canAdvance) message.Status = status;
+            if (statusAt is not null && (message.StatusUpdatedAt is null || statusAt > message.StatusUpdatedAt)) message.StatusUpdatedAt = statusAt;
+            if (deliveredAt is not null && (message.DeliveredAt is null || deliveredAt < message.DeliveredAt)) message.DeliveredAt = deliveredAt;
+            if (readAt is not null && (message.ReadAt is null || readAt < message.ReadAt)) message.ReadAt = readAt;
+            if (message.Status == WhatsAppMessageStatus.Read && message.DeliveredAt is null) message.DeliveredAt = message.ReadAt ?? statusAt;
+            if (status == WhatsAppMessageStatus.Failed && canAdvance)
+            {
+                message.FailedAt = statusAt ?? DateTimeOffset.Now;
+                if (!string.IsNullOrWhiteSpace(failureReason)) message.FailureReason = failureReason;
+            }
+            await using var update = db.CreateCommand();
+            update.CommandText = "UPDATE whatsapp_messages SET status=$status,data_json=$json WHERE id=$id";
+            update.Parameters.AddWithValue("$status", message.Status.ToString()); update.Parameters.AddWithValue("$json", Json.Serialize(message)); update.Parameters.AddWithValue("$id", id);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+            return message;
         }
-        await using var update = db.CreateCommand();
-        update.CommandText = "UPDATE whatsapp_messages SET status=$status,data_json=$json WHERE id=$id";
-        update.Parameters.AddWithValue("$status", message.Status.ToString()); update.Parameters.AddWithValue("$json", Json.Serialize(message)); update.Parameters.AddWithValue("$id", id);
-        await update.ExecuteNonQueryAsync(cancellationToken);
-        return message;
+        finally
+        {
+            _conversationWriteGate.Release();
+        }
     }
 
     public async Task MarkWhatsAppConversationReadAsync(string conversationId, CancellationToken cancellationToken = default)
@@ -2154,10 +2755,23 @@ public sealed partial class LocalRepository
         return items;
     }
 
+    public async Task<EmailConversation?> GetEmailConversationAsync(
+        string conversationId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT data_json FROM email_conversations WHERE id=$id";
+        command.Parameters.AddWithValue("$id", conversationId);
+        return Json.Deserialize<EmailConversation>(await command.ExecuteScalarAsync(cancellationToken) as string);
+    }
+
     public async Task UpsertEmailConversationAsync(
         EmailConversation conversation,
         CancellationToken cancellationToken = default,
-        bool incrementUnread = false)
+        bool incrementUnread = false,
+        bool allowBindingReplacement = false)
     {
         await _conversationWriteGate.WaitAsync(cancellationToken);
         try
@@ -2173,6 +2787,10 @@ public sealed partial class LocalRepository
                 existingCommand.Parameters.AddWithValue("$id", conversation.Id);
                 existing = Json.Deserialize<EmailConversation>(await existingCommand.ExecuteScalarAsync(cancellationToken) as string);
             }
+            if (!allowBindingReplacement &&
+                !string.IsNullOrWhiteSpace(existing?.LeadId) &&
+                !existing.LeadId.Equals(conversation.LeadId, StringComparison.OrdinalIgnoreCase))
+                conversation.LeadId = existing.LeadId;
             if (incrementUnread)
             {
                 conversation.LastReadAt = existing?.LastReadAt;
@@ -2445,21 +3063,236 @@ public sealed partial class LocalRepository
 
     public async Task<bool> UpsertEmailMessageAsync(EmailMessage message, CancellationToken cancellationToken = default)
     {
-        message.UpdatedAt = DateTimeOffset.Now;
-        await using var db = Open(); await db.OpenAsync(cancellationToken);
-        await using var command = db.CreateCommand();
-        command.CommandText = """
-            INSERT INTO email_messages(id,provider_message_id,account_id,conversation_id,lead_id,direction,status,timestamp,updated_at,data_json)
-            VALUES($id,$provider,$account,$conversation,$lead,$direction,$status,$timestamp,$updated,$json)
-            ON CONFLICT(id) DO UPDATE SET lead_id=excluded.lead_id,status=excluded.status,updated_at=excluded.updated_at,data_json=excluded.data_json
-            """;
-        command.Parameters.AddWithValue("$id", message.Id); command.Parameters.AddWithValue("$provider", message.ProviderMessageId);
-        command.Parameters.AddWithValue("$account", message.AccountId); command.Parameters.AddWithValue("$conversation", message.ConversationId);
-        command.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(message.LeadId) ? DBNull.Value : message.LeadId);
-        command.Parameters.AddWithValue("$direction", message.Direction.ToString()); command.Parameters.AddWithValue("$status", message.Status.ToString());
-        command.Parameters.AddWithValue("$timestamp", message.Timestamp.ToString("O")); command.Parameters.AddWithValue("$updated", message.UpdatedAt.ToString("O"));
-        command.Parameters.AddWithValue("$json", Json.Serialize(message));
-        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+        await _conversationWriteGate.WaitAsync(cancellationToken);
+        try
+        {
+            message.UpdatedAt = DateTimeOffset.Now;
+            await using var db = Open(); await db.OpenAsync(cancellationToken);
+            await using (var existingCommand = db.CreateCommand())
+            {
+                existingCommand.CommandText = "SELECT data_json FROM email_messages WHERE id=$id";
+                existingCommand.Parameters.AddWithValue("$id", message.Id);
+                if (Json.Deserialize<EmailMessage>(await existingCommand.ExecuteScalarAsync(cancellationToken) as string) is
+                    { DeliveryAcknowledged: true } existing)
+                {
+                    message.LeadId = existing.LeadId;
+                    message.DeliveryAcknowledged = true;
+                    message.ContextChangedAfterSend = existing.ContextChangedAfterSend;
+                    message.ContextChangeReason = existing.ContextChangeReason;
+                }
+            }
+            await using var command = db.CreateCommand();
+            command.CommandText = """
+                INSERT INTO email_messages(id,provider_message_id,account_id,conversation_id,lead_id,direction,status,timestamp,updated_at,data_json)
+                VALUES($id,$provider,$account,$conversation,$lead,$direction,$status,$timestamp,$updated,$json)
+                ON CONFLICT(id) DO UPDATE SET lead_id=excluded.lead_id,status=excluded.status,updated_at=excluded.updated_at,data_json=excluded.data_json
+                """;
+            command.Parameters.AddWithValue("$id", message.Id); command.Parameters.AddWithValue("$provider", message.ProviderMessageId);
+            command.Parameters.AddWithValue("$account", message.AccountId); command.Parameters.AddWithValue("$conversation", message.ConversationId);
+            command.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(message.LeadId) ? DBNull.Value : message.LeadId);
+            command.Parameters.AddWithValue("$direction", message.Direction.ToString()); command.Parameters.AddWithValue("$status", message.Status.ToString());
+            command.Parameters.AddWithValue("$timestamp", message.Timestamp.ToString("O")); command.Parameters.AddWithValue("$updated", message.UpdatedAt.ToString("O"));
+            command.Parameters.AddWithValue("$json", Json.Serialize(message));
+            return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+        }
+        finally
+        {
+            _conversationWriteGate.Release();
+        }
+    }
+
+    public async Task<EmailMessage> PersistAcknowledgedOutgoingEmailAsync(
+        EmailConversation proposedConversation,
+        EmailMessage message,
+        string expectedLeadId,
+        EmailSendBindingSource bindingSource,
+        string expectedCustomerDependencyHash = "",
+        CancellationToken cancellationToken = default)
+    {
+        await _conversationWriteGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var db = Open();
+            await db.OpenAsync(cancellationToken);
+            await using var transaction = db.BeginTransaction(deferred: false);
+
+            EmailConversation? currentConversation;
+            await using (var readConversation = db.CreateCommand())
+            {
+                readConversation.Transaction = transaction;
+                readConversation.CommandText = "SELECT data_json FROM email_conversations WHERE id=$id";
+                readConversation.Parameters.AddWithValue("$id", proposedConversation.Id);
+                currentConversation = Json.Deserialize<EmailConversation>(
+                    await readConversation.ExecuteScalarAsync(cancellationToken) as string);
+            }
+
+            var leads = new List<Lead>();
+            await using (var readLeads = db.CreateCommand())
+            {
+                readLeads.Transaction = transaction;
+                readLeads.CommandText = "SELECT data_json FROM leads";
+                await using var reader = await readLeads.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                    if (Json.Deserialize<Lead>(reader.GetString(0)) is { } lead) leads.Add(lead);
+            }
+
+            var peerEmail = NormalizeEmail(proposedConversation.PeerEmail);
+            var expectedLead = leads.FirstOrDefault(lead =>
+                lead.Id.Equals(expectedLeadId, StringComparison.OrdinalIgnoreCase));
+            var matchingLeads = leads
+                .Where(lead => NormalizeEmail(lead.Email).Equals(peerEmail, StringComparison.OrdinalIgnoreCase))
+                .Take(2)
+                .ToList();
+            var currentLeadId = currentConversation?.LeadId?.Trim() ?? "";
+            var expectedLeadMatchesEmail = expectedLead is not null &&
+                                           NormalizeEmail(expectedLead.Email).Equals(peerEmail, StringComparison.OrdinalIgnoreCase);
+            var dependencyIsCurrent = true;
+            if (!string.IsNullOrWhiteSpace(expectedCustomerDependencyHash))
+            {
+                dependencyIsCurrent = expectedLead is not null &&
+                    (await CaptureCustomerExternalFactDependencyAsync(
+                        db,
+                        transaction,
+                        expectedLead.Id,
+                        DateTimeOffset.Now,
+                        cancellationToken)).Hash.Equals(expectedCustomerDependencyHash, StringComparison.Ordinal);
+            }
+            var bindingIsCurrent = bindingSource switch
+            {
+                EmailSendBindingSource.ExistingConversation =>
+                    expectedLeadMatchesEmail &&
+                    currentLeadId.Equals(expectedLeadId, StringComparison.OrdinalIgnoreCase),
+                EmailSendBindingSource.UniqueEmail =>
+                    expectedLeadMatchesEmail &&
+                    matchingLeads.Count == 1 &&
+                    matchingLeads[0].Id.Equals(expectedLeadId, StringComparison.OrdinalIgnoreCase) &&
+                    (currentLeadId.Length == 0 || currentLeadId.Equals(expectedLeadId, StringComparison.OrdinalIgnoreCase)),
+                EmailSendBindingSource.ExplicitUnbound =>
+                    string.IsNullOrWhiteSpace(expectedLeadId) &&
+                    matchingLeads.Count != 1 &&
+                    currentLeadId.Length == 0,
+                _ => false
+            };
+            var contextIsCurrent = bindingIsCurrent && dependencyIsCurrent;
+            var contextReason = contextIsCurrent
+                ? ""
+                : !dependencyIsCurrent
+                    ? "SMTP 已确认发送，但客户资料或外部调查事实在发送期间发生变化；消息按未关联记录保存。"
+                    : "SMTP 已确认发送，但邮件会话绑定或唯一邮箱客户在发送期间发生变化；消息按未关联记录保存。";
+
+            var now = DateTimeOffset.Now;
+            var storedConversation = currentConversation ?? new EmailConversation
+            {
+                Id = proposedConversation.Id,
+                AccountId = proposedConversation.AccountId,
+                PeerEmail = peerEmail
+            };
+            storedConversation.AccountId = proposedConversation.AccountId;
+            storedConversation.PeerEmail = peerEmail;
+            if (currentConversation is null || proposedConversation.LastMessageAt >= currentConversation.LastMessageAt)
+            {
+                storedConversation.PeerName = string.IsNullOrWhiteSpace(proposedConversation.PeerName)
+                    ? storedConversation.PeerName
+                    : proposedConversation.PeerName;
+                storedConversation.Subject = proposedConversation.Subject;
+                storedConversation.LastMessage = proposedConversation.LastMessage;
+                storedConversation.LastMessageAt = proposedConversation.LastMessageAt;
+            }
+            storedConversation.UpdatedAt = now;
+            if (contextIsCurrent)
+            {
+                if (string.IsNullOrWhiteSpace(storedConversation.LeadId))
+                    storedConversation.LeadId = expectedLeadId;
+            }
+            else if (currentConversation is null)
+            {
+                storedConversation.LeadId = "";
+            }
+
+            await using (var saveConversation = db.CreateCommand())
+            {
+                saveConversation.Transaction = transaction;
+                saveConversation.CommandText = """
+                    INSERT INTO email_conversations(id,account_id,lead_id,peer_email,last_message_at,unread_count,updated_at,data_json)
+                    VALUES($id,$account,$lead,$peer,$last,$unread,$updated,$json)
+                    ON CONFLICT(id) DO UPDATE SET lead_id=excluded.lead_id,peer_email=excluded.peer_email,
+                      last_message_at=excluded.last_message_at,unread_count=excluded.unread_count,
+                      updated_at=excluded.updated_at,data_json=excluded.data_json
+                    """;
+                saveConversation.Parameters.AddWithValue("$id", storedConversation.Id);
+                saveConversation.Parameters.AddWithValue("$account", storedConversation.AccountId);
+                saveConversation.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(storedConversation.LeadId) ? DBNull.Value : storedConversation.LeadId);
+                saveConversation.Parameters.AddWithValue("$peer", storedConversation.PeerEmail);
+                saveConversation.Parameters.AddWithValue("$last", storedConversation.LastMessageAt.ToString("O"));
+                saveConversation.Parameters.AddWithValue("$unread", storedConversation.UnreadCount);
+                saveConversation.Parameters.AddWithValue("$updated", storedConversation.UpdatedAt.ToString("O"));
+                saveConversation.Parameters.AddWithValue("$json", Json.Serialize(storedConversation));
+                await saveConversation.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            message.LeadId = contextIsCurrent ? expectedLeadId : "";
+            message.DeliveryAcknowledged = true;
+            message.ContextChangedAfterSend = !contextIsCurrent;
+            message.ContextChangeReason = contextReason;
+            message.UpdatedAt = now;
+            await using (var saveMessage = db.CreateCommand())
+            {
+                saveMessage.Transaction = transaction;
+                saveMessage.CommandText = """
+                    INSERT INTO email_messages(id,provider_message_id,account_id,conversation_id,lead_id,direction,status,timestamp,updated_at,data_json)
+                    VALUES($id,$provider,$account,$conversation,$lead,$direction,$status,$timestamp,$updated,$json)
+                    ON CONFLICT(id) DO UPDATE SET lead_id=excluded.lead_id,status=excluded.status,
+                      updated_at=excluded.updated_at,data_json=excluded.data_json
+                    """;
+                saveMessage.Parameters.AddWithValue("$id", message.Id);
+                saveMessage.Parameters.AddWithValue("$provider", message.ProviderMessageId);
+                saveMessage.Parameters.AddWithValue("$account", message.AccountId);
+                saveMessage.Parameters.AddWithValue("$conversation", message.ConversationId);
+                saveMessage.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(message.LeadId) ? DBNull.Value : message.LeadId);
+                saveMessage.Parameters.AddWithValue("$direction", message.Direction.ToString());
+                saveMessage.Parameters.AddWithValue("$status", message.Status.ToString());
+                saveMessage.Parameters.AddWithValue("$timestamp", message.Timestamp.ToString("O"));
+                saveMessage.Parameters.AddWithValue("$updated", message.UpdatedAt.ToString("O"));
+                saveMessage.Parameters.AddWithValue("$json", Json.Serialize(message));
+                await saveMessage.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            if (contextIsCurrent && expectedLead is not null)
+            {
+                expectedLead.LastContactAt = message.Timestamp;
+                expectedLead.LatestMessage = message.TextBody;
+                if (expectedLead.Stage == LeadStage.New) expectedLead.Stage = LeadStage.Contacted;
+                await UpsertLeadInternalAsync(db, expectedLead, cancellationToken, transaction);
+            }
+            if (!contextIsCurrent)
+            {
+                await using var audit = db.CreateCommand();
+                audit.Transaction = transaction;
+                audit.CommandText = "INSERT INTO audit_events(event_type,lead_id,draft_id,detail,created_at) VALUES($type,NULL,NULL,$detail,$at)";
+                audit.Parameters.AddWithValue("$type", "email_send_context_changed");
+                audit.Parameters.AddWithValue("$detail", Json.Serialize(new
+                {
+                    message.AccountId,
+                    message.ConversationId,
+                    message.ProviderMessageId,
+                    recipient = peerEmail,
+                    expectedLeadId,
+                    bindingSource,
+                    currentLeadId,
+                    dependencyIsCurrent,
+                    reason = contextReason
+                }));
+                audit.Parameters.AddWithValue("$at", now.ToString("O"));
+                await audit.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return message;
+        }
+        finally
+        {
+            _conversationWriteGate.Release();
+        }
     }
 
     public async Task<EmailMessage?> GetEmailMessageAsync(string id, CancellationToken cancellationToken = default)
@@ -2789,6 +3622,44 @@ public sealed partial class LocalRepository
         command.Parameters.AddWithValue("$status", report.Status.ToString()); command.Parameters.AddWithValue("$error", report.Error);
         command.Parameters.AddWithValue("$updated", report.UpdatedTime.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<bool> AppendCustomerReportExportAsync(
+        string reportId,
+        CustomerReportExportRecord export,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await db.BeginTransactionAsync(cancellationToken);
+        List<CustomerReportExportRecord> history;
+        await using (var read = db.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = "SELECT export_history,status FROM customer_analysis_reports WHERE id=$id";
+            read.Parameters.AddWithValue("$id", reportId);
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken)
+                || !reader.GetString(1).Equals(CustomerReportStatus.Succeeded.ToString(), StringComparison.Ordinal))
+                return false;
+            history = Json.Deserialize<List<CustomerReportExportRecord>>(reader.GetString(0)) ?? [];
+        }
+
+        history.Add(export);
+        await using var update = db.CreateCommand();
+        update.Transaction = transaction;
+        update.CommandText = """
+            UPDATE customer_analysis_reports
+            SET export_history=$exports,updated_time=$updated
+            WHERE id=$id AND status=$succeeded
+            """;
+        update.Parameters.AddWithValue("$exports", Json.Serialize(history));
+        update.Parameters.AddWithValue("$updated", DateTimeOffset.Now.ToString("O"));
+        update.Parameters.AddWithValue("$id", reportId);
+        update.Parameters.AddWithValue("$succeeded", CustomerReportStatus.Succeeded.ToString());
+        var appended = await update.ExecuteNonQueryAsync(cancellationToken) == 1;
+        if (appended) await transaction.CommitAsync(cancellationToken);
+        return appended;
     }
 
     public async Task<CustomerAnalysisReport?> GetCustomerAnalysisReportAsync(string reportId, CancellationToken cancellationToken = default)
@@ -3320,26 +4191,62 @@ public sealed partial class LocalRepository
 
     public async Task UpsertWhatsAppIdentityLinkAsync(WhatsAppIdentityLink link, CancellationToken cancellationToken = default)
     {
-        link.UpdatedAt = DateTimeOffset.Now;
-        await using var db = Open(); await db.OpenAsync(cancellationToken);
-        await using var command = db.CreateCommand();
-        command.CommandText = """
-            INSERT INTO whatsapp_identity_links(id,customer_id,account_id,conversation_id,contact_jid,match_result,is_active,updated_at,data_json)
-            VALUES($id,$customer,$account,$conversation,$jid,$result,$active,$updated,$json)
-            ON CONFLICT(account_id,conversation_id) DO UPDATE SET id=excluded.id,customer_id=excluded.customer_id,
-              contact_jid=excluded.contact_jid,match_result=excluded.match_result,is_active=excluded.is_active,
-              updated_at=excluded.updated_at,data_json=excluded.data_json
-            """;
-        command.Parameters.AddWithValue("$id", link.Id);
-        command.Parameters.AddWithValue("$customer", link.CustomerId);
-        command.Parameters.AddWithValue("$account", link.AccountId);
-        command.Parameters.AddWithValue("$conversation", link.ConversationId);
-        command.Parameters.AddWithValue("$jid", link.ContactJid);
-        command.Parameters.AddWithValue("$result", link.MatchResult.ToString());
-        command.Parameters.AddWithValue("$active", link.IsActive ? 1 : 0);
-        command.Parameters.AddWithValue("$updated", link.UpdatedAt.ToString("O"));
-        command.Parameters.AddWithValue("$json", Json.Serialize(link));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await _conversationWriteGate.WaitAsync(cancellationToken);
+        try
+        {
+            link.UpdatedAt = DateTimeOffset.Now;
+            await using var db = Open(); await db.OpenAsync(cancellationToken);
+            await using var transaction = db.BeginTransaction(deferred: false);
+            await using var command = db.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO whatsapp_identity_links(id,customer_id,account_id,conversation_id,contact_jid,match_result,is_active,updated_at,data_json)
+                VALUES($id,$customer,$account,$conversation,$jid,$result,$active,$updated,$json)
+                ON CONFLICT(account_id,conversation_id) DO UPDATE SET id=excluded.id,customer_id=excluded.customer_id,
+                  contact_jid=excluded.contact_jid,match_result=excluded.match_result,is_active=excluded.is_active,
+                  updated_at=excluded.updated_at,data_json=excluded.data_json
+                """;
+            command.Parameters.AddWithValue("$id", link.Id);
+            command.Parameters.AddWithValue("$customer", link.CustomerId);
+            command.Parameters.AddWithValue("$account", link.AccountId);
+            command.Parameters.AddWithValue("$conversation", link.ConversationId);
+            command.Parameters.AddWithValue("$jid", link.ContactJid);
+            command.Parameters.AddWithValue("$result", link.MatchResult.ToString());
+            command.Parameters.AddWithValue("$active", link.IsActive ? 1 : 0);
+            command.Parameters.AddWithValue("$updated", link.UpdatedAt.ToString("O"));
+            command.Parameters.AddWithValue("$json", Json.Serialize(link));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+
+            WhatsAppConversation? conversation;
+            await using (var readConversation = db.CreateCommand())
+            {
+                readConversation.Transaction = transaction;
+                readConversation.CommandText = "SELECT data_json FROM whatsapp_conversations WHERE id=$id";
+                readConversation.Parameters.AddWithValue("$id", link.ConversationId);
+                conversation = Json.Deserialize<WhatsAppConversation>(
+                    await readConversation.ExecuteScalarAsync(cancellationToken) as string);
+            }
+            if (conversation is not null)
+            {
+                conversation.LeadId = link.IsActive && !conversation.IsGroup
+                    ? link.CustomerId.Trim()
+                    : "";
+                conversation.UpdatedAt = link.UpdatedAt;
+                await using var updateConversation = db.CreateCommand();
+                updateConversation.Transaction = transaction;
+                updateConversation.CommandText = "UPDATE whatsapp_conversations SET lead_id=$lead,updated_at=$updated,data_json=$json WHERE id=$id";
+                updateConversation.Parameters.AddWithValue("$id", conversation.Id);
+                updateConversation.Parameters.AddWithValue("$lead", string.IsNullOrWhiteSpace(conversation.LeadId) ? DBNull.Value : conversation.LeadId);
+                updateConversation.Parameters.AddWithValue("$updated", conversation.UpdatedAt.ToString("O"));
+                updateConversation.Parameters.AddWithValue("$json", Json.Serialize(conversation));
+                await updateConversation.ExecuteNonQueryAsync(cancellationToken);
+            }
+            await transaction.CommitAsync(cancellationToken);
+        }
+        finally
+        {
+            _conversationWriteGate.Release();
+        }
     }
 
     public async Task SaveIdentityMatchLogAsync(CustomerIdentityMatchLog log, CancellationToken cancellationToken = default)
@@ -3470,6 +4377,78 @@ public sealed partial class LocalRepository
         command.Parameters.AddWithValue("$updated", state.UpdatedAt.ToString("O"));
         command.Parameters.AddWithValue("$json", Json.Serialize(state));
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<ConversationAgentState?> TryUpdateConversationAgentRunOutcomeAsync(
+        string accountId,
+        string conversationId,
+        string expectedCustomerId,
+        string expectedRunContextToken,
+        CustomerSuccessRunStatus status,
+        string detail = "",
+        string providerMessageId = "",
+        string error = "",
+        string holdingReplyMessageId = "",
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var transaction = db.BeginTransaction(deferred: false);
+
+        await using (var linkCommand = db.CreateCommand())
+        {
+            linkCommand.Transaction = transaction;
+            linkCommand.CommandText = "SELECT data_json FROM whatsapp_identity_links WHERE account_id=$account AND conversation_id=$conversation";
+            linkCommand.Parameters.AddWithValue("$account", accountId);
+            linkCommand.Parameters.AddWithValue("$conversation", conversationId);
+            var link = Json.Deserialize<WhatsAppIdentityLink>(await linkCommand.ExecuteScalarAsync(cancellationToken) as string);
+            if (link is null || !link.IsActive ||
+                !link.CustomerId.Equals(expectedCustomerId, StringComparison.OrdinalIgnoreCase))
+                return null;
+        }
+
+        ConversationAgentState? state;
+        await using (var readCommand = db.CreateCommand())
+        {
+            readCommand.Transaction = transaction;
+            readCommand.CommandText = "SELECT data_json FROM conversation_agent_states WHERE account_id=$account AND conversation_id=$conversation";
+            readCommand.Parameters.AddWithValue("$account", accountId);
+            readCommand.Parameters.AddWithValue("$conversation", conversationId);
+            state = Json.Deserialize<ConversationAgentState>(await readCommand.ExecuteScalarAsync(cancellationToken) as string);
+        }
+        if (state is null ||
+            !state.CustomerId.Equals(expectedCustomerId, StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrWhiteSpace(expectedRunContextToken) &&
+             !state.PendingRunContextToken.Equals(expectedRunContextToken, StringComparison.Ordinal)))
+            return null;
+
+        state.LastRunStatus = status;
+        state.LastRunDetail = detail.Trim();
+        state.LastProviderMessageId = providerMessageId.Trim();
+        state.LastRunError = error.Trim();
+        state.LastRunAt = DateTimeOffset.Now;
+        state.UpdatedAt = DateTimeOffset.Now;
+        if (!string.IsNullOrWhiteSpace(holdingReplyMessageId))
+            state.LastHoldingReplyMessageId = holdingReplyMessageId.Trim();
+
+        await using var updateCommand = db.CreateCommand();
+        updateCommand.Transaction = transaction;
+        updateCommand.CommandText = """
+            UPDATE conversation_agent_states
+            SET mode=$mode,updated_at=$updated,data_json=$json
+            WHERE account_id=$account AND conversation_id=$conversation AND customer_id=$customer
+            """;
+        updateCommand.Parameters.AddWithValue("$mode", state.Mode.ToString());
+        updateCommand.Parameters.AddWithValue("$updated", state.UpdatedAt.ToString("O"));
+        updateCommand.Parameters.AddWithValue("$json", Json.Serialize(state));
+        updateCommand.Parameters.AddWithValue("$account", accountId);
+        updateCommand.Parameters.AddWithValue("$conversation", conversationId);
+        updateCommand.Parameters.AddWithValue("$customer", expectedCustomerId);
+        if (await updateCommand.ExecuteNonQueryAsync(cancellationToken) != 1)
+            return null;
+
+        await transaction.CommitAsync(cancellationToken);
+        return state;
     }
 
     public async Task<GlobalCustomerAgentLock?> GetGlobalCustomerAgentLockAsync(string customerId, CancellationToken cancellationToken = default)
@@ -3744,19 +4723,29 @@ public sealed partial class LocalRepository
         await using var db = Open(); await db.OpenAsync(cancellationToken);
         await using var command = db.CreateCommand();
         command.CommandText = """
-            SELECT m.data_json
+            SELECT m.data_json,l.customer_id
             FROM whatsapp_messages m
             LEFT JOIN whatsapp_identity_links l
               ON l.account_id=m.account_id AND l.conversation_id=m.conversation_id AND l.is_active=1
-            WHERE m.lead_id=$customer OR l.customer_id=$customer
+            WHERE l.customer_id=$customer
+               OR m.lead_id=$customer
             ORDER BY m.timestamp DESC LIMIT $limit
             """;
         command.Parameters.AddWithValue("$customer", customerId);
-        command.Parameters.AddWithValue("$limit", limit);
+        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 20_000));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         while (await reader.ReadAsync(cancellationToken))
-            if (Json.Deserialize<WhatsAppMessage>(reader.GetString(0)) is { } item && seen.Add(item.Id)) items.Add(item);
+        {
+            if (Json.Deserialize<WhatsAppMessage>(reader.GetString(0)) is not { } item || !seen.Add(item.Id)) continue;
+            var activeLinkCustomerId = reader.IsDBNull(1) ? "" : reader.GetString(1);
+            var belongsToCustomer = item.LeadAttributionFinal
+                ? item.LeadId.Equals(customerId, StringComparison.OrdinalIgnoreCase)
+                : activeLinkCustomerId.Length > 0
+                    ? activeLinkCustomerId.Equals(customerId, StringComparison.OrdinalIgnoreCase)
+                    : item.LeadId.Equals(customerId, StringComparison.OrdinalIgnoreCase);
+            if (belongsToCustomer) items.Add(item);
+        }
         items.Reverse();
         return items;
     }

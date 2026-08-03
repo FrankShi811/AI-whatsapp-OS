@@ -11,17 +11,20 @@ public sealed class CustomerAnalysisService
     private readonly IStructuredAiProvider _provider;
     private readonly HybridRetriever? _knowledgeRetrieval;
     private readonly CustomerBrainService? _customerBrain;
+    private readonly Func<CancellationToken, Task>? _beforeSuccessCommit;
 
     public CustomerAnalysisService(
         LocalRepository repository,
         IStructuredAiProvider provider,
         HybridRetriever? knowledgeRetrieval = null,
-        CustomerBrainService? customerBrain = null)
+        CustomerBrainService? customerBrain = null,
+        Func<CancellationToken, Task>? beforeSuccessCommit = null)
     {
         _repository = repository;
         _provider = provider;
         _knowledgeRetrieval = knowledgeRetrieval;
         _customerBrain = customerBrain;
+        _beforeSuccessCommit = beforeSuccessCommit;
     }
 
     public async Task<CustomerAnalysisReport> GenerateAsync(
@@ -31,6 +34,7 @@ public sealed class CustomerAnalysisService
     {
         if (!_provider.HasApiKey(AiModuleKeys.CustomerAnalytics)) throw new DeepSeekException("provider_not_configured", "请先完成 AI API 对接并选择模型。", false);
         var lead = await _repository.GetLeadAsync(customerId, cancellationToken) ?? throw new InvalidOperationException("客户不存在或已经删除。");
+        lead = await LeadIntelligenceFreshness.EnsureCurrentAsync(_repository, lead, cancellationToken);
         if (_customerBrain is not null)
         {
             try
@@ -130,7 +134,20 @@ public sealed class CustomerAnalysisService
             report.Error = facts.InformationGaps.Count == 0
                 ? ""
                 : $"已基于当前全部可用资料生成；信息增加后可再次生成新版本。当前缺口：{string.Join("；", facts.InformationGaps.Take(4))}";
+            if (_beforeSuccessCommit is not null)
+                await _beforeSuccessCommit(cancellationToken);
             await _repository.SaveCustomerAnalysisReportAsync(report, cancellationToken);
+            var currentReport = await CustomerAnalysisFreshness.GetCurrentAsync(
+                _repository,
+                report.Id,
+                cancellationToken);
+            if (currentReport is null)
+                throw new InvalidOperationException("报告保存后无法重新读取，请重试生成。");
+            report = currentReport;
+            if (report.Status != CustomerReportStatus.Succeeded)
+                throw new InvalidOperationException(string.IsNullOrWhiteSpace(report.Error)
+                    ? CustomerAnalysisFreshness.StaleReason
+                    : report.Error);
             if (!string.IsNullOrWhiteSpace(snapshot.KnowledgeRetrievalId) && snapshot.KnowledgeReferences.Count > 0)
                 await _repository.UpdateKnowledgeRetrievalUsageAsync(
                     snapshot.KnowledgeRetrievalId,
@@ -148,16 +165,19 @@ public sealed class CustomerAnalysisService
         }
         catch (Exception error)
         {
-            report.Status = CustomerReportStatus.RetryableFailed;
-            report.Error = error is DeepSeekException dse ? $"{dse.Code}: {dse.Message}" : error.Message;
-            await _repository.SaveCustomerAnalysisReportAsync(report, cancellationToken);
+            if (report.Status != CustomerReportStatus.Stale)
+            {
+                report.Status = CustomerReportStatus.RetryableFailed;
+                report.Error = error is DeepSeekException dse ? $"{dse.Code}: {dse.Message}" : error.Message;
+                await _repository.SaveCustomerAnalysisReportAsync(report, cancellationToken);
+            }
             await _repository.LogEventAsync("customer_intelligence_report_failed", lead.Id, null, $"report_id={report.Id};version={report.Version};error={report.Error}", cancellationToken);
             throw;
         }
     }
 
     public Task<List<CustomerAnalysisReport>> GetHistoryAsync(string customerId, CancellationToken cancellationToken = default) =>
-        _repository.GetCustomerAnalysisReportsAsync(customerId, cancellationToken);
+        CustomerAnalysisFreshness.SynchronizeAsync(_repository, customerId, cancellationToken);
 
     private async Task<T> RunStepAsync<T>(
         CustomerAnalysisReport report,
@@ -195,7 +215,7 @@ public sealed class CustomerAnalysisService
 
     private async Task<CustomerIntelligenceSourceSnapshot> BuildSnapshotAsync(Lead lead, CancellationToken cancellationToken)
     {
-        var messages = (await _repository.GetWhatsAppMessagesForLeadAsync(lead, 5000, cancellationToken))
+        var messages = (await _repository.GetWhatsAppMessagesForCustomerAsync(lead.Id, 5000, cancellationToken))
             .Where(message => !message.IsStatusUpdate)
             .ToList();
         var emailMessages = await _repository.GetEmailMessagesForLeadAsync(lead.Id, 5000, cancellationToken);
@@ -203,7 +223,8 @@ public sealed class CustomerAnalysisService
         var touches = new List<CustomerCampaignTouch>();
         foreach (var campaign in campaigns)
         {
-            foreach (var recipient in (await _repository.GetCampaignRecipientsAsync(campaign.Id, cancellationToken)).Where(item => item.LeadId == lead.Id))
+            foreach (var recipient in (await _repository.GetCampaignRecipientsAsync(campaign.Id, cancellationToken))
+                         .Where(item => item.LeadId == lead.Id && !item.CustomerAttributionIsolated))
                 touches.Add(new CustomerCampaignTouch
                 {
                     CampaignId = campaign.Id, CampaignName = campaign.Name, Channel = campaign.ChannelLabel, Message = recipient.RenderedMessage,
@@ -214,21 +235,11 @@ public sealed class CustomerAnalysisService
         timeline.Insert(0, new CustomerHistoryEvent { Type = "customer_created", Detail = "客户资料进入 AI Sales OS", CreatedAt = lead.CreatedAt });
         timeline.Add(new CustomerHistoryEvent { Type = "customer_snapshot", Detail = $"当前阶段：{lead.StageLabel}；当前等级：{(lead.HasCurrentAiScore ? lead.Grade : "D")}", CreatedAt = lead.UpdatedAt });
         var customerBrain = await _repository.GetCustomerIntelligenceProfileAsync(lead.Id, cancellationToken);
-        var now = DateTimeOffset.Now;
-        var verifiedExternalFacts = (await _repository.GetCustomerEnrichmentFactsAsync(
-                lead.Id,
-                latestPerValue: false,
-                cancellationToken: cancellationToken))
-            .Where(fact => fact.VerificationStatus is CustomerEnrichmentVerificationStatus.Verified
-                or CustomerEnrichmentVerificationStatus.HumanConfirmed)
-            .Where(fact => fact.ExpiresAt is null || fact.ExpiresAt > now)
-            .GroupBy(fact => $"{fact.FieldType}|{fact.NormalizedValue}", StringComparer.OrdinalIgnoreCase)
-            .Select(group => group
-                .OrderByDescending(fact => fact.VerificationStatus == CustomerEnrichmentVerificationStatus.HumanConfirmed)
-                .ThenByDescending(fact => fact.UpdatedAt)
-                .First())
-            .OrderByDescending(fact => fact.UpdatedAt)
-            .ToList();
+        var verifiedExternalFacts = await CustomerExternalFactPolicy.GetCurrentFactsAsync(
+            _repository,
+            lead.Id,
+            DateTimeOffset.Now,
+            cancellationToken);
         return new CustomerIntelligenceSourceSnapshot
         {
             CapturedAt = DateTimeOffset.Now,
@@ -247,42 +258,23 @@ public sealed class CustomerAnalysisService
         CustomerIntelligenceSourceSnapshot snapshot,
         CancellationToken cancellationToken)
     {
-        if (snapshot.VerifiedExternalFacts.Count == 0) return;
-
         var now = DateTimeOffset.Now;
-        var activeById = (await _repository.GetCustomerEnrichmentFactsAsync(
-                snapshot.Lead.Id,
-                latestPerValue: false,
-                cancellationToken: cancellationToken))
-            .Where(fact => fact.VerificationStatus is CustomerEnrichmentVerificationStatus.Verified
-                or CustomerEnrichmentVerificationStatus.HumanConfirmed)
-            .Where(fact => fact.ExpiresAt is null || fact.ExpiresAt > now)
-            .GroupBy(fact => fact.Id, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
-
-        if (snapshot.VerifiedExternalFacts.Any(captured =>
-                (captured.ExpiresAt is not null && captured.ExpiresAt <= now)
-                || !activeById.TryGetValue(captured.Id, out var active)
-                || !HasSameExternalFactMaterial(captured, active)))
+        var currentIdentityHash = await CustomerExternalFactPolicy.GetCurrentIdentityHashAsync(
+            _repository,
+            snapshot.Lead.Id,
+            cancellationToken);
+        var capturedIdentityHash = CustomerEnrichmentIdentityService.Build(snapshot.Lead).IdentityHash;
+        if (currentIdentityHash.Length == 0
+            || !capturedIdentityHash.Equals(currentIdentityHash, StringComparison.Ordinal))
+            throw new InvalidOperationException("客户身份资料已在报告生成期间发生变化，请重新生成报告。");
+        var active = await CustomerExternalFactPolicy.GetCurrentFactsAsync(
+            _repository,
+            snapshot.Lead.Id,
+            now,
+            cancellationToken);
+        if (!CustomerExternalFactPolicy.HasSameFactSet(snapshot.VerifiedExternalFacts, active))
             throw new InvalidOperationException("客户外部调查事实已在报告生成期间被拒绝、过期或修改，请重新生成报告。");
     }
-
-    private static bool HasSameExternalFactMaterial(
-        CustomerEnrichmentFact left,
-        CustomerEnrichmentFact right) =>
-        string.Equals(left.FieldType, right.FieldType, StringComparison.OrdinalIgnoreCase)
-        && string.Equals(left.FieldValue, right.FieldValue, StringComparison.Ordinal)
-        && string.Equals(left.NormalizedValue, right.NormalizedValue, StringComparison.OrdinalIgnoreCase)
-        && string.Equals(left.Category, right.Category, StringComparison.OrdinalIgnoreCase)
-        && string.Equals(left.FactType, right.FactType, StringComparison.OrdinalIgnoreCase)
-        && left.ConfidenceScore == right.ConfidenceScore
-        && string.Equals(left.EvidenceQuote, right.EvidenceQuote, StringComparison.Ordinal)
-        && string.Equals(left.ReviewNote, right.ReviewNote, StringComparison.Ordinal)
-        && string.Equals(left.HumanReviewId, right.HumanReviewId, StringComparison.Ordinal)
-        && left.SourceIds.OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
-            .SequenceEqual(
-                right.SourceIds.OrderBy(value => value, StringComparer.OrdinalIgnoreCase),
-                StringComparer.OrdinalIgnoreCase);
 
     private async Task<CustomerFactSet> ExtractFactsAsync(CustomerIntelligenceSourceSnapshot snapshot, CancellationToken cancellationToken)
     {

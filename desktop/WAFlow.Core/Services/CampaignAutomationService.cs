@@ -31,18 +31,20 @@ public sealed record CampaignExecutionSummary(
     int Queued,
     string NextPosition)
 {
+    public int DeliveryAcknowledged => Math.Max(0, Total - Sent - Failed - Skipped - Cancelled - Queued);
     public string Name => Campaign.Name;
     public string Channel => Campaign.ChannelLabel;
     public string AccountId => Campaign.AccountId;
     public string Status => Campaign.StatusLabel;
     public string Trigger => Campaign.ScheduleLabel;
-    public string Progress => $"{Sent + Failed + Skipped + Cancelled} / {Total}";
+    public string Progress => $"{Sent + DeliveryAcknowledged + Failed + Skipped + Cancelled} / {Total}";
     public string SuccessRate
     {
         get
         {
-            var attempted = Sent + Failed;
-            return attempted == 0 ? "—" : $"{Sent * 100d / attempted:0.#}%";
+            var confirmed = Sent + DeliveryAcknowledged;
+            var attempted = confirmed + Failed;
+            return attempted == 0 ? "—" : $"{confirmed * 100d / attempted:0.#}%";
         }
     }
     public string StopOrNext => !string.IsNullOrWhiteSpace(Campaign.SafetyStopPosition)
@@ -187,7 +189,7 @@ public sealed class CampaignAutomationService : IAsyncDisposable
         {
             var emailAccount = await _repository.GetEmailAccountAsync(campaign.AccountId, cancellationToken);
             if (emailAccount is null || emailAccount.Status != EmailConnectionStatus.Connected)
-                throw new InvalidOperationException("邮件账号尚未连接，请先在邮件 Inbox 中完成 IMAP / SMTP 连接测试。");
+                throw new InvalidOperationException("邮件账号尚未连接，请先在邮件箱中完成 IMAP / SMTP 连接测试。");
         }
 
         var now = DateTimeOffset.Now;
@@ -352,7 +354,10 @@ public sealed class CampaignAutomationService : IAsyncDisposable
 
             if (campaign.Channel == CampaignChannel.WhatsApp && !await EnsureCampaignIpSafeAsync(campaign, cancellationToken)) return;
 
-            var sentToday = await _repository.CountCampaignMessagesSentAsync(campaign.AccountId, BeijingDayStart(DateTimeOffset.Now), cancellationToken);
+            var sentToday = await CountCampaignMessagesConsumingLimitAsync(
+                campaign.AccountId,
+                BeijingDayStart(DateTimeOffset.Now),
+                cancellationToken);
             if (sentToday >= campaign.DailyLimit)
             {
                 recipient.NextAttemptAt = NextBeijingDay(DateTimeOffset.Now, campaign.StartsAt);
@@ -369,18 +374,14 @@ public sealed class CampaignAutomationService : IAsyncDisposable
                 await _repository.SaveCampaignAsync(campaign, cancellationToken);
             }
 
-            recipient.Status = CampaignRecipientStatus.Sending; recipient.AttemptCount++;
+            PrepareRecipientForNetworkSend(campaign, recipient);
             await _repository.SaveCampaignRecipientAsync(recipient, cancellationToken);
             try
             {
                 if (campaign.Channel == CampaignChannel.Email)
                 {
                     var sent = await _email.SendAsync(campaign.AccountId, recipient.Email, recipient.RenderedSubject, recipient.RenderedMessage, eligibleLead.Id, cancellationToken: cancellationToken);
-                    recipient.ProviderMessageId = sent.ProviderMessageId;
-                    recipient.Status = CampaignRecipientStatus.Sent;
-                    recipient.SentAt = sent.Timestamp;
-                    recipient.LastError = "";
-                    await _repository.LogEventAsync("campaign_message_sent", eligibleLead.Id, null, $"campaign_id={campaign.Id};channel=Email;recipient_id={recipient.Id};message_id={recipient.ProviderMessageId}", cancellationToken);
+                    await ApplyEmailSendResultAsync(campaign, recipient, eligibleLead, sent, cancellationToken);
                 }
                 else
                 {
@@ -410,6 +411,10 @@ public sealed class CampaignAutomationService : IAsyncDisposable
                     }
                 }
             }
+            catch (EmailDeliveryAcknowledgedException error) when (campaign.Channel == CampaignChannel.Email)
+            {
+                await ApplyEmailDeliveryAcknowledgedExceptionAsync(campaign, recipient, error, cancellationToken);
+            }
             catch (Exception error)
             {
                 recipient.LastError = Safe(error.Message);
@@ -432,13 +437,122 @@ public sealed class CampaignAutomationService : IAsyncDisposable
                     recipient.NextAttemptAt = DateTimeOffset.Now.AddMinutes(recipient.AttemptCount == 1 ? 2 : 10);
                 }
             }
-            await _repository.SaveCampaignRecipientAsync(recipient, cancellationToken);
+            var finalizationToken = recipient.Status == CampaignRecipientStatus.DeliveryAcknowledged
+                ? CancellationToken.None
+                : cancellationToken;
+            await _repository.SaveCampaignRecipientAsync(recipient, finalizationToken);
             if (campaign.Channel == CampaignChannel.WhatsApp && recipient.Status == CampaignRecipientStatus.Sending)
                 await ReconcileRecipientAfterSendAsync(campaign.AccountId, recipient.ProviderMessageId, cancellationToken);
-            await CompleteCampaignIfFinishedAsync(campaign, cancellationToken);
+            await CompleteCampaignIfFinishedAsync(campaign, finalizationToken);
             CampaignChanged?.Invoke(this, EventArgs.Empty);
         }
         finally { _sendLock.Release(); }
+    }
+
+    private static void PrepareRecipientForNetworkSend(
+        WhatsAppCampaign campaign,
+        CampaignRecipient recipient)
+    {
+        recipient.Status = CampaignRecipientStatus.Sending;
+        recipient.AttemptCount++;
+        if (campaign.Channel != CampaignChannel.Email) return;
+
+        recipient.CustomerAttributionIsolated = true;
+        recipient.CustomerAttributionNote =
+            "邮件正在发送，客户归属将在 SMTP 结果与当前会话身份复核后确认；确认前不会作为原客户的 AI 分析来源。";
+    }
+
+    private async Task ApplyEmailSendResultAsync(
+        WhatsAppCampaign campaign,
+        CampaignRecipient recipient,
+        Lead eligibleLead,
+        EmailMessage sent,
+        CancellationToken cancellationToken)
+    {
+        recipient.ProviderMessageId = sent.ProviderMessageId;
+        recipient.SentAt = sent.Timestamp;
+        if (sent.ContextChangedAfterSend)
+        {
+            MarkEmailDeliveryAcknowledged(
+                recipient,
+                "SMTP 已确认接收，但发送期间客户归属发生变化；本次发送已与原客户隔离，请勿重复发送。",
+                sent.ContextChangeReason);
+            await TryLogEventAsync(
+                "campaign_email_delivery_acknowledged_unattributed",
+                null,
+                $"campaign_id={campaign.Id};recipient_id={recipient.Id};message_id={recipient.ProviderMessageId};reason={Safe(recipient.CustomerAttributionNote)}",
+                cancellationToken);
+            return;
+        }
+
+        recipient.Status = CampaignRecipientStatus.Sent;
+        recipient.LastError = "";
+        recipient.CustomerAttributionIsolated = false;
+        recipient.CustomerAttributionNote = "";
+        await TryLogEventAsync(
+            "campaign_message_sent",
+            eligibleLead.Id,
+            $"campaign_id={campaign.Id};channel=Email;recipient_id={recipient.Id};message_id={recipient.ProviderMessageId}",
+            cancellationToken);
+    }
+
+    private async Task ApplyEmailDeliveryAcknowledgedExceptionAsync(
+        WhatsAppCampaign campaign,
+        CampaignRecipient recipient,
+        EmailDeliveryAcknowledgedException error,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(error.ProviderMessageId))
+            recipient.ProviderMessageId = error.ProviderMessageId.Trim();
+        recipient.SentAt = DateTimeOffset.Now;
+        MarkEmailDeliveryAcknowledged(
+            recipient,
+            "SMTP 已确认接收，但本地发送记录尚未保存完成；已作为不可重试终态计入发送限额，请勿重复发送。",
+            error.InnerException?.Message);
+        await TryLogEventAsync(
+            "campaign_email_delivery_acknowledged_persistence_pending",
+            null,
+            $"campaign_id={campaign.Id};recipient_id={recipient.Id};message_id={recipient.ProviderMessageId};reason={Safe(recipient.CustomerAttributionNote)}",
+            cancellationToken);
+    }
+
+    private static void MarkEmailDeliveryAcknowledged(
+        CampaignRecipient recipient,
+        string message,
+        string? detail)
+    {
+        recipient.Status = CampaignRecipientStatus.DeliveryAcknowledged;
+        recipient.CustomerAttributionIsolated = true;
+        recipient.CustomerAttributionNote = string.IsNullOrWhiteSpace(detail)
+            ? message
+            : $"{message} 原因：{Safe(detail)}";
+        recipient.LastError = recipient.CustomerAttributionNote;
+    }
+
+    private async Task TryLogEventAsync(
+        string eventType,
+        string? leadId,
+        string detail,
+        CancellationToken cancellationToken)
+    {
+        try { await _repository.LogEventAsync(eventType, leadId, null, detail, cancellationToken); }
+        catch { /* An audit write failure must never downgrade an SMTP-acknowledged delivery into a retryable send. */ }
+    }
+
+    private async Task<int> CountCampaignMessagesConsumingLimitAsync(
+        string accountId,
+        DateTimeOffset since,
+        CancellationToken cancellationToken)
+    {
+        var count = await _repository.CountCampaignMessagesSentAsync(accountId, since, cancellationToken);
+        foreach (var campaign in await _repository.GetCampaignsAsync(accountId, cancellationToken))
+        {
+            count += (await _repository.GetCampaignRecipientsAsync(campaign.Id, cancellationToken))
+                .Count(recipient => recipient.Status == CampaignRecipientStatus.DeliveryAcknowledged
+                    && recipient.SentAt is not null
+                    && recipient.SentAt >= since);
+        }
+        return count;
     }
 
     private async Task ReconcileRecipientAfterSendAsync(string accountId, string providerMessageId, CancellationToken cancellationToken)
@@ -692,17 +806,17 @@ public sealed class CampaignAutomationService : IAsyncDisposable
             nextPosition);
     }
 
-    private static bool IsTerminal(CampaignRecipientStatus status) => status is CampaignRecipientStatus.Sent or CampaignRecipientStatus.Failed or CampaignRecipientStatus.Skipped or CampaignRecipientStatus.Cancelled;
+    private static bool IsTerminal(CampaignRecipientStatus status) => status is CampaignRecipientStatus.Sent or CampaignRecipientStatus.DeliveryAcknowledged or CampaignRecipientStatus.Failed or CampaignRecipientStatus.Skipped or CampaignRecipientStatus.Cancelled;
 
     private async Task CompleteCampaignIfFinishedAsync(WhatsAppCampaign campaign, CancellationToken cancellationToken)
     {
         var recipients = await _repository.GetCampaignRecipientsAsync(campaign.Id, cancellationToken);
-        if (recipients.Count > 0 && recipients.All(x => x.Status is CampaignRecipientStatus.Sent or CampaignRecipientStatus.Skipped or CampaignRecipientStatus.Failed or CampaignRecipientStatus.Cancelled))
+        if (recipients.Count > 0 && recipients.All(x => x.Status is CampaignRecipientStatus.Sent or CampaignRecipientStatus.DeliveryAcknowledged or CampaignRecipientStatus.Skipped or CampaignRecipientStatus.Failed or CampaignRecipientStatus.Cancelled))
         {
             if (campaign.Status == CampaignStatus.Completed) return;
             campaign.Status = CampaignStatus.Completed; campaign.PauseReason = "";
             await _repository.SaveCampaignAsync(campaign, cancellationToken);
-            await _repository.LogEventAsync("campaign_completed", null, null, $"campaign_id={campaign.Id};channel={campaign.Channel};sent={recipients.Count(x => x.Status == CampaignRecipientStatus.Sent)}", cancellationToken);
+            await _repository.LogEventAsync("campaign_completed", null, null, $"campaign_id={campaign.Id};channel={campaign.Channel};sent={recipients.Count(x => x.Status == CampaignRecipientStatus.Sent)};delivery_acknowledged={recipients.Count(x => x.Status == CampaignRecipientStatus.DeliveryAcknowledged)}", cancellationToken);
         }
     }
 

@@ -20,6 +20,7 @@ public sealed class LeadScoringService
         lead.Score = 0;
         lead.Grade = "D";
         lead.AnalysisContractVersion = 0;
+        lead.AnalysisDependencyHash = "";
         lead.BaseProfileScore = 0;
         lead.BehaviorSignalScore = 0;
         lead.ScoreBreakdown = [];

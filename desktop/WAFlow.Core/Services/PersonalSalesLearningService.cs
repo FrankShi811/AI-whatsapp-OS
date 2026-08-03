@@ -262,7 +262,7 @@ public sealed class PersonalSalesLearningService
         var normalized = NormalizeChannel(channel);
         if (normalized is "whatsapp" or "manual_action")
         {
-            var message = (await _repository.GetWhatsAppMessagesForLeadAsync(lead, 5_000, cancellationToken))
+            var message = (await _repository.GetWhatsAppMessagesForCustomerAsync(lead.Id, 5_000, cancellationToken))
                 .Where(item => item.Direction == WhatsAppMessageDirection.Incoming
                     && !item.IsStatusUpdate
                     && !item.IsRevoked

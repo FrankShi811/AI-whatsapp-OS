@@ -9,11 +9,22 @@ public sealed record CustomerSuccessAgentRunCompletedEvent(
     string ConversationId,
     CustomerSuccessRunStatus Status);
 
+public interface ICustomerSuccessMessageSender
+{
+    Task<JsonElement> SendTextAsync(
+        string accountId,
+        string phone,
+        string text,
+        CancellationToken cancellationToken = default);
+}
+
 public sealed class CustomerSuccessAgentCoordinator : IDisposable
 {
+    private const string ContextChangedMessage = "上下文已变化，请重新生成";
+
     private readonly LocalRepository _repository;
     private readonly WhatsAppSyncService _sync;
-    private readonly WhatsAppConnectionManager _connections;
+    private readonly ICustomerSuccessMessageSender _connections;
     private readonly CustomerSuccessAgentService _agent;
     private readonly CancellationTokenSource _shutdown = new();
 
@@ -22,7 +33,7 @@ public sealed class CustomerSuccessAgentCoordinator : IDisposable
     public CustomerSuccessAgentCoordinator(
         LocalRepository repository,
         WhatsAppSyncService sync,
-        WhatsAppConnectionManager connections,
+        ICustomerSuccessMessageSender connections,
         CustomerSuccessAgentService agent)
     {
         _repository = repository;
@@ -99,6 +110,10 @@ public sealed class CustomerSuccessAgentCoordinator : IDisposable
 
     private async Task HandleAsync(WhatsAppMessage message, CancellationToken cancellationToken)
     {
+        CustomerSuccessAgentRunResult? result = null;
+        var expectedCustomerId = "";
+        var transportAcknowledged = false;
+        var committedCustomerId = "";
         try
         {
             var conversation = (await _repository.GetWhatsAppConversationsAsync(message.AccountId, cancellationToken))
@@ -108,8 +123,9 @@ public sealed class CustomerSuccessAgentCoordinator : IDisposable
             if (state?.Mode is not ConversationAgentMode.CopilotActive and not ConversationAgentMode.AutoActive &&
                 state?.Mode is not ConversationAgentMode.HumanRequired and not ConversationAgentMode.HumanActive and not ConversationAgentMode.ResumeReview)
                 return;
+            expectedCustomerId = state.CustomerId;
             var requestedMode = state.Mode;
-            var result = await _agent.AnalyzeAsync(
+            result = await _agent.AnalyzeAsync(
                 message.AccountId, message.ConversationId, conversation.Phone, conversation.DisplayName,
                 sourceMessageId: message.Id,
                 trigger: CustomerSuccessRunTrigger.IncomingAutomation,
@@ -119,8 +135,11 @@ public sealed class CustomerSuccessAgentCoordinator : IDisposable
                 var status = requestedMode is ConversationAgentMode.HumanRequired or ConversationAgentMode.HumanActive or ConversationAgentMode.ResumeReview
                     ? CustomerSuccessRunStatus.HumanRequired
                     : CustomerSuccessRunStatus.Blocked;
-                await _agent.UpdateRunOutcomeAsync(
-                    message.AccountId, message.ConversationId, status,
+                await TryUpdateRunOutcomeAsync(
+                    result,
+                    expectedCustomerId,
+                    message,
+                    status,
                     string.IsNullOrWhiteSpace(result.BlockReason) ? "本轮没有生成回复。" : result.BlockReason,
                     cancellationToken: cancellationToken);
                 RaiseRunCompleted(message, status);
@@ -129,8 +148,11 @@ public sealed class CustomerSuccessAgentCoordinator : IDisposable
 
             if (result.Handoff is not null && requestedMode != ConversationAgentMode.AutoActive)
             {
-                await _agent.UpdateRunOutcomeAsync(
-                    message.AccountId, message.ConversationId, CustomerSuccessRunStatus.HumanRequired,
+                await TryUpdateRunOutcomeAsync(
+                    result,
+                    expectedCustomerId,
+                    message,
+                    CustomerSuccessRunStatus.HumanRequired,
                     "检测到高风险问题，协作草稿未发送，已转人工处理。",
                     cancellationToken: cancellationToken);
                 RaiseRunCompleted(message, CustomerSuccessRunStatus.HumanRequired);
@@ -151,43 +173,139 @@ public sealed class CustomerSuccessAgentCoordinator : IDisposable
                 var detail = string.IsNullOrWhiteSpace(result.BlockReason)
                     ? "自动回复未通过账号锁或安全校验，消息未发送。"
                     : result.BlockReason;
-                await _agent.UpdateRunOutcomeAsync(
-                    message.AccountId, message.ConversationId, CustomerSuccessRunStatus.Blocked, detail,
+                await TryUpdateRunOutcomeAsync(
+                    result,
+                    expectedCustomerId,
+                    message,
+                    CustomerSuccessRunStatus.Blocked,
+                    detail,
                     cancellationToken: cancellationToken);
                 RaiseRunCompleted(message, CustomerSuccessRunStatus.Blocked);
                 return;
             }
-            var response = await _connections.SendTextAsync(message.AccountId, conversation.Phone, result.Decision.ReplyText, cancellationToken);
+            if (result.ContextToken is null)
+                throw new InvalidOperationException(ContextChangedMessage);
+            if (shouldSendHolding)
+                await EnsureHoldingContextCurrentAsync(result, message, cancellationToken);
+            var capturedIdentityLink = await _repository.GetWhatsAppIdentityLinkAsync(
+                result.ContextToken.AccountId,
+                result.ContextToken.ConversationId,
+                cancellationToken);
+            if (capturedIdentityLink is null || !capturedIdentityLink.IsActive)
+                throw new InvalidOperationException(ContextChangedMessage);
+            var acknowledgedSendBindingToken = BuildAcknowledgedSendBindingToken(capturedIdentityLink);
+            var verifiedConversation = await _agent.EnsureRunContextCurrentAsync(
+                result.ContextToken,
+                requireAutoLock: !shouldSendHolding,
+                requireProcessedState: true,
+                cancellationToken);
+            var response = await _connections.SendTextAsync(
+                message.AccountId,
+                verifiedConversation.Phone,
+                result.Decision.ReplyText,
+                cancellationToken);
             var providerMessageId = ReadProviderId(response);
+            var targetVerified = ReadBool(response, "targetVerified");
+            var providerStatus = ReadNumericStatus(response);
             if (string.IsNullOrWhiteSpace(providerMessageId))
                 throw new InvalidOperationException("WhatsApp 未返回服务端消息 ID，AI 回复未确认发出。");
-            if (!ReadBool(response, "targetVerified"))
+            if (!targetVerified)
                 throw new InvalidOperationException("WhatsApp 未确认目标联系人，AI 回复未发出。");
-            var providerStatus = ReadNumericStatus(response);
-            var confirmedByServer = providerStatus is >= 2 and <= 4;
-            if (shouldSendHolding && result.AgentState is not null)
+            transportAcknowledged = true;
+
+            var postSendContextCurrent = true;
+            try
             {
-                result.AgentState.LastHoldingReplyMessageId = providerMessageId;
-                await _repository.UpsertConversationAgentStateAsync(result.AgentState, cancellationToken);
+                if (shouldSendHolding)
+                    await EnsureHoldingContextCurrentAsync(result, message, CancellationToken.None);
+                await _agent.EnsureRunContextCurrentAsync(
+                    result.ContextToken,
+                    requireAutoLock: !shouldSendHolding,
+                    requireProcessedState: true,
+                    CancellationToken.None);
             }
-            if (result.Decision.KnowledgeCitations.Count > 0)
+            catch (InvalidOperationException error) when (error.Message == ContextChangedMessage)
             {
-                foreach (var citation in result.Decision.KnowledgeCitations)
+                postSendContextCurrent = false;
+            }
+            catch (OperationCanceledException)
+            {
+                postSendContextCurrent = false;
+            }
+            catch (Exception)
+            {
+                postSendContextCurrent = false;
+            }
+
+            var acknowledgedAt = ReadTimestamp(response) ?? DateTimeOffset.Now;
+            var messageStatus = WhatsAppStatusFromNumeric(providerStatus);
+            var acknowledgedCommit = await _repository.PersistAcknowledgedOutgoingWhatsAppAsync(
+                new WhatsAppConversation
                 {
-                    await _repository.SaveKnowledgeUsageOutcomeAsync(new KnowledgeUsageOutcome
-                    {
-                        Id = $"{providerMessageId}:{citation.ChunkId}",
-                        RetrievalLogId = result.Decision.KnowledgeRetrievalId,
-                        ChunkId = citation.ChunkId,
-                        CustomerId = result.Context?.CustomerId ?? "",
-                        SourceMessageId = providerMessageId,
-                        ActuallySent = confirmedByServer,
-                        ObservationNote = confirmedByServer
-                            ? "知识辅助回复已由 WhatsApp 服务端确认；后续回复和阶段结果需另行观察。"
-                            : "已取得消息 ID，但服务端状态尚未确认；不计入真实发送样本。"
-                    }, cancellationToken);
-                }
+                    Id = verifiedConversation.Id,
+                    AccountId = verifiedConversation.AccountId,
+                    Jid = verifiedConversation.Jid,
+                    Phone = verifiedConversation.Phone,
+                    IsGroup = verifiedConversation.IsGroup,
+                    DisplayName = verifiedConversation.DisplayName,
+                    LastMessage = result.Decision.ReplyText,
+                    LastMessageAt = acknowledgedAt,
+                    UnreadCount = verifiedConversation.UnreadCount,
+                    LastReadAt = verifiedConversation.LastReadAt,
+                    IsPinned = verifiedConversation.IsPinned,
+                    PinnedAt = verifiedConversation.PinnedAt
+                },
+                new WhatsAppMessage
+                {
+                    Id = $"{message.AccountId}:{providerMessageId}",
+                    ProviderMessageId = providerMessageId,
+                    AccountId = message.AccountId,
+                    ConversationId = message.ConversationId,
+                    Jid = verifiedConversation.Jid,
+                    Phone = verifiedConversation.Phone,
+                    Direction = WhatsAppMessageDirection.Outgoing,
+                    Status = messageStatus,
+                    Kind = "text",
+                    Body = result.Decision.ReplyText,
+                    Timestamp = acknowledgedAt,
+                    StatusUpdatedAt = acknowledgedAt,
+                    DeliveredAt = messageStatus is WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read
+                        ? acknowledgedAt
+                        : null,
+                    ReadAt = messageStatus == WhatsAppMessageStatus.Read ? acknowledgedAt : null,
+                    FailedAt = messageStatus == WhatsAppMessageStatus.Failed ? acknowledgedAt : null,
+                    Source = shouldSendHolding ? "customer_success_holding" : "customer_success_auto"
+                },
+                result.ContextToken.CustomerId,
+                acknowledgedSendBindingToken,
+                postSendContextCurrent,
+                updateLeadConnection: providerStatus is >= 2 and <= 4,
+                expectedCustomerIdentityHash: result.ContextToken.CustomerIdentityHash,
+                expectedActiveFactSetToken: result.ContextToken.ActiveFactSetToken,
+                expectedRunContextToken: result.ContextToken.RunToken,
+                expectedConversationTargetToken: result.ContextToken.ConversationTargetToken,
+                expectedSourceMessageId: result.ContextToken.SourceMessageId,
+                expectedSourceMessageToken: result.ContextToken.SourceMessageToken,
+                cancellationToken: CancellationToken.None);
+            committedCustomerId = acknowledgedCommit.AttributedCustomerId;
+            if (acknowledgedCommit.ContextChanged ||
+                string.IsNullOrWhiteSpace(acknowledgedCommit.AttributedCustomerId) ||
+                !acknowledgedCommit.AttributedCustomerId.Equals(
+                    result.ContextToken.CustomerId,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                await LogUnattributedAcknowledgedContextChangeAsync(
+                    message,
+                    result,
+                    acknowledgedCommit.ContextChangeReason,
+                    providerMessageId,
+                    providerStatus,
+                    targetVerified);
+                RaiseRunCompleted(message, CustomerSuccessRunStatus.AutoReplyPending);
+                return;
             }
+            var attributedCustomerId = acknowledgedCommit.AttributedCustomerId;
+            var confirmedByServer = providerStatus is >= 2 and <= 4;
             var runStatus = shouldSendHolding
                 ? CustomerSuccessRunStatus.HumanRequired
                 : confirmedByServer
@@ -200,26 +318,121 @@ public sealed class CustomerSuccessAgentCoordinator : IDisposable
                 : confirmedByServer
                     ? "自动回复已通过目标校验，并由 WhatsApp 服务端确认。"
                     : "自动回复已取得消息 ID，等待 WhatsApp 服务端状态确认。";
-            await _agent.UpdateRunOutcomeAsync(
-                message.AccountId, message.ConversationId, runStatus, runDetail, providerMessageId,
-                cancellationToken: cancellationToken);
+            var updatedState = await _repository.TryUpdateConversationAgentRunOutcomeAsync(
+                message.AccountId,
+                message.ConversationId,
+                attributedCustomerId,
+                result.ContextToken.RunToken,
+                runStatus,
+                runDetail,
+                providerMessageId,
+                holdingReplyMessageId: shouldSendHolding ? providerMessageId : "",
+                cancellationToken: CancellationToken.None);
+            if (updatedState is null)
+            {
+                await LogContextChangedAuditAsync(
+                    message,
+                    result,
+                    "post_send_state_claim_rejected",
+                    "发送后状态提交时检测到客户重绑定或新一轮已接管；保留发送审计，不覆盖当前客户状态。",
+                    providerMessageId,
+                    providerStatus,
+                    targetVerified,
+                    CancellationToken.None);
+                RaiseRunCompleted(message, CustomerSuccessRunStatus.AutoReplyPending);
+                return;
+            }
+            if (result.Decision.KnowledgeCitations.Count > 0)
+            {
+                foreach (var citation in result.Decision.KnowledgeCitations)
+                {
+                    await _repository.SaveKnowledgeUsageOutcomeAsync(new KnowledgeUsageOutcome
+                    {
+                        Id = $"{providerMessageId}:{citation.ChunkId}",
+                        RetrievalLogId = result.Decision.KnowledgeRetrievalId,
+                        ChunkId = citation.ChunkId,
+                        CustomerId = attributedCustomerId,
+                        SourceMessageId = providerMessageId,
+                        ActuallySent = confirmedByServer,
+                        ObservationNote = confirmedByServer
+                            ? "知识辅助回复已由 WhatsApp 服务端确认；后续回复和阶段结果需另行观察。"
+                            : "已取得消息 ID，但服务端状态尚未确认；不计入真实发送样本。"
+                    }, CancellationToken.None);
+                }
+            }
             await _repository.LogEventAsync(
                 confirmedByServer
                     ? shouldSendHolding ? "customer_success_holding_reply_sent" : "customer_success_auto_reply_sent"
                     : shouldSendHolding ? "customer_success_holding_reply_pending" : "customer_success_auto_reply_pending",
-                result.Context?.CustomerId, null,
+                attributedCustomerId, null,
                 Json.Serialize(new { message.AccountId, message.ConversationId, sourceMessageId = message.Id, providerMessageId, providerStatus, targetVerified = true }),
-                cancellationToken);
+                CancellationToken.None);
             RaiseRunCompleted(message, runStatus);
         }
         catch (Exception ex)
         {
-            await _agent.UpdateRunOutcomeAsync(
-                message.AccountId, message.ConversationId, CustomerSuccessRunStatus.Failed,
-                "Agent 处理失败，未自动发送消息。", error: ex.Message,
+            if (transportAcknowledged)
+            {
+                if (!string.IsNullOrWhiteSpace(committedCustomerId))
+                {
+                    try
+                    {
+                        await _repository.LogEventAsync(
+                            "customer_success_ack_postprocess_failed",
+                            committedCustomerId,
+                            null,
+                            Json.Serialize(new
+                            {
+                                message.AccountId,
+                                message.ConversationId,
+                                sourceMessageId = message.Id,
+                                committedCustomerId,
+                                error = ex.Message
+                            }),
+                            CancellationToken.None);
+                    }
+                    catch
+                    {
+                        // The transport ACK must remain non-retryable even if local diagnostics also fail.
+                    }
+                }
+                RaiseRunCompleted(message, CustomerSuccessRunStatus.AutoReplyPending);
+                return;
+            }
+            if (ex.Message == ContextChangedMessage)
+            {
+                await LogContextChangedAuditAsync(
+                    message,
+                    result,
+                    "pre_send_context_changed",
+                    "客户上下文已变化，本轮已关闭发送且未覆盖当前客户状态。",
+                    cancellationToken: CancellationToken.None);
+                RaiseRunCompleted(message, CustomerSuccessRunStatus.Failed);
+                return;
+            }
+            var outcomeUpdated = await TryUpdateRunOutcomeAsync(
+                result,
+                expectedCustomerId,
+                message,
+                CustomerSuccessRunStatus.Failed,
+                "Agent 处理失败，自动发送未获确认。",
+                error: ex.Message,
                 cancellationToken: CancellationToken.None);
+            if (!outcomeUpdated &&
+                (result?.ContextToken is not null || !string.IsNullOrWhiteSpace(expectedCustomerId)))
+            {
+                await LogContextChangedAuditAsync(
+                    message,
+                    result,
+                    "failure_outcome_state_claim_rejected",
+                    "失败状态提交时检测到客户重绑定或新一轮已接管；未覆盖当前客户状态。",
+                    cancellationToken: CancellationToken.None);
+                RaiseRunCompleted(message, CustomerSuccessRunStatus.Failed);
+                return;
+            }
             await _repository.SaveAgentTurnLogAsync(new AgentTurnLog
             {
+                CustomerId = result?.ContextToken?.CustomerId ?? expectedCustomerId,
                 AccountId = message.AccountId,
                 ConversationId = message.ConversationId,
                 SourceMessageId = message.Id,
@@ -227,6 +440,127 @@ public sealed class CustomerSuccessAgentCoordinator : IDisposable
                 Decision = "auto_reply_failed"
             }, CancellationToken.None);
             RaiseRunCompleted(message, CustomerSuccessRunStatus.Failed);
+        }
+    }
+
+    private async Task<bool> TryUpdateRunOutcomeAsync(
+        CustomerSuccessAgentRunResult? result,
+        string fallbackCustomerId,
+        WhatsAppMessage message,
+        CustomerSuccessRunStatus status,
+        string detail,
+        string providerMessageId = "",
+        string error = "",
+        CancellationToken cancellationToken = default)
+    {
+        var customerId = result?.ContextToken?.CustomerId ?? fallbackCustomerId;
+        if (string.IsNullOrWhiteSpace(customerId)) return false;
+        return await _repository.TryUpdateConversationAgentRunOutcomeAsync(
+            message.AccountId,
+            message.ConversationId,
+            customerId,
+            result?.ContextToken?.RunToken ?? "",
+            status,
+            detail,
+            providerMessageId,
+            error,
+            cancellationToken: cancellationToken) is not null;
+    }
+
+    private async Task EnsureHoldingContextCurrentAsync(
+        CustomerSuccessAgentRunResult result,
+        WhatsAppMessage message,
+        CancellationToken cancellationToken)
+    {
+        var customerId = result.ContextToken?.CustomerId ?? throw new InvalidOperationException(ContextChangedMessage);
+        var currentState = await _repository.GetConversationAgentStateAsync(
+            message.AccountId,
+            message.ConversationId,
+            cancellationToken);
+        var currentHandoff = await _repository.GetOpenHumanHandoffAsync(customerId, cancellationToken);
+        if (currentState?.Mode != ConversationAgentMode.HumanRequired ||
+            currentHandoff is null || result.Handoff is null ||
+            !currentHandoff.Id.Equals(result.Handoff.Id, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(ContextChangedMessage);
+    }
+
+    private async Task LogContextChangedAuditAsync(
+        WhatsAppMessage message,
+        CustomerSuccessAgentRunResult? result,
+        string decision,
+        string detail,
+        string providerMessageId = "",
+        int providerStatus = 0,
+        bool targetVerified = false,
+        CancellationToken cancellationToken = default)
+    {
+        var token = result?.ContextToken;
+        await _repository.LogEventAsync(
+            "customer_success_context_changed_fail_closed",
+            token?.CustomerId,
+            null,
+            Json.Serialize(new
+            {
+                message.AccountId,
+                message.ConversationId,
+                sourceMessageId = message.Id,
+                token?.RunToken,
+                token?.IdentityLinkId,
+                token?.IdentityLinkToken,
+                token?.CustomerIdentityHash,
+                token?.ActiveFactSetToken,
+                providerMessageId,
+                providerStatus,
+                targetVerified,
+                decision,
+                detail
+            }),
+            cancellationToken);
+        await _repository.SaveAgentTurnLogAsync(new AgentTurnLog
+        {
+            CustomerId = token?.CustomerId ?? "",
+            AccountId = message.AccountId,
+            ConversationId = message.ConversationId,
+            SourceMessageId = message.Id,
+            Decision = decision,
+            Error = detail
+        }, cancellationToken);
+    }
+
+    private async Task LogUnattributedAcknowledgedContextChangeAsync(
+        WhatsAppMessage message,
+        CustomerSuccessAgentRunResult result,
+        string detail,
+        string providerMessageId,
+        int providerStatus,
+        bool targetVerified)
+    {
+        try
+        {
+            await _repository.LogEventAsync(
+                "customer_success_context_changed_fail_closed",
+                null,
+                null,
+                Json.Serialize(new
+                {
+                    message.AccountId,
+                    message.ConversationId,
+                    sourceMessageId = message.Id,
+                    result.ContextToken?.RunToken,
+                    providerMessageId,
+                    providerStatus,
+                    targetVerified,
+                    decision = "post_send_context_changed_unattributed",
+                    detail = string.IsNullOrWhiteSpace(detail)
+                        ? "WhatsApp 已确认发送，但客户上下文已变化；消息永久按未归属保存。"
+                        : detail
+                }),
+                CancellationToken.None);
+        }
+        catch
+        {
+            // The final-unbound ACK remains authoritative if this global,
+            // deliberately customer-free diagnostic cannot be written.
         }
     }
 
@@ -259,6 +593,45 @@ public sealed class CustomerSuccessAgentCoordinator : IDisposable
             ? numeric
             : 1;
     }
+
+    private static DateTimeOffset? ReadTimestamp(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Object ||
+            !value.TryGetProperty("timestamp", out var item)) return null;
+        if (item.ValueKind == JsonValueKind.String &&
+            DateTimeOffset.TryParse(item.GetString(), out var parsed)) return parsed;
+        if (item.ValueKind != JsonValueKind.Number || !item.TryGetInt64(out var numeric)) return null;
+        try
+        {
+            return numeric > 10_000_000_000
+                ? DateTimeOffset.FromUnixTimeMilliseconds(numeric)
+                : DateTimeOffset.FromUnixTimeSeconds(numeric);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return null;
+        }
+    }
+
+    private static WhatsAppMessageStatus WhatsAppStatusFromNumeric(int status) => status switch
+    {
+        <= 0 => WhatsAppMessageStatus.Failed,
+        1 => WhatsAppMessageStatus.Pending,
+        2 => WhatsAppMessageStatus.Sent,
+        3 => WhatsAppMessageStatus.Delivered,
+        _ => WhatsAppMessageStatus.Read
+    };
+
+    private static string BuildAcknowledgedSendBindingToken(WhatsAppIdentityLink link) => string.Join("|",
+        link.Id,
+        link.CustomerId,
+        link.ContactJid,
+        link.ContactLid,
+        link.PhoneIdentityId,
+        link.MatchResult,
+        link.MatchMethod,
+        link.ManuallyConfirmed,
+        link.UpdatedAt.ToUniversalTime().ToString("O"));
 
     public void Dispose()
     {

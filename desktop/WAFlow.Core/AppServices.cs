@@ -82,7 +82,7 @@ public sealed class AppServices
             Imports);
         CustomerAnalysis = new CustomerAnalysisService(Repository, DeepSeek, KnowledgeRetrieval, CustomerBrain);
         CustomerReportExports = new CustomerReportExportService(Repository);
-        CustomerActions = new CustomerActionLifecycleService(Repository);
+        CustomerActions = new CustomerActionLifecycleService(Repository, CustomerBrain);
         SalesLearning = new PersonalSalesLearningService(Repository);
         ConversationAssistant = new ConversationAssistantService(Repository, DeepSeek, SalesLearning, KnowledgeRetrieval, CustomerBrain);
         WhatsAppTranslation = new WhatsAppTranslationService(Repository, DeepSeek);
@@ -97,7 +97,7 @@ public sealed class AppServices
             KnowledgeRetrieval,
             CustomerBrain);
         CustomerSuccessCoordinator = new CustomerSuccessAgentCoordinator(Repository, WhatsAppSync, WhatsApp, CustomerSuccessAgent);
-        TodayBrief = new TodayBriefService(Repository, SalesLearning);
+        TodayBrief = new TodayBriefService(Repository, SalesLearning, CustomerBrain);
         DashboardUnreadDigest = new DashboardUnreadDigestService(Repository, DeepSeek);
     }
 

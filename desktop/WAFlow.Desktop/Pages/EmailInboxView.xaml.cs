@@ -24,9 +24,20 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     private bool _loading;
     private bool _isNewEmail;
     private bool _aiAssisting;
+    private bool _sending;
+    private bool _conversationLoading;
     private bool _suppressSelectionChanged;
     private bool _customerDrawerExpanded = true;
+    private int _conversationSelectionGeneration;
+    private int _emailDraftGeneration;
     private int _customerBrainRefreshGeneration;
+    private string _emailDraftAccountId = "";
+    private string _emailDraftConversationId = "";
+    private string _emailDraftCustomerId = "";
+    private string _emailDraftRecipient = "";
+    private string _emailDraftDependencyHash = "";
+    private bool _emailDraftWasNewEmail;
+    private EmailComposerAiBinding? _appliedEmailAiBinding;
     private readonly object _refreshLock = new();
     private Task _activeRefresh = Task.CompletedTask;
     private bool _refreshRequestedAgain;
@@ -169,7 +180,9 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         _suppressSelectionChanged = true;
         ConversationList.SelectedItem = null;
         _suppressSelectionChanged = false;
+        ++_conversationSelectionGeneration;
         _isNewEmail = true;
+        _conversationLoading = false;
         _conversation = null;
         _lead = null;
         _messages.Clear();
@@ -190,7 +203,7 @@ public partial class EmailInboxView : UserControl, IRefreshableView
 
     private async void Sync_Click(object sender, RoutedEventArgs e)
     {
-        if (AccountBox.SelectedItem is not EmailAccount account) { MessageBox.Show("请先连接邮件账号。", "邮件 Inbox", MessageBoxButton.OK, MessageBoxImage.Information); return; }
+        if (AccountBox.SelectedItem is not EmailAccount account) { MessageBox.Show("请先连接邮件账号。", "邮件箱", MessageBoxButton.OK, MessageBoxImage.Information); return; }
         if (!_services.Email.HasLocalCredential(account.Id))
         {
             EmailSyncStatusText.Text = EmailService.LocalAuthorizationMessage(account);
@@ -221,9 +234,18 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     private async void AccountBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loading) return;
+        var account = AccountBox.SelectedItem as EmailAccount;
+        if (!_isNewEmail) ClearConversation();
+        else
+        {
+            ++_conversationSelectionGeneration;
+            ResetEmailAssistantResult();
+        }
         UpdateSelectedAccountAuthorizationStatus();
         await RefreshConversationsAsync();
-        if (_isNewEmail && AccountBox.SelectedItem is EmailAccount account)
+        if (account is null || AccountBox.SelectedItem is not EmailAccount currentAccount ||
+            !currentAccount.Id.Equals(account.Id, StringComparison.OrdinalIgnoreCase)) return;
+        if (_isNewEmail)
             ConversationSubtitle.Text = $"发件账号：{account.EmailAddress}";
         await UpdateEmailAssistantModelAsync();
         UpdateComposerState();
@@ -246,61 +268,204 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     {
         if (_suppressSelectionChanged) return;
         if (ConversationList.SelectedItem is not EmailConversationItem item) { ClearConversation(); return; }
+        var selectionGeneration = ++_conversationSelectionGeneration;
         var conversation = item.Conversation;
+        var accountId = conversation.AccountId;
+        var recipient = NormalizeEmailTarget(conversation.PeerEmail);
         _isNewEmail = false;
         _conversation = conversation;
-        _emailDraft = null;
-        if (IsVisible && item.Unread > 0)
-        {
-            item.MarkRead(DateTimeOffset.Now);
-            await _services.Repository.MarkEmailConversationReadAsync(conversation.Id);
-            DataChanged?.Invoke(this, EventArgs.Empty);
-        }
-        ConversationTitle.Text = conversation.DisplayName; ConversationSubtitle.Text = $"{conversation.PeerEmail} · {conversation.Subject}";
-        var messages = await Task.Run(async () =>
-            await _services.Repository.GetEmailMessagesAsync(conversation.Id));
-        _messages.ReplaceAll(messages);
+        _lead = null;
+        _conversationLoading = true;
+        _messages.Clear();
+        ResetEmailAssistantResult();
+        ResetCustomerIntelligenceSummary();
+        ConversationTitle.Text = conversation.DisplayName;
+        ConversationSubtitle.Text = $"{conversation.PeerEmail} · {conversation.Subject}";
         RecipientBox.Text = conversation.PeerEmail;
         RecipientBox.IsReadOnly = true;
         SubjectBox.Text = string.IsNullOrWhiteSpace(conversation.Subject) ? "" : conversation.Subject.StartsWith("Re:", StringComparison.OrdinalIgnoreCase) ? conversation.Subject : $"Re: {conversation.Subject}";
-        _lead = !string.IsNullOrWhiteSpace(conversation.LeadId) ? await _services.Repository.GetLeadAsync(conversation.LeadId) : await _services.Repository.GetLeadByEmailAsync(conversation.PeerEmail);
-        PopulateCustomer();
-        ResetEmailAssistantResult();
-        UpdateLeadIntelligenceSummary(_lead);
-        await UpdateCustomerBrainSummaryAsync(_lead);
         UpdateComposerState();
-        await Dispatcher.InvokeAsync(() => MessageScroll.ScrollToEnd());
+        try
+        {
+            if (IsVisible && item.Unread > 0)
+            {
+                item.MarkRead(DateTimeOffset.Now);
+                await _services.Repository.MarkEmailConversationReadAsync(conversation.Id);
+                if (!IsCurrentEmailTarget(selectionGeneration, accountId, conversation.Id, recipient, false)) return;
+                DataChanged?.Invoke(this, EventArgs.Empty);
+            }
+            var messages = await Task.Run(async () =>
+                await _services.Repository.GetEmailMessagesAsync(conversation.Id));
+            if (!IsCurrentEmailTarget(selectionGeneration, accountId, conversation.Id, recipient, false)) return;
+            var lead = await ResolveEmailLeadAsync(conversation, recipient);
+            if (!IsCurrentEmailTarget(selectionGeneration, accountId, conversation.Id, recipient, false)) return;
+            _messages.ReplaceAll(messages);
+            _lead = lead;
+            PopulateCustomer();
+            UpdateLeadIntelligenceSummary(_lead);
+            await UpdateCustomerBrainSummaryAsync(_lead);
+            if (!IsCurrentEmailTarget(selectionGeneration, accountId, conversation.Id, recipient, false)) return;
+            await Dispatcher.InvokeAsync(() => MessageScroll.ScrollToEnd());
+        }
+        finally
+        {
+            if (IsCurrentEmailTarget(selectionGeneration, accountId, conversation.Id, recipient, false))
+            {
+                _conversationLoading = false;
+                UpdateComposerState();
+            }
+        }
     }
+
+    private bool IsCurrentEmailTarget(
+        int selectionGeneration,
+        string accountId,
+        string? conversationId,
+        string recipient,
+        bool wasNewEmail)
+    {
+        if (selectionGeneration != _conversationSelectionGeneration ||
+            AccountBox.SelectedItem is not EmailAccount account ||
+            !account.Id.Equals(accountId, StringComparison.OrdinalIgnoreCase) ||
+            !NormalizeEmailTarget(RecipientBox.Text).Equals(recipient, StringComparison.OrdinalIgnoreCase)) return false;
+        if (wasNewEmail)
+            return _isNewEmail && string.IsNullOrWhiteSpace(conversationId) && ConversationList.SelectedItem is null;
+        return !_isNewEmail &&
+               ConversationList.SelectedItem is EmailConversationItem selected &&
+               selected.Id.Equals(conversationId, StringComparison.OrdinalIgnoreCase) &&
+               selected.Conversation.AccountId.Equals(accountId, StringComparison.OrdinalIgnoreCase) &&
+               _conversation is not null &&
+               _conversation.Id.Equals(conversationId, StringComparison.OrdinalIgnoreCase) &&
+               _conversation.AccountId.Equals(accountId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<Lead?> ResolveEmailLeadAsync(EmailConversation? conversation, string recipient)
+    {
+        if (conversation is not null)
+        {
+            var persisted = await _services.Repository.GetEmailConversationAsync(conversation.Id);
+            if (!string.IsNullOrWhiteSpace(persisted?.LeadId))
+                return await _services.Repository.GetLeadAsync(persisted.LeadId);
+        }
+        return await _services.Repository.GetLeadByEmailAsync(recipient);
+    }
+
+    private static string NormalizeEmailTarget(string? value) => (value ?? "").Trim().ToLowerInvariant();
 
     private async void Send_Click(object sender, RoutedEventArgs e)
     {
-        if (AccountBox.SelectedItem is not EmailAccount account)
+        if (_sending || AccountBox.SelectedItem is not EmailAccount account)
         {
-            MessageBox.Show("请先连接并选择一个发件邮箱。", "邮件发送", MessageBoxButton.OK, MessageBoxImage.Information);
+            if (!_sending) MessageBox.Show("请先连接并选择一个发件邮箱。", "邮件发送", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
+        var selectionGeneration = _conversationSelectionGeneration;
+        var conversation = _conversation;
+        var conversationId = conversation?.Id;
+        var wasNewEmail = _isNewEmail;
+        var recipient = NormalizeEmailTarget(RecipientBox.Text);
+        var subject = SubjectBox.Text;
+        var body = ComposerBox.Text;
+        var replyTo = wasNewEmail
+            ? null
+            : _messages.LastOrDefault(message => message.Direction == EmailMessageDirection.Incoming)?.ProviderMessageId;
+        bool IsCurrentTarget() =>
+            IsCurrentEmailTarget(selectionGeneration, account.Id, conversationId, recipient, wasNewEmail);
+        _sending = true;
         try
         {
-            SendButton.IsEnabled = false; SendButton.Content = "发送中…";
-            await ResolveRecipientContextAsync();
-            var replyTo = _isNewEmail
-                ? null
-                : _messages.LastOrDefault(message => message.Direction == EmailMessageDirection.Incoming)?.ProviderMessageId;
+            SendButton.Content = "发送中…";
+            UpdateComposerState();
+            var sendLead = await ResolveEmailLeadAsync(conversation, recipient);
+            if (!IsCurrentTarget()) return;
+            var appliedBinding = _appliedEmailAiBinding;
+            if (appliedBinding is not null &&
+                !IsCurrentAppliedEmailAiTarget(
+                    appliedBinding,
+                    account.Id,
+                    conversationId,
+                    recipient,
+                    wasNewEmail,
+                    sendLead?.Id ?? ""))
+            {
+                ComposerBox.Clear();
+                ResetEmailAssistantResult();
+                return;
+            }
+            if (appliedBinding is not null && !string.IsNullOrWhiteSpace(appliedBinding.CustomerId))
+            {
+                var dependency = await CustomerExternalFactPolicy.CaptureDependencyAsync(
+                    _services.Repository,
+                    appliedBinding.CustomerId,
+                    DateTimeOffset.Now);
+                if (!IsCurrentTarget() ||
+                    !ReferenceEquals(_appliedEmailAiBinding, appliedBinding) ||
+                    !IsCurrentAppliedEmailAiTarget(
+                        appliedBinding,
+                        account.Id,
+                        conversationId,
+                        recipient,
+                        wasNewEmail,
+                        sendLead?.Id ?? "") ||
+                    !dependency.Hash.Equals(appliedBinding.DependencyHash, StringComparison.Ordinal))
+                {
+                    if (IsCurrentTarget())
+                    {
+                        ComposerBox.Clear();
+                        ResetEmailAssistantResult();
+                    }
+                    return;
+                }
+            }
             var sent = await _services.Email.SendAsync(
                 account.Id,
-                RecipientBox.Text,
-                SubjectBox.Text,
-                ComposerBox.Text,
-                _lead?.Id,
-                replyTo);
+                recipient,
+                subject,
+                body,
+                sendLead?.Id,
+                replyTo,
+                explicitUnbound: wasNewEmail && sendLead is null,
+                expectedCustomerDependencyHash: appliedBinding?.DependencyHash ?? "");
+            DataChanged?.Invoke(this, EventArgs.Empty);
+            if (!IsCurrentTarget()) return;
+            if (sent.ContextChangedAfterSend)
+            {
+                ComposerBox.Clear();
+                ResetEmailAssistantResult();
+                EmailSyncStatusText.Text = "邮件服务器已确认发送；发送期间客户关联发生变化，本地记录已按未关联保存。请勿重复发送。";
+                await RefreshConversationsAsync();
+                if (AccountBox.SelectedItem is EmailAccount currentAccount &&
+                    currentAccount.Id.Equals(account.Id, StringComparison.OrdinalIgnoreCase))
+                    ConversationList.SelectedItem = _conversations.FirstOrDefault(item => item.Id == sent.ConversationId);
+                return;
+            }
+            await RefreshConversationsAsync();
+            if (!IsCurrentTarget()) return;
             _isNewEmail = false;
             ComposerBox.Clear();
-            await RefreshConversationsAsync();
+            ResetEmailAssistantResult();
             ConversationList.SelectedItem = _conversations.FirstOrDefault(item => item.Id == sent.ConversationId);
-            DataChanged?.Invoke(this, EventArgs.Empty);
         }
-        catch (Exception error) { MessageBox.Show(error.Message, "邮件发送失败", MessageBoxButton.OK, MessageBoxImage.Warning); }
-        finally { SendButton.Content = "发送邮件"; UpdateComposerState(); }
+        catch (EmailDeliveryAcknowledgedException error)
+        {
+            if (IsCurrentTarget())
+            {
+                ComposerBox.Clear();
+                ResetEmailAssistantResult();
+                EmailSyncStatusText.Text = error.Message;
+                MessageBox.Show(error.Message, "邮件已发送 · 请勿重试", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        catch (Exception error)
+        {
+            if (IsCurrentTarget()) MessageBox.Show(error.Message, "邮件发送失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _sending = false;
+            SendButton.Content = "发送邮件";
+            UpdateComposerState();
+        }
     }
 
     private async void SaveCustomer_Click(object sender, RoutedEventArgs e)
@@ -320,7 +485,7 @@ public partial class EmailInboxView : UserControl, IRefreshableView
                 Grade = "D",
                 Score = 0,
                 Stage = LeadStage.New,
-                Source = "邮件 Inbox"
+                Source = "邮件箱"
             };
             _lead.Name = NameBox.Text.Trim(); _lead.Email = CustomerEmailBox.Text.Trim();
             if (string.IsNullOrWhiteSpace(_lead.Name)) _lead.Name = email;
@@ -340,7 +505,9 @@ public partial class EmailInboxView : UserControl, IRefreshableView
             if (_conversation is not null)
             {
                 _conversation.LeadId = _lead.Id; _conversation.PeerName = _lead.DisplayName;
-                await _services.Repository.UpsertEmailConversationAsync(_conversation);
+                await _services.Repository.UpsertEmailConversationAsync(
+                    _conversation,
+                    allowBindingReplacement: true);
             }
             LinkStateText.Text = $"已关联：{_lead.Grade} 级 · {Labels.Stage(_lead.Stage)}";
             UpdateLeadIntelligenceSummary(_lead);
@@ -363,6 +530,8 @@ public partial class EmailInboxView : UserControl, IRefreshableView
 
     private void ClearConversation()
     {
+        ++_conversationSelectionGeneration;
+        _conversationLoading = false;
         _isNewEmail = false; _conversation = null; _lead = null; _emailDraft = null; _messages.Clear(); ConversationTitle.Text = "选择邮件会话"; ConversationSubtitle.Text = "";
         RecipientBox.Clear(); RecipientBox.IsReadOnly = true; SubjectBox.Clear(); ComposerBox.Clear(); EmailAiInstructionBox.Clear();
         NameBox.Clear(); CustomerEmailBox.Clear(); CountryBox.Clear(); OwnerBox.Clear(); TagsBox.Clear(); NotesBox.Clear(); LinkStateText.Text = "按邮箱自动匹配客户";
@@ -380,14 +549,29 @@ public partial class EmailInboxView : UserControl, IRefreshableView
 
     private void RecipientBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        if (IsInitialized) UpdateComposerState();
+        if (!IsInitialized) return;
+        if (_isNewEmail)
+        {
+            ++_conversationSelectionGeneration;
+            _lead = null;
+            ResetEmailAssistantResult();
+            ResetCustomerIntelligenceSummary();
+        }
+        UpdateComposerState();
     }
 
     private async Task ResolveRecipientContextAsync()
     {
-        var email = RecipientBox.Text.Trim();
+        if (AccountBox.SelectedItem is not EmailAccount account) return;
+        var selectionGeneration = _conversationSelectionGeneration;
+        var conversation = _conversation;
+        var conversationId = conversation?.Id;
+        var wasNewEmail = _isNewEmail;
+        var email = NormalizeEmailTarget(RecipientBox.Text);
         if (string.IsNullOrWhiteSpace(email)) return;
-        _lead = await _services.Repository.GetLeadByEmailAsync(email);
+        var lead = await ResolveEmailLeadAsync(conversation, email);
+        if (!IsCurrentEmailTarget(selectionGeneration, account.Id, conversationId, email, wasNewEmail)) return;
+        _lead = lead;
         PopulateCustomer();
         UpdateLeadIntelligenceSummary(_lead);
         await UpdateCustomerBrainSummaryAsync(_lead);
@@ -396,30 +580,76 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     private async void GenerateEmailDraft_Click(object sender, RoutedEventArgs e)
     {
         if (_aiAssisting || AccountBox.SelectedItem is not EmailAccount account) return;
+        var selectionGeneration = _conversationSelectionGeneration;
+        var conversation = _conversation;
+        var conversationId = conversation?.Id;
+        var wasNewEmail = _isNewEmail;
+        var recipient = NormalizeEmailTarget(RecipientBox.Text);
+        var instruction = EmailAiInstructionBox.Text;
+        var draftSubject = SubjectBox.Text;
+        var draftBody = ComposerBox.Text;
+        var draftGeneration = ++_emailDraftGeneration;
+        bool IsCurrentRun() =>
+            draftGeneration == _emailDraftGeneration &&
+            IsCurrentEmailTarget(selectionGeneration, account.Id, conversationId, recipient, wasNewEmail);
         try
         {
             _aiAssisting = true;
             GenerateEmailDraftButton.Content = "正在生成…";
             ComposerAiButton.Content = "分析中";
             UpdateComposerState();
-            await ResolveRecipientContextAsync();
-            _emailDraft = await _services.EmailAssistant.AnalyzeAsync(
+            var lead = await ResolveEmailLeadAsync(conversation, recipient);
+            if (!IsCurrentRun()) return;
+            var customerId = lead?.Id ?? "";
+            var dependency = lead is null
+                ? null
+                : await CustomerExternalFactPolicy.CaptureDependencyAsync(
+                    _services.Repository,
+                    lead.Id,
+                    DateTimeOffset.Now);
+            if (!IsCurrentRun()) return;
+            _lead = lead;
+            PopulateCustomer();
+            UpdateLeadIntelligenceSummary(_lead);
+            var result = await _services.EmailAssistant.AnalyzeAsync(
                 account.Id,
-                _conversation?.Id,
-                RecipientBox.Text,
-                _lead,
-                EmailAiInstructionBox.Text,
-                SubjectBox.Text,
-                ComposerBox.Text);
+                conversationId,
+                recipient,
+                lead,
+                instruction,
+                draftSubject,
+                draftBody);
+            if (!IsCurrentRun()) return;
+            var currentLead = await ResolveEmailLeadAsync(conversation, recipient);
+            if (!IsCurrentRun() ||
+                !string.Equals(currentLead?.Id ?? "", customerId, StringComparison.OrdinalIgnoreCase)) return;
+            if (lead is not null)
+            {
+                var currentDependency = await CustomerExternalFactPolicy.CaptureDependencyAsync(
+                    _services.Repository,
+                    lead.Id,
+                    DateTimeOffset.Now);
+                if (!IsCurrentRun() || dependency is null ||
+                    !currentDependency.Hash.Equals(dependency.Hash, StringComparison.Ordinal)) return;
+            }
+            _emailDraft = result;
+            _emailDraftAccountId = account.Id;
+            _emailDraftConversationId = conversationId ?? "";
+            _emailDraftCustomerId = customerId;
+            _emailDraftRecipient = recipient;
+            _emailDraftDependencyHash = dependency?.Hash ?? "";
+            _emailDraftWasNewEmail = wasNewEmail;
             ShowEmailAssistantResult(_emailDraft);
             UseEmailDraftButton.IsEnabled = true;
         }
         catch (DeepSeekException error)
         {
+            if (!IsCurrentRun()) return;
             MessageBox.Show(EmailAssistantErrorMessage(error), "AI 邮件助理", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception error)
         {
+            if (!IsCurrentRun()) return;
             MessageBox.Show(error.Message, "AI 邮件助理", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
@@ -431,13 +661,38 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         }
     }
 
-    private void UseEmailDraft_Click(object sender, RoutedEventArgs e)
+    private async void UseEmailDraft_Click(object sender, RoutedEventArgs e)
     {
-        if (_emailDraft is null) return;
-        SubjectBox.Text = _emailDraft.Subject;
-        ComposerBox.Text = _emailDraft.Body;
+        if (_emailDraft is null || !IsCurrentEmailDraftTarget())
+        {
+            ResetEmailAssistantResult();
+            return;
+        }
+        var draft = _emailDraft;
+        if (!string.IsNullOrWhiteSpace(_emailDraftCustomerId))
+        {
+            var dependency = await CustomerExternalFactPolicy.CaptureDependencyAsync(
+                _services.Repository,
+                _emailDraftCustomerId,
+                DateTimeOffset.Now);
+            if (!ReferenceEquals(_emailDraft, draft) || !IsCurrentEmailDraftTarget() ||
+                !dependency.Hash.Equals(_emailDraftDependencyHash, StringComparison.Ordinal))
+            {
+                ResetEmailAssistantResult();
+                return;
+            }
+        }
+        SubjectBox.Text = draft.Subject;
+        ComposerBox.Text = draft.Body;
         ComposerBox.CaretIndex = ComposerBox.Text.Length;
         ComposerBox.Focus();
+        _appliedEmailAiBinding = new EmailComposerAiBinding(
+            _emailDraftAccountId,
+            _emailDraftConversationId,
+            _emailDraftCustomerId,
+            _emailDraftRecipient,
+            _emailDraftDependencyHash,
+            _emailDraftWasNewEmail);
         EmailAiStatusText.Text = "草稿已填入 · 请核对后手动发送";
     }
 
@@ -458,7 +713,23 @@ public partial class EmailInboxView : UserControl, IRefreshableView
 
     private void ResetEmailAssistantResult()
     {
+        // A user edit remains derived from the applied AI draft. Never discard the
+        // binding while leaving its subject/body available for another account,
+        // conversation or recipient, because that would bypass dependency checks.
+        if (_appliedEmailAiBinding is not null)
+        {
+            SubjectBox.Clear();
+            ComposerBox.Clear();
+        }
+        ++_emailDraftGeneration;
         _emailDraft = null;
+        _emailDraftAccountId = "";
+        _emailDraftConversationId = "";
+        _emailDraftCustomerId = "";
+        _emailDraftRecipient = "";
+        _emailDraftDependencyHash = "";
+        _emailDraftWasNewEmail = false;
+        _appliedEmailAiBinding = null;
         EmailAiStatusText.Text = "尚无产出";
         EmailAiConfidenceText.Text = "—";
         EmailAiSubjectText.Text = "主题：等待生成";
@@ -469,6 +740,33 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         UseEmailDraftButton.IsEnabled = false;
         GenerateEmailDraftButton.Content = "立即生成草稿";
     }
+
+    private bool IsCurrentEmailDraftTarget()
+    {
+        if (AccountBox.SelectedItem is not EmailAccount account ||
+            !account.Id.Equals(_emailDraftAccountId, StringComparison.OrdinalIgnoreCase) ||
+            !NormalizeEmailTarget(RecipientBox.Text).Equals(_emailDraftRecipient, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(_lead?.Id ?? "", _emailDraftCustomerId, StringComparison.OrdinalIgnoreCase)) return false;
+        if (_emailDraftWasNewEmail)
+            return _isNewEmail && ConversationList.SelectedItem is null && string.IsNullOrWhiteSpace(_emailDraftConversationId);
+        return !_isNewEmail &&
+               ConversationList.SelectedItem is EmailConversationItem selected &&
+               selected.Id.Equals(_emailDraftConversationId, StringComparison.OrdinalIgnoreCase) &&
+               _conversation?.Id.Equals(_emailDraftConversationId, StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static bool IsCurrentAppliedEmailAiTarget(
+        EmailComposerAiBinding binding,
+        string accountId,
+        string? conversationId,
+        string recipient,
+        bool wasNewEmail,
+        string customerId) =>
+        binding.AccountId.Equals(accountId, StringComparison.OrdinalIgnoreCase) &&
+        binding.ConversationId.Equals(conversationId ?? "", StringComparison.OrdinalIgnoreCase) &&
+        binding.Recipient.Equals(recipient, StringComparison.OrdinalIgnoreCase) &&
+        binding.WasNewEmail == wasNewEmail &&
+        binding.CustomerId.Equals(customerId, StringComparison.OrdinalIgnoreCase);
 
     private async Task UpdateEmailAssistantModelAsync()
     {
@@ -491,11 +789,12 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     {
         var hasAccount = AccountBox.SelectedItem is EmailAccount;
         var hasRecipient = !string.IsNullOrWhiteSpace(RecipientBox.Text);
-        var aiReady = hasAccount && hasRecipient && _services.DeepSeek.HasApiKey(AiModuleKeys.EmailInbox) && !_aiAssisting;
+        var aiReady = hasAccount && hasRecipient && _services.DeepSeek.HasApiKey(AiModuleKeys.EmailInbox) &&
+                      !_aiAssisting && !_sending && !_conversationLoading;
         ComposerAiButton.IsEnabled = aiReady;
         GenerateEmailDraftButton.IsEnabled = aiReady;
-        UseEmailDraftButton.IsEnabled = !_aiAssisting && _emailDraft is not null;
-        SendButton.IsEnabled = hasAccount && hasRecipient && !_aiAssisting;
+        UseEmailDraftButton.IsEnabled = !_aiAssisting && !_sending && !_conversationLoading && _emailDraft is not null;
+        SendButton.IsEnabled = hasAccount && hasRecipient && !_aiAssisting && !_sending && !_conversationLoading;
     }
 
     private void UpdateLeadIntelligenceSummary(Lead? lead)
@@ -531,9 +830,14 @@ public partial class EmailInboxView : UserControl, IRefreshableView
             var facts = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.Fact);
             var inferences = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.Inference);
             var gaps = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.InformationGap);
-            AiSidebarBrainMetaText.Text = $"BRAIN V{brain.Version} · 覆盖 {brain.Coverage.Percentage}% · 事实 {facts} / 判断 {inferences} / 缺口 {gaps}";
-            if (!string.IsNullOrWhiteSpace(brain.Summary)) AiSidebarProfileText.Text = brain.Summary;
-            if (!string.IsNullOrWhiteSpace(brain.NextBestAction)) AiSidebarNextActionText.Text = $"下一步：{brain.NextBestAction}";
+            AiSidebarBrainMetaText.Text = brain.HasCurrentDecision
+                ? $"BRAIN V{brain.Version} · 覆盖 {brain.Coverage.Percentage}% · 事实 {facts} / 判断 {inferences} / 缺口 {gaps}"
+                : $"BRAIN V{brain.Version} · 结论已过期 · 资料已变化；打开客户详情，点击“AI 分析并生成行动”";
+            if (brain.HasCurrentDecision)
+            {
+                if (!string.IsNullOrWhiteSpace(brain.Summary)) AiSidebarProfileText.Text = brain.Summary;
+                if (!string.IsNullOrWhiteSpace(brain.NextBestAction)) AiSidebarNextActionText.Text = $"下一步：{brain.NextBestAction}";
+            }
             RenderConversationContext(brain.ConversationContext, loading: true);
             brain = await _services.CustomerBrain.UpdateConversationContextAsync(lead.Id);
             if (generation != _customerBrainRefreshGeneration || _lead?.Id != lead.Id) return;
@@ -544,6 +848,7 @@ public partial class EmailInboxView : UserControl, IRefreshableView
             if (generation != _customerBrainRefreshGeneration || _lead?.Id != lead.Id) return;
             AiSidebarBrainMetaText.Text = $"CUSTOMER BRAIN · 暂不可用：{error.Message}";
             var profile = await _services.CustomerBrain.GetAsync(lead.Id);
+            if (generation != _customerBrainRefreshGeneration || _lead?.Id != lead.Id) return;
             RenderConversationContext(profile?.ConversationContext);
         }
     }
@@ -686,6 +991,13 @@ public partial class EmailInboxView : UserControl, IRefreshableView
     }
 
     private sealed record StageChoice(string Label, LeadStage Value);
+    private sealed record EmailComposerAiBinding(
+        string AccountId,
+        string ConversationId,
+        string CustomerId,
+        string Recipient,
+        string DependencyHash,
+        bool WasNewEmail);
     private sealed record EmailInboxSnapshot(
         IReadOnlyList<EmailAccount> Accounts,
         string? SelectedAccountId,

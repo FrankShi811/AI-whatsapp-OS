@@ -9,10 +9,20 @@ public static class ReleaseCatalog
     public static string CurrentVersion =>
         Assembly.GetExecutingAssembly().GetName().Version is { } version
             ? $"{version.Major}.{version.Minor}.{version.Build}"
-            : "5.17.3";
+            : "5.18.0";
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("5.18.0", "2026-08-03", "客户外部调查与客户数据统一",
+        [
+            "Customer Operations 新增“客户外部调查”：直接选择客户或从客户列表进入，即可对公开商业信息发起调查、查看来源与证据、审核冲突，并形成供 Customer Brain 与客户智能报告使用的可审核事实；Tavily、Brave 或用户明确启用的本地 SearXNG 按可用性自动选择，不要求普通用户手工排序服务商。",
+            "首次使用只展示当前能否调查和一条下一步操作；填写一个自己的 Tavily 或 Brave 搜索密钥即可收集公开来源。把来源整理为 Customer Brain 事实只需启用 AI 事实整理并填写本程序本地月度估算提醒额度，每次估算预留保留在高级选项并自动采用默认值；日/月账期按用户本地时区记录。本地估算只统计本机调用，实际套餐、额度、定价和账单以 Provider 为准。",
+            "调查事实以同一客户 ID 写入 Customer Brain 和客户智能分析来源；Buyer ID、电话或邮箱发生身份变化后，旧身份事实与旧报告会立即标记为过期，进行中的旧身份任务不会回写当前客户，人工确认前不会静默覆盖 CRM 原始字段。",
+            "Customer Brain、今日简报和客户智能分析统一读取客户身份关联后的 WhatsApp 与邮件上下文；外部事实变化会使旧决策和旧报告失效并阻止继续当作当前结论展示或导出，历史版本仍完整保留以供追溯。",
+            "WhatsApp、邮件箱、Customer Success Agent 与邮件 Campaign 的 AI 内容均绑定生成时的客户身份、会话和有效调查事实；发送期间如发生客户重绑、资料或事实变化、新消息接管，服务器已确认的消息会永久按未关联记录，并与所有客户 Brain、状态、知识反馈和分析来源隔离，避免串客或重复发送。",
+            "左侧导航将“客户列表”移入 Command Center，“客户外部调查”保留在 Customer Operations；用户可见名称同步改为“看板”“WhatsApp”“邮件箱”，内部模块键与已有客户、消息和设置数据保持兼容。",
+            "新增客户调查身份隔离、并发回写拦截、跨账号消息、陈旧决策/报告、单值事实冲突、批量状态和导航回归；本版本仅发布 GitHub Windows 中文安装包与 Velopack 自动更新资产，不关闭、重启、安装或覆盖本机正式程序，更新缓存继续只保留当前、待安装新版本及最近 3 个回滚版本，macOS 继续暂停。"
+        ], true),
         new("5.17.3", "2026-08-03", "WhatsApp 离线新消息自动补齐",
         [
             "修复程序关闭数日后重新启动时，手机 WhatsApp 已收到新消息但 AI Sales OS 会话列表仍停留在旧日期的问题：已登录账号连接成功后会主动接收 WhatsApp 离线消息队列，再恢复手机通知优先状态。",
@@ -20,7 +30,7 @@ public static class ReleaseCatalog
             "保持所有已登录账号的后台实时连接和消息入库；离线消息继续经过既有 Provider Message ID 去重、未读气泡、群聊隔离、客户命名与 Customer Brain 联动规则，不会重复写入或把旧已读消息重新标为未读。",
             "新增启动补齐、手动补齐、确认超时、取消任务和手机通知恢复回归；同步使用手册明确启动自动补齐和手动强制补齐的适用场景。",
             "本版本仅发布 GitHub Windows 中文安装包与 Velopack 自动更新资产，不关闭、重启、安装或覆盖本机正式程序；安装或更新继续创建或修复桌面快捷方式，更新缓存继续只保留当前、待安装新版本及最近 3 个回滚版本，macOS 继续暂停。"
-        ], true),
+        ]),
         new("5.17.2", "2026-08-03", "商机补充数据通用命名",
         [
             "商机智能的补充数据选择标题统一为“选择商机补充数据工作簿”，不再把任何示例来源或文件名称写成程序限定的业务品牌。",

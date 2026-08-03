@@ -495,12 +495,12 @@ public partial class MainWindow : Window
             "intelligence" => ((object)_intelligence, "商机智能", "AI 评分证据、客户画像与下一步决策"),
             "customers" => ((object)_customers, "客户列表", "统一客户数据、动态字段与批量运营"),
             "customer-enrichment" => ((object)_customerEnrichment, "客户外部调查", "公开来源、主体匹配、证据事实与人工审核"),
-            "inbox" => ((object)_inbox, "WhatsApp Inbox", "会话、客户资料与 AI 销售信号实时联动"),
-            "email" => ((object)_email, "邮件 Inbox", "邮件收发、历史归档与 CRM 客户资料实时联动"),
+            "inbox" => ((object)_inbox, "WhatsApp", "会话、客户资料与 AI 销售信号实时联动"),
+            "email" => ((object)_email, "邮件箱", "邮件收发、历史归档与 CRM 客户资料实时联动"),
             "broadcast" => ((object)_campaigns, "多渠道自动化触达", "WhatsApp 与邮件任务、动态字段、发送节奏与分渠道审计"),
             "knowledge" => ((object)_knowledge, "知识库", "批准知识、作用域、版本、混合检索与来源审计"),
             "analytics" => ((object)_analytics, "客户智能分析", "全量客户数据、AI 商业判断、报告版本与管理层导出"),
-            _ => ((object)_dashboard, "Dashboard", "今天最值得推进的商机与动作")
+            _ => ((object)_dashboard, "看板", "今天最值得推进的商机与动作")
         };
 
         try
@@ -560,9 +560,9 @@ public partial class MainWindow : Window
         await OpenSettingsAsync();
     }
 
-    private async Task OpenSettingsAsync()
+    private async Task OpenSettingsAsync(bool focusCustomerEnrichment = false)
     {
-        var window = new SettingsWindow(_services, _updates) { Owner = this };
+        var window = new SettingsWindow(_services, _updates, focusCustomerEnrichment) { Owner = this };
         var saved = window.ShowDialog() == true;
         // Closing an owned window restores focus to the invoking button. That is
         // programmatic focus restoration, not keyboard navigation, so it must
@@ -887,7 +887,7 @@ public partial class MainWindow : Window
     }
 
     private async void CustomerEnrichment_SettingsRequested(object? sender, EventArgs e) =>
-        await OpenSettingsAsync();
+        await OpenSettingsAsync(focusCustomerEnrichment: true);
 
     private void View_DataChanged(object? sender, EventArgs e)
     {
@@ -987,7 +987,7 @@ public partial class MainWindow : Window
     {
         var totals = await _services.Repository.GetInboxUnreadTotalsAsync();
         SetUnreadBadge(WhatsAppUnreadBadge, WhatsAppUnreadText, InboxButton, totals.WhatsApp, "WhatsApp");
-        SetUnreadBadge(EmailUnreadBadge, EmailUnreadText, EmailButton, totals.Email, "邮件");
+        SetUnreadBadge(EmailUnreadBadge, EmailUnreadText, EmailButton, totals.Email, "邮件箱");
         if (_lastUnreadTotals is not null && _lastUnreadTotals != totals)
         {
             _services.DashboardUnreadDigest.QueueBackgroundRefresh();
@@ -1000,7 +1000,7 @@ public partial class MainWindow : Window
     {
         badge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
         text.Text = count > 99 ? "99+" : count.ToString();
-        button.ToolTip = count > 0 ? $"{channel} Inbox：{count} 条未读消息" : $"{channel} Inbox：暂无未读消息";
+        button.ToolTip = count > 0 ? $"{channel}：{count} 条未读消息" : $"{channel}：暂无未读消息";
     }
 
     private void Campaigns_SafetyStopped(object? sender, CampaignSafetyStoppedEventArgs e)

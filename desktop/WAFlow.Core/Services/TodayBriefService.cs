@@ -7,11 +7,16 @@ public sealed class TodayBriefService
 {
     private readonly LocalRepository _repository;
     private readonly PersonalSalesLearningService _learning;
+    private readonly CustomerBrainService? _customerBrain;
 
-    public TodayBriefService(LocalRepository repository, PersonalSalesLearningService? learning = null)
+    public TodayBriefService(
+        LocalRepository repository,
+        PersonalSalesLearningService? learning = null,
+        CustomerBrainService? customerBrain = null)
     {
         _repository = repository;
         _learning = learning ?? new PersonalSalesLearningService(repository);
+        _customerBrain = customerBrain;
     }
 
     public async Task<TodayBriefSnapshot> GetAsync(CancellationToken cancellationToken = default)
@@ -47,7 +52,10 @@ public sealed class TodayBriefService
         {
             if (string.IsNullOrWhiteSpace(customerId)) return null;
             if (profileCache.TryGetValue(customerId, out var cached)) return cached;
-            var profile = await _repository.GetCustomerIntelligenceProfileAsync(customerId, cancellationToken);
+            var candidate = _customerBrain is null
+                ? await _repository.GetCustomerIntelligenceProfileAsync(customerId, cancellationToken)
+                : await _customerBrain.GetAsync(customerId, cancellationToken);
+            var profile = candidate?.HasCurrentDecision == true ? candidate : null;
             profileCache[customerId] = profile;
             return profile;
         }
@@ -86,6 +94,18 @@ public sealed class TodayBriefService
         {
             leadsById.TryGetValue(task.CustomerId, out var lead);
             var profile = await GetProfileAsync(task.CustomerId);
+            if (!string.IsNullOrWhiteSpace(task.RecommendationId)
+                && task.Status != FollowUpTaskStatus.InProgress)
+            {
+                var recommendation = (await _repository.GetAiRecommendationHistoryAsync(task.CustomerId, cancellationToken))
+                    .FirstOrDefault(item => item.Id.Equals(task.RecommendationId, StringComparison.Ordinal));
+                if (recommendation is not null
+                    && !string.IsNullOrWhiteSpace(recommendation.SourceProfileId)
+                    && (profile?.HasCurrentDecision != true
+                        || !profile.Id.Equals(recommendation.SourceProfileId, StringComparison.Ordinal)
+                        || profile.Version != recommendation.SourceProfileVersion))
+                    continue;
+            }
             items.Add(new TodayBriefItem
             {
                 CustomerId = task.CustomerId,

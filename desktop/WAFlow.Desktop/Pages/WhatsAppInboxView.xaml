@@ -1,14 +1,15 @@
 <UserControl x:Class="WAFlow.Desktop.Pages.WhatsAppInboxView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:controls="clr-namespace:WAFlow.Desktop.Controls">
+             xmlns:controls="clr-namespace:WAFlow.Desktop.Controls"
+             AutomationProperties.Name="WhatsApp">
     <Grid Margin="30,24,30,28">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
         <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel>
                 <TextBlock Text="LIVE SALES CONVERSATIONS" Style="{StaticResource PageEyebrow}"/>
-                <TextBlock Text="WhatsApp Conversation Command Center" Style="{StaticResource PageTitle}" Margin="0,5,0,0"/>
+                <TextBlock Text="WhatsApp" Style="{StaticResource PageTitle}" Margin="0,5,0,0"/>
                 <TextBlock Text="会话、客户上下文、AI 商机判断与销售动作在同一工作区完成。" Foreground="{DynamicResource Muted}" Margin="0,6,0,0"/>
                 <Border x:Name="IpStatusBorder" Background="{DynamicResource SurfaceMuted}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="12" Padding="10,6" Margin="0,9,0,0" HorizontalAlignment="Left" ToolTip="监测本机连接 WhatsApp 时使用的公网出口 IP；每 60 秒检测一次。">
                     <StackPanel Orientation="Horizontal">

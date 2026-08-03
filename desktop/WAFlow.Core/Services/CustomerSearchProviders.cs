@@ -431,7 +431,7 @@ public abstract class CustomerSearchProviderBase : ICustomerSearchProvider, IMet
         if (statusCode == HttpStatusCode.TooManyRequests)
             return CreateProviderException(
                 CustomerEnrichmentErrorCodes.ProviderQuotaExhausted,
-                $"{DisplayName} 免费额度或速率额度已用完，系统不会自动产生付费请求。",
+                $"{DisplayName} 返回账号额度或速率限制；本程序不会因该错误自动切换为付费模式，实际额度与账单以 Provider 为准。",
                 retryable: false);
 
         var retryable = statusCode == HttpStatusCode.RequestTimeout || (int)statusCode >= 500;

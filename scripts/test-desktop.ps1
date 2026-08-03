@@ -106,6 +106,8 @@ $aiModelCapabilityResolverSource = Get-Content -Raw -Encoding utf8 -LiteralPath 
 $conversationAssistantSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\ConversationAssistantService.cs')
 $customerAnalysisSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerAnalysisService.cs')
 $customerBrainSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerBrainService.cs')
+$customerExternalFactPolicySource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerExternalFactPolicy.cs')
+$customerReportExportSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerReportExportService.cs')
 $customerSuccessAgentSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerSuccessAgentService.cs')
 $buyerIdentitySource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\BuyerIdentity.cs')
 $customerIdentitySource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerIdentityService.cs')
@@ -227,58 +229,116 @@ if (-not $domainModelsSource.Contains('public const string CustomerEnrichment = 
     -not $appServicesSource.Contains('CustomerEnrichment = new CustomerEnrichmentService(')) {
   $customerEnrichmentContractFailures += 'module_ai_routing'
 }
-if (-not $customerEnrichmentXaml.Contains('AutomationProperties.Name="客户公开商业信息调查"') -or
+if (-not $customerEnrichmentXaml.Contains('AutomationProperties.Name="客户外部调查"') -or
     -not $customerEnrichmentSource.Contains('_enrichmentService = services.CustomerEnrichment;') -or
     -not $customerEnrichmentRepositorySource.Contains('customer_enrichment_fact_sources')) {
   $customerEnrichmentContractFailures += 'page_backend_binding'
+}
+$commandCenterIndex = $mainWindowXaml.IndexOf('Text="COMMAND CENTER"', [StringComparison]::Ordinal)
+$customersIndex = $mainWindowXaml.IndexOf('x:Name="CustomersButton"', [StringComparison]::Ordinal)
+$customerOperationsIndex = $mainWindowXaml.IndexOf('Text="CUSTOMER OPERATIONS"', [StringComparison]::Ordinal)
+$customerEnrichmentIndex = $mainWindowXaml.IndexOf('x:Name="CustomerEnrichmentButton"', [StringComparison]::Ordinal)
+$insightsIndex = $mainWindowXaml.IndexOf('Text="INSIGHTS"', [StringComparison]::Ordinal)
+if ($commandCenterIndex -lt 0 -or $customersIndex -le $commandCenterIndex -or $customerOperationsIndex -le $customersIndex -or
+    $customerEnrichmentIndex -le $customerOperationsIndex -or $insightsIndex -le $customerEnrichmentIndex -or
+    -not $mainWindowXaml.Contains('Text="看板" Style="{StaticResource NavText}"') -or
+    -not $mainWindowXaml.Contains('Text="WhatsApp" Style="{StaticResource NavText}"') -or
+    -not $mainWindowXaml.Contains('Text="邮件箱" Style="{StaticResource NavText}"') -or
+    -not $dashboardXaml.Contains('AutomationProperties.Name="看板"') -or
+    -not $whatsAppInboxXaml.Contains('AutomationProperties.Name="WhatsApp"') -or
+    -not $emailInboxXaml.Contains('AutomationProperties.Name="邮件箱"') -or
+    -not $guideCatalogSource.Contains('"customers", "COMMAND CENTER", "客户列表使用手册"') -or
+    -not $guideCatalogSource.Contains('"inbox", "CONVERSATION INTELLIGENCE", "WhatsApp 使用手册"') -or
+    -not $guideCatalogSource.Contains('"email", "CUSTOMER EMAIL INTELLIGENCE", "邮件箱使用手册"')) {
+  $customerEnrichmentContractFailures += 'sidebar_grouping_and_visible_names'
+}
+$enrichmentAdvancedIndex = $settingsXaml.IndexOf('Header="高级选项（通常无需修改）"', [StringComparison]::Ordinal)
+$enrichmentReservationIndex = $settingsXaml.IndexOf('x:Name="EnrichmentAiReservationBox"', [StringComparison]::Ordinal)
+if (-not $settingsXaml.Contains('x:Name="EnrichmentSettingsSection"') -or
+    -not $settingsXaml.Contains('x:Name="EnrichmentAllowAiAnalysisBox"') -or
+    -not $settingsXaml.Contains('x:Name="EnrichmentBudgetBox"') -or
+    -not $settingsXaml.Contains('x:Name="EnrichmentAllowPaidBox"') -or
+    -not $settingsXaml.Contains('Text="本地月度估算提醒额度 USD"') -or
+    $enrichmentAdvancedIndex -lt 0 -or $enrichmentReservationIndex -le $enrichmentAdvancedIndex -or
+    -not $settingsSource.Contains('bool focusCustomerEnrichment = false') -or
+    -not $settingsSource.Contains('EnrichmentSettingsSection.BringIntoView()') -or
+    -not $settingsSource.Contains('填写一个联网搜索密钥即可收集公开来源；需要生成事实时，再启用 AI 并设置本程序的月度估算提醒额度。') -or
+    -not $guideCatalogSource.Contains('本地估算只统计本机调用，不含账号在其他工具中的用量，实际账单以 Provider 为准')) {
+  $customerEnrichmentContractFailures += 'novice_setup_and_honest_local_estimate'
+}
+if (-not $customerEnrichmentRepositorySource.Contains('GetCustomerEnrichmentQueueSummariesAsync') -or
+    -not $customerEnrichmentRepositorySource.Contains("'job' AS row_kind") -or
+    -not $customerEnrichmentRepositorySource.Contains('latestCurrentJob') -or
+    -not $customerEnrichmentRepositorySource.Contains('CustomerEnrichmentJob? LatestHistoricalJob') -or
+    -not $customerEnrichmentRepositorySource.Contains('LatestJob is null && HasHistoricalJob') -or
+    -not $customerEnrichmentSource.Contains('来源已保存 · 待启用 AI 整理') -or
+    -not $customerEnrichmentSource.Contains('来源已保存 · 待完成 AI 对接') -or
+    -not $customerEnrichmentSource.Contains('完成 AI API 对接，并为“客户外部调查”选择可用模型')) {
+  $customerEnrichmentContractFailures += 'batch_queue_current_identity_summary'
+}
+if ($whatsAppInboxSource -notmatch 'if \(brain\.HasCurrentDecision\)[\s\S]{0,500}?AiSidebarProfileText' -or
+    $emailInboxSource -notmatch 'if \(brain\.HasCurrentDecision\)[\s\S]{0,500}?AiSidebarProfileText' -or
+    $leadIntelligenceSource -notmatch 'if \(brain\.HasCurrentDecision\)[\s\S]{0,500}?ProfileText' -or
+    -not $whatsAppInboxSource.Contains('打开客户详情，点击“AI 分析并生成行动”') -or
+    -not $emailInboxSource.Contains('打开客户详情，点击“AI 分析并生成行动”') -or
+    -not $leadIntelligenceSource.Contains('打开客户详情，点击“AI 分析并生成行动”')) {
+  $customerEnrichmentContractFailures += 'stale_brain_ui_gate'
 }
 if ($customerEnrichmentContractFailures.Count -gt 0) {
   throw "Customer external enrichment must have complete sidebar, guide, page/backend and module-AI routing. missing=$($customerEnrichmentContractFailures -join ',')"
 }
 Write-Host 'PASS  customer external enrichment sidebar, guide, page/backend and module-AI routing contract'
-$customerEnrichmentHardGateFailures = @()
+$customerEnrichmentUsageGateFailures = @()
 if ($customerSearchProviderSource -notmatch [regex]::Escape('Interlocked.Increment(ref _lastAttemptCount);') -or
     $customerEnrichmentServiceSource -notmatch [regex]::Escape('var actualAttempts = GetActualAttempts(provider, reservedAttempts);') -or
     $customerEnrichmentServiceSource -notmatch [regex]::Escape('usage.Requests = actualAttempts;') -or
     $customerEnrichmentServiceSource -notmatch [regex]::Escape('EstimateSearchCost(provider.Id, settings, currentUsage, actualAttempts)')) {
-  $customerEnrichmentHardGateFailures += 'actual_attempt_metering'
+  $customerEnrichmentUsageGateFailures += 'actual_attempt_metering'
 }
 if ($customerEnrichmentServiceSource -notmatch 'SaveCustomerEnrichmentUsageAsync\(usage, cancellationToken\);[\s\S]{0,900}?provider\.SearchAsync' -or
     $customerEnrichmentRepositorySource -notmatch 'ON CONFLICT\(id\) DO UPDATE SET[\s\S]{0,500}?requests=excluded\.requests' -or
     $customerEnrichmentRepositorySource -notmatch 'request_month < \$currentMonth') {
-  $customerEnrichmentHardGateFailures += 'durable_reservation_and_month_ledger'
+  $customerEnrichmentUsageGateFailures += 'durable_reservation_and_month_ledger'
 }
-if ($customerEnrichmentServiceSource -notmatch '!settings\.AllowPaidRequests \|\| !settings\.AllowAiAnalysisRequests[\s\S]{0,180}?settings\.MonthlyBudgetUsd <= 0' -or
+if ($customerEnrichmentServiceSource -notmatch '!settings\.AllowAiAnalysisRequests[\s\S]{0,180}?settings\.MonthlyBudgetUsd <= 0' -or
     $customerEnrichmentServiceSource -notmatch 'AiAnalysisPaymentNotAuthorized[\s\S]{0,1200}?return;[\s\S]{0,3000}?_analyzer\.AnalyzeAsync') {
-  $customerEnrichmentHardGateFailures += 'ai_payment_authorization'
+  $customerEnrichmentUsageGateFailures += 'ai_payment_authorization'
+}
+if ($customerEnrichmentRepositorySource -notmatch '_timeProvider\.GetLocalNow\(\)' -or
+    $customerEnrichmentRepositorySource -notmatch 'TimeZoneInfo\.ConvertTime\(usage\.CreatedAt, _timeProvider\.LocalTimeZone\)' -or
+    $customerEnrichmentRepositorySource -notmatch 'TimeZoneInfo\.ConvertTime\(item\.CreatedAt, _timeProvider\.LocalTimeZone\)\.Date == now\.Date') {
+  $customerEnrichmentUsageGateFailures += 'user_local_usage_period'
 }
 if ($customerEnrichmentServiceSource -notmatch 'RequestState\.Equals\("reserved"[\s\S]{0,500}?CustomerEnrichmentJobStatus\.Failed[\s\S]{0,500}?RecoveryReviewRequired[\s\S]{0,500}?continue;' -or
     $customerEnrichmentServiceSource -notmatch 'ResolveReviewedJobStatus\(reviewedFacts\)[\s\S]{0,500}?SaveCustomerEnrichmentJobAsync\(job, cancellationToken\)') {
-  $customerEnrichmentHardGateFailures += 'restart_and_review_status'
+  $customerEnrichmentUsageGateFailures += 'restart_and_review_status'
 }
-if ($customerEnrichmentRepositorySource -notmatch 'GetCustomerEnrichmentFactSelectionRank\(item, now\)' -or
-    $customerEnrichmentRepositorySource -notmatch 'HumanConfirmed when current => 600[\s\S]{0,120}?Verified when current => 500[\s\S]{0,120}?PossibleMatch => 300') {
-  $customerEnrichmentHardGateFailures += 'verified_fact_precedence'
+if ($customerExternalFactPolicySource -notmatch 'GetDisplaySelectionRank\(fact, now\)' -or
+    $customerExternalFactPolicySource -notmatch 'HumanConfirmed when current => 600[\s\S]{0,120}?Verified when current => 500[\s\S]{0,120}?PossibleMatch => 300') {
+  $customerEnrichmentUsageGateFailures += 'verified_fact_precedence'
 }
 if ($customerEnrichmentAnalyzerSource -notmatch 'Where\(source => ContainsEvidence\(source, fact\.EvidenceQuote\)\)' -or
     $customerEnrichmentAnalyzerSource -notmatch '!result\.EntityMatch\.Status\.Equals\("verified"[\s\S]{0,180}?result\.EntityMatch\.Conflicts\.Count > 0[\s\S]{0,120}?Math\.Min\(result\.EntityMatch\.Score, 89\)') {
-  $customerEnrichmentHardGateFailures += 'evidence_source_and_entity_gate'
+  $customerEnrichmentUsageGateFailures += 'evidence_source_and_entity_gate'
 }
 if ($customerEnrichmentServiceSource -notmatch 'EditAndConfirm:[\s\S]{0,700}?fact\.SourceIds = \[\];[\s\S]{0,120}?fact\.EvidenceQuote = "";' -or
     $customerEnrichmentServiceSource -notmatch 'fact\.HumanReviewId = review\.Id' -or
     $customerEnrichmentRepositorySource -notmatch 'DELETE FROM customer_enrichment_fact_sources WHERE fact_id=\$fact') {
-  $customerEnrichmentHardGateFailures += 'human_edit_provenance'
+  $customerEnrichmentUsageGateFailures += 'human_edit_provenance'
 }
 if ($customerEnrichmentRepositorySource -notmatch 'DELETE FROM customer_intelligence_profiles WHERE customer_id=\$customer' -or
-    $customerBrainSource -notmatch 'HasStaleExternalFactDependencies\(latestReportCandidate, verifiedExternalFacts, now\)' -or
+    $customerBrainSource -notmatch 'HasStaleExternalFactDependencies\(latestReportCandidate, verifiedExternalFacts\)' -or
     $customerAnalysisSource -notmatch 'EnsureExternalFactsStillCurrentAsync\(snapshot, cancellationToken\)' -or
-    $customerAnalysisSource -notmatch 'report\.Status = CustomerReportStatus\.RetryableFailed') {
-  $customerEnrichmentHardGateFailures += 'brain_and_report_invalidation'
+    $customerAnalysisSource -notmatch 'report\.Status = CustomerReportStatus\.RetryableFailed' -or
+    $customerExternalFactPolicySource -notmatch 'GetCurrentIdentityHashAsync[\s\S]{0,1800}?capturedIdentityHash\.Equals\(currentIdentityHash' -or
+    $customerExternalFactPolicySource -notmatch 'report\.Status = CustomerReportStatus\.Stale' -or
+    $customerReportExportSource -notmatch 'CustomerAnalysisFreshness\.GetCurrentAsync') {
+  $customerEnrichmentUsageGateFailures += 'brain_and_report_invalidation'
 }
-if ($customerEnrichmentHardGateFailures.Count -gt 0) {
-  throw "Customer external enrichment hard gates must preserve pre-network reservations, actual-attempt billing, monthly ledgers, AI authorization, safe restart and review status. missing=$($customerEnrichmentHardGateFailures -join ',')"
+if ($customerEnrichmentUsageGateFailures.Count -gt 0) {
+  throw "Customer external enrichment usage guards must preserve pre-network local estimates, actual-attempt metering, user-local monthly ledgers, AI authorization, safe restart and review status. missing=$($customerEnrichmentUsageGateFailures -join ',')"
 }
-Write-Host 'PASS  customer external enrichment billing, reservation, restart and review hard-gate contract'
+Write-Host 'PASS  customer external enrichment local-estimate, reservation, restart and review guard contract'
 if ($mainWindowXaml -match 'x:Name="ThemeButton"' -or
     $mainWindowXaml -match 'Click="CommandButton_Click"' -or
     $mainWindowXaml -match '<Button Content="设置"' -or
@@ -1019,6 +1079,54 @@ if ($emailInboxXaml -notmatch 'x:Name="NewEmailButton"' -or
   throw 'Email Inbox must support new-message composition, CRM/Customer Brain-aware AI drafting, manual-send safety and current module guidance.'
 }
 Write-Host 'PASS  Email Inbox new-message, Customer Intelligence, AI draft and all-module guide audit contract'
+
+if ($whatsAppInboxSource -notmatch [regex]::Escape('_conversationSelectionGeneration') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('IsCurrentConversationSelection') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('var sendBinding = resolved.Binding') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('var sendLead = sendBinding.Lead') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('PersistAcknowledgedOutgoingWhatsAppAsync') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('_pendingAgentDraftContextToken') -or
+    $whatsAppInboxSource -match [regex]::Escape('string.Equals(ComposerBox.Text.Trim(), _pendingKnowledgeDecision.ReplyText.Trim()') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('expectedCustomerIdentityHash: draftContextToken?.CustomerIdentityHash') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('expectedSourceMessageToken: draftContextToken?.SourceMessageToken') -or
+    $whatsAppInboxSource -notmatch [regex]::Escape('accepted = true;') -or
+    $emailInboxSource -notmatch [regex]::Escape('IsCurrentEmailTarget') -or
+    $emailInboxSource -notmatch [regex]::Escape('IsCurrentEmailDraftTarget') -or
+    $emailInboxSource -notmatch [regex]::Escape('var sendLead = await ResolveEmailLeadAsync') -or
+    $emailInboxSource -notmatch [regex]::Escape('EmailComposerAiBinding') -or
+    $emailInboxSource -notmatch [regex]::Escape('ContextChangedAfterSend') -or
+    $emailInboxSource -notmatch [regex]::Escape('expectedCustomerDependencyHash: appliedBinding?.DependencyHash') -or
+    $emailInboxSource -notmatch '_appliedEmailAiBinding is not null[\s\S]{0,240}SubjectBox\.Clear\(\);[\s\S]{0,120}ComposerBox\.Clear\(\);' -or
+    $emailServiceSource -notmatch [regex]::Escape('ExpectedCustomerDependencyHash') -or
+    $emailServiceSource -notmatch [regex]::Escape('binding.ExpectedCustomerDependencyHash') -or
+    $emailAssistantSource -notmatch [regex]::Escape('email_assistant_source_changed') -or
+    $emailAssistantSource -notmatch [regex]::Escape('EnsureSourceCurrentAsync') -or
+    $customerSuccessSource -notmatch [regex]::Escape('EnsureRunContextCurrentAsync') -or
+    $customerSuccessSource -notmatch [regex]::Escape('post_send_context_changed') -or
+    $customerSuccessSource -notmatch [regex]::Escape('PersistAcknowledgedOutgoingWhatsAppAsync') -or
+    $customerSuccessSource -notmatch [regex]::Escape('expectedActiveFactSetToken: result.ContextToken.ActiveFactSetToken') -or
+    $customerSuccessSource -notmatch [regex]::Escape('expectedSourceMessageToken: result.ContextToken.SourceMessageToken') -or
+    $campaignAutomationSource -notmatch [regex]::Escape('PrepareRecipientForNetworkSend') -or
+    $campaignAutomationSource -notmatch [regex]::Escape('recipient.CustomerAttributionIsolated = true') -or
+    $localRepositorySource -notmatch [regex]::Escape('TryUpdateConversationAgentRunOutcomeAsync') -or
+    $localRepositorySource -notmatch [regex]::Escape('PersistAcknowledgedOutgoingWhatsAppAsync') -or
+    $localRepositorySource -notmatch [regex]::Escape('PersistAcknowledgedOutgoingEmailAsync') -or
+    $localRepositorySource -notmatch [regex]::Escape('LeadAttributionFinal') -or
+    $localRepositorySource -notmatch [regex]::Escape('DeliveryAcknowledged') -or
+    $localRepositorySource -notmatch [regex]::Escape('CaptureCustomerExternalFactDependencyAsync') -or
+    $localRepositorySource -notmatch [regex]::Escape('expectedCustomerDependencyHash') -or
+    $localRepositorySource -notmatch [regex]::Escape('dependencyIsCurrent') -or
+    $localRepositorySource -notmatch [regex]::Escape('CustomerSuccessAgentService.BuildSourceMessageToken') -or
+    $localRepositorySource -notmatch [regex]::Escape('ApplySynchronizedWhatsAppMessageOutcomeAsync') -or
+    $localRepositorySource -notmatch [regex]::Escape('MarkWhatsAppMessageRevokedAsync') -or
+    $localRepositorySource -notmatch [regex]::Escape('item.LeadAttributionFinal') -or
+    $whatsAppSyncSource -notmatch [regex]::Escape('ResolveConversationLeadAsync') -or
+    $whatsAppSyncSource -notmatch [regex]::Escape('ApplySynchronizedWhatsAppMessageOutcomeAsync') -or
+    $whatsAppSyncSource -notmatch [regex]::Escape('"whatsapp_message_revoked"') -or
+    $localRepositorySource -notmatch [regex]::Escape('db.BeginTransaction(deferred: false)')) {
+  throw 'WhatsApp, Email and Customer Success AI results must remain bound to the selected account, conversation, customer identity and current external-fact source before UI apply, send and outcome persistence.'
+}
+Write-Host 'PASS  WhatsApp, Email and Customer Success stale-target and cross-customer fail-closed contract'
 
 if ($whatsAppInboxXaml -match 'x:Name="CompanyBox"' -or
     $emailInboxXaml -match 'x:Name="CompanyBox"' -or

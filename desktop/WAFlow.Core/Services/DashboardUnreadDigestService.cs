@@ -245,7 +245,7 @@ public sealed class DashboardUnreadDigestService
         TotalUnreadThreadCount = 0,
         SummarizedThreadCount = 0,
         IsAiGenerated = false,
-        StatusMessage = "WhatsApp 和邮件 Inbox 暂无未读消息。",
+        StatusMessage = "WhatsApp 和邮件箱暂无未读消息。",
         Items = []
     };
 
@@ -268,7 +268,7 @@ public sealed class DashboardUnreadDigestService
                         ? "待查看新消息"
                         : Clean(thread.Subject, 60),
                     Summary = Clean(preview, 320),
-                    SuggestedAction = $"进入 {(thread.Channel == "email" ? "邮件 Inbox" : "WhatsApp Inbox")} 查看原文并决定是否回复。",
+                    SuggestedAction = $"进入 {(thread.Channel == "email" ? "邮件箱" : "WhatsApp")} 查看原文并决定是否回复。",
                     Priority = "normal",
                     LastMessageAt = thread.LastMessageAt,
                     UnreadCount = thread.UnreadCount

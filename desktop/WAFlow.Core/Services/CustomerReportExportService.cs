@@ -13,39 +13,132 @@ namespace WAFlow.Core.Services;
 public sealed class CustomerReportExportService
 {
     private readonly LocalRepository _repository;
+    private readonly Func<CancellationToken, Task>? _beforeFinalValidation;
 
-    public CustomerReportExportService(LocalRepository repository) => _repository = repository;
+    public CustomerReportExportService(
+        LocalRepository repository,
+        Func<CancellationToken, Task>? beforeFinalValidation = null)
+    {
+        _repository = repository;
+        _beforeFinalValidation = beforeFinalValidation;
+    }
 
     public async Task ExportWordAsync(CustomerAnalysisReport report, string path, CancellationToken cancellationToken = default)
     {
-        EnsureExportable(report, path, ".docx");
-        await Task.Run(() => WordCustomerReportRenderer.Render(report, path), cancellationToken);
-        await RecordExportAsync(report, path, "Word", cancellationToken);
+        await ExportAsync(report, path, ".docx", "Word", WordCustomerReportRenderer.Render, cancellationToken);
     }
 
     public async Task ExportPdfAsync(CustomerAnalysisReport report, string path, CancellationToken cancellationToken = default)
     {
-        EnsureExportable(report, path, ".pdf");
-        await Task.Run(() => PdfCustomerReportRenderer.Render(report, path), cancellationToken);
-        await RecordExportAsync(report, path, "PDF", cancellationToken);
+        await ExportAsync(report, path, ".pdf", "PDF", PdfCustomerReportRenderer.Render, cancellationToken);
     }
 
-    private async Task RecordExportAsync(CustomerAnalysisReport report, string path, string format, CancellationToken cancellationToken)
+    private async Task ExportAsync(
+        CustomerAnalysisReport report,
+        string path,
+        string extension,
+        string format,
+        Action<CustomerAnalysisReport, string> render,
+        CancellationToken cancellationToken)
     {
+        var current = await ResolveCurrentReportAsync(report, cancellationToken);
+        EnsureExportable(current, path, extension);
+        var targetPath = Path.GetFullPath(path);
+        var directory = Path.GetDirectoryName(targetPath)!;
+        var temporaryPath = Path.Combine(
+            directory,
+            $".{Path.GetFileNameWithoutExtension(targetPath)}.{Guid.NewGuid():N}.rendering{extension}");
+        var backupPath = Path.Combine(
+            directory,
+            $".{Path.GetFileName(targetPath)}.{Guid.NewGuid():N}.backup");
+        var replacedTarget = false;
+        var hadExistingTarget = File.Exists(targetPath);
+        var exportCommitted = false;
+        try
+        {
+            await Task.Run(() => render(current, temporaryPath), cancellationToken);
+            if (_beforeFinalValidation is not null)
+                await _beforeFinalValidation(cancellationToken);
+
+            current = await ResolveCurrentReportAsync(report, cancellationToken);
+            EnsureExportable(current, targetPath, extension);
+            if (hadExistingTarget)
+                File.Replace(temporaryPath, targetPath, backupPath, ignoreMetadataErrors: true);
+            else
+                File.Move(temporaryPath, targetPath);
+            replacedTarget = true;
+
+            var recorded = await AppendExportHistoryAsync(current, targetPath, format, cancellationToken);
+            exportCommitted = true;
+            await RecordExportAuditAsync(recorded.Report, recorded.Export, cancellationToken);
+        }
+        catch
+        {
+            if (replacedTarget && !exportCommitted)
+            {
+                if (hadExistingTarget && File.Exists(backupPath))
+                    File.Replace(backupPath, targetPath, null, ignoreMetadataErrors: true);
+                else if (File.Exists(targetPath))
+                    File.Delete(targetPath);
+            }
+            throw;
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+            if (File.Exists(backupPath)) File.Delete(backupPath);
+        }
+    }
+
+    private async Task<CustomerAnalysisReport> ResolveCurrentReportAsync(
+        CustomerAnalysisReport report,
+        CancellationToken cancellationToken)
+    {
+        var current = await CustomerAnalysisFreshness.GetCurrentAsync(
+            _repository,
+            report.Id,
+            cancellationToken);
+        return current ?? throw new InvalidOperationException("报告不存在或已被删除，不能导出。");
+    }
+
+    private async Task<(CustomerAnalysisReport Report, CustomerReportExportRecord Export)> AppendExportHistoryAsync(
+        CustomerAnalysisReport report,
+        string path,
+        string format,
+        CancellationToken cancellationToken)
+    {
+        var current = await ResolveCurrentReportAsync(report, cancellationToken);
+        EnsureExportable(current, path, Path.GetExtension(path));
         var info = new FileInfo(path);
-        report.ExportHistory.Add(new CustomerReportExportRecord { Format = format, FilePath = info.FullName, FileSize = info.Length });
-        await _repository.SaveCustomerAnalysisReportAsync(report, cancellationToken);
+        var export = new CustomerReportExportRecord { Format = format, FilePath = info.FullName, FileSize = info.Length };
+        if (!await _repository.AppendCustomerReportExportAsync(current.Id, export, cancellationToken))
+            throw new InvalidOperationException(CustomerAnalysisFreshness.StaleReason);
+        return (current, export);
+    }
+
+    private async Task RecordExportAuditAsync(
+        CustomerAnalysisReport report,
+        CustomerReportExportRecord export,
+        CancellationToken cancellationToken)
+    {
         await _repository.SaveCustomerAnalysisStepAsync(new CustomerAnalysisReportStep
         {
             ReportId = report.Id, StepKey = "format_rendering", Sequence = 6,
             Status = CustomerReportStepStatus.Succeeded,
-            ResultJson = Json.Serialize(report.ExportHistory.Last())
+            ResultJson = Json.Serialize(export)
         }, cancellationToken);
-        await _repository.LogEventAsync("customer_intelligence_report_exported", report.CustomerId, null, $"report_id={report.Id};version={report.Version};format={format};path={info.FullName}", cancellationToken);
+        await _repository.LogEventAsync(
+            "customer_intelligence_report_exported",
+            report.CustomerId,
+            null,
+            $"report_id={report.Id};version={report.Version};format={export.Format};path={export.FilePath}",
+            cancellationToken);
     }
 
     private static void EnsureExportable(CustomerAnalysisReport report, string path, string extension)
     {
+        if (report.Status == CustomerReportStatus.Stale)
+            throw new InvalidOperationException(CustomerAnalysisFreshness.StaleReason);
         if (report.Status != CustomerReportStatus.Succeeded) throw new InvalidOperationException("报告尚未生成完成，不能导出。");
         if (!string.Equals(Path.GetExtension(path), extension, StringComparison.OrdinalIgnoreCase)) throw new ArgumentException($"导出路径必须使用 {extension} 扩展名。", nameof(path));
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);

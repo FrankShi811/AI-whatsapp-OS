@@ -37,7 +37,12 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private bool _initialLeadLinkCompleted;
     private bool _sending;
     private bool _aiAssisting;
+    private int _conversationSelectionGeneration;
     private int _customerBrainRefreshGeneration;
+    private CustomerSuccessRunContextToken? _pendingAgentDraftContextToken;
+    private string _pendingKnowledgeCustomerId = "";
+    private string _pendingKnowledgeAccountId = "";
+    private string _pendingKnowledgeConversationId = "";
     private string _attachmentPath = "";
     private MessageItem? _replyingTo;
     private string _composerConversationId = "";
@@ -730,6 +735,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
     private async void ConversationList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        var selectionGeneration = ++_conversationSelectionGeneration;
         if (ConversationList.SelectedItem is not ConversationItem conversation)
         {
             _composerConversationId = "";
@@ -743,15 +749,18 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             _composerConversationId = conversation.Id;
             ClearAttachment();
             ClearReply();
-            ClearKnowledgeReferences();
+            ClearKnowledgeReferences(clearBoundComposer: true);
             ResetTranslationUi(conversation);
         }
+        ++_customerBrainRefreshGeneration;
+        ClearLead();
         if (IsVisible)
         {
             var hadUnread = conversation.Unread > 0;
             conversation.Unread = 0;
             conversation.LastReadAt = DateTimeOffset.Now;
             await _services.Repository.MarkWhatsAppConversationReadAsync(conversation.Id);
+            if (!IsCurrentConversationSelection(selectionGeneration, conversation)) return;
             if (hadUnread) DataChanged?.Invoke(this, EventArgs.Empty);
         }
         ChatTitleText.Text = conversation.DisplayName;
@@ -762,6 +771,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         var persistedMessages = conversation.IsGroup || !string.IsNullOrWhiteSpace(conversation.Phone)
             ? await _services.Repository.GetWhatsAppMessagesAsync(conversation.Id, 2000)
             : [];
+        if (!IsCurrentConversationSelection(selectionGeneration, conversation)) return;
         foreach (var message in persistedMessages)
             if (!conversation.Messages.Any(x => x.Id == message.ProviderMessageId))
                 conversation.Messages.Add(new MessageItem(message.ProviderMessageId, message.Body, message.Timestamp, message.Direction == WhatsAppMessageDirection.Outgoing, message.Kind, message.FileName, message.MimeType, message.MediaPath, message.MediaDownloadError, message.Status, message.StatusUpdatedAt, message.DeliveredAt, message.ReadAt, message.FailureReason, message.QuotedMessageId, message.QuotedText, message.QuotedFromMe, message.IsRevoked, message.RevokedAt, message.IsStatusUpdate, message.StatusExpiresAt, message.ParticipantName, message.IsGroup));
@@ -770,15 +780,75 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         SaveLeadButton.IsEnabled = !conversation.IsGroup
                                    && !string.IsNullOrWhiteSpace(conversation.Phone)
                                    && FindOwnedPeerAccount(conversation.AccountId, conversation.Phone) is null;
-        await LoadLeadAsync(conversation);
+        await LoadLeadAsync(conversation, selectionGeneration);
+        if (!IsCurrentConversationSelection(selectionGeneration, conversation)) return;
         UpdateComposerState();
         UpdateStatusUpdateBanner(conversation);
         ScrollMessages(conversation);
         await LoadTranslationContextAsync(conversation);
     }
 
-    private async Task LoadLeadAsync(ConversationItem conversation)
+    private bool IsCurrentConversationSelection(int selectionGeneration, ConversationItem conversation) =>
+        selectionGeneration == _conversationSelectionGeneration && IsCurrentConversation(conversation);
+
+    private bool IsCurrentConversation(ConversationItem conversation) =>
+        ConversationList.SelectedItem is ConversationItem current &&
+        current.AccountId.Equals(conversation.AccountId, StringComparison.OrdinalIgnoreCase) &&
+        current.Id.Equals(conversation.Id, StringComparison.OrdinalIgnoreCase) &&
+        current.Phone.Equals(conversation.Phone, StringComparison.Ordinal) &&
+        current.Jid.Equals(conversation.Jid, StringComparison.OrdinalIgnoreCase);
+
+    private async Task<(bool IsCurrent, ConversationLeadBinding Binding)> ResolveCurrentConversationLeadAsync(
+        ConversationItem conversation,
+        int selectionGeneration)
     {
+        var binding = await ResolveConversationLeadBindingAsync(conversation);
+        return IsCurrentConversationSelection(selectionGeneration, conversation)
+            ? (true, binding)
+            : (false, ConversationLeadBinding.Unbound);
+    }
+
+    private async Task<ConversationLeadBinding> ResolveConversationLeadBindingAsync(ConversationItem conversation)
+    {
+        var identity = string.IsNullOrWhiteSpace(conversation.Phone)
+            ? new CustomerIdentityResolution { Result = CustomerIdentityMatchResult.NoMatch }
+            : await _services.CustomerIdentity.ResolveAsync(
+                conversation.AccountId,
+                conversation.Id,
+                conversation.Phone,
+                conversation.Jid,
+                "",
+                conversation.DisplayName);
+        if (!identity.AllowsAutomation || string.IsNullOrWhiteSpace(identity.CustomerId))
+            return ConversationLeadBinding.Unbound;
+        var lead = await _services.Repository.GetLeadAsync(identity.CustomerId);
+        if (lead is null) return ConversationLeadBinding.Unbound;
+        var link = await _services.Repository.GetWhatsAppIdentityLinkAsync(
+            conversation.AccountId,
+            conversation.Id);
+        var linkToken = link is { IsActive: true } &&
+                        link.CustomerId.Equals(lead.Id, StringComparison.OrdinalIgnoreCase)
+            ? string.Join("|",
+                link.Id,
+                link.CustomerId,
+                link.ContactJid,
+                link.ContactLid,
+                link.PhoneIdentityId,
+                link.MatchResult,
+                link.MatchMethod,
+                link.ManuallyConfirmed,
+                link.UpdatedAt.ToUniversalTime().ToString("O"))
+            : $"resolved|{identity.Result}|{identity.Method}|{lead.Id}";
+        return new ConversationLeadBinding(lead.Id, linkToken, lead);
+    }
+
+    private async Task LoadLeadAsync(ConversationItem conversation, int? selectionGeneration = null)
+    {
+        bool IsCurrent() =>
+            (!selectionGeneration.HasValue || selectionGeneration.Value == _conversationSelectionGeneration) &&
+            IsCurrentConversation(conversation);
+
+        if (!IsCurrent()) return;
         if (conversation.IsGroup)
         {
             _currentLead = null;
@@ -798,16 +868,30 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             UpdateComposerState();
             return;
         }
-        _currentIdentityResolution = string.IsNullOrWhiteSpace(conversation.Phone)
+        var identityResolution = string.IsNullOrWhiteSpace(conversation.Phone)
             ? new CustomerIdentityResolution { Result = CustomerIdentityMatchResult.NoMatch, Reason = "WhatsApp 尚未提供号码。" }
             : await _services.CustomerIdentity.ResolveAsync(
                 conversation.AccountId, conversation.Id, conversation.Phone, conversation.Jid, "", conversation.DisplayName);
-        _currentLead = _currentIdentityResolution.AllowsAutomation && !string.IsNullOrWhiteSpace(_currentIdentityResolution.CustomerId)
-            ? await _services.Repository.GetLeadAsync(_currentIdentityResolution.CustomerId)
+        if (!IsCurrent()) return;
+        var lead = identityResolution.AllowsAutomation && !string.IsNullOrWhiteSpace(identityResolution.CustomerId)
+            ? await _services.Repository.GetLeadAsync(identityResolution.CustomerId)
             : null;
-        _currentCustomerSuccessContext = _currentLead is null
+        if (!IsCurrent()) return;
+        var customerSuccessContext = lead is null
             ? null
             : await _services.CustomerSuccessAgent.GetContextAsync(conversation.AccountId, conversation.Id);
+        if (!IsCurrent()) return;
+        _currentIdentityResolution = identityResolution;
+        _currentLead = lead;
+        _currentCustomerSuccessContext = customerSuccessContext;
+        if (_pendingAgentDraftContextToken is { } draftToken &&
+            (lead is null ||
+             !draftToken.CustomerId.Equals(lead.Id, StringComparison.OrdinalIgnoreCase) ||
+             !draftToken.AccountId.Equals(conversation.AccountId, StringComparison.OrdinalIgnoreCase) ||
+             !draftToken.ConversationId.Equals(conversation.Id, StringComparison.OrdinalIgnoreCase) ||
+             customerSuccessContext?.AgentState?.PendingRunContextToken
+                 .Equals(draftToken.RunToken, StringComparison.Ordinal) != true))
+            ClearKnowledgeReferences(clearBoundComposer: true);
         var ownedPeer = FindOwnedPeerAccount(conversation.AccountId, conversation.Phone);
         LeadLinkStateText.Text = ownedPeer is not null
             ? $"WhatsApp：{conversation.DisplayName} · 本机账号互发，不关联 CRM"
@@ -830,7 +914,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private async void SaveLead_Click(object sender, RoutedEventArgs e)
     {
         if (ConversationList.SelectedItem is not ConversationItem conversation) return;
-        if (string.IsNullOrWhiteSpace(conversation.Phone)) { MessageBox.Show("WhatsApp 尚未向关联设备提供该联系人的电话号码，暂时不能创建客户。", "WhatsApp Inbox", MessageBoxButton.OK, MessageBoxImage.Information); return; }
+        if (string.IsNullOrWhiteSpace(conversation.Phone)) { MessageBox.Show("WhatsApp 尚未向关联设备提供该联系人的电话号码，暂时不能创建客户。", "WhatsApp", MessageBoxButton.OK, MessageBoxImage.Information); return; }
         try
         {
             var lead = _currentLead ?? new Lead { PhoneE164 = "+" + conversation.Phone, PhoneValid = true, Source = "WhatsApp QR session" };
@@ -872,7 +956,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 if (index >= 0) _leads[index] = lead;
             }
             await _services.Repository.SynchronizeLeadConnectionsFromInboxAsync([lead]);
-            var latestReply = (await _services.Repository.GetWhatsAppMessagesForLeadAsync(lead, 40))
+            var latestReply = (await _services.Repository.GetWhatsAppMessagesForCustomerAsync(lead.Id, 40))
                 .LastOrDefault(message => !message.IsStatusUpdate && message.Direction == WhatsAppMessageDirection.Incoming && !string.IsNullOrWhiteSpace(message.Body));
             if (latestReply is not null && (!lead.AiScoreApplied || lead.LastAnalyzedAt is null || latestReply.Timestamp > lead.LastAnalyzedAt))
                 await _services.LeadAutomation.QueueLeadForReplyAsync(latestReply);
@@ -886,13 +970,13 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 CustomerId = lead.Id,
                 CandidateCustomerIds = [lead.Id],
                 Confidence = 1,
-                Reason = "用户已在 WhatsApp Inbox 明确确认绑定。"
+                Reason = "用户已在 WhatsApp 明确确认绑定。"
             };
             _currentCustomerSuccessContext = await _services.CustomerSuccessAgent.GetContextAsync(conversation.AccountId, conversation.Id);
             UpdateCustomerSuccessPanel(_currentIdentityResolution, _currentCustomerSuccessContext);
             await UpdateCustomerBrainSummaryAsync(lead);
             DataChanged?.Invoke(this, EventArgs.Empty);
-            MessageBox.Show("客户资料已同步到 AI Sales OS。", "WhatsApp Inbox", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("客户资料已同步到 AI Sales OS。", "WhatsApp", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception error) { MessageBox.Show(error.Message, "保存失败", MessageBoxButton.OK, MessageBoxImage.Warning); }
     }
@@ -906,6 +990,13 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private async Task GenerateAgentSuggestionAsync()
     {
         if (_aiAssisting || ConversationList.SelectedItem is not ConversationItem conversation) return;
+        var selectionGeneration = _conversationSelectionGeneration;
+        var expectedPhone = conversation.Phone;
+        var expectedCustomerId = _currentLead?.Id ?? "";
+        bool IsCurrentTarget() =>
+            IsCurrentConversationSelection(selectionGeneration, conversation) &&
+            conversation.Phone.Equals(expectedPhone, StringComparison.Ordinal) &&
+            string.Equals(_currentLead?.Id ?? "", expectedCustomerId, StringComparison.OrdinalIgnoreCase);
         if (string.IsNullOrWhiteSpace(conversation.Phone))
         {
             MessageBox.Show("WhatsApp 尚未提供该联系人的电话号码，AI 暂时不能安全关联客户资料。", "AI 会话助理", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -926,19 +1017,39 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             var result = await _services.CustomerSuccessAgent.AnalyzeAsync(
                 conversation.AccountId, conversation.Id, conversation.Phone,
                 conversation.DisplayName, conversation.Jid);
+            if (!IsCurrentTarget()) return;
+            var resultCustomerId = result.ContextToken?.CustomerId ?? expectedCustomerId;
+            if (!string.Equals(resultCustomerId, expectedCustomerId, StringComparison.OrdinalIgnoreCase)) return;
             if (result.Decision is null)
             {
-                await LoadLeadAsync(conversation);
+                await LoadLeadAsync(conversation, selectionGeneration);
+                if (!IsCurrentTarget()) return;
                 MessageBox.Show(
                     string.IsNullOrWhiteSpace(result.BlockReason) ? "当前会话暂不允许 AI 自动处理。" : result.BlockReason,
                     "DHgate Customer Success Agent", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
+            if (result.ContextToken is null)
+                throw new InvalidOperationException("AI 草稿缺少可验证的客户上下文，请重新生成。");
+            await _services.CustomerSuccessAgent.EnsureRunContextCurrentAsync(
+                result.ContextToken,
+                requireAutoLock: false,
+                requireProcessedState: true);
+            if (!IsCurrentTarget()) return;
+            BindPendingAgentDraft(
+                result.Decision,
+                result.ContextToken,
+                resultCustomerId,
+                conversation.AccountId,
+                conversation.Id);
             ComposerBox.Text = result.Decision.ReplyText;
             ComposerBox.CaretIndex = ComposerBox.Text.Length;
-            ShowKnowledgeReferences(result.Decision, result.KnowledgeRetrieval);
-            await LoadLeadAsync(conversation);
+            ShowKnowledgeReferences(
+                result.Decision,
+                result.KnowledgeRetrieval);
+            await LoadLeadAsync(conversation, selectionGeneration);
+            if (!IsCurrentTarget()) return;
             DataChanged?.Invoke(this, EventArgs.Empty);
             ComposerBox.Focus();
         }
@@ -952,13 +1063,15 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                     CustomerSuccessRunStatus.Failed,
                     "建议生成未完成，运行状态已恢复，可以重新尝试。",
                     error: $"{error.Code}: {error.Message}");
-                await LoadLeadAsync(conversation);
+                if (IsCurrentTarget()) await LoadLeadAsync(conversation, selectionGeneration);
             }
             catch { /* 保留原始 AI 错误，不让状态刷新错误覆盖它。 */ }
+            if (!IsCurrentTarget()) return;
             MessageBox.Show(AgentErrorMessage(error), "AI 会话助理", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception error)
         {
+            if (!IsCurrentTarget()) return;
             MessageBox.Show(error.Message, "AI 会话助理", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
@@ -1062,6 +1175,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
     private void ComposerBox_TextChanged(object sender, TextChangedEventArgs e)
     {
+        if (_pendingAgentDraftContextToken is not null && string.IsNullOrWhiteSpace(ComposerBox.Text))
+            ClearKnowledgeReferences(clearBoundComposer: true);
         if (!_applyingTranslatedDraft &&
             _translatedDraftApplied &&
             !string.Equals(ComposerBox.Text.Trim(), _draftTranslationText, StringComparison.Ordinal))
@@ -1193,38 +1308,56 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private async Task<bool> SendCurrentAsync(string origin = "human")
     {
         if (_sending || ConversationList.SelectedItem is not ConversationItem conversation) return false;
+        var selectionGeneration = _conversationSelectionGeneration;
         var text = ComposerBox.Text.Trim();
-        var knowledgeDecision = _pendingKnowledgeDecision is not null &&
-                                string.Equals(_pendingKnowledgeDecision.ReplyText.Trim(), text, StringComparison.Ordinal)
-            ? _pendingKnowledgeDecision
-            : null;
-        var effectiveOrigin = knowledgeDecision is not null
-            ? "ai_knowledge_assisted"
-            : _translatedDraftApplied &&
-              string.Equals(text, _draftTranslationText, StringComparison.Ordinal)
-                ? "human_translated"
-                : origin;
         var attachmentPath = _attachmentPath;
         var reply = _replyingTo;
         if (string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(attachmentPath)) return false;
         if (string.IsNullOrWhiteSpace(conversation.Phone)) { MessageBox.Show("该联系人的电话号码尚未同步，暂时不能发送。", "WhatsApp", MessageBoxButton.OK, MessageBoxImage.Warning); return false; }
-        if (_currentLead?.OptedOut == true) { MessageBox.Show("客户已退订，禁止发送。", "WhatsApp", MessageBoxButton.OK, MessageBoxImage.Warning); return false; }
 
         _sending = true;
         var accepted = false;
-        var pendingId = $"local-{Guid.NewGuid():N}";
-        var pendingTimestamp = DateTimeOffset.Now;
-        var pendingKind = string.IsNullOrWhiteSpace(attachmentPath) ? "text" : KindFromFileName(attachmentPath);
-        var pendingFileName = string.IsNullOrWhiteSpace(attachmentPath) ? "" : Path.GetFileName(attachmentPath);
-        var pendingMessage = new MessageItem(pendingId, text, pendingTimestamp, true, pendingKind, pendingFileName, "", attachmentPath, "", WhatsAppMessageStatus.Pending, pendingTimestamp, null, null, "", reply?.Id ?? "", reply?.DisplayText ?? "", reply?.FromMe ?? false);
-        conversation.Messages.Add(pendingMessage);
-        conversation.LastMessage = MessagePreview(text, pendingKind, pendingFileName);
-        conversation.LastAt = pendingTimestamp;
-        ReorderConversations(conversation);
-        ScrollMessages(conversation);
         UpdateComposerState();
+        MessageItem? pendingMessage = null;
         try
         {
+            var resolved = await ResolveCurrentConversationLeadAsync(conversation, selectionGeneration);
+            if (!resolved.IsCurrent) return false;
+            var sendBinding = resolved.Binding;
+            var sendLead = sendBinding.Lead;
+            if (sendLead?.OptedOut == true)
+            {
+                MessageBox.Show("客户已退订，禁止发送。", "WhatsApp", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+
+            var draftContextToken = _pendingAgentDraftContextToken;
+            var knowledgeDecision = _pendingKnowledgeDecision;
+            if (draftContextToken is not null &&
+                !await EnsurePendingAgentDraftCurrentAsync(conversation, sendBinding, draftContextToken))
+            {
+                return false;
+            }
+            if (draftContextToken is null) knowledgeDecision = null;
+            var effectiveOrigin = draftContextToken is not null
+                ? knowledgeDecision?.KnowledgeCitations.Count > 0
+                    ? "ai_knowledge_assisted"
+                    : "ai_conversation_assistant"
+                : _translatedDraftApplied &&
+                  string.Equals(text, _draftTranslationText, StringComparison.Ordinal)
+                    ? "human_translated"
+                    : origin;
+            var pendingId = $"local-{Guid.NewGuid():N}";
+            var pendingTimestamp = DateTimeOffset.Now;
+            var pendingKind = string.IsNullOrWhiteSpace(attachmentPath) ? "text" : KindFromFileName(attachmentPath);
+            var pendingFileName = string.IsNullOrWhiteSpace(attachmentPath) ? "" : Path.GetFileName(attachmentPath);
+            pendingMessage = new MessageItem(pendingId, text, pendingTimestamp, true, pendingKind, pendingFileName, "", attachmentPath, "", WhatsAppMessageStatus.Pending, pendingTimestamp, null, null, "", reply?.Id ?? "", reply?.DisplayText ?? "", reply?.FromMe ?? false);
+            conversation.Messages.Add(pendingMessage);
+            conversation.LastMessage = MessagePreview(text, pendingKind, pendingFileName);
+            conversation.LastAt = pendingTimestamp;
+            ReorderConversations(conversation);
+            if (IsCurrentConversationSelection(selectionGeneration, conversation)) ScrollMessages(conversation);
+
             JsonElement result;
             if (string.IsNullOrWhiteSpace(attachmentPath))
                 result = reply is null
@@ -1255,26 +1388,35 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             pendingMessage.UpdateStatus(status, DateTimeOffset.Now, status is WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read ? DateTimeOffset.Now : null, status == WhatsAppMessageStatus.Read ? DateTimeOffset.Now : null, "");
             conversation.LastMessage = MessagePreview(text, kind, fileName);
             conversation.LastAt = timestamp;
-            ComposerBox.Clear();
-            ClearOutgoingTranslation();
-            ClearAttachment();
-            ClearReply();
-
-            var storedConversation = await _services.Repository.GetWhatsAppConversationAsync(conversation.AccountId, conversation.Phone) ?? new WhatsAppConversation
+            if (IsCurrentConversationSelection(selectionGeneration, conversation))
             {
-                Id = conversation.Id, AccountId = conversation.AccountId, Phone = conversation.Phone
+                ComposerBox.Clear();
+                ClearOutgoingTranslation();
+                ClearAttachment();
+                ClearReply();
+            }
+
+            var confirmedByServer = status is WhatsAppMessageStatus.Sent or WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read;
+            var sourceContextCurrent = draftContextToken is null ||
+                                       await IsAgentDraftContextCurrentAsync(draftContextToken);
+            var proposedConversation = new WhatsAppConversation
+            {
+                Id = conversation.Id,
+                AccountId = conversation.AccountId,
+                Jid = conversation.Jid,
+                Phone = conversation.Phone,
+                DisplayName = conversation.DisplayName,
+                LastMessage = conversation.LastMessage,
+                LastMessageAt = timestamp,
+                UnreadCount = conversation.Unread,
+                LastReadAt = conversation.LastReadAt,
+                IsPinned = conversation.IsPinned,
+                PinnedAt = conversation.PinnedAt
             };
-            storedConversation.LeadId = _currentLead?.Id ?? conversation.LeadId;
-            storedConversation.DisplayName = conversation.DisplayName;
-            storedConversation.LastMessage = conversation.LastMessage;
-            storedConversation.LastMessageAt = timestamp;
-            storedConversation.IsPinned = conversation.IsPinned;
-            storedConversation.PinnedAt = conversation.PinnedAt;
-            await _services.Repository.UpsertWhatsAppConversationAsync(storedConversation);
             var storedMessage = new WhatsAppMessage
             {
                 Id = $"{conversation.AccountId}:{id}", ProviderMessageId = id, AccountId = conversation.AccountId,
-                ConversationId = conversation.Id, LeadId = _currentLead?.Id ?? conversation.LeadId, Phone = conversation.Phone,
+                ConversationId = conversation.Id, LeadId = "", Jid = conversation.Jid, Phone = conversation.Phone,
                 Direction = WhatsAppMessageDirection.Outgoing, Status = status, Kind = kind,
                 Body = text, FileName = fileName, MimeType = mimeType, MediaPath = attachmentPath, Timestamp = timestamp,
                 QuotedMessageId = reply?.Id ?? "", QuotedText = reply?.DisplayText ?? "", QuotedFromMe = reply?.FromMe ?? false,
@@ -1288,53 +1430,99 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                     _ => "desktop"
                 }
             };
-            await _services.Repository.UpsertWhatsAppMessageAsync(storedMessage);
-            ReorderConversations(conversation);
-            ScrollMessages(conversation);
-            var confirmedByServer = status is WhatsAppMessageStatus.Sent or WhatsAppMessageStatus.Delivered or WhatsAppMessageStatus.Read;
-            if (_currentLead is not null && confirmedByServer)
+            var commit = await _services.Repository.PersistAcknowledgedOutgoingWhatsAppAsync(
+                proposedConversation,
+                storedMessage,
+                sendBinding.CustomerId,
+                sendBinding.BindingToken,
+                sourceContextCurrent,
+                confirmedByServer,
+                expectedCustomerIdentityHash: draftContextToken?.CustomerIdentityHash ?? "",
+                expectedActiveFactSetToken: draftContextToken?.ActiveFactSetToken ?? "",
+                expectedRunContextToken: draftContextToken?.RunToken ?? "",
+                expectedConversationTargetToken: draftContextToken?.ConversationTargetToken ?? "",
+                expectedSourceMessageId: draftContextToken?.SourceMessageId ?? "",
+                expectedSourceMessageToken: draftContextToken?.SourceMessageToken ?? "");
+            storedMessage = commit.Message;
+            // From this point the transport ACK and local message commit are durable.
+            // Follow-up analytics are best effort and must never turn a confirmed send
+            // into a retryable-looking failure that could make the user send twice.
+            accepted = true;
+            try
             {
-                LeadConnectionStatus.ApplyFromMessage(_currentLead, storedMessage);
-                await _services.Repository.UpsertLeadAsync(_currentLead);
-                await _services.Repository.LogEventAsync("whatsapp_message_sent", _currentLead.Id, null, $"message_id={id}; kind={kind}; origin={effectiveOrigin}");
-                if (effectiveOrigin is "ai_conversation_assistant" or "ai_knowledge_assisted")
+                var attributedLead = string.IsNullOrWhiteSpace(commit.AttributedCustomerId)
+                    ? null
+                    : await _services.Repository.GetLeadAsync(commit.AttributedCustomerId);
+                ReorderConversations(conversation);
+                if (IsCurrentConversationSelection(selectionGeneration, conversation)) ScrollMessages(conversation);
+                if (confirmedByServer && attributedLead is not null)
                 {
-                    await _services.CustomerActions.RecordMessageExecutionAsync(
-                        _currentLead.Id,
-                        "WhatsApp",
-                        text,
-                        $"whatsapp-{conversation.AccountId}-{id}",
-                        timestamp);
-                }
-                if (knowledgeDecision is not null)
-                {
-                    foreach (var citation in knowledgeDecision.KnowledgeCitations)
+                    await _services.Repository.LogEventAsync("whatsapp_message_sent", attributedLead.Id, null, $"message_id={id}; kind={kind}; origin={effectiveOrigin}");
+                    if (effectiveOrigin is "ai_conversation_assistant" or "ai_knowledge_assisted")
                     {
-                        await _services.Repository.SaveKnowledgeUsageOutcomeAsync(new KnowledgeUsageOutcome
-                        {
-                            Id = $"{conversation.AccountId}:{id}:{citation.ChunkId}",
-                            RetrievalLogId = knowledgeDecision.KnowledgeRetrievalId,
-                            ChunkId = citation.ChunkId,
-                            CustomerId = _currentLead.Id,
-                            SourceMessageId = id,
-                            ActuallySent = true,
-                            ObservationNote = "用户人工确认并发送知识辅助回复；回复、阶段推进、成交和复购仍需后续真实观察。"
-                        });
+                        await _services.CustomerActions.RecordMessageExecutionAsync(
+                            attributedLead.Id,
+                            "WhatsApp",
+                            text,
+                            $"whatsapp-{conversation.AccountId}-{id}",
+                            timestamp);
                     }
-                    _pendingKnowledgeDecision = null;
+                    if (knowledgeDecision is not null)
+                    {
+                        foreach (var citation in knowledgeDecision.KnowledgeCitations)
+                        {
+                            await _services.Repository.SaveKnowledgeUsageOutcomeAsync(new KnowledgeUsageOutcome
+                            {
+                                Id = $"{conversation.AccountId}:{id}:{citation.ChunkId}",
+                                RetrievalLogId = knowledgeDecision.KnowledgeRetrievalId,
+                                ChunkId = citation.ChunkId,
+                                CustomerId = attributedLead.Id,
+                                SourceMessageId = id,
+                                ActuallySent = true,
+                                ObservationNote = "用户人工确认并发送知识辅助回复；回复、阶段推进、成交和复购仍需后续真实观察。"
+                            });
+                        }
+                    }
+                    if (IsCurrentConversationSelection(selectionGeneration, conversation)) _currentLead = attributedLead;
+                }
+                else if (confirmedByServer)
+                {
+                    await _services.Repository.LogEventAsync(
+                        "whatsapp_message_sent_unattributed",
+                        null,
+                        null,
+                        $"message_id={id}; kind={kind}; origin={effectiveOrigin}; context_changed={commit.ContextChanged}; reason={commit.ContextChangeReason}");
+                    if (commit.ContextChanged && IsCurrentConversationSelection(selectionGeneration, conversation))
+                        MessageBox.Show(
+                            "WhatsApp 已确认发送；发送期间客户身份或外部调查事实发生变化，本地消息已按未关联保存。请勿重复发送，请刷新会话后再继续。",
+                            "消息已发送 · 请勿重试",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Information);
                 }
             }
-            accepted = true;
+            catch (Exception postProcessError)
+            {
+                if (IsCurrentConversationSelection(selectionGeneration, conversation))
+                    MessageBox.Show(
+                        $"WhatsApp 已确认发送并保存，后续分析记录暂未完成：{postProcessError.Message}\n\n请勿重复发送；刷新后可继续处理。",
+                        "消息已发送 · 后处理待恢复",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+            }
+            if (draftContextToken is not null && ReferenceEquals(_pendingAgentDraftContextToken, draftContextToken))
+                ClearPendingKnowledgeDecision();
         }
         catch (TimeoutException)
         {
-            pendingMessage.UpdateStatus(WhatsAppMessageStatus.Pending, DateTimeOffset.Now, null, null, "等待 WhatsApp 回执，发送状态待确认");
-            MessageBox.Show("尚未收到 WhatsApp 服务端确认，消息保持待确认状态，不会显示为已发送。请等待会话同步后再决定是否重试。", "发送状态待确认", MessageBoxButton.OK, MessageBoxImage.Warning);
+            pendingMessage?.UpdateStatus(WhatsAppMessageStatus.Pending, DateTimeOffset.Now, null, null, "等待 WhatsApp 回执，发送状态待确认");
+            if (IsCurrentConversationSelection(selectionGeneration, conversation))
+                MessageBox.Show("尚未收到 WhatsApp 服务端确认，消息保持待确认状态，不会显示为已发送。请等待会话同步后再决定是否重试。", "发送状态待确认", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception error)
         {
-            pendingMessage.UpdateStatus(WhatsAppMessageStatus.Failed, DateTimeOffset.Now, null, null, error.Message);
-            MessageBox.Show(error.Message, "发送失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            pendingMessage?.UpdateStatus(WhatsAppMessageStatus.Failed, DateTimeOffset.Now, null, null, error.Message);
+            if (IsCurrentConversationSelection(selectionGeneration, conversation))
+                MessageBox.Show(error.Message, "发送失败", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally { _sending = false; UpdateComposerState(); }
         return accepted;
@@ -1552,6 +1740,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         catch (OperationCanceledException) { }
         catch (Exception error)
         {
+            if (cts.IsCancellationRequested || !IsCurrentConversation(conversation)) return;
             _translationProfile = null;
             TranslationRouteText.Text = "本机语言 ⇄ 客户主流语言";
             TranslationStatusText.Text = $"语言识别未完成：{FriendlyTranslationError(error)}";
@@ -1642,6 +1831,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
     private void ClearLead()
     {
+        if (_pendingAgentDraftContextToken is not null)
+            ClearKnowledgeReferences(clearBoundComposer: true);
         _currentLead = null; LeadLinkStateText.Text = "选择会话后关联客户"; NameBox.Clear(); OwnerBox.Clear(); TagsBox.Clear(); OptInCheck.IsChecked = false; OptedOutCheck.IsChecked = false; NotesBox.Clear(); CustomFieldsBox.Clear(); SaveLeadButton.IsEnabled = false;
         _currentIdentityResolution = null;
         _currentCustomerSuccessContext = null;
@@ -1690,6 +1881,23 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             string.IsNullOrWhiteSpace(state.LastGeneratedReply))
             return;
 
+        var selectionGeneration = _conversationSelectionGeneration;
+        var contextToken = _pendingAgentDraftContextToken;
+        if (contextToken is null ||
+            !state.PendingRunContextToken.Equals(contextToken.RunToken, StringComparison.Ordinal))
+        {
+            ComposerBox.Clear();
+            ClearKnowledgeReferences();
+            MessageBox.Show(
+                "这份后台草稿缺少可复验的完整客户快照。请点击“重新生成建议”，确认当前客户与调查事实后再使用。",
+                "AI 草稿需要重新生成",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+        var resolved = await ResolveCurrentConversationLeadAsync(conversation, selectionGeneration);
+        if (!resolved.IsCurrent) return;
+        if (!await EnsurePendingAgentDraftCurrentAsync(conversation, resolved.Binding, contextToken)) return;
         ComposerBox.Text = state.LastGeneratedReply;
         ComposerBox.CaretIndex = ComposerBox.Text.Length;
         ComposerBox.Focus();
@@ -1698,7 +1906,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             conversation.Id,
             state.LastRunStatus,
             "草稿已填入会话输入框；你可以修改后点击发送。");
-        await LoadLeadAsync(conversation);
+        if (IsCurrentConversationSelection(selectionGeneration, conversation))
+            await LoadLeadAsync(conversation, selectionGeneration);
     }
 
     private async void TakeOverHandoff_Click(object sender, RoutedEventArgs e)
@@ -1867,9 +2076,14 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             var facts = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.Fact);
             var inferences = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.Inference);
             var gaps = brain.Statements.Count(item => item.Nature == IntelligenceStatementNature.InformationGap);
-            AiSidebarBrainMetaText.Text = $"BRAIN V{brain.Version} · 覆盖 {brain.Coverage.Percentage}% · 事实 {facts} / 判断 {inferences} / 缺口 {gaps} · 知识 {brain.KnowledgeReferences.Count}";
-            if (!string.IsNullOrWhiteSpace(brain.Summary)) AiSidebarProfileText.Text = brain.Summary;
-            if (!string.IsNullOrWhiteSpace(brain.NextBestAction)) AiSidebarNextActionText.Text = $"下一步：{brain.NextBestAction}";
+            AiSidebarBrainMetaText.Text = brain.HasCurrentDecision
+                ? $"BRAIN V{brain.Version} · 覆盖 {brain.Coverage.Percentage}% · 事实 {facts} / 判断 {inferences} / 缺口 {gaps} · 知识 {brain.KnowledgeReferences.Count}"
+                : $"BRAIN V{brain.Version} · 结论已过期 · 资料已变化；打开客户详情，点击“AI 分析并生成行动”";
+            if (brain.HasCurrentDecision)
+            {
+                if (!string.IsNullOrWhiteSpace(brain.Summary)) AiSidebarProfileText.Text = brain.Summary;
+                if (!string.IsNullOrWhiteSpace(brain.NextBestAction)) AiSidebarNextActionText.Text = $"下一步：{brain.NextBestAction}";
+            }
             RenderConversationContext(brain.ConversationContext, loading: true);
             brain = await _services.CustomerBrain.UpdateConversationContextAsync(lead.Id);
             if (generation != _customerBrainRefreshGeneration || _currentLead?.Id != lead.Id) return;
@@ -1880,6 +2094,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             if (generation != _customerBrainRefreshGeneration || _currentLead?.Id != lead.Id) return;
             AiSidebarBrainMetaText.Text = $"CUSTOMER BRAIN · 暂不可用：{error.Message}";
             var profile = await _services.CustomerBrain.GetAsync(lead.Id);
+            if (generation != _customerBrainRefreshGeneration || _currentLead?.Id != lead.Id) return;
             RenderConversationContext(profile?.ConversationContext);
         }
     }
@@ -1987,11 +2202,29 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         return string.Join(Environment.NewLine, parts);
     }
 
+    private void BindPendingAgentDraft(
+        CustomerSuccessAgentDecision decision,
+        CustomerSuccessRunContextToken contextToken,
+        string customerId,
+        string accountId,
+        string conversationId)
+    {
+        if (string.IsNullOrWhiteSpace(customerId) ||
+            !contextToken.CustomerId.Equals(customerId, StringComparison.OrdinalIgnoreCase) ||
+            !contextToken.AccountId.Equals(accountId, StringComparison.OrdinalIgnoreCase) ||
+            !contextToken.ConversationId.Equals(conversationId, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("AI 草稿的客户上下文不一致，请重新生成。");
+        _pendingKnowledgeDecision = decision;
+        _pendingAgentDraftContextToken = contextToken;
+        _pendingKnowledgeCustomerId = customerId;
+        _pendingKnowledgeAccountId = accountId;
+        _pendingKnowledgeConversationId = conversationId;
+    }
+
     private void ShowKnowledgeReferences(
         CustomerSuccessAgentDecision decision,
         KnowledgeRetrievalResult? retrieval)
     {
-        _pendingKnowledgeDecision = decision;
         if (retrieval is null)
         {
             KnowledgeReferencePanel.Visibility = Visibility.Collapsed;
@@ -2012,12 +2245,75 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 : $"知识不足：{retrieval.InsufficiencyReason} · 检索 ID {retrieval.Id}";
     }
 
-    private void ClearKnowledgeReferences()
+    private void ClearKnowledgeReferences(bool clearBoundComposer = false)
     {
-        _pendingKnowledgeDecision = null;
+        var clearComposer = clearBoundComposer && _pendingAgentDraftContextToken is not null;
+        ClearPendingKnowledgeDecision();
         KnowledgeReferenceList.ItemsSource = null;
         KnowledgeReferenceSummaryText.Text = "尚未执行知识检索";
         KnowledgeReferencePanel.Visibility = Visibility.Collapsed;
+        if (clearComposer && !string.IsNullOrWhiteSpace(ComposerBox.Text)) ComposerBox.Clear();
+    }
+
+    private void ClearPendingKnowledgeDecision()
+    {
+        _pendingKnowledgeDecision = null;
+        _pendingAgentDraftContextToken = null;
+        _pendingKnowledgeCustomerId = "";
+        _pendingKnowledgeAccountId = "";
+        _pendingKnowledgeConversationId = "";
+    }
+
+    private bool IsPendingKnowledgeTarget(ConversationItem conversation, string customerId) =>
+        _pendingKnowledgeDecision is not null &&
+        _pendingAgentDraftContextToken is not null &&
+        _pendingKnowledgeAccountId.Equals(conversation.AccountId, StringComparison.OrdinalIgnoreCase) &&
+        _pendingKnowledgeConversationId.Equals(conversation.Id, StringComparison.OrdinalIgnoreCase) &&
+        _pendingKnowledgeCustomerId.Equals(customerId, StringComparison.OrdinalIgnoreCase);
+
+    private async Task<bool> EnsurePendingAgentDraftCurrentAsync(
+        ConversationItem conversation,
+        ConversationLeadBinding binding,
+        CustomerSuccessRunContextToken contextToken)
+    {
+        if (!ReferenceEquals(_pendingAgentDraftContextToken, contextToken) ||
+            binding.Lead is null ||
+            !IsPendingKnowledgeTarget(conversation, binding.CustomerId) ||
+            !contextToken.CustomerId.Equals(binding.CustomerId, StringComparison.OrdinalIgnoreCase))
+        {
+            InvalidatePendingAgentDraft();
+            return false;
+        }
+        if (await IsAgentDraftContextCurrentAsync(contextToken)) return true;
+        InvalidatePendingAgentDraft();
+        return false;
+    }
+
+    private async Task<bool> IsAgentDraftContextCurrentAsync(CustomerSuccessRunContextToken contextToken)
+    {
+        try
+        {
+            await _services.CustomerSuccessAgent.EnsureRunContextCurrentAsync(
+                contextToken,
+                requireAutoLock: false,
+                requireProcessedState: true);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void InvalidatePendingAgentDraft()
+    {
+        ClearKnowledgeReferences(clearBoundComposer: true);
+        if (ConversationList.SelectedItem is ConversationItem)
+            MessageBox.Show(
+                "客户身份、会话原文或外部调查事实已变化。旧 AI 草稿已清空，请重新生成后再发送。",
+                "AI 草稿已失效",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
     }
 
     private void ViewKnowledgeSource_Click(object sender, RoutedEventArgs e)
@@ -2039,22 +2335,36 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     {
         if (KnowledgeReferenceList.SelectedItem is not KnowledgeReferenceRow row ||
             ConversationList.SelectedItem is not ConversationItem conversation) return;
+        var selectionGeneration = _conversationSelectionGeneration;
+        var customerId = _currentLead?.Id ?? "";
+        if (!IsPendingKnowledgeTarget(conversation, customerId))
+        {
+            ClearKnowledgeReferences(clearBoundComposer: true);
+            return;
+        }
         await _services.Repository.SaveKnowledgeFeedbackAsync(new KnowledgeFeedback
         {
             RetrievalLogId = _pendingKnowledgeDecision?.KnowledgeRetrievalId ?? "",
             DocumentId = row.Hit.DocumentId,
             ChunkId = row.Hit.ChunkId,
-            CustomerId = _currentLead?.Id ?? "",
+            CustomerId = customerId,
             AccountId = conversation.AccountId,
             ConversationId = conversation.Id,
             Helpful = false,
             ExcludedForCurrentConversation = true,
             Note = "用户在 Inbox 将该知识排除出当前会话。"
         });
-        if (_pendingKnowledgeDecision is not null &&
-            string.Equals(ComposerBox.Text.Trim(), _pendingKnowledgeDecision.ReplyText.Trim(), StringComparison.Ordinal))
+        if (!IsCurrentConversationSelection(selectionGeneration, conversation)) return;
+        if (!IsPendingKnowledgeTarget(conversation, customerId))
+        {
+            ClearKnowledgeReferences(clearBoundComposer: true);
+            return;
+        }
+        // Editing an AI draft does not turn it into an unrelated human draft. Once a cited
+        // source is excluded, every derivative of that bound draft must be discarded.
+        if (_pendingAgentDraftContextToken is not null && !string.IsNullOrWhiteSpace(ComposerBox.Text))
             ComposerBox.Clear();
-        _pendingKnowledgeDecision = null;
+        ClearPendingKnowledgeDecision();
         var remaining = (KnowledgeReferenceList.ItemsSource as IEnumerable<KnowledgeReferenceRow> ?? [])
             .Where(item => item.Hit.ChunkId != row.Hit.ChunkId).ToList();
         KnowledgeReferenceList.ItemsSource = remaining;
@@ -2065,23 +2375,44 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     {
         if (KnowledgeReferenceList.SelectedItem is not KnowledgeReferenceRow row ||
             ConversationList.SelectedItem is not ConversationItem conversation) return;
+        var selectionGeneration = _conversationSelectionGeneration;
+        var customerId = _currentLead?.Id ?? "";
+        if (!IsPendingKnowledgeTarget(conversation, customerId))
+        {
+            ClearKnowledgeReferences(clearBoundComposer: true);
+            return;
+        }
         await _services.Repository.SaveKnowledgeFeedbackAsync(new KnowledgeFeedback
         {
             RetrievalLogId = _pendingKnowledgeDecision?.KnowledgeRetrievalId ?? "",
             DocumentId = row.Hit.DocumentId,
             ChunkId = row.Hit.ChunkId,
-            CustomerId = _currentLead?.Id ?? "",
+            CustomerId = customerId,
             AccountId = conversation.AccountId,
             ConversationId = conversation.Id,
             Helpful = true,
             Note = "用户在 Inbox 标记该知识引用有帮助。"
         });
+        if (!IsCurrentConversationSelection(selectionGeneration, conversation)) return;
+        if (!IsPendingKnowledgeTarget(conversation, customerId))
+        {
+            ClearKnowledgeReferences(clearBoundComposer: true);
+            return;
+        }
         KnowledgeReferenceSummaryText.Text = "已记录“有帮助”。这只是人工反馈，不会被系统表述为成交因果。";
     }
 
     private async void DisableKnowledgeSource_Click(object sender, RoutedEventArgs e)
     {
-        if (KnowledgeReferenceList.SelectedItem is not KnowledgeReferenceRow row) return;
+        if (KnowledgeReferenceList.SelectedItem is not KnowledgeReferenceRow row ||
+            ConversationList.SelectedItem is not ConversationItem conversation) return;
+        var selectionGeneration = _conversationSelectionGeneration;
+        var customerId = _currentLead?.Id ?? "";
+        if (!IsPendingKnowledgeTarget(conversation, customerId))
+        {
+            ClearKnowledgeReferences(clearBoundComposer: true);
+            return;
+        }
         if (MessageBox.Show(
                 $"停用“{row.Hit.DocumentTitle}”后，它会立即退出全部后续检索。原件、版本和审计仍保留。是否继续？",
                 "停用知识来源",
@@ -2090,14 +2421,20 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         try
         {
             await _services.KnowledgeBase.DisableAsync(row.Hit.DocumentId);
-            if (_pendingKnowledgeDecision is not null &&
-                string.Equals(ComposerBox.Text.Trim(), _pendingKnowledgeDecision.ReplyText.Trim(), StringComparison.Ordinal))
-                ComposerBox.Clear();
-            ClearKnowledgeReferences();
+            if (!IsCurrentConversationSelection(selectionGeneration, conversation)) return;
+            if (!IsPendingKnowledgeTarget(conversation, customerId))
+            {
+                ClearKnowledgeReferences(clearBoundComposer: true);
+                return;
+            }
+            // The user may have edited the generated text; it is still derived from this
+            // source and remains bound to the original customer/run context.
+            ClearKnowledgeReferences(clearBoundComposer: true);
             MessageBox.Show("知识来源已停用。请重新运行 AI 生成建议。", "知识库", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception error)
         {
+            if (!IsCurrentConversationSelection(selectionGeneration, conversation)) return;
             MessageBox.Show(error.Message, "停用失败", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -2291,6 +2628,16 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         "offline_messages_timeout" => "离线消息补齐确认",
         _ => "WhatsApp 数据"
     };
+    private sealed record ConversationLeadBinding(string CustomerId, string BindingToken, Lead? Lead)
+    {
+        public static ConversationLeadBinding Unbound { get; } = new("", "", null);
+
+        public bool HasSameTarget(ConversationLeadBinding other) =>
+            Lead is not null && other.Lead is not null &&
+            CustomerId.Equals(other.CustomerId, StringComparison.OrdinalIgnoreCase) &&
+            BindingToken.Equals(other.BindingToken, StringComparison.Ordinal);
+    }
+
     private sealed record StageOption(string Label, LeadStage Value);
     private sealed record AgentModeOption(string Label, ConversationAgentMode Value);
     private sealed record KnowledgeReferenceRow(string Citation, string Preview, KnowledgeRetrievalHit Hit);

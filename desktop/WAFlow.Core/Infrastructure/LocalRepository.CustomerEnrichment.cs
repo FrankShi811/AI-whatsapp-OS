@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using WAFlow.Core.Domain;
+using WAFlow.Core.Services;
 
 namespace WAFlow.Core.Infrastructure;
 
@@ -366,7 +367,8 @@ public sealed partial class LocalRepository
         int retentionDays,
         CancellationToken cancellationToken = default)
     {
-        var cutoff = DateTimeOffset.Now.AddDays(-Math.Clamp(retentionDays, 30, 3650)).ToString("O");
+        var cutoff = _timeProvider.GetUtcNow().AddDays(-Math.Clamp(retentionDays, 30, 3650)).ToString("O");
+        var currentLocalMonth = _timeProvider.GetLocalNow().ToString("yyyy-MM");
         await using var db = Open();
         await db.OpenAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await db.BeginTransactionAsync(cancellationToken);
@@ -380,12 +382,11 @@ public sealed partial class LocalRepository
         var removedJobs = await jobs.ExecuteNonQueryAsync(cancellationToken);
         await using var usage = db.CreateCommand();
         usage.Transaction = transaction;
-        // Budget and free-quota gates are calendar-month based. Never prune the
-        // current month's ledger even when a short retention window overlaps a
-        // 31-day month, otherwise the local hard gate could under-count usage.
+        // The local usage estimate follows the user's calendar month. Never
+        // prune that month's ledger even when retention overlaps a month edge.
         usage.CommandText = "DELETE FROM customer_enrichment_provider_usage WHERE created_at < $cutoff AND request_month < $currentMonth";
         usage.Parameters.AddWithValue("$cutoff", cutoff);
-        usage.Parameters.AddWithValue("$currentMonth", DateTimeOffset.Now.ToString("yyyy-MM"));
+        usage.Parameters.AddWithValue("$currentMonth", currentLocalMonth);
         await usage.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return removedJobs;
@@ -464,6 +465,109 @@ public sealed partial class LocalRepository
         while (await reader.ReadAsync(cancellationToken))
             if (Json.Deserialize<CustomerEnrichmentJob>(reader.GetString(0)) is { } item) results.Add(item);
         return results;
+    }
+
+    public async Task<IReadOnlyDictionary<string, CustomerEnrichmentQueueSummary>>
+        GetCustomerEnrichmentQueueSummariesAsync(CancellationToken cancellationToken = default)
+    {
+        await using var db = Open();
+        await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            SELECT l.id AS customer_id,
+                   l.data_json AS lead_json,
+                   'job' AS row_kind,
+                   job.data_json AS job_json,
+                   NULL AS field_type,
+                   NULL AS normalized_value,
+                   NULL AS fact_job_json
+            FROM leads AS l
+            LEFT JOIN customer_enrichment_jobs AS job
+              ON job.customer_id = l.id
+
+            UNION ALL
+
+            SELECT l.id AS customer_id,
+                   l.data_json AS lead_json,
+                   'fact' AS row_kind,
+                   NULL AS job_json,
+                   fact.field_type,
+                   fact.normalized_value,
+                   fact_job.data_json AS fact_job_json
+            FROM leads AS l
+            LEFT JOIN customer_enrichment_facts AS fact
+              ON fact.customer_id = l.id
+            LEFT JOIN customer_enrichment_jobs AS fact_job
+              ON fact_job.id = fact.job_id
+             AND fact_job.customer_id = fact.customer_id
+            """;
+
+        var customerIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var jobsByCustomer = new Dictionary<string, Dictionary<string, CustomerEnrichmentJob>>(StringComparer.OrdinalIgnoreCase);
+        var currentIdentityHashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var currentFactKeys = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var customerId = reader.GetString(0);
+            customerIds.Add(customerId);
+            if (!currentIdentityHashes.ContainsKey(customerId)
+                && Json.Deserialize<Lead>(reader.GetString(1)) is { } lead)
+            {
+                currentIdentityHashes[customerId] = CustomerEnrichmentIdentityService.Build(lead).IdentityHash;
+            }
+
+            var rowKind = reader.GetString(2);
+            if (rowKind == "job" && !reader.IsDBNull(3)
+                && Json.Deserialize<CustomerEnrichmentJob>(reader.GetString(3)) is { } job)
+            {
+                if (!jobsByCustomer.TryGetValue(customerId, out var jobs))
+                {
+                    jobs = new Dictionary<string, CustomerEnrichmentJob>(StringComparer.OrdinalIgnoreCase);
+                    jobsByCustomer[customerId] = jobs;
+                }
+                jobs[job.Id] = job;
+            }
+
+            if (rowKind != "fact"
+                || reader.IsDBNull(4)
+                || reader.IsDBNull(5)
+                || reader.IsDBNull(6)
+                || !currentIdentityHashes.TryGetValue(customerId, out var currentIdentityHash)
+                || Json.Deserialize<CustomerEnrichmentJob>(reader.GetString(6)) is not { } factJob
+                || !string.Equals(factJob.IdentityHash, currentIdentityHash, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (!currentFactKeys.TryGetValue(customerId, out var factKeys))
+            {
+                factKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                currentFactKeys[customerId] = factKeys;
+            }
+            factKeys.Add($"{reader.GetString(4)}|{reader.GetString(5)}");
+        }
+
+        return customerIds.ToDictionary(
+            customerId => customerId,
+            customerId =>
+            {
+                var jobs = jobsByCustomer.TryGetValue(customerId, out var jobsById)
+                    ? jobsById.Values.OrderByDescending(job => job.CreatedAt).ToList()
+                    : [];
+                var latestHistoricalJob = jobs.FirstOrDefault();
+                var latestCurrentJob = currentIdentityHashes.TryGetValue(customerId, out var currentIdentityHash)
+                    ? jobs.FirstOrDefault(job => string.Equals(
+                        job.IdentityHash,
+                        currentIdentityHash,
+                        StringComparison.OrdinalIgnoreCase))
+                    : null;
+                var factCount = currentFactKeys.TryGetValue(customerId, out var factKeys) ? factKeys.Count : 0;
+                return new CustomerEnrichmentQueueSummary(
+                    customerId,
+                    latestCurrentJob,
+                    factCount,
+                    latestHistoricalJob);
+            },
+            StringComparer.OrdinalIgnoreCase);
     }
 
     public async Task<IReadOnlyList<CustomerEnrichmentJob>> GetRecoverableCustomerEnrichmentJobsAsync(
@@ -903,8 +1007,40 @@ public sealed partial class LocalRepository
                 if (Json.Deserialize<AiRecommendationRecord>(recommendationReader.GetString(0)) is { } item)
                     recommendations.Add(item);
         }
+        var followUpTasks = new List<FollowUpTask>();
+        await using (var readTasks = db.CreateCommand())
+        {
+            readTasks.Transaction = transaction;
+            readTasks.CommandText = "SELECT data_json FROM follow_up_tasks WHERE customer_id=$customer";
+            readTasks.Parameters.AddWithValue("$customer", fact.CustomerId);
+            await using var taskReader = await readTasks.ExecuteReaderAsync(cancellationToken);
+            while (await taskReader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<FollowUpTask>(taskReader.GetString(0)) is { } item)
+                    followUpTasks.Add(item);
+        }
+        var salesActions = new List<SalesActionRecord>();
+        await using (var readActions = db.CreateCommand())
+        {
+            readActions.Transaction = transaction;
+            readActions.CommandText = "SELECT data_json FROM sales_action_logs WHERE customer_id=$customer";
+            readActions.Parameters.AddWithValue("$customer", fact.CustomerId);
+            await using var actionReader = await readActions.ExecuteReaderAsync(cancellationToken);
+            while (await actionReader.ReadAsync(cancellationToken))
+                if (Json.Deserialize<SalesActionRecord>(actionReader.GetString(0)) is { } item)
+                    salesActions.Add(item);
+        }
         foreach (var recommendation in recommendations)
         {
+            var task = followUpTasks.FirstOrDefault(item =>
+                item.RecommendationId.Equals(recommendation.Id, StringComparison.OrdinalIgnoreCase));
+            var action = salesActions.FirstOrDefault(item =>
+                item.RecommendationId.Equals(recommendation.Id, StringComparison.OrdinalIgnoreCase));
+            if (recommendation.Status == AiRecommendationStatus.InProgress
+                || task?.Status == FollowUpTaskStatus.InProgress
+                || action?.Status == SalesActionStatus.InProgress
+                || action?.ExecutedAt is not null)
+                continue;
+
             recommendation.Status = AiRecommendationStatus.Superseded;
             recommendation.UpdatedAt = fact.UpdatedAt;
             await using var invalidateRecommendation = db.CreateCommand();
@@ -919,6 +1055,37 @@ public sealed partial class LocalRepository
             invalidateRecommendation.Parameters.AddWithValue("$json", Json.Serialize(recommendation));
             invalidateRecommendation.Parameters.AddWithValue("$id", recommendation.Id);
             await invalidateRecommendation.ExecuteNonQueryAsync(cancellationToken);
+
+            if (task is { Status: FollowUpTaskStatus.Proposed or FollowUpTaskStatus.Open })
+            {
+                task.Status = FollowUpTaskStatus.Dismissed;
+                task.Outcome = "客户资料已变化，旧 AI 建议已失效。";
+                task.CompletedAt = fact.UpdatedAt;
+                task.UpdatedAt = fact.UpdatedAt;
+                await using var dismissTask = db.CreateCommand();
+                dismissTask.Transaction = transaction;
+                dismissTask.CommandText = "UPDATE follow_up_tasks SET status=$status,updated_at=$updated,data_json=$json WHERE id=$id";
+                dismissTask.Parameters.AddWithValue("$status", task.Status.ToString());
+                dismissTask.Parameters.AddWithValue("$updated", task.UpdatedAt.ToString("O"));
+                dismissTask.Parameters.AddWithValue("$json", Json.Serialize(task));
+                dismissTask.Parameters.AddWithValue("$id", task.Id);
+                await dismissTask.ExecuteNonQueryAsync(cancellationToken);
+            }
+            if (action is { Status: SalesActionStatus.Planned or SalesActionStatus.Approved })
+            {
+                action.Status = SalesActionStatus.Cancelled;
+                action.Outcome = "客户资料已变化，旧 AI 建议已失效。";
+                action.CompletedAt = fact.UpdatedAt;
+                action.UpdatedAt = fact.UpdatedAt;
+                await using var cancelAction = db.CreateCommand();
+                cancelAction.Transaction = transaction;
+                cancelAction.CommandText = "UPDATE sales_action_logs SET status=$status,updated_at=$updated,data_json=$json WHERE id=$id";
+                cancelAction.Parameters.AddWithValue("$status", action.Status.ToString());
+                cancelAction.Parameters.AddWithValue("$updated", action.UpdatedAt.ToString("O"));
+                cancelAction.Parameters.AddWithValue("$json", Json.Serialize(action));
+                cancelAction.Parameters.AddWithValue("$id", action.Id);
+                await cancelAction.ExecuteNonQueryAsync(cancellationToken);
+            }
         }
         await transaction.CommitAsync(cancellationToken);
     }
@@ -927,6 +1094,7 @@ public sealed partial class LocalRepository
         CustomerEnrichmentProviderUsage usage,
         CancellationToken cancellationToken = default)
     {
+        var localUsageTime = TimeZoneInfo.ConvertTime(usage.CreatedAt, _timeProvider.LocalTimeZone);
         await using var db = Open();
         await db.OpenAsync(cancellationToken);
         await using var command = db.CreateCommand();
@@ -946,8 +1114,8 @@ public sealed partial class LocalRepository
         command.Parameters.AddWithValue("$job", string.IsNullOrWhiteSpace(usage.JobId) || usage.JobId == "settings-test"
             ? DBNull.Value
             : usage.JobId);
-        command.Parameters.AddWithValue("$day", usage.CreatedAt.ToString("yyyy-MM-dd"));
-        command.Parameters.AddWithValue("$month", usage.CreatedAt.ToString("yyyy-MM"));
+        command.Parameters.AddWithValue("$day", localUsageTime.ToString("yyyy-MM-dd"));
+        command.Parameters.AddWithValue("$month", localUsageTime.ToString("yyyy-MM"));
         command.Parameters.AddWithValue("$requests", usage.Requests);
         command.Parameters.AddWithValue("$cost", usage.EstimatedCostUsd.ToString(System.Globalization.CultureInfo.InvariantCulture));
         command.Parameters.AddWithValue("$succeeded", usage.Succeeded ? 1 : 0);
@@ -976,7 +1144,7 @@ public sealed partial class LocalRepository
     public async Task<CustomerEnrichmentUsageSummary> GetCustomerEnrichmentUsageSummaryAsync(
         CancellationToken cancellationToken = default)
     {
-        var now = DateTimeOffset.Now;
+        var now = _timeProvider.GetLocalNow();
         await using var db = Open();
         await db.OpenAsync(cancellationToken);
         await using var command = db.CreateCommand();
@@ -988,7 +1156,9 @@ public sealed partial class LocalRepository
             if (Json.Deserialize<CustomerEnrichmentProviderUsage>(reader.GetString(0)) is { } item) items.Add(item);
         return new CustomerEnrichmentUsageSummary
         {
-            TodayRequests = items.Where(item => item.CreatedAt.Date == now.Date).Sum(item => item.Requests),
+            TodayRequests = items
+                .Where(item => TimeZoneInfo.ConvertTime(item.CreatedAt, _timeProvider.LocalTimeZone).Date == now.Date)
+                .Sum(item => item.Requests),
             MonthRequests = items.Sum(item => item.Requests),
             MonthEstimatedCostUsd = items.Sum(item => item.EstimatedCostUsd),
             LastError = items.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.ErrorMessage))?.ErrorMessage ?? "",
@@ -1017,4 +1187,14 @@ public sealed partial class LocalRepository
 
     private static object Db(DateTimeOffset? value) =>
         (object?)value?.ToString("O") ?? DBNull.Value;
+}
+
+public sealed record CustomerEnrichmentQueueSummary(
+    string CustomerId,
+    CustomerEnrichmentJob? LatestJob,
+    int FactCount,
+    CustomerEnrichmentJob? LatestHistoricalJob)
+{
+    public bool HasHistoricalJob => LatestHistoricalJob is not null;
+    public bool NeedsRefresh => LatestJob is null && HasHistoricalJob;
 }

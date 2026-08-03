@@ -83,7 +83,7 @@ public partial class CustomerEditWindow : Window
         {
             var snapshot = await _services.CustomerEnrichment.GetSnapshotAsync(_lead.Id);
             var now = DateTimeOffset.Now;
-            var verified = snapshot.Facts
+            var verified = snapshot.ActiveFacts
                 .Where(fact => fact.VerificationStatus is CustomerEnrichmentVerificationStatus.Verified
                     or CustomerEnrichmentVerificationStatus.HumanConfirmed)
                 .Where(fact => fact.ExpiresAt is null || fact.ExpiresAt > now)

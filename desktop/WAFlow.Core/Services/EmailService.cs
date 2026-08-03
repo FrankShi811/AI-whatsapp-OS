@@ -41,8 +41,27 @@ public sealed record EmailSynchronizationState(
     int Imported = 0,
     string Error = "");
 
+public sealed class EmailDeliveryAcknowledgedException : Exception
+{
+    public string ProviderMessageId { get; }
+
+    public EmailDeliveryAcknowledgedException(string providerMessageId, Exception innerException)
+        : base("邮件服务器已经确认接收，但本地记录暂未保存完成。请勿重复发送；稍后同步收件箱或已发送邮件。", innerException)
+    {
+        ProviderMessageId = providerMessageId;
+    }
+}
+
 public sealed class EmailService : IAsyncDisposable
 {
+    private sealed record EmailSendBindingSnapshot(
+        string ConversationId,
+        string PeerEmail,
+        string LeadId,
+        EmailSendBindingSource Source,
+        EmailConversation? Conversation,
+        Lead? Lead,
+        string ExpectedCustomerDependencyHash);
     private readonly LocalRepository _repository;
     private readonly ConcurrentDictionary<string, BackgroundAccountMonitor> _backgroundMonitors = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _syncGates = new(StringComparer.OrdinalIgnoreCase);
@@ -502,6 +521,8 @@ public sealed class EmailService : IAsyncDisposable
         string body,
         string? leadId = null,
         string? inReplyTo = null,
+        bool explicitUnbound = false,
+        string expectedCustomerDependencyHash = "",
         CancellationToken cancellationToken = default)
     {
         var account = await RequireAccountAsync(accountId, cancellationToken);
@@ -509,6 +530,13 @@ public sealed class EmailService : IAsyncDisposable
         if (!MailboxAddress.TryParse(toAddress, out var recipient)) throw new InvalidOperationException("收件邮箱格式无效。");
         if (string.IsNullOrWhiteSpace(subject)) throw new InvalidOperationException("请填写邮件主题。");
         if (string.IsNullOrWhiteSpace(body)) throw new InvalidOperationException("请填写邮件正文。");
+        var binding = await CaptureSendBindingAsync(
+            account,
+            recipient,
+            leadId,
+            explicitUnbound,
+            expectedCustomerDependencyHash,
+            cancellationToken);
 
         var mime = new MimeMessage();
         mime.From.Add(new MailboxAddress(account.DisplayName, account.EmailAddress));
@@ -518,43 +546,161 @@ public sealed class EmailService : IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(inReplyTo)) mime.InReplyTo = inReplyTo;
         mime.MessageId = MimeUtils.GenerateMessageId();
 
+        SmtpClient? client = null;
         try
         {
-            using var client = await ConnectSmtpAsync(account, password, cancellationToken);
+            client = await ConnectSmtpAsync(account, password, cancellationToken);
             await client.SendAsync(mime, cancellationToken);
-            await client.DisconnectAsync(true, cancellationToken);
-            var stored = await StoreOutgoingAsync(account, recipient, mime, leadId, cancellationToken);
-            await _repository.LogEventAsync("email_message_sent", stored.LeadId, null, $"account_id={account.Id};message_id={stored.ProviderMessageId};to={recipient.Address}", cancellationToken);
+        }
+        catch (Exception error)
+        {
+            try { await StoreFailedOutgoingAsync(account, recipient, mime, binding, error.Message, cancellationToken); }
+            catch { /* Preserve the SMTP error even when local failure-history persistence also fails. */ }
+            await _repository.LogEventAsync("email_message_failed", binding.LeadId, null, $"account_id={account.Id};to={recipient.Address};error={Safe(error.Message)}", cancellationToken);
+            throw new InvalidOperationException($"邮件发送失败：{Safe(error.Message)}", error);
+        }
+        finally
+        {
+            if (client is not null)
+            {
+                if (client.IsConnected)
+                {
+                    try { await client.DisconnectAsync(true, CancellationToken.None); }
+                    catch { /* SMTP SendAsync already returned an ACK; disconnect errors must not invite a duplicate send. */ }
+                }
+                client.Dispose();
+            }
+        }
+
+        try
+        {
+            var stored = await StoreOutgoingAsync(account, recipient, mime, binding, CancellationToken.None);
+            await _repository.LogEventAsync(
+                stored.ContextChangedAfterSend ? "email_message_sent_context_changed" : "email_message_sent",
+                string.IsNullOrWhiteSpace(stored.LeadId) ? null : stored.LeadId,
+                null,
+                $"account_id={account.Id};message_id={stored.ProviderMessageId};to={recipient.Address};context_changed={stored.ContextChangedAfterSend}",
+                CancellationToken.None);
             return stored;
         }
         catch (Exception error)
         {
-            try { await StoreFailedOutgoingAsync(account, recipient, mime, leadId, error.Message, cancellationToken); }
-            catch { /* Preserve the SMTP error even when local failure-history persistence also fails. */ }
-            await _repository.LogEventAsync("email_message_failed", leadId, null, $"account_id={account.Id};to={recipient.Address};error={Safe(error.Message)}", cancellationToken);
-            throw new InvalidOperationException($"邮件发送失败：{Safe(error.Message)}", error);
+            try
+            {
+                await _repository.LogEventAsync(
+                    "email_message_acknowledged_persistence_failed",
+                    null,
+                    null,
+                    $"account_id={account.Id};message_id={mime.MessageId};to={recipient.Address};error={Safe(error.Message)}",
+                    CancellationToken.None);
+            }
+            catch { }
+            throw new EmailDeliveryAcknowledgedException(mime.MessageId ?? "", error);
         }
+    }
+
+    private async Task<EmailSendBindingSnapshot> CaptureSendBindingAsync(
+        EmailAccount account,
+        MailboxAddress recipient,
+        string? requestedLeadId,
+        bool explicitUnbound,
+        string expectedCustomerDependencyHash,
+        CancellationToken cancellationToken)
+    {
+        var peer = NormalizeEmail(recipient.Address);
+        var conversationId = $"{account.Id}:{peer}";
+        var conversation = await _repository.GetEmailConversationAsync(conversationId, cancellationToken);
+        var requestedId = requestedLeadId?.Trim() ?? "";
+        var requestedLead = requestedId.Length == 0
+            ? null
+            : await _repository.GetLeadAsync(requestedId, cancellationToken)
+              ?? throw new InvalidOperationException("发送前客户已经不存在，请刷新邮件会话后重试。");
+        if (requestedLead is not null &&
+            !NormalizeEmail(requestedLead.Email).Equals(peer, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("发送前客户邮箱已经变化，请刷新邮件会话后重新确认收件人。");
+
+        if (!string.IsNullOrWhiteSpace(conversation?.LeadId))
+        {
+            if (explicitUnbound ||
+                (requestedId.Length > 0 && !conversation.LeadId.Equals(requestedId, StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("发送前邮件会话的客户关联已经变化，请刷新后重新确认。");
+            var boundLead = await _repository.GetLeadAsync(conversation.LeadId, cancellationToken)
+                ?? throw new InvalidOperationException("邮件会话关联的客户已经不存在，请先重新关联客户。");
+            if (!NormalizeEmail(boundLead.Email).Equals(peer, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("邮件会话关联客户的邮箱与当前收件人不一致，请先核对客户资料。");
+            return new EmailSendBindingSnapshot(
+                conversationId,
+                peer,
+                boundLead.Id,
+                EmailSendBindingSource.ExistingConversation,
+                conversation,
+                boundLead,
+                expectedCustomerDependencyHash);
+        }
+
+        var uniqueLead = await _repository.GetLeadByEmailAsync(peer, cancellationToken);
+        if (explicitUnbound)
+        {
+            if (requestedId.Length > 0 || uniqueLead is not null)
+                throw new InvalidOperationException("发送前已出现可关联客户，请刷新后重新确认客户身份。");
+            return new EmailSendBindingSnapshot(
+                conversationId,
+                peer,
+                "",
+                EmailSendBindingSource.ExplicitUnbound,
+                conversation,
+                null,
+                expectedCustomerDependencyHash);
+        }
+
+        if (requestedLead is not null)
+        {
+            if (uniqueLead is null || !uniqueLead.Id.Equals(requestedLead.Id, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("传入客户不再是当前邮箱的唯一匹配，邮件未发送。");
+            return new EmailSendBindingSnapshot(
+                conversationId,
+                peer,
+                requestedLead.Id,
+                EmailSendBindingSource.UniqueEmail,
+                conversation,
+                requestedLead,
+                expectedCustomerDependencyHash);
+        }
+        return uniqueLead is null
+            ? new EmailSendBindingSnapshot(
+                conversationId,
+                peer,
+                "",
+                EmailSendBindingSource.ExplicitUnbound,
+                conversation,
+                null,
+                expectedCustomerDependencyHash)
+            : new EmailSendBindingSnapshot(
+                conversationId,
+                peer,
+                uniqueLead.Id,
+                EmailSendBindingSource.UniqueEmail,
+                conversation,
+                uniqueLead,
+                expectedCustomerDependencyHash);
     }
 
     private async Task StoreFailedOutgoingAsync(
         EmailAccount account,
         MailboxAddress recipient,
         MimeMessage source,
-        string? leadId,
+        EmailSendBindingSnapshot binding,
         string failureReason,
         CancellationToken cancellationToken)
     {
         var peer = NormalizeEmail(recipient.Address);
-        var lead = string.IsNullOrWhiteSpace(leadId)
-            ? await _repository.GetLeadByEmailAsync(peer, cancellationToken)
-            : await _repository.GetLeadAsync(leadId, cancellationToken);
         var now = DateTimeOffset.Now;
-        var conversation = await BuildConversationAsync(account, peer, recipient.Name, source.Subject, source.TextBody, now, lead, false, cancellationToken);
+        var conversation = await BuildConversationAsync(account, peer, recipient.Name, source.Subject, source.TextBody, now, binding.Lead, false, cancellationToken);
         var providerMessageId = string.IsNullOrWhiteSpace(source.MessageId) ? MimeUtils.GenerateMessageId() : source.MessageId;
         await _repository.UpsertEmailMessageAsync(new EmailMessage
         {
             Id = $"{account.Id}:{providerMessageId}", ProviderMessageId = providerMessageId,
-            AccountId = account.Id, ConversationId = conversation.Id, LeadId = lead?.Id ?? "",
+            AccountId = account.Id, ConversationId = conversation.Id, LeadId = conversation.LeadId,
             Direction = EmailMessageDirection.Outgoing, Status = EmailMessageStatus.Failed,
             FromAddress = account.EmailAddress, FromName = account.DisplayName, ToAddresses = [peer],
             Subject = source.Subject ?? "", TextBody = source.TextBody ?? "", HtmlBody = source.HtmlBody ?? "",
@@ -581,7 +727,7 @@ public sealed class EmailService : IAsyncDisposable
         var item = new EmailMessage
         {
             Id = messageId, ProviderMessageId = providerId, AccountId = account.Id,
-            ConversationId = conversation.Id, LeadId = lead?.Id ?? "", Direction = EmailMessageDirection.Incoming,
+            ConversationId = conversation.Id, LeadId = conversation.LeadId, Direction = EmailMessageDirection.Incoming,
             Status = EmailMessageStatus.Received, FromAddress = peer, FromName = sender.Name ?? "",
             ToAddresses = source.To.Mailboxes.Select(address => NormalizeEmail(address.Address)).Where(value => value.Length > 0).ToList(),
             CcAddresses = source.Cc.Mailboxes.Select(address => NormalizeEmail(address.Address)).Where(value => value.Length > 0).ToList(),
@@ -591,31 +737,47 @@ public sealed class EmailService : IAsyncDisposable
         return await _repository.UpsertEmailMessageAsync(item, cancellationToken);
     }
 
-    private async Task<EmailMessage> StoreOutgoingAsync(EmailAccount account, MailboxAddress recipient, MimeMessage source, string? leadId, CancellationToken cancellationToken)
+    private async Task<EmailMessage> StoreOutgoingAsync(
+        EmailAccount account,
+        MailboxAddress recipient,
+        MimeMessage source,
+        EmailSendBindingSnapshot binding,
+        CancellationToken cancellationToken)
     {
         var peer = NormalizeEmail(recipient.Address);
-        var lead = string.IsNullOrWhiteSpace(leadId) ? await _repository.GetLeadByEmailAsync(peer, cancellationToken) : await _repository.GetLeadAsync(leadId, cancellationToken);
         var now = DateTimeOffset.Now;
-        var conversation = await BuildConversationAsync(account, peer, recipient.Name, source.Subject, source.TextBody, now, lead, false, cancellationToken);
+        var conversation = new EmailConversation
+        {
+            Id = binding.ConversationId,
+            AccountId = account.Id,
+            LeadId = binding.LeadId,
+            PeerEmail = peer,
+            PeerName = !string.IsNullOrWhiteSpace(binding.Lead?.DisplayName)
+                ? binding.Lead.DisplayName
+                : recipient.Name ?? binding.Conversation?.PeerName ?? "",
+            Subject = source.Subject ?? binding.Conversation?.Subject ?? "",
+            LastMessage = Snippet(source.TextBody),
+            LastMessageAt = now,
+            UnreadCount = binding.Conversation?.UnreadCount ?? 0,
+            LastReadAt = binding.Conversation?.LastReadAt
+        };
         var providerMessageId = string.IsNullOrWhiteSpace(source.MessageId) ? MimeUtils.GenerateMessageId() : source.MessageId;
         var item = new EmailMessage
         {
             Id = $"{account.Id}:{providerMessageId}", ProviderMessageId = providerMessageId,
-            AccountId = account.Id, ConversationId = conversation.Id, LeadId = lead?.Id ?? "",
+            AccountId = account.Id, ConversationId = conversation.Id, LeadId = binding.LeadId,
             Direction = EmailMessageDirection.Outgoing, Status = EmailMessageStatus.Sent,
             FromAddress = account.EmailAddress, FromName = account.DisplayName,
             ToAddresses = [peer], Subject = source.Subject ?? "", TextBody = source.TextBody ?? "",
             HtmlBody = source.HtmlBody ?? "", InReplyTo = source.InReplyTo ?? "", Timestamp = now
         };
-        await _repository.UpsertEmailMessageAsync(item, cancellationToken);
-        if (lead is not null)
-        {
-            lead.LastContactAt = now;
-            lead.LatestMessage = item.TextBody;
-            if (lead.Stage == LeadStage.New) lead.Stage = LeadStage.Contacted;
-            await _repository.UpsertLeadAsync(lead, cancellationToken);
-        }
-        return item;
+        return await _repository.PersistAcknowledgedOutgoingEmailAsync(
+            conversation,
+            item,
+            binding.LeadId,
+            binding.Source,
+            binding.ExpectedCustomerDependencyHash,
+            cancellationToken);
     }
 
     private async Task<EmailConversation> BuildConversationAsync(
@@ -633,8 +795,11 @@ public sealed class EmailService : IAsyncDisposable
         var existing = (await _repository.GetEmailConversationsAsync(account.Id, cancellationToken))
             .FirstOrDefault(item => item.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
         var conversation = existing ?? new EmailConversation { Id = id, AccountId = account.Id, PeerEmail = peerEmail };
-        conversation.LeadId = lead?.Id ?? conversation.LeadId;
-        conversation.PeerName = !string.IsNullOrWhiteSpace(lead?.DisplayName) ? lead.DisplayName : (peerName ?? conversation.PeerName);
+        var effectiveLead = !string.IsNullOrWhiteSpace(existing?.LeadId)
+            ? await _repository.GetLeadAsync(existing.LeadId, cancellationToken)
+            : lead;
+        if (string.IsNullOrWhiteSpace(conversation.LeadId)) conversation.LeadId = effectiveLead?.Id ?? "";
+        conversation.PeerName = !string.IsNullOrWhiteSpace(effectiveLead?.DisplayName) ? effectiveLead.DisplayName : (peerName ?? conversation.PeerName);
         conversation.Subject = subject ?? conversation.Subject;
         conversation.LastMessage = Snippet(body);
         conversation.LastMessageAt = timestamp;

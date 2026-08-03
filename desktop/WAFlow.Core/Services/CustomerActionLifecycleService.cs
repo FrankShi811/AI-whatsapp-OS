@@ -6,10 +6,14 @@ namespace WAFlow.Core.Services;
 public sealed class CustomerActionLifecycleService
 {
     private readonly LocalRepository _repository;
+    private readonly CustomerBrainService _customerBrain;
 
-    public CustomerActionLifecycleService(LocalRepository repository)
+    public CustomerActionLifecycleService(
+        LocalRepository repository,
+        CustomerBrainService? customerBrain = null)
     {
         _repository = repository;
+        _customerBrain = customerBrain ?? new CustomerBrainService(repository);
     }
 
     public Task AcceptAsync(string customerId, string recommendationId, CancellationToken cancellationToken = default) =>
@@ -34,6 +38,7 @@ public sealed class CustomerActionLifecycleService
         CancellationToken cancellationToken = default)
     {
         var state = await LoadStateAsync(customerId, recommendationId, cancellationToken);
+        await EnsureRecommendationCurrentAsync(state.Recommendation, cancellationToken);
         var now = DateTimeOffset.Now;
         var dueAt = now.Add(delay <= TimeSpan.Zero ? TimeSpan.FromHours(24) : delay);
         CaptureBaseline(state.Action, state.Lead, now);
@@ -92,6 +97,7 @@ public sealed class CustomerActionLifecycleService
                 cancellationToken);
             return false;
         }
+        await EnsureRecommendationCurrentAsync(recommendation, cancellationToken);
 
         var state = await LoadStateAsync(customerId, recommendation.Id, cancellationToken);
         CaptureBaseline(state.Action, state.Lead, occurredAt);
@@ -133,6 +139,8 @@ public sealed class CustomerActionLifecycleService
         CancellationToken cancellationToken = default)
     {
         var state = await LoadStateAsync(customerId, recommendationId, cancellationToken);
+        if (recommendationStatus is AiRecommendationStatus.Accepted or AiRecommendationStatus.InProgress)
+            await EnsureRecommendationCurrentAsync(state.Recommendation, cancellationToken);
         var now = DateTimeOffset.Now;
         if (recommendationStatus is AiRecommendationStatus.Accepted
             or AiRecommendationStatus.InProgress
@@ -248,6 +256,20 @@ public sealed class CustomerActionLifecycleService
         if (action.BaselineStage is not null || lead is null) return;
         action.BaselineStage = lead.Stage;
         action.BaselineCapturedAt = capturedAt;
+    }
+
+    private async Task EnsureRecommendationCurrentAsync(
+        AiRecommendationRecord recommendation,
+        CancellationToken cancellationToken)
+    {
+        // Legacy/manual lifecycle records predate source-profile binding. They
+        // are not Customer Brain conclusions and retain their existing workflow.
+        if (string.IsNullOrWhiteSpace(recommendation.SourceProfileId)) return;
+        var profile = await _customerBrain.RefreshAsync(recommendation.CustomerId, cancellationToken);
+        if (profile?.HasCurrentDecision != true
+            || !profile.Id.Equals(recommendation.SourceProfileId, StringComparison.Ordinal)
+            || profile.Version != recommendation.SourceProfileVersion)
+            throw new InvalidOperationException("客户资料已经变化，这条 AI 建议已不是当前结论。请刷新 Customer Brain 后使用新建议。");
     }
 
     private async Task SaveEventAsync(

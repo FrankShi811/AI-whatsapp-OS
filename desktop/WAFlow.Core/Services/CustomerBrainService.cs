@@ -17,6 +17,7 @@ public sealed class CustomerBrainService
     private readonly IStructuredAiProvider? _provider;
     private readonly HybridRetriever? _knowledgeRetrieval;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _contextLocks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _analysisLocks = new(StringComparer.OrdinalIgnoreCase);
 
     public CustomerBrainService(
         LocalRepository repository,
@@ -32,20 +33,23 @@ public sealed class CustomerBrainService
     {
         var lead = await _repository.GetLeadAsync(customerId, cancellationToken)
             ?? throw new InvalidOperationException("客户不存在或已经删除。");
-        var whatsApp = (await _repository.GetWhatsAppMessagesForLeadAsync(lead, 5000, cancellationToken))
+        var hadCurrentLeadAnalysis = lead.HasCurrentAiScore;
+        lead = await LeadIntelligenceFreshness.EnsureCurrentAsync(_repository, lead, cancellationToken);
+        var leadAnalysisInvalidated = hadCurrentLeadAnalysis && !lead.HasCurrentAiScore;
+        var whatsApp = (await _repository.GetWhatsAppMessagesForCustomerAsync(lead.Id, 5000, cancellationToken))
             .Where(message => !message.IsStatusUpdate)
             .OrderBy(message => message.Timestamp)
             .ToList();
         var emails = (await _repository.GetEmailMessagesForLeadAsync(lead.Id, 5000, cancellationToken))
             .OrderBy(message => message.Timestamp)
             .ToList();
-        var reports = await _repository.GetCustomerAnalysisReportsAsync(lead.Id, cancellationToken);
+        var reports = await CustomerAnalysisFreshness.SynchronizeAsync(_repository, lead.Id, cancellationToken);
         var campaignTouches = await GetCampaignTouchesAsync(lead.Id, cancellationToken);
         var now = DateTimeOffset.Now;
         var verifiedExternalFacts = await GetActiveExternalFactsAsync(lead.Id, now, cancellationToken);
         var latestReportCandidate = reports.FirstOrDefault(report => report.Status == CustomerReportStatus.Succeeded);
         var reportHasStaleExternalDependencies = latestReportCandidate is not null
-            && HasStaleExternalFactDependencies(latestReportCandidate, verifiedExternalFacts, now);
+            && HasStaleExternalFactDependencies(latestReportCandidate, verifiedExternalFacts);
         var latestReport = reportHasStaleExternalDependencies ? null : latestReportCandidate;
 
         await SynchronizeBehaviorTimelineAsync(lead, whatsApp, emails, campaignTouches, reports, cancellationToken);
@@ -64,6 +68,7 @@ public sealed class CustomerBrainService
         var profileHasStaleExternalDependencies = current is not null
             && HasStaleMaterializedExternalFacts(current, verifiedExternalFacts);
         if (current is not null
+            && !leadAnalysisInvalidated
             && !reportHasStaleExternalDependencies
             && !profileHasStaleExternalDependencies
             && string.Equals(current.SourceSnapshotHash, sourceHash, StringComparison.Ordinal))
@@ -79,12 +84,23 @@ public sealed class CustomerBrainService
             coverage,
             sourceHash,
             current,
-            reuseCurrentDerivedState: !reportHasStaleExternalDependencies && !profileHasStaleExternalDependencies);
+            reuseCurrentDerivedState: !leadAnalysisInvalidated
+                && !reportHasStaleExternalDependencies
+                && !profileHasStaleExternalDependencies);
         await _repository.SaveCustomerIntelligenceProfileAsync(profile, cancellationToken);
-        await SynchronizeRecommendationAsync(
-            profile,
-            cancellationToken,
-            forceReplace: reportHasStaleExternalDependencies || profileHasStaleExternalDependencies);
+        if (profile.HasCurrentDecision)
+        {
+            await SynchronizeRecommendationAsync(
+                profile,
+                cancellationToken,
+                forceReplace: leadAnalysisInvalidated
+                    || reportHasStaleExternalDependencies
+                    || profileHasStaleExternalDependencies);
+        }
+        else
+        {
+            await SupersedeUnacceptedRecommendationsAsync(profile.CustomerId, cancellationToken);
+        }
         await _repository.LogEventAsync(
             "customer_brain_materialized",
             lead.Id,
@@ -98,8 +114,7 @@ public sealed class CustomerBrainService
         string customerId,
         CancellationToken cancellationToken = default)
     {
-        var current = await _repository.GetCustomerIntelligenceProfileAsync(customerId, cancellationToken);
-        return current is null ? null : await RefreshAsync(customerId, cancellationToken);
+        return await RefreshAsync(customerId, cancellationToken);
     }
 
     public async Task<CustomerIntelligenceProfile> UpdateConversationContextAsync(
@@ -113,7 +128,7 @@ public sealed class CustomerBrainService
         {
             var lead = await _repository.GetLeadAsync(customerId, cancellationToken)
                 ?? throw new InvalidOperationException("客户不存在或已经删除。");
-            var whatsApp = (await _repository.GetWhatsAppMessagesForLeadAsync(lead, 20_000, cancellationToken))
+            var whatsApp = (await _repository.GetWhatsAppMessagesForCustomerAsync(lead.Id, 20_000, cancellationToken))
                 .Where(message => !message.IsStatusUpdate && !message.IsRevoked && !string.IsNullOrWhiteSpace(message.Body))
                 .OrderBy(message => message.Timestamp)
                 .ToList();
@@ -303,19 +318,27 @@ public sealed class CustomerBrainService
 
     public async Task<CustomerIntelligenceProfile> AnalyzeAsync(string customerId, CancellationToken cancellationToken = default)
     {
+        var gate = _analysisLocks.GetOrAdd(customerId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try { return await AnalyzeCoreAsync(customerId, cancellationToken); }
+        finally { gate.Release(); }
+    }
+
+    private async Task<CustomerIntelligenceProfile> AnalyzeCoreAsync(string customerId, CancellationToken cancellationToken)
+    {
         var profile = await RefreshAsync(customerId, cancellationToken);
         var lead = await _repository.GetLeadAsync(customerId, cancellationToken)
             ?? throw new InvalidOperationException("\u5ba2\u6237\u4e0d\u5b58\u5728\u6216\u5df2\u88ab\u5220\u9664\u3002");
         if (_provider is null || !_provider.HasApiKey(AiModuleKeys.Customers))
             throw new InvalidOperationException("\u8bf7\u5148\u5728 API \u5bf9\u63a5\u4e2d\u914d\u7f6e\u53ef\u7528\u7684 AI Provider \u548c\u6a21\u578b\u3002");
 
-        var timeline = await _repository.GetCustomerBehaviorTimelineAsync(customerId, cancellationToken);
+        var timeline = await GetAttributionSafeBehaviorTimelineAsync(customerId, cancellationToken);
         var reports = await _repository.GetCustomerAnalysisReportsAsync(customerId, cancellationToken);
         var now = DateTimeOffset.Now;
         var verifiedExternalFacts = await GetActiveExternalFactsAsync(customerId, now, cancellationToken);
         var latestReportCandidate = reports.FirstOrDefault(report => report.Status == CustomerReportStatus.Succeeded);
         var latestReport = latestReportCandidate is not null
-            && !HasStaleExternalFactDependencies(latestReportCandidate, verifiedExternalFacts, now)
+            && !HasStaleExternalFactDependencies(latestReportCandidate, verifiedExternalFacts)
                 ? latestReportCandidate
                 : null;
         var recommendations = (await _repository.GetAiRecommendationHistoryAsync(customerId, cancellationToken))
@@ -400,6 +423,7 @@ public sealed class CustomerBrainService
         };
         await _repository.SaveCustomerBrainRunAsync(run, cancellationToken);
 
+        var sourceChangedDuringRun = false;
         try
         {
             run.Status = CustomerBrainRunStatus.Understanding;
@@ -489,6 +513,13 @@ public sealed class CustomerBrainService
                 cancellationToken);
             run.RecommendationJson = Json.Serialize(recommendation);
 
+            var currentProfile = await RefreshAsync(customerId, cancellationToken);
+            if (!currentProfile.SourceSnapshotHash.Equals(run.SourceSnapshotHash, StringComparison.Ordinal))
+            {
+                sourceChangedDuringRun = true;
+                throw new InvalidOperationException("Customer Brain 分析期间客户身份、会话、报告或外部调查事实已变化，本次旧快照结果未提交，请重新分析。");
+            }
+
             ApplyDecision(profile, understanding, opportunity, recommendation, run);
             profile.KnowledgeRetrievalId = knowledge.Id;
             profile.KnowledgeReferences = knowledge.Hits;
@@ -529,7 +560,7 @@ public sealed class CustomerBrainService
             run.Error = error.Message;
             run.CompletedAt = DateTimeOffset.Now;
             await _repository.SaveCustomerBrainRunAsync(run, CancellationToken.None);
-            if (!profile.HasCurrentDecision)
+            if (!sourceChangedDuringRun && !profile.HasCurrentDecision)
             {
                 profile.DecisionStatus = CustomerBrainDecisionStatus.RetryableFailed;
                 profile.LastBrainRunId = run.Id;
@@ -556,7 +587,7 @@ public sealed class CustomerBrainService
         foreach (var campaign in await _repository.GetCampaignsAsync(null, cancellationToken))
         {
             foreach (var recipient in (await _repository.GetCampaignRecipientsAsync(campaign.Id, cancellationToken))
-                         .Where(item => item.LeadId == customerId))
+                         .Where(item => item.LeadId == customerId && !item.CustomerAttributionIsolated))
             {
                 touches.Add(new CustomerCampaignTouch
                 {
@@ -572,6 +603,30 @@ public sealed class CustomerBrainService
             }
         }
         return touches.OrderBy(item => item.ScheduledAt).ToList();
+    }
+
+    private async Task<List<CustomerBehaviorEvent>> GetAttributionSafeBehaviorTimelineAsync(
+        string customerId,
+        CancellationToken cancellationToken)
+    {
+        var timeline = await _repository.GetCustomerBehaviorTimelineAsync(customerId, cancellationToken);
+        if (!timeline.Any(item => string.Equals(item.SourceType, "campaign_recipient", StringComparison.OrdinalIgnoreCase)))
+            return timeline;
+
+        var isolatedSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var campaign in await _repository.GetCampaignsAsync(null, cancellationToken))
+        {
+            foreach (var recipient in (await _repository.GetCampaignRecipientsAsync(campaign.Id, cancellationToken))
+                         .Where(item => item.CustomerAttributionIsolated
+                             && string.Equals(item.LeadId, customerId, StringComparison.OrdinalIgnoreCase)))
+                isolatedSources.Add($"{campaign.Id}:{recipient.ScheduledAt:O}");
+        }
+
+        if (isolatedSources.Count == 0) return timeline;
+        return timeline
+            .Where(item => !string.Equals(item.SourceType, "campaign_recipient", StringComparison.OrdinalIgnoreCase)
+                || !isolatedSources.Contains(item.SourceId))
+            .ToList();
     }
 
     private async Task SynchronizeBehaviorTimelineAsync(
@@ -875,6 +930,42 @@ public sealed class CustomerBrainService
         return created;
     }
 
+    private async Task SupersedeUnacceptedRecommendationsAsync(
+        string customerId,
+        CancellationToken cancellationToken)
+    {
+        var candidates = (await _repository.GetAiRecommendationHistoryAsync(customerId, cancellationToken))
+            .Where(item => item.Status is AiRecommendationStatus.Proposed or AiRecommendationStatus.Accepted)
+            .ToList();
+        var tasks = await _repository.GetFollowUpTasksAsync(customerId, cancellationToken);
+        var actions = await _repository.GetSalesActionsAsync(customerId, cancellationToken);
+        foreach (var recommendation in candidates)
+        {
+            var task = tasks.FirstOrDefault(item => item.RecommendationId.Equals(recommendation.Id, StringComparison.Ordinal));
+            var action = actions.FirstOrDefault(item => item.RecommendationId.Equals(recommendation.Id, StringComparison.Ordinal));
+            if (task?.Status == FollowUpTaskStatus.InProgress
+                || action?.Status == SalesActionStatus.InProgress
+                || action?.ExecutedAt is not null)
+                continue;
+            recommendation.Status = AiRecommendationStatus.Superseded;
+            await _repository.SaveAiRecommendationAsync(recommendation, cancellationToken);
+            if (task is { Status: FollowUpTaskStatus.Proposed or FollowUpTaskStatus.Open })
+            {
+                task.Status = FollowUpTaskStatus.Dismissed;
+                task.Outcome = "客户资料已变化，旧 AI 建议已失效。";
+                task.CompletedAt = DateTimeOffset.Now;
+                await _repository.UpsertFollowUpTaskAsync(task, cancellationToken);
+            }
+            if (action is { Status: SalesActionStatus.Planned or SalesActionStatus.Approved })
+            {
+                action.Status = SalesActionStatus.Cancelled;
+                action.Outcome = "客户资料已变化，旧 AI 建议已失效。";
+                action.CompletedAt = DateTimeOffset.Now;
+                await _repository.SaveSalesActionAsync(action, cancellationToken);
+            }
+        }
+    }
+
     private static CustomerBrainDecisionStatus ResolveDecisionStatus(CustomerIntelligenceProfile? current)
     {
         if (current is null) return CustomerBrainDecisionStatus.NotAnalyzed;
@@ -1115,39 +1206,19 @@ public sealed class CustomerBrainService
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        var facts = await _repository.GetCustomerEnrichmentFactsAsync(
+        return await CustomerExternalFactPolicy.GetCurrentFactsAsync(
+            _repository,
             customerId,
-            latestPerValue: false,
+            now,
             cancellationToken);
-        return facts
-            .Where(fact => IsActiveExternalFact(fact, now))
-            .GroupBy(fact => $"{fact.FieldType}|{fact.NormalizedValue}", StringComparer.OrdinalIgnoreCase)
-            .Select(group => group
-                .OrderByDescending(fact => fact.VerificationStatus == CustomerEnrichmentVerificationStatus.HumanConfirmed)
-                .ThenByDescending(fact => fact.UpdatedAt)
-                .First())
-            .OrderByDescending(fact => fact.UpdatedAt)
-            .ToList();
     }
-
-    private static bool IsActiveExternalFact(CustomerEnrichmentFact fact, DateTimeOffset now) =>
-        (fact.VerificationStatus is CustomerEnrichmentVerificationStatus.Verified
-            or CustomerEnrichmentVerificationStatus.HumanConfirmed)
-        && (fact.ExpiresAt is null || fact.ExpiresAt > now);
 
     private static bool HasStaleExternalFactDependencies(
         CustomerAnalysisReport report,
-        IReadOnlyCollection<CustomerEnrichmentFact> activeFacts,
-        DateTimeOffset now)
+        IReadOnlyCollection<CustomerEnrichmentFact> activeFacts)
     {
-        var activeById = activeFacts
-            .GroupBy(fact => fact.Id, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
         var capturedFacts = report.SourceSnapshot?.VerifiedExternalFacts ?? [];
-        if (capturedFacts.Any(captured =>
-                !IsActiveExternalFact(captured, now)
-                || !activeById.TryGetValue(captured.Id, out var active)
-                || !HasSameExternalFactMaterial(captured, active)))
+        if (!CustomerExternalFactPolicy.HasSameFactSet(capturedFacts, activeFacts))
             return true;
 
         var externalEvidence = report.Report?.EvidenceLedger?
@@ -1170,23 +1241,6 @@ public sealed class CustomerBrainService
                     || fact.SourceIds.Contains(statement.SourceId, StringComparer.OrdinalIgnoreCase)
                     || (!string.IsNullOrWhiteSpace(fact.HumanReviewId)
                         && statement.SourceId.Equals($"review:{fact.HumanReviewId}", StringComparison.OrdinalIgnoreCase)))));
-
-    private static bool HasSameExternalFactMaterial(
-        CustomerEnrichmentFact left,
-        CustomerEnrichmentFact right) =>
-        string.Equals(left.FieldType, right.FieldType, StringComparison.OrdinalIgnoreCase)
-        && string.Equals(left.FieldValue, right.FieldValue, StringComparison.Ordinal)
-        && string.Equals(left.NormalizedValue, right.NormalizedValue, StringComparison.OrdinalIgnoreCase)
-        && string.Equals(left.Category, right.Category, StringComparison.OrdinalIgnoreCase)
-        && string.Equals(left.FactType, right.FactType, StringComparison.OrdinalIgnoreCase)
-        && left.ConfidenceScore == right.ConfidenceScore
-        && string.Equals(left.EvidenceQuote, right.EvidenceQuote, StringComparison.Ordinal)
-        && string.Equals(left.ReviewNote, right.ReviewNote, StringComparison.Ordinal)
-        && string.Equals(left.HumanReviewId, right.HumanReviewId, StringComparison.Ordinal)
-        && left.SourceIds.OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
-            .SequenceEqual(
-                right.SourceIds.OrderBy(value => value, StringComparer.OrdinalIgnoreCase),
-                StringComparer.OrdinalIgnoreCase);
 
     private static bool IsExternalEnrichmentSource(string? source) =>
         !string.IsNullOrWhiteSpace(source)

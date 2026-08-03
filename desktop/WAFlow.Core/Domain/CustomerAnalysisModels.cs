@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace WAFlow.Core.Domain;
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum CustomerReportStatus { Running, Succeeded, RetryableFailed }
+public enum CustomerReportStatus { Running, Succeeded, Stale, RetryableFailed }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum CustomerReportStepStatus { Pending, Running, Succeeded, RetryableFailed }
@@ -27,6 +27,7 @@ public sealed class CustomerAnalysisReport
     [JsonIgnore] public string StatusLabel => Status switch
     {
         CustomerReportStatus.Succeeded => "报告已完成",
+        CustomerReportStatus.Stale => "历史快照，资料已变化",
         CustomerReportStatus.RetryableFailed => "生成失败，可重试",
         _ => "AI 正在生成"
     };

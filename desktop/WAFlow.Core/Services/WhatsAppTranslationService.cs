@@ -395,7 +395,7 @@ public sealed partial class WhatsAppTranslationService
     private void EnsureProvider()
     {
         if (!_provider.HasApiKey(AiModuleKeys.WhatsAppInbox))
-            throw new DeepSeekException("provider_not_configured", "请先在“设置”中为 WhatsApp Inbox 配置 AI 模型。", false);
+            throw new DeepSeekException("provider_not_configured", "请先在“设置”中为 WhatsApp 配置 AI 模型。", false);
     }
 
     private static bool IsTranslatableMessage(WhatsAppMessage message)

@@ -16,6 +16,16 @@ using WAFlow.Core.Services;
 
 var failures = new List<string>();
 void Check(bool condition, string name) { if (condition) Console.WriteLine($"PASS  {name}"); else { Console.WriteLine($"FAIL  {name}"); failures.Add(name); } }
+string WhatsAppBindingToken(WhatsAppIdentityLink link) => string.Join("|",
+    link.Id,
+    link.CustomerId,
+    link.ContactJid,
+    link.ContactLid,
+    link.PhoneIdentityId,
+    link.MatchResult,
+    link.MatchMethod,
+    link.ManuallyConfirmed,
+    link.UpdatedAt.ToUniversalTime().ToString("O"));
 void WriteHeaders(IXLWorksheet sheet, IReadOnlyList<string> headers)
 {
     for (var index = 0; index < headers.Count; index++) sheet.Cell(1, index + 1).Value = headers[index];
@@ -1315,6 +1325,385 @@ await repository.UpsertWhatsAppMessageAsync(lateFailure);
 await repository.UpdateWhatsAppMessageStatusAsync("primary", lateFailure.ProviderMessageId, WhatsAppMessageStatus.Failed, DateTimeOffset.Now, failureReason:"WhatsApp returned an error");
 Check((await repository.GetWhatsAppMessagesAsync(conversation.Id)).Single(x => x.Id == lateFailure.Id).Status == WhatsAppMessageStatus.Failed, "late WhatsApp transport errors correct an optimistic sent status");
 
+var outgoingAckRoot = Path.Combine(root, "outgoing-ack-binding");
+var outgoingAckRepository = new LocalRepository(Path.Combine(outgoingAckRoot, "outgoing-ack.db"));
+await outgoingAckRepository.InitializeAsync();
+var ackPositiveLead = new Lead { Id="ack-positive", Name="Ack Positive", PhoneE164="+14155551001", PhoneValid=true };
+var ackRaceLeadA = new Lead { Id="ack-race-a", Name="Ack Race A", PhoneE164="+14155551002", PhoneValid=true };
+var ackRaceLeadB = new Lead { Id="ack-race-b", Name="Ack Race B", PhoneE164="+14155551002", PhoneValid=true };
+await outgoingAckRepository.UpsertLeadAsync(ackPositiveLead);
+await outgoingAckRepository.UpsertLeadAsync(ackRaceLeadA);
+await outgoingAckRepository.UpsertLeadAsync(ackRaceLeadB);
+var ackPositiveConversation = new WhatsAppConversation
+{
+    Id="ack-account:14155551001", AccountId="ack-account", Phone="14155551001", Jid="14155551001@s.whatsapp.net",
+    LeadId=ackPositiveLead.Id, DisplayName=ackPositiveLead.Name, LastMessage="before", LastMessageAt=DateTimeOffset.Now.AddMinutes(-1)
+};
+await outgoingAckRepository.UpsertWhatsAppConversationAsync(ackPositiveConversation);
+await outgoingAckRepository.UpsertWhatsAppIdentityLinkAsync(new WhatsAppIdentityLink
+{
+    Id="ack-positive-link", CustomerId=ackPositiveLead.Id, AccountId=ackPositiveConversation.AccountId,
+    ConversationId=ackPositiveConversation.Id, ContactJid=ackPositiveConversation.Jid,
+    MatchResult=CustomerIdentityMatchResult.ExactMatch, MatchMethod=CustomerIdentityMatchMethod.ManualBinding,
+    Confidence=1, ManuallyConfirmed=true, IsActive=true
+});
+var ackPositiveLink = (await outgoingAckRepository.GetWhatsAppIdentityLinkAsync(
+    ackPositiveConversation.AccountId, ackPositiveConversation.Id))!;
+var ackPositiveMessage = new WhatsAppMessage
+{
+    Id="ack-account:ack-positive-message", ProviderMessageId="ack-positive-message", AccountId=ackPositiveConversation.AccountId,
+    ConversationId=ackPositiveConversation.Id, Phone=ackPositiveConversation.Phone, Jid=ackPositiveConversation.Jid,
+    Direction=WhatsAppMessageDirection.Outgoing, Status=WhatsAppMessageStatus.Sent, Body="confirmed send",
+    Timestamp=DateTimeOffset.Now, Source="desktop_ai"
+};
+var ackPositiveCommit = await outgoingAckRepository.PersistAcknowledgedOutgoingWhatsAppAsync(
+    new WhatsAppConversation
+    {
+        Id=ackPositiveConversation.Id, AccountId=ackPositiveConversation.AccountId, Phone=ackPositiveConversation.Phone,
+        Jid=ackPositiveConversation.Jid, DisplayName=ackPositiveConversation.DisplayName, LastMessage=ackPositiveMessage.Body,
+        LastMessageAt=ackPositiveMessage.Timestamp
+    },
+    ackPositiveMessage,
+    ackPositiveLead.Id,
+    WhatsAppBindingToken(ackPositiveLink),
+    sourceContextCurrent:true,
+    updateLeadConnection:true);
+Check(
+    ackPositiveCommit.AttributedCustomerId == ackPositiveLead.Id &&
+    ackPositiveCommit.Message.LeadAttributionFinal &&
+    !ackPositiveCommit.ContextChanged &&
+    (await outgoingAckRepository.GetLeadAsync(ackPositiveLead.Id))?.LastContactAt == ackPositiveMessage.Timestamp,
+    "WhatsApp acknowledged send atomically attributes and updates the still-current customer");
+
+var ackRaceConversation = new WhatsAppConversation
+{
+    Id="ack-account:14155551002", AccountId="ack-account", Phone="14155551002", Jid="14155551002@s.whatsapp.net",
+    LeadId=ackRaceLeadA.Id, DisplayName=ackRaceLeadA.Name, LastMessage="before race", LastMessageAt=DateTimeOffset.Now.AddMinutes(-1)
+};
+await outgoingAckRepository.UpsertWhatsAppConversationAsync(ackRaceConversation);
+await outgoingAckRepository.UpsertWhatsAppIdentityLinkAsync(new WhatsAppIdentityLink
+{
+    Id="ack-race-link-a", CustomerId=ackRaceLeadA.Id, AccountId=ackRaceConversation.AccountId,
+    ConversationId=ackRaceConversation.Id, ContactJid=ackRaceConversation.Jid,
+    MatchResult=CustomerIdentityMatchResult.ExactMatch, MatchMethod=CustomerIdentityMatchMethod.ManualBinding,
+    Confidence=1, ManuallyConfirmed=true, IsActive=true
+});
+var ackRaceLinkA = (await outgoingAckRepository.GetWhatsAppIdentityLinkAsync(
+    ackRaceConversation.AccountId, ackRaceConversation.Id))!;
+var ackRaceTokenA = WhatsAppBindingToken(ackRaceLinkA);
+await outgoingAckRepository.UpsertWhatsAppIdentityLinkAsync(new WhatsAppIdentityLink
+{
+    Id="ack-race-link-b", CustomerId=ackRaceLeadB.Id, AccountId=ackRaceConversation.AccountId,
+    ConversationId=ackRaceConversation.Id, ContactJid=ackRaceConversation.Jid,
+    MatchResult=CustomerIdentityMatchResult.ExactMatch, MatchMethod=CustomerIdentityMatchMethod.ManualBinding,
+    Confidence=1, ManuallyConfirmed=true, IsActive=true
+});
+var ackRaceProjectedConversation = await outgoingAckRepository.GetWhatsAppConversationByIdAsync(ackRaceConversation.Id);
+Check(
+    ackRaceProjectedConversation?.LeadId == ackRaceLeadB.Id,
+    "active WhatsApp identity link atomically becomes the conversation customer authority");
+var ackRaceMessage = new WhatsAppMessage
+{
+    Id="ack-account:ack-race-message", ProviderMessageId="ack-race-message", AccountId=ackRaceConversation.AccountId,
+    ConversationId=ackRaceConversation.Id, Phone=ackRaceConversation.Phone, Jid=ackRaceConversation.Jid,
+    Direction=WhatsAppMessageDirection.Outgoing, Status=WhatsAppMessageStatus.Sent, Body="A-context reply",
+    Timestamp=DateTimeOffset.Now, Source="desktop_ai"
+};
+var ackRaceCommit = await outgoingAckRepository.PersistAcknowledgedOutgoingWhatsAppAsync(
+    new WhatsAppConversation
+    {
+        Id=ackRaceConversation.Id, AccountId=ackRaceConversation.AccountId, Phone=ackRaceConversation.Phone,
+        Jid=ackRaceConversation.Jid, DisplayName=ackRaceLeadA.Name, LastMessage=ackRaceMessage.Body,
+        LastMessageAt=ackRaceMessage.Timestamp
+    },
+    ackRaceMessage,
+    ackRaceLeadA.Id,
+    ackRaceTokenA,
+    sourceContextCurrent:true,
+    updateLeadConnection:true);
+var ackRaceStoredConversation = await outgoingAckRepository.GetWhatsAppConversationByIdAsync(ackRaceConversation.Id);
+var ackRaceStoredMessage = (await outgoingAckRepository.GetWhatsAppMessagesAsync(ackRaceConversation.Id))
+    .Single(item => item.Id == ackRaceMessage.Id);
+Check(
+    ackRaceCommit.ContextChanged && ackRaceCommit.AttributedCustomerId.Length == 0 &&
+    ackRaceStoredMessage.LeadId.Length == 0 && ackRaceStoredMessage.LeadAttributionFinal &&
+    ackRaceStoredConversation?.LeadId == ackRaceLeadB.Id &&
+    (await outgoingAckRepository.GetLeadAsync(ackRaceLeadA.Id))?.LastContactAt is null &&
+    (await outgoingAckRepository.GetLeadAsync(ackRaceLeadB.Id))?.LastContactAt is null &&
+    (await outgoingAckRepository.GetKnowledgeUsageOutcomesAsync()).Count == 0,
+    "WhatsApp acknowledged A-to-B rebind keeps the sent audit unbound and never overwrites either customer");
+await outgoingAckRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id=ackRaceMessage.Id, ProviderMessageId=ackRaceMessage.ProviderMessageId, AccountId=ackRaceMessage.AccountId,
+    ConversationId=ackRaceMessage.ConversationId, LeadId=ackRaceLeadB.Id, Phone=ackRaceMessage.Phone,
+    Direction=ackRaceMessage.Direction, Status=WhatsAppMessageStatus.Delivered, Body=ackRaceMessage.Body,
+    Timestamp=ackRaceMessage.Timestamp, Source="live"
+});
+Check(
+    (await outgoingAckRepository.GetWhatsAppMessagesAsync(ackRaceConversation.Id))
+        .Single(item => item.Id == ackRaceMessage.Id).LeadId.Length == 0,
+    "late WhatsApp synchronization cannot rewrite a finalized unbound ACK onto the rebound customer");
+var ackRaceHistoryA = await outgoingAckRepository.GetWhatsAppMessagesForCustomerAsync(ackRaceLeadA.Id);
+var ackRaceHistoryB = await outgoingAckRepository.GetWhatsAppMessagesForCustomerAsync(ackRaceLeadB.Id);
+Check(
+    ackRaceHistoryA.All(item => item.Id != ackRaceMessage.Id) &&
+    ackRaceHistoryB.All(item => item.Id != ackRaceMessage.Id),
+    "finalized context-changed WhatsApp ACK stays out of every customer Brain history");
+await outgoingAckRepository.SynchronizeLeadConnectionsFromInboxAsync([ackPositiveLead]);
+Check(
+    (await outgoingAckRepository.GetWhatsAppConversationByIdAsync(ackRaceConversation.Id))?.LeadId == ackRaceLeadB.Id &&
+    (await outgoingAckRepository.GetWhatsAppMessagesAsync(ackRaceConversation.Id))
+        .Single(item => item.Id == ackRaceMessage.Id).LeadId.Length == 0,
+    "subset inbox reconciliation preserves other active identity links and finalized unbound ACKs");
+
+await outgoingAckRepository.UpsertWhatsAppIdentityLinkAsync(new WhatsAppIdentityLink
+{
+    Id="ack-revocation-link-a", CustomerId=ackRaceLeadA.Id, AccountId=ackRaceConversation.AccountId,
+    ConversationId=ackRaceConversation.Id, ContactJid=ackRaceConversation.Jid,
+    MatchResult=CustomerIdentityMatchResult.ExactMatch, MatchMethod=CustomerIdentityMatchMethod.ManualBinding,
+    Confidence=1, ManuallyConfirmed=true, IsActive=true
+});
+var rebindRevocationMessage = new WhatsAppMessage
+{
+    Id="ack-account:rebind-revocation", ProviderMessageId="rebind-revocation",
+    AccountId=ackRaceConversation.AccountId, ConversationId=ackRaceConversation.Id,
+    LeadId=ackRaceLeadA.Id, Phone=ackRaceConversation.Phone, Jid=ackRaceConversation.Jid,
+    Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received,
+    Body="Incoming before customer rebind", Timestamp=DateTimeOffset.Now.AddSeconds(1)
+};
+await outgoingAckRepository.UpsertWhatsAppMessageAsync(rebindRevocationMessage);
+await outgoingAckRepository.UpsertWhatsAppIdentityLinkAsync(new WhatsAppIdentityLink
+{
+    Id="ack-revocation-link-b", CustomerId=ackRaceLeadB.Id, AccountId=ackRaceConversation.AccountId,
+    ConversationId=ackRaceConversation.Id, ContactJid=ackRaceConversation.Jid,
+    MatchResult=CustomerIdentityMatchResult.ExactMatch, MatchMethod=CustomerIdentityMatchMethod.ManualBinding,
+    Confidence=1, ManuallyConfirmed=true, IsActive=true
+});
+var revokedHistoryABefore = (await outgoingAckRepository.GetCustomerHistoryAsync(ackRaceLeadA.Id))
+    .Count(item => item.Type == "whatsapp_message_revoked");
+var revokedHistoryBBefore = (await outgoingAckRepository.GetCustomerHistoryAsync(ackRaceLeadB.Id))
+    .Count(item => item.Type == "whatsapp_message_revoked");
+await using (var revocationBridge = new WhatsAppConnectionManager())
+{
+    var revocationSync = new WhatsAppSyncService(outgoingAckRepository, revocationBridge);
+    var ingestRevocation = typeof(WhatsAppSyncService).GetMethod(
+        "IngestRevocationAsync",
+        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    using var reboundRevocationDocument = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        revokedMessageId = rebindRevocationMessage.ProviderMessageId,
+        timestamp = DateTimeOffset.Now.ToString("O")
+    }));
+    await (Task)ingestRevocation.Invoke(
+        revocationSync,
+        [ackRaceConversation.AccountId, reboundRevocationDocument.RootElement.Clone()])!;
+
+    var revokedHistoryAAfterRebind = (await outgoingAckRepository.GetCustomerHistoryAsync(ackRaceLeadA.Id))
+        .Count(item => item.Type == "whatsapp_message_revoked");
+    var revokedHistoryBAfterRebind = (await outgoingAckRepository.GetCustomerHistoryAsync(ackRaceLeadB.Id))
+        .Count(item => item.Type == "whatsapp_message_revoked");
+    var reboundRevokedStored = (await outgoingAckRepository.GetWhatsAppMessagesAsync(ackRaceConversation.Id))
+        .Single(item => item.Id == rebindRevocationMessage.Id);
+    Check(
+        reboundRevokedStored.IsRevoked && reboundRevokedStored.LeadId == ackRaceLeadB.Id &&
+        revokedHistoryAAfterRebind == revokedHistoryABefore &&
+        revokedHistoryBAfterRebind == revokedHistoryBBefore + 1,
+        "late WhatsApp revocation resolves a non-final message against the current active customer only");
+
+    using var finalUnboundRevocationDocument = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        revokedMessageId = ackRaceMessage.ProviderMessageId,
+        timestamp = DateTimeOffset.Now.AddSeconds(1).ToString("O")
+    }));
+    await (Task)ingestRevocation.Invoke(
+        revocationSync,
+        [ackRaceConversation.AccountId, finalUnboundRevocationDocument.RootElement.Clone()])!;
+    await outgoingAckRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+    {
+        Id=ackRaceMessage.Id, ProviderMessageId=ackRaceMessage.ProviderMessageId,
+        AccountId=ackRaceMessage.AccountId, ConversationId=ackRaceMessage.ConversationId,
+        LeadId=ackRaceLeadB.Id, Phone=ackRaceMessage.Phone, Direction=ackRaceMessage.Direction,
+        Status=WhatsAppMessageStatus.Read, Body=ackRaceMessage.Body, Timestamp=ackRaceMessage.Timestamp,
+        Source="late-live-after-revocation"
+    });
+    var finalRevokedStored = (await outgoingAckRepository.GetWhatsAppMessagesAsync(ackRaceConversation.Id))
+        .Single(item => item.Id == ackRaceMessage.Id);
+    Check(
+        finalRevokedStored.IsRevoked && finalRevokedStored.LeadAttributionFinal && finalRevokedStored.LeadId.Length == 0 &&
+        (await outgoingAckRepository.GetCustomerHistoryAsync(ackRaceLeadA.Id))
+            .Count(item => item.Type == "whatsapp_message_revoked") == revokedHistoryAAfterRebind &&
+        (await outgoingAckRepository.GetCustomerHistoryAsync(ackRaceLeadB.Id))
+            .Count(item => item.Type == "whatsapp_message_revoked") == revokedHistoryBAfterRebind &&
+        (await outgoingAckRepository.GetWhatsAppMessagesForCustomerAsync(ackRaceLeadA.Id))
+            .All(item => item.Id != ackRaceMessage.Id) &&
+        (await outgoingAckRepository.GetWhatsAppMessagesForCustomerAsync(ackRaceLeadB.Id))
+            .All(item => item.Id != ackRaceMessage.Id),
+        "revocation and later sync preserve a finalized unbound ACK outside every customer Brain and audit history");
+}
+
+var dependencyBeforeIdentityChange = await CustomerExternalFactPolicy.CaptureDependencyAsync(
+    outgoingAckRepository,
+    ackPositiveLead.Id,
+    DateTimeOffset.Now);
+ackPositiveLead.Company = "Changed while transport was in flight";
+await outgoingAckRepository.UpsertLeadAsync(ackPositiveLead);
+var dependencyRaceMessage = new WhatsAppMessage
+{
+    Id="ack-account:ack-dependency-race", ProviderMessageId="ack-dependency-race", AccountId=ackPositiveConversation.AccountId,
+    ConversationId=ackPositiveConversation.Id, Phone=ackPositiveConversation.Phone, Jid=ackPositiveConversation.Jid,
+    Direction=WhatsAppMessageDirection.Outgoing, Status=WhatsAppMessageStatus.Sent, Body="stale external-fact context",
+    Timestamp=DateTimeOffset.Now.AddSeconds(1), Source="desktop_ai"
+};
+var dependencyRaceCommit = await outgoingAckRepository.PersistAcknowledgedOutgoingWhatsAppAsync(
+    new WhatsAppConversation
+    {
+        Id=ackPositiveConversation.Id, AccountId=ackPositiveConversation.AccountId, Phone=ackPositiveConversation.Phone,
+        Jid=ackPositiveConversation.Jid, DisplayName=ackPositiveConversation.DisplayName,
+        LastMessage=dependencyRaceMessage.Body, LastMessageAt=dependencyRaceMessage.Timestamp
+    },
+    dependencyRaceMessage,
+    ackPositiveLead.Id,
+    WhatsAppBindingToken(ackPositiveLink),
+    sourceContextCurrent:true,
+    updateLeadConnection:true,
+    expectedCustomerIdentityHash:dependencyBeforeIdentityChange.IdentityHash,
+    expectedActiveFactSetToken:dependencyBeforeIdentityChange.Hash);
+Check(
+    dependencyRaceCommit.ContextChanged && dependencyRaceCommit.AttributedCustomerId.Length == 0 &&
+    dependencyRaceCommit.Message.LeadAttributionFinal && dependencyRaceCommit.Message.LeadId.Length == 0,
+    "WhatsApp ACK transaction rechecks customer identity and external-fact dependencies before attribution");
+
+var staleInboxLeadProjection = (await outgoingAckRepository.GetLeadAsync(ackPositiveLead.Id))!;
+var latestInboxLeadProjection = (await outgoingAckRepository.GetLeadAsync(ackPositiveLead.Id))!;
+latestInboxLeadProjection.Company = "Latest transaction customer edit";
+latestInboxLeadProjection.Score = 93;
+latestInboxLeadProjection.Grade = "A";
+latestInboxLeadProjection.AiScoreApplied = true;
+await outgoingAckRepository.UpsertLeadAsync(latestInboxLeadProjection);
+await outgoingAckRepository.SynchronizeLeadConnectionsFromInboxAsync([staleInboxLeadProjection]);
+var reconciledInboxLeadProjection = await outgoingAckRepository.GetLeadAsync(ackPositiveLead.Id);
+Check(
+    reconciledInboxLeadProjection?.Company == latestInboxLeadProjection.Company &&
+    reconciledInboxLeadProjection.Score == latestInboxLeadProjection.Score &&
+    reconciledInboxLeadProjection.Grade == latestInboxLeadProjection.Grade &&
+    reconciledInboxLeadProjection.AiScoreApplied,
+    "inbox reconciliation uses the transaction-current customer row and cannot restore stale AI or profile fields");
+
+var sourceMessage = new WhatsAppMessage
+{
+    Id="ack-account:source-before-send", ProviderMessageId="source-before-send", AccountId=ackPositiveConversation.AccountId,
+    ConversationId=ackPositiveConversation.Id, LeadId=ackPositiveLead.Id, Phone=ackPositiveConversation.Phone,
+    Jid=ackPositiveConversation.Jid, Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received,
+    Kind="text", Body="Please quote 500 pieces", Timestamp=DateTimeOffset.Now.AddSeconds(2)
+};
+await outgoingAckRepository.UpsertWhatsAppMessageAsync(sourceMessage);
+const string sourceRunToken = "source-run-token";
+await outgoingAckRepository.UpsertConversationAgentStateAsync(new ConversationAgentState
+{
+    CustomerId=ackPositiveLead.Id, AccountId=ackPositiveConversation.AccountId,
+    ConversationId=ackPositiveConversation.Id, PendingRunContextToken=sourceRunToken,
+    LastProcessedMessageId=sourceMessage.Id, LastRunStatus=CustomerSuccessRunStatus.SuggestionReady
+});
+var sourceConversation = (await outgoingAckRepository.GetWhatsAppConversationByIdAsync(ackPositiveConversation.Id))!;
+var conversationTokenMethod = typeof(CustomerSuccessAgentService).GetMethod(
+    "BuildConversationTargetToken",
+    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+var sourceTokenMethod = typeof(CustomerSuccessAgentService).GetMethod(
+    "BuildSourceMessageToken",
+    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+var capturedConversationToken = (string)conversationTokenMethod.Invoke(null, [sourceConversation])!;
+var capturedSourceToken = (string)sourceTokenMethod.Invoke(null, [sourceMessage])!;
+await outgoingAckRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id="ack-account:newer-source", ProviderMessageId="newer-source", AccountId=ackPositiveConversation.AccountId,
+    ConversationId=ackPositiveConversation.Id, LeadId=ackPositiveLead.Id, Phone=ackPositiveConversation.Phone,
+    Jid=ackPositiveConversation.Jid, Direction=WhatsAppMessageDirection.Incoming, Status=WhatsAppMessageStatus.Received,
+    Kind="text", Body="Actually change the quantity", Timestamp=sourceMessage.Timestamp.AddSeconds(1)
+});
+var currentSourceDependency = await CustomerExternalFactPolicy.CaptureDependencyAsync(
+    outgoingAckRepository,
+    ackPositiveLead.Id,
+    DateTimeOffset.Now);
+var staleSourceAck = new WhatsAppMessage
+{
+    Id="ack-account:stale-source-ack", ProviderMessageId="stale-source-ack", AccountId=ackPositiveConversation.AccountId,
+    ConversationId=ackPositiveConversation.Id, Phone=ackPositiveConversation.Phone, Jid=ackPositiveConversation.Jid,
+    Direction=WhatsAppMessageDirection.Outgoing, Status=WhatsAppMessageStatus.Sent,
+    Body="AI reply to the older request", Timestamp=sourceMessage.Timestamp.AddSeconds(2), Source="desktop_ai"
+};
+var staleSourceCommit = await outgoingAckRepository.PersistAcknowledgedOutgoingWhatsAppAsync(
+    new WhatsAppConversation
+    {
+        Id=ackPositiveConversation.Id, AccountId=ackPositiveConversation.AccountId, Phone=ackPositiveConversation.Phone,
+        Jid=ackPositiveConversation.Jid, DisplayName=ackPositiveConversation.DisplayName,
+        LastMessage=staleSourceAck.Body, LastMessageAt=staleSourceAck.Timestamp
+    },
+    staleSourceAck,
+    ackPositiveLead.Id,
+    WhatsAppBindingToken(ackPositiveLink),
+    sourceContextCurrent:true,
+    updateLeadConnection:true,
+    expectedCustomerIdentityHash:currentSourceDependency.IdentityHash,
+    expectedActiveFactSetToken:currentSourceDependency.Hash,
+    expectedRunContextToken:sourceRunToken,
+    expectedConversationTargetToken:capturedConversationToken,
+    expectedSourceMessageId:sourceMessage.Id,
+    expectedSourceMessageToken:capturedSourceToken);
+Check(
+    staleSourceCommit.ContextChanged && staleSourceCommit.AttributedCustomerId.Length == 0 &&
+    staleSourceCommit.Message.LeadAttributionFinal && staleSourceCommit.Message.LeadId.Length == 0,
+    "WhatsApp ACK transaction rejects an AI reply when a newer customer message arrives before commit");
+
+var detachedLead = new Lead { Id="ack-detached", Name="Detached Customer", PhoneE164="+14155551003", PhoneValid=true };
+await outgoingAckRepository.UpsertLeadAsync(detachedLead);
+var detachedConversation = new WhatsAppConversation
+{
+    Id="ack-account:14155551003", AccountId="ack-account", Phone="14155551003",
+    Jid="14155551003@s.whatsapp.net", LeadId=detachedLead.Id, DisplayName=detachedLead.Name
+};
+await outgoingAckRepository.UpsertWhatsAppConversationAsync(detachedConversation);
+await outgoingAckRepository.UpsertWhatsAppIdentityLinkAsync(new WhatsAppIdentityLink
+{
+    Id="ack-detached-link", CustomerId=detachedLead.Id, AccountId=detachedConversation.AccountId,
+    ConversationId=detachedConversation.Id, ContactJid=detachedConversation.Jid,
+    MatchResult=CustomerIdentityMatchResult.ExactMatch, MatchMethod=CustomerIdentityMatchMethod.ManualBinding,
+    Confidence=1, ManuallyConfirmed=true, IsActive=false
+});
+await using (var authoritativeSyncBridge = new WhatsAppConnectionManager())
+{
+    var authoritativeSync = new WhatsAppSyncService(outgoingAckRepository, authoritativeSyncBridge);
+    var ingestAuthoritativeContact = typeof(WhatsAppSyncService).GetMethod(
+        "IngestContactAsync",
+        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    using var activeLinkContact = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        jid = ackRaceConversation.Jid,
+        phone = ackRaceConversation.Phone,
+        displayName = "Stale provider name",
+        source = "history:contacts"
+    }));
+    await (Task)ingestAuthoritativeContact.Invoke(
+        authoritativeSync,
+        [ackRaceConversation.AccountId, activeLinkContact.RootElement.Clone()])!;
+    using var detachedContact = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        jid = detachedConversation.Jid,
+        phone = detachedConversation.Phone,
+        displayName = "Would otherwise phone-match",
+        source = "history:contacts"
+    }));
+    await (Task)ingestAuthoritativeContact.Invoke(
+        authoritativeSync,
+        [detachedConversation.AccountId, detachedContact.RootElement.Clone()])!;
+}
+Check(
+    (await outgoingAckRepository.GetWhatsAppConversationByIdAsync(ackRaceConversation.Id))?.LeadId == ackRaceLeadB.Id &&
+    (await outgoingAckRepository.GetWhatsAppConversationByIdAsync(ackRaceConversation.Id))?.DisplayName == ackRaceLeadB.DisplayName,
+    "live WhatsApp synchronization uses the active identity link instead of a stale phone owner");
+Check(
+    (await outgoingAckRepository.GetWhatsAppConversationByIdAsync(detachedConversation.Id))?.LeadId.Length == 0,
+    "an explicitly detached WhatsApp identity remains unbound during later phone synchronization");
+
 var ipHandler = new IpMonitorHandler();
 var ipMonitor = new PublicIpMonitor(repository, new HttpClient(ipHandler) { Timeout=TimeSpan.FromSeconds(2) });
 var firstIp = await ipMonitor.CheckAsync("primary");
@@ -1732,6 +2121,535 @@ Check(EmailAssistantService.Validate(new EmailAssistantResult
 {
     Subject="", Body="body", ContextSummary="摘要", CustomerIntent="意向", RecommendedNextAction="下一步", Confidence=.5
 })?.Contains("subject") == true, "Email Sales Copilot rejects incomplete structured drafts");
+var emailRaceLead = new Lead
+{
+    Id = "email-source-race-lead",
+    Name = "Email Source Race Buyer",
+    Email = "email-source-race@example.com",
+    Company = "Email Source Race Ltd",
+    PhoneE164 = "+14155550777",
+    PhoneValid = true
+};
+await repository.UpsertLeadAsync(emailRaceLead);
+var emailRaceConversation = new EmailConversation
+{
+    Id = "sales-email:email-source-race@example.com",
+    AccountId = emailAccount.Id,
+    LeadId = emailRaceLead.Id,
+    PeerEmail = emailRaceLead.Email,
+    PeerName = emailRaceLead.Name,
+    Subject = "Source revision",
+    LastMessage = "Please send the next step.",
+    LastMessageAt = DateTimeOffset.Now
+};
+await repository.UpsertEmailConversationAsync(emailRaceConversation);
+await repository.UpsertEmailMessageAsync(new EmailMessage
+{
+    Id = "sales-email:source-race-message",
+    ProviderMessageId = "source-race-message",
+    AccountId = emailAccount.Id,
+    ConversationId = emailRaceConversation.Id,
+    LeadId = emailRaceLead.Id,
+    Direction = EmailMessageDirection.Incoming,
+    Status = EmailMessageStatus.Received,
+    FromAddress = emailRaceLead.Email,
+    ToAddresses = [emailAccount.EmailAddress],
+    Subject = emailRaceConversation.Subject,
+    TextBody = emailRaceConversation.LastMessage,
+    Timestamp = DateTimeOffset.Now
+});
+var emailRaceJob = new CustomerEnrichmentJob
+{
+    Id = "email-source-race-job",
+    CustomerId = emailRaceLead.Id,
+    Status = CustomerEnrichmentJobStatus.Succeeded,
+    Provider = "offline-test",
+    IdentityHash = CustomerEnrichmentIdentityService.Build(emailRaceLead).IdentityHash
+};
+await repository.SaveCustomerEnrichmentJobAsync(emailRaceJob);
+var emailRaceFact = new CustomerEnrichmentFact
+{
+    Id = "email-source-race-fact",
+    CustomerId = emailRaceLead.Id,
+    JobId = emailRaceJob.Id,
+    FieldType = "public_role",
+    FieldValue = "Procurement Manager",
+    NormalizedValue = "procurement manager",
+    Category = "公开职位",
+    FactType = "verified_fact",
+    ConfidenceScore = 95,
+    VerificationStatus = CustomerEnrichmentVerificationStatus.Verified,
+    EvidenceQuote = "Email Source Race Buyer is Procurement Manager.",
+    LastVerifiedAt = DateTimeOffset.Now,
+    ExpiresAt = DateTimeOffset.Now.AddDays(90)
+};
+await repository.SaveCustomerEnrichmentFactsAsync([emailRaceFact]);
+var blockingEmailProvider = new BlockingEmailAssistantProvider();
+var blockingEmailAssistant = new EmailAssistantService(repository, blockingEmailProvider);
+var blockedEmailDraftTask = blockingEmailAssistant.AnalyzeAsync(
+    emailAccount.Id,
+    emailRaceConversation.Id,
+    emailRaceLead.Email,
+    emailRaceLead,
+    "Ask for the target delivery date.",
+    "",
+    "");
+await blockingEmailProvider.GenerationStarted.WaitAsync(TimeSpan.FromSeconds(10));
+emailRaceFact.VerificationStatus = CustomerEnrichmentVerificationStatus.Rejected;
+emailRaceFact.UpdatedAt = DateTimeOffset.Now.AddSeconds(1);
+await repository.SaveCustomerEnrichmentFactsAsync([emailRaceFact]);
+blockingEmailProvider.ReleaseGeneration();
+try
+{
+    await blockedEmailDraftTask;
+    Check(false, "Email Sales Copilot rejects a draft when the customer external-fact source changes in flight");
+}
+catch (DeepSeekException error)
+{
+    Check(error.Code == "email_assistant_source_changed"
+        && (await repository.GetEmailMessagesAsync(emailRaceConversation.Id)).Count == 1,
+        "Email Sales Copilot rejects a draft when the customer external-fact source changes in flight");
+}
+var emailAckRoot = Path.Combine(root, "email-ack-binding");
+var emailAckRepository = new LocalRepository(Path.Combine(emailAckRoot, "email-ack.db"));
+await emailAckRepository.InitializeAsync();
+await emailAckRepository.SaveEmailAccountAsync(new EmailAccount
+{
+    Id="ack-mail", Provider=EmailProviderKind.Custom, EmailAddress="seller@example.com",
+    UserName="seller@example.com", ImapHost="imap.example.com", SmtpHost="smtp.example.com",
+    Status=EmailConnectionStatus.Connected
+});
+var emailAckLeadA = new Lead { Id="email-ack-a", Name="Email Ack A", Email="ack-race@example.com" };
+var emailAckLeadB = new Lead { Id="email-ack-b", Name="Email Ack B", Email="ack-race@example.com" };
+var emailUniqueLead = new Lead { Id="email-ack-unique", Name="Email Unique", Email="unique-ack@example.com" };
+await emailAckRepository.UpsertLeadAsync(emailUniqueLead);
+var emailUniqueAt = DateTimeOffset.Now;
+var emailUniqueMessage = new EmailMessage
+{
+    Id="ack-mail:unique-message", ProviderMessageId="unique-message", AccountId="ack-mail",
+    ConversationId="ack-mail:unique-ack@example.com", Direction=EmailMessageDirection.Outgoing,
+    Status=EmailMessageStatus.Sent, FromAddress="seller@example.com", ToAddresses=[emailUniqueLead.Email],
+    Subject="Unique ACK", TextBody="Unique customer message", Timestamp=emailUniqueAt
+};
+var emailUniqueCommit = await emailAckRepository.PersistAcknowledgedOutgoingEmailAsync(
+    new EmailConversation
+    {
+        Id=emailUniqueMessage.ConversationId, AccountId=emailUniqueMessage.AccountId, LeadId=emailUniqueLead.Id,
+        PeerEmail=emailUniqueLead.Email, PeerName=emailUniqueLead.Name, Subject=emailUniqueMessage.Subject,
+        LastMessage=emailUniqueMessage.TextBody, LastMessageAt=emailUniqueAt
+    },
+    emailUniqueMessage,
+    emailUniqueLead.Id,
+    EmailSendBindingSource.UniqueEmail);
+Check(
+    emailUniqueCommit.LeadId == emailUniqueLead.Id && emailUniqueCommit.DeliveryAcknowledged &&
+    !emailUniqueCommit.ContextChangedAfterSend &&
+    (await emailAckRepository.GetLeadAsync(emailUniqueLead.Id))?.LastContactAt == emailUniqueAt,
+    "email acknowledged send atomically attributes the still-unique customer");
+
+var emailDependencyJob = new CustomerEnrichmentJob
+{
+    Id = "email-ack-dependency-job",
+    CustomerId = emailUniqueLead.Id,
+    Status = CustomerEnrichmentJobStatus.Succeeded,
+    Provider = "offline-test",
+    IdentityHash = CustomerEnrichmentIdentityService.Build(
+        (await emailAckRepository.GetLeadAsync(emailUniqueLead.Id))!).IdentityHash
+};
+await emailAckRepository.SaveCustomerEnrichmentJobAsync(emailDependencyJob);
+var emailDependencyFact = new CustomerEnrichmentFact
+{
+    Id = "email-ack-dependency-fact",
+    CustomerId = emailUniqueLead.Id,
+    JobId = emailDependencyJob.Id,
+    FieldType = "public_role",
+    FieldValue = "Head of Procurement",
+    NormalizedValue = "head of procurement",
+    Category = "公开职位",
+    FactType = "verified_fact",
+    ConfidenceScore = 96,
+    VerificationStatus = CustomerEnrichmentVerificationStatus.Verified,
+    EvidenceQuote = "Email Unique is Head of Procurement.",
+    LastVerifiedAt = DateTimeOffset.Now,
+    ExpiresAt = DateTimeOffset.Now.AddDays(90)
+};
+await emailAckRepository.SaveCustomerEnrichmentFactsAsync([emailDependencyFact]);
+var emailDependencyBeforeSend = await CustomerExternalFactPolicy.CaptureDependencyAsync(
+    emailAckRepository,
+    emailUniqueLead.Id,
+    DateTimeOffset.Now);
+var emailLeadBeforeDependencyDrift = await emailAckRepository.GetLeadAsync(emailUniqueLead.Id);
+emailDependencyFact.VerificationStatus = CustomerEnrichmentVerificationStatus.Rejected;
+emailDependencyFact.UpdatedAt = DateTimeOffset.Now.AddSeconds(1);
+await emailAckRepository.SaveCustomerEnrichmentFactsAsync([emailDependencyFact]);
+var emailDependencyAckAt = emailUniqueAt.AddMinutes(1);
+var emailDependencyAckMessage = new EmailMessage
+{
+    Id="ack-mail:dependency-message", ProviderMessageId="dependency-message", AccountId="ack-mail",
+    ConversationId=emailUniqueMessage.ConversationId, Direction=EmailMessageDirection.Outgoing,
+    Status=EmailMessageStatus.Sent, FromAddress="seller@example.com", ToAddresses=[emailUniqueLead.Email],
+    Subject="Stale external context", TextBody="AI draft based on stale public facts", Timestamp=emailDependencyAckAt
+};
+var emailDependencyAckCommit = await emailAckRepository.PersistAcknowledgedOutgoingEmailAsync(
+    new EmailConversation
+    {
+        Id=emailDependencyAckMessage.ConversationId, AccountId=emailDependencyAckMessage.AccountId,
+        LeadId=emailUniqueLead.Id, PeerEmail=emailUniqueLead.Email, PeerName=emailUniqueLead.Name,
+        Subject=emailDependencyAckMessage.Subject, LastMessage=emailDependencyAckMessage.TextBody,
+        LastMessageAt=emailDependencyAckAt
+    },
+    emailDependencyAckMessage,
+    emailUniqueLead.Id,
+    EmailSendBindingSource.ExistingConversation,
+    emailDependencyBeforeSend.Hash);
+var emailLeadAfterDependencyDrift = await emailAckRepository.GetLeadAsync(emailUniqueLead.Id);
+Check(
+    emailDependencyAckCommit.DeliveryAcknowledged && emailDependencyAckCommit.ContextChangedAfterSend &&
+    emailDependencyAckCommit.LeadId.Length == 0 &&
+    emailDependencyAckCommit.ContextChangeReason.Contains("外部调查事实", StringComparison.Ordinal) &&
+    emailLeadAfterDependencyDrift?.LastContactAt == emailLeadBeforeDependencyDrift?.LastContactAt &&
+    (await emailAckRepository.GetEmailMessagesForLeadAsync(emailUniqueLead.Id))
+        .All(item => item.Id != emailDependencyAckMessage.Id),
+    "email ACK transaction rejects stale external-fact dependency without feeding any customer history");
+
+await emailAckRepository.UpsertLeadAsync(emailAckLeadA);
+var emailAckConversation = new EmailConversation
+{
+    Id="ack-mail:ack-race@example.com", AccountId="ack-mail", LeadId=emailAckLeadA.Id,
+    PeerEmail=emailAckLeadA.Email, PeerName=emailAckLeadA.Name, Subject="A subject",
+    LastMessage="A before send", LastMessageAt=DateTimeOffset.Now.AddMinutes(-2)
+};
+await emailAckRepository.UpsertEmailConversationAsync(emailAckConversation);
+await emailAckRepository.UpsertLeadAsync(emailAckLeadB);
+var newerIncomingAt = DateTimeOffset.Now.AddMinutes(2);
+emailAckConversation.LeadId = emailAckLeadB.Id;
+emailAckConversation.PeerName = emailAckLeadB.Name;
+emailAckConversation.Subject = "newer incoming subject";
+emailAckConversation.LastMessage = "newer incoming while SMTP waited";
+emailAckConversation.LastMessageAt = newerIncomingAt;
+emailAckConversation.UnreadCount = 1;
+await emailAckRepository.UpsertEmailConversationAsync(
+    emailAckConversation,
+    incrementUnread:true,
+    allowBindingReplacement:true);
+var emailRaceAckAt = DateTimeOffset.Now;
+var emailRaceAckMessage = new EmailMessage
+{
+    Id="ack-mail:race-message", ProviderMessageId="race-message", AccountId="ack-mail",
+    ConversationId=emailAckConversation.Id, Direction=EmailMessageDirection.Outgoing, Status=EmailMessageStatus.Sent,
+    FromAddress="seller@example.com", ToAddresses=[emailAckLeadA.Email], Subject="A-context subject",
+    TextBody="A-context body", Timestamp=emailRaceAckAt
+};
+var emailRaceAckCommit = await emailAckRepository.PersistAcknowledgedOutgoingEmailAsync(
+    new EmailConversation
+    {
+        Id=emailAckConversation.Id, AccountId=emailAckConversation.AccountId, LeadId=emailAckLeadA.Id,
+        PeerEmail=emailAckLeadA.Email, PeerName=emailAckLeadA.Name, Subject=emailRaceAckMessage.Subject,
+        LastMessage=emailRaceAckMessage.TextBody, LastMessageAt=emailRaceAckAt
+    },
+    emailRaceAckMessage,
+    emailAckLeadA.Id,
+    EmailSendBindingSource.ExistingConversation);
+var emailRaceAckStoredConversation = (await emailAckRepository.GetEmailConversationsAsync("ack-mail"))
+    .Single(item => item.Id == emailAckConversation.Id);
+Check(
+    emailRaceAckCommit.ContextChangedAfterSend && emailRaceAckCommit.LeadId.Length == 0 &&
+    emailRaceAckStoredConversation.LeadId == emailAckLeadB.Id &&
+    emailRaceAckStoredConversation.LastMessage == "newer incoming while SMTP waited" &&
+    emailRaceAckStoredConversation.LastMessageAt == newerIncomingAt &&
+    (await emailAckRepository.GetLeadAsync(emailAckLeadA.Id))?.LastContactAt is null &&
+    (await emailAckRepository.GetLeadAsync(emailAckLeadB.Id))?.LastContactAt is null,
+    "email acknowledged A-to-B rebind stays unbound and preserves the newer conversation snapshot");
+await emailAckRepository.UpsertEmailMessageAsync(new EmailMessage
+{
+    Id=emailRaceAckMessage.Id, ProviderMessageId=emailRaceAckMessage.ProviderMessageId, AccountId=emailRaceAckMessage.AccountId,
+    ConversationId=emailRaceAckMessage.ConversationId, LeadId=emailAckLeadB.Id, Direction=EmailMessageDirection.Outgoing,
+    Status=EmailMessageStatus.Sent, FromAddress=emailRaceAckMessage.FromAddress, ToAddresses=emailRaceAckMessage.ToAddresses,
+    Subject=emailRaceAckMessage.Subject, TextBody=emailRaceAckMessage.TextBody, Timestamp=emailRaceAckMessage.Timestamp
+});
+Check(
+    (await emailAckRepository.GetEmailMessagesAsync(emailAckConversation.Id))
+        .Single(item => item.Id == emailRaceAckMessage.Id).LeadId.Length == 0,
+    "late email synchronization cannot rewrite a finalized unbound ACK onto the rebound customer");
+
+var ambiguousEmail = "ambiguous-ack@example.com";
+await emailAckRepository.UpsertLeadAsync(new Lead { Id="email-ambiguous-a", Name="Ambiguous A", Email=ambiguousEmail });
+await emailAckRepository.UpsertLeadAsync(new Lead { Id="email-ambiguous-b", Name="Ambiguous B", Email=ambiguousEmail });
+var ambiguousMessage = new EmailMessage
+{
+    Id="ack-mail:ambiguous-message", ProviderMessageId="ambiguous-message", AccountId="ack-mail",
+    ConversationId=$"ack-mail:{ambiguousEmail}", Direction=EmailMessageDirection.Outgoing, Status=EmailMessageStatus.Sent,
+    FromAddress="seller@example.com", ToAddresses=[ambiguousEmail], Subject="Explicit unbound",
+    TextBody="Manual unbound message", Timestamp=DateTimeOffset.Now
+};
+var ambiguousCommit = await emailAckRepository.PersistAcknowledgedOutgoingEmailAsync(
+    new EmailConversation
+    {
+        Id=ambiguousMessage.ConversationId, AccountId=ambiguousMessage.AccountId, PeerEmail=ambiguousEmail,
+        Subject=ambiguousMessage.Subject, LastMessage=ambiguousMessage.TextBody, LastMessageAt=ambiguousMessage.Timestamp
+    },
+    ambiguousMessage,
+    "",
+    EmailSendBindingSource.ExplicitUnbound);
+Check(
+    ambiguousCommit.DeliveryAcknowledged && !ambiguousCommit.ContextChangedAfterSend && ambiguousCommit.LeadId.Length == 0 &&
+    (await emailAckRepository.GetEmailConversationsAsync("ack-mail"))
+        .Single(item => item.Id == ambiguousMessage.ConversationId).LeadId.Length == 0,
+    "explicitly unbound email remains unbound when the recipient address is ambiguous across customers");
+
+var campaignAckIpMonitor = new PublicIpMonitor(
+    emailAckRepository,
+    new HttpClient(new MutableIpMonitorHandler("198.51.100.51")) { Timeout=TimeSpan.FromSeconds(2) });
+await using (var campaignAckService = new CampaignAutomationService(
+                 emailAckRepository,
+                 new WhatsAppConnectionManager(),
+                 campaignAckIpMonitor,
+                 new EmailService(emailAckRepository)))
+{
+    var prepareNetworkSend = typeof(CampaignAutomationService).GetMethod(
+        "PrepareRecipientForNetworkSend",
+        BindingFlags.Static | BindingFlags.NonPublic)!;
+    var contextChangedCampaign = new WhatsAppCampaign
+    {
+        Id="email-context-changed-campaign", Channel=CampaignChannel.Email, AccountId="ack-mail",
+        Name="Email context changed", Status=CampaignStatus.Running, ApprovedAt=DateTimeOffset.Now,
+        StartsAt=DateTimeOffset.Now, DailyLimit=2
+    };
+    await emailAckRepository.SaveCampaignAsync(contextChangedCampaign);
+    var contextChangedRecipient = new CampaignRecipient
+    {
+        Id="email-context-changed-recipient", CampaignId=contextChangedCampaign.Id,
+        LeadId=emailAckLeadA.Id, AccountId="ack-mail", Email=emailAckLeadA.Email,
+        DisplayName=emailAckLeadA.Name, RenderedSubject="Context changed", RenderedMessage="Already acknowledged",
+        Status=CampaignRecipientStatus.Queued,
+        ScheduledAt=DateTimeOffset.Now.AddMinutes(-1), NextAttemptAt=DateTimeOffset.Now.AddMinutes(-1)
+    };
+    prepareNetworkSend.Invoke(null, [contextChangedCampaign, contextChangedRecipient]);
+    var contextChangedWasPending = contextChangedRecipient.CustomerAttributionIsolated &&
+        contextChangedRecipient.CustomerAttributionNote.Contains("确认前", StringComparison.Ordinal);
+    await emailAckRepository.SaveCampaignRecipientAsync(contextChangedRecipient);
+    var staleCampaignSourceId = $"{contextChangedCampaign.Id}:{contextChangedRecipient.ScheduledAt:O}";
+    await emailAckRepository.UpsertCustomerBehaviorEventAsync(new CustomerBehaviorEvent
+    {
+        Id="stale-context-changed-campaign-touch", CustomerId=emailAckLeadA.Id, Channel="Email",
+        EventType="campaign_touch", Direction="outgoing", SourceType="campaign_recipient",
+        SourceId=staleCampaignSourceId, Summary="queued before the SMTP race", OccurredAt=contextChangedRecipient.ScheduledAt
+    });
+    var contextChangedMessage = new EmailMessage
+    {
+        Id="ack-mail:campaign-context-changed", ProviderMessageId="campaign-context-changed-provider",
+        AccountId="ack-mail", ConversationId=emailAckConversation.Id, LeadId="",
+        Direction=EmailMessageDirection.Outgoing, Status=EmailMessageStatus.Sent,
+        FromAddress="seller@example.com", ToAddresses=[emailAckLeadA.Email], Subject="Context changed",
+        TextBody="Already acknowledged", Timestamp=DateTimeOffset.Now, DeliveryAcknowledged=true,
+        ContextChangedAfterSend=true, ContextChangeReason="conversation rebound from customer A to customer B"
+    };
+    var applyEmailResult = typeof(CampaignAutomationService).GetMethod(
+        "ApplyEmailSendResultAsync",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    await (Task)applyEmailResult.Invoke(campaignAckService, [
+        contextChangedCampaign,
+        contextChangedRecipient,
+        emailAckLeadA,
+        contextChangedMessage,
+        CancellationToken.None
+    ])!;
+    await emailAckRepository.SaveCampaignRecipientAsync(contextChangedRecipient);
+
+    var completeCampaign = typeof(CampaignAutomationService).GetMethod(
+        "CompleteCampaignIfFinishedAsync",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    await (Task)completeCampaign.Invoke(campaignAckService, [contextChangedCampaign, CancellationToken.None])!;
+    var storedContextChangedRecipient = (await emailAckRepository.GetCampaignRecipientsAsync(contextChangedCampaign.Id)).Single();
+    var originalLeadAudit = await emailAckRepository.GetCustomerHistoryAsync(emailAckLeadA.Id);
+    var brainTouchesMethod = typeof(CustomerBrainService).GetMethod(
+        "GetCampaignTouchesAsync",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var brainTouches = await (Task<List<CustomerCampaignTouch>>)brainTouchesMethod.Invoke(
+        new CustomerBrainService(emailAckRepository),
+        [emailAckLeadA.Id, CancellationToken.None])!;
+    var safeTimelineMethod = typeof(CustomerBrainService).GetMethod(
+        "GetAttributionSafeBehaviorTimelineAsync",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var safeTimeline = await (Task<List<CustomerBehaviorEvent>>)safeTimelineMethod.Invoke(
+        new CustomerBrainService(emailAckRepository),
+        [emailAckLeadA.Id, CancellationToken.None])!;
+    var analysisSnapshotMethod = typeof(CustomerAnalysisService).GetMethod(
+        "BuildSnapshotAsync",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var analysisSnapshot = await (Task<CustomerIntelligenceSourceSnapshot>)analysisSnapshotMethod.Invoke(
+        new CustomerAnalysisService(emailAckRepository, new FakeStructuredReportProvider()),
+        [emailAckLeadA, CancellationToken.None])!;
+    Check(
+        contextChangedWasPending &&
+        storedContextChangedRecipient.Status == CampaignRecipientStatus.DeliveryAcknowledged &&
+        storedContextChangedRecipient.ProviderMessageId == contextChangedMessage.ProviderMessageId &&
+        storedContextChangedRecipient.CustomerAttributionIsolated &&
+        storedContextChangedRecipient.SentAt == contextChangedMessage.Timestamp &&
+        storedContextChangedRecipient.LastError.Contains("请勿重复发送", StringComparison.Ordinal) &&
+        (await emailAckRepository.GetCampaignAsync(contextChangedCampaign.Id))?.Status == CampaignStatus.Completed &&
+        !originalLeadAudit.Any(item => item.Type is "campaign_message_sent" or "campaign_message_failed") &&
+        brainTouches.Count == 0 &&
+        analysisSnapshot.CampaignTouches.Count == 0 &&
+        safeTimeline.All(item => item.SourceId != staleCampaignSourceId),
+        "campaign email A-to-B SMTP ACK is terminal, preserves provider id and is isolated from original-customer audit and AI sources");
+
+    var persistencePendingCampaign = new WhatsAppCampaign
+    {
+        Id="email-ack-persistence-campaign", Channel=CampaignChannel.Email, AccountId="ack-mail",
+        Name="Email ACK persistence pending", Status=CampaignStatus.Running, ApprovedAt=DateTimeOffset.Now,
+        StartsAt=DateTimeOffset.Now, DailyLimit=2
+    };
+    await emailAckRepository.SaveCampaignAsync(persistencePendingCampaign);
+    var persistencePendingRecipient = new CampaignRecipient
+    {
+        Id="email-ack-persistence-recipient", CampaignId=persistencePendingCampaign.Id,
+        LeadId=emailUniqueLead.Id, AccountId="ack-mail", Email=emailUniqueLead.Email,
+        DisplayName=emailUniqueLead.Name, RenderedSubject="ACK pending", RenderedMessage="Do not retry",
+        Status=CampaignRecipientStatus.Queued,
+        ScheduledAt=DateTimeOffset.Now.AddSeconds(-30), NextAttemptAt=DateTimeOffset.Now.AddSeconds(-30)
+    };
+    prepareNetworkSend.Invoke(null, [persistencePendingCampaign, persistencePendingRecipient]);
+    var persistenceWasPending = persistencePendingRecipient.CustomerAttributionIsolated;
+    await emailAckRepository.SaveCampaignRecipientAsync(persistencePendingRecipient);
+    var acknowledgedError = new EmailDeliveryAcknowledgedException(
+        "campaign-persistence-provider",
+        new IOException("simulated local persistence failure after SMTP ACK"));
+    var applyAcknowledgedError = typeof(CampaignAutomationService).GetMethod(
+        "ApplyEmailDeliveryAcknowledgedExceptionAsync",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    await (Task)applyAcknowledgedError.Invoke(campaignAckService, [
+        persistencePendingCampaign,
+        persistencePendingRecipient,
+        acknowledgedError,
+        CancellationToken.None
+    ])!;
+    await emailAckRepository.SaveCampaignRecipientAsync(persistencePendingRecipient);
+    await (Task)completeCampaign.Invoke(campaignAckService, [persistencePendingCampaign, CancellationToken.None])!;
+    await emailAckRepository.RecoverInterruptedCampaignRecipientsAsync();
+    var storedPersistencePending = (await emailAckRepository.GetCampaignRecipientsAsync(persistencePendingCampaign.Id)).Single();
+    var countQuotaMethod = typeof(CampaignAutomationService).GetMethod(
+        "CountCampaignMessagesConsumingLimitAsync",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var quotaConsumed = await (Task<int>)countQuotaMethod.Invoke(campaignAckService, [
+        "ack-mail",
+        DateTimeOffset.Now.AddHours(-1),
+        CancellationToken.None
+    ])!;
+    var acknowledgedSummary = (await campaignAckService.GetExecutionHistoryAsync())
+        .Single(item => item.Campaign.Id == persistencePendingCampaign.Id);
+    Check(
+        persistenceWasPending &&
+        storedPersistencePending.Status == CampaignRecipientStatus.DeliveryAcknowledged &&
+        storedPersistencePending.Status != CampaignRecipientStatus.Failed &&
+        storedPersistencePending.ProviderMessageId == acknowledgedError.ProviderMessageId &&
+        storedPersistencePending.SentAt is not null &&
+        storedPersistencePending.CustomerAttributionIsolated &&
+        storedPersistencePending.LastError.Contains("不可重试终态", StringComparison.Ordinal) &&
+        (await emailAckRepository.GetCampaignAsync(persistencePendingCampaign.Id))?.Status == CampaignStatus.Completed &&
+        quotaConsumed == 2 &&
+        acknowledgedSummary is { Sent: 0, Failed: 0, Queued: 0, DeliveryAcknowledged: 1 } &&
+        acknowledgedSummary.Progress == "1 / 1" && acknowledgedSummary.SuccessRate == "100%",
+        "EmailDeliveryAcknowledgedException stays terminal, retains provider id, consumes quota and is never downgraded to Failed");
+
+    var contextCurrentRecipient = new CampaignRecipient
+    {
+        Id="email-context-current-recipient", CampaignId=contextChangedCampaign.Id,
+        LeadId=emailUniqueLead.Id, AccountId="ack-mail", Email=emailUniqueLead.Email,
+        DisplayName=emailUniqueLead.Name, RenderedSubject="Current context", RenderedMessage="Confirmed attribution",
+        Status=CampaignRecipientStatus.Queued, ScheduledAt=DateTimeOffset.Now, NextAttemptAt=DateTimeOffset.Now
+    };
+    prepareNetworkSend.Invoke(null, [contextChangedCampaign, contextCurrentRecipient]);
+    var contextCurrentStartedIsolated = contextCurrentRecipient.CustomerAttributionIsolated;
+    await (Task)applyEmailResult.Invoke(campaignAckService, [
+        contextChangedCampaign,
+        contextCurrentRecipient,
+        emailUniqueLead,
+        new EmailMessage
+        {
+            ProviderMessageId="campaign-context-current-provider", Timestamp=DateTimeOffset.Now,
+            DeliveryAcknowledged=true, ContextChangedAfterSend=false
+        },
+        CancellationToken.None
+    ])!;
+    Check(
+        contextCurrentStartedIsolated &&
+        contextCurrentRecipient.Status == CampaignRecipientStatus.Sent &&
+        !contextCurrentRecipient.CustomerAttributionIsolated &&
+        contextCurrentRecipient.CustomerAttributionNote.Length == 0,
+        "campaign email pending attribution is cleared only after a context-current SMTP acknowledgement");
+
+    const string crashWindowEmailText = "SMTP accepted text must remain isolated after restart";
+    var crashWindowEmailCampaign = new WhatsAppCampaign
+    {
+        Id="email-crash-window-campaign", Channel=CampaignChannel.Email, AccountId="ack-mail",
+        Name="Email crash window", Status=CampaignStatus.Running, ApprovedAt=DateTimeOffset.Now,
+        StartsAt=DateTimeOffset.Now, DailyLimit=10
+    };
+    await emailAckRepository.SaveCampaignAsync(crashWindowEmailCampaign);
+    var crashWindowEmailRecipient = new CampaignRecipient
+    {
+        Id="email-crash-window-recipient", CampaignId=crashWindowEmailCampaign.Id,
+        LeadId=emailAckLeadB.Id, AccountId="ack-mail", Email=emailAckLeadB.Email,
+        DisplayName=emailAckLeadB.Name, RenderedSubject="Crash window", RenderedMessage=crashWindowEmailText,
+        Status=CampaignRecipientStatus.Queued,
+        ScheduledAt=DateTimeOffset.Now.AddSeconds(-10), NextAttemptAt=DateTimeOffset.Now.AddSeconds(-10)
+    };
+    prepareNetworkSend.Invoke(null, [crashWindowEmailCampaign, crashWindowEmailRecipient]);
+    await emailAckRepository.SaveCampaignRecipientAsync(crashWindowEmailRecipient);
+    var crashEmailSourceId = $"{crashWindowEmailCampaign.Id}:{crashWindowEmailRecipient.ScheduledAt:O}";
+    await emailAckRepository.UpsertCustomerBehaviorEventAsync(new CustomerBehaviorEvent
+    {
+        Id="email-crash-window-stale-touch", CustomerId=emailAckLeadB.Id, Channel="Email",
+        EventType="campaign_touch", Direction="outgoing", SourceType="campaign_recipient",
+        SourceId=crashEmailSourceId, Summary=crashWindowEmailText, OccurredAt=crashWindowEmailRecipient.ScheduledAt
+    });
+
+    const string whatsappCrashText = "WhatsApp crash recovery remains on its established attribution path";
+    var whatsappCrashCampaign = new WhatsAppCampaign
+    {
+        Id="whatsapp-crash-window-campaign", Channel=CampaignChannel.WhatsApp, AccountId="ack-mail",
+        Name="WhatsApp crash window", Status=CampaignStatus.Running, ApprovedAt=DateTimeOffset.Now,
+        StartsAt=DateTimeOffset.Now, DailyLimit=10
+    };
+    await emailAckRepository.SaveCampaignAsync(whatsappCrashCampaign);
+    var whatsappCrashRecipient = new CampaignRecipient
+    {
+        Id="whatsapp-crash-window-recipient", CampaignId=whatsappCrashCampaign.Id,
+        LeadId=emailAckLeadB.Id, AccountId="ack-mail", Phone="+14155550999",
+        DisplayName=emailAckLeadB.Name, RenderedMessage=whatsappCrashText,
+        Status=CampaignRecipientStatus.Queued,
+        ScheduledAt=DateTimeOffset.Now.AddSeconds(-9), NextAttemptAt=DateTimeOffset.Now.AddSeconds(-9)
+    };
+    prepareNetworkSend.Invoke(null, [whatsappCrashCampaign, whatsappCrashRecipient]);
+    await emailAckRepository.SaveCampaignRecipientAsync(whatsappCrashRecipient);
+
+    await emailAckRepository.RecoverInterruptedCampaignRecipientsAsync();
+    var storedCrashEmail = (await emailAckRepository.GetCampaignRecipientsAsync(crashWindowEmailCampaign.Id)).Single();
+    var storedCrashWhatsApp = (await emailAckRepository.GetCampaignRecipientsAsync(whatsappCrashCampaign.Id)).Single();
+    var crashBrainTouches = await (Task<List<CustomerCampaignTouch>>)brainTouchesMethod.Invoke(
+        new CustomerBrainService(emailAckRepository),
+        [emailAckLeadB.Id, CancellationToken.None])!;
+    var crashAnalysisSnapshot = await (Task<CustomerIntelligenceSourceSnapshot>)analysisSnapshotMethod.Invoke(
+        new CustomerAnalysisService(emailAckRepository, new FakeStructuredReportProvider()),
+        [emailAckLeadB, CancellationToken.None])!;
+    var crashSafeTimeline = await (Task<List<CustomerBehaviorEvent>>)safeTimelineMethod.Invoke(
+        new CustomerBrainService(emailAckRepository),
+        [emailAckLeadB.Id, CancellationToken.None])!;
+    Check(
+        storedCrashEmail.Status == CampaignRecipientStatus.Failed &&
+        storedCrashEmail.CustomerAttributionIsolated &&
+        storedCrashEmail.CustomerAttributionNote.Contains("确认前", StringComparison.Ordinal) &&
+        storedCrashEmail.LastError.Contains("发送结果未知", StringComparison.Ordinal) &&
+        crashBrainTouches.All(item => item.Message != crashWindowEmailText) &&
+        crashAnalysisSnapshot.CampaignTouches.All(item => item.Message != crashWindowEmailText) &&
+        crashSafeTimeline.All(item => item.SourceId != crashEmailSourceId) &&
+        storedCrashWhatsApp.Status == CampaignRecipientStatus.Failed &&
+        !storedCrashWhatsApp.CustomerAttributionIsolated &&
+        storedCrashWhatsApp.CustomerAttributionNote.Length == 0 &&
+        crashBrainTouches.Any(item => item.Message == whatsappCrashText),
+        "campaign email pre-network isolation survives Sending recovery and hides actual text while WhatsApp remains unchanged");
+}
 var emailCampaign = new WhatsAppCampaign
 {
     Id="email-campaign", Channel=CampaignChannel.Email, AccountId=emailAccount.Id, Name="Email nurture",
@@ -2084,14 +3002,19 @@ Check(
     && leadIntelligenceRoute.ReasoningParameter == "reasoning_effort",
     "Lead Intelligence has an independent provider, model and declared reasoning-depth route");
 
-await using (var embeddedBridge = new WhatsAppConnectionManager(
-                 Path.Combine(root, "embedded-bridge-workspace")))
+if (!string.Equals(
+        Environment.GetEnvironmentVariable("WAFLOW_SKIP_EMBEDDED_BRIDGE_SMOKE"),
+        "1",
+        StringComparison.Ordinal))
 {
+    await using var embeddedBridge = new WhatsAppConnectionManager(
+        Path.Combine(root, "embedded-bridge-workspace"));
     await embeddedBridge.StartAsync("embedded_smoke");
     var bridgePing = await embeddedBridge.PingAsync();
     Check(bridgePing.TryGetProperty("bridge", out var bridgeName) && bridgeName.GetString() == "WAFlow.WhatsApp.Bridge", "embedded bridge EXE extraction and startup");
     await embeddedBridge.LogoutAsync();
 }
+else Console.WriteLine("SKIP  embedded bridge EXE extraction and startup (WAFLOW_SKIP_EMBEDDED_BRIDGE_SMOKE=1)");
 
 var analysisJson = V2AnalysisJson("Could you quote 300 units?");
 var draftJson = WAFlow.Core.Infrastructure.Json.Serialize(new { purpose="follow_up", language="en", body="Hi Elena, thank you for confirming 300 units. I will verify the lead time and share the next details with you.", rationale=new[] { "承接客户的数量与交期问题" }, assumptions=Array.Empty<string>(), risks=new[] { "交期需人工确认" } });
@@ -2616,7 +3539,7 @@ var firstRecommendations = await reportRepository.GetAiRecommendationHistoryAsyn
 var behaviorTimeline = await reportRepository.GetCustomerBehaviorTimelineAsync(reportLead.Id);
 Check(firstBrain is { Version: 1, CustomerId: "report-customer" } && firstBrain.Coverage.HasCrmData && firstBrain.Coverage.HasWhatsAppHistory && firstBrain.Coverage.HasLeadAnalysis && firstBrain.Coverage.HasCustomerReport && firstBrain.Coverage.HasCampaignHistory, "Customer Brain materializes one cross-channel profile with explicit data coverage");
 Check(firstBrain.Statements.Any(item => item.Nature == IntelligenceStatementNature.Fact && item.Source == "CRM") && firstBrain.Statements.Any(item => item.Nature == IntelligenceStatementNature.Inference) && firstBrain.Statements.Any(item => item.Nature == IntelligenceStatementNature.Recommendation), "Customer Brain keeps facts, AI inference and sales recommendations distinct");
-Check(firstBrainAgain.Version == firstBrain.Version && firstRecommendations.Count == 1, "Customer Brain refresh is idempotent and does not duplicate versions or recommendations");
+Check(firstBrainAgain.Version == firstBrain.Version && firstRecommendations.Count == 0, "Customer Brain refresh is idempotent and never creates executable recommendations before a current AI decision exists");
 Check(behaviorTimeline.Count >= 88 && behaviorTimeline.Any(item => item.SourceType == "whatsapp_message") && behaviorTimeline.Any(item => item.SourceType == "campaign_recipient") && behaviorTimeline.Any(item => item.SourceType == "customer_analysis_report"), "Customer Brain builds an idempotent behavior timeline from conversations, campaigns and reports");
 var stagedBrainService = new CustomerBrainService(reportRepository, new FakeCustomerBrainProvider());
 var contextualBrain = await stagedBrainService.UpdateConversationContextAsync(reportLead.Id);
@@ -2676,18 +3599,76 @@ Check(changedBrain.Version == decisionBrain.Version + 1 && changedBrain.SourceSn
     && changedBrain.CreatedAt == firstBrain.CreatedAt && changedBrain.DecisionStatus == CustomerBrainDecisionStatus.Stale
     && changedBrain.PurchaseProbability == decisionBrain.PurchaseProbability, "Customer Brain marks the previous AI decision stale when source semantics change without discarding it");
 Check(unchangedLeadAfterBrain is { Score: 86, Grade: "A", AnalysisStatus: AnalysisStatus.Succeeded } && unchangedLeadAfterBrain.CustomFields["目标价格状态"] == "待确认", "Customer Brain never overwrites authoritative CRM or Lead Intelligence fields");
-var brainRecommendation = (await reportRepository.GetAiRecommendationHistoryAsync(reportLead.Id)).First();
 var actionLifecycle = new CustomerActionLifecycleService(reportRepository);
+var staleRecommendation = (await reportRepository.GetAiRecommendationHistoryAsync(reportLead.Id)).First();
+var staleRecommendationBlocked = false;
+try
+{
+    await actionLifecycle.AcceptAsync(reportLead.Id, staleRecommendation.Id);
+}
+catch (InvalidOperationException)
+{
+    staleRecommendationBlocked = true;
+}
+Check(staleRecommendation.Status == AiRecommendationStatus.Superseded
+    && staleRecommendationBlocked
+    && (await reportRepository.GetFollowUpTasksAsync(reportLead.Id))
+        .Single(item => item.RecommendationId == staleRecommendation.Id).Status == FollowUpTaskStatus.Dismissed,
+    "stale Customer Brain decisions cannot remain executable or appear as active Today Brief work");
+_ = await stagedBrainService.AnalyzeAsync(reportLead.Id);
+var brainRecommendation = (await reportRepository.GetAiRecommendationHistoryAsync(reportLead.Id))
+    .First(item => item.Status == AiRecommendationStatus.Proposed);
 await actionLifecycle.AcceptAsync(reportLead.Id, brainRecommendation.Id);
 Check((await reportRepository.GetAiRecommendationHistoryAsync(reportLead.Id)).First(item => item.Id == brainRecommendation.Id).Status == AiRecommendationStatus.Accepted
     && (await reportRepository.GetFollowUpTasksAsync(reportLead.Id)).Single(item => item.RecommendationId == brainRecommendation.Id).Status == FollowUpTaskStatus.Open
     && (await reportRepository.GetSalesActionsAsync(reportLead.Id)).Single(item => item.RecommendationId == brainRecommendation.Id).Status == SalesActionStatus.Approved,
     "accepted Customer Brain recommendation synchronizes recommendation, task and sales action");
+var acceptedBeforeSourceChangeId = brainRecommendation.Id;
+reportLead.CustomFields["accepted-recommendation-stale-probe"] = "changed";
+await reportRepository.UpsertLeadAsync(reportLead);
+var staleAcceptedSendBlocked = false;
+try
+{
+    await actionLifecycle.RecordMessageExecutionAsync(
+        reportLead.Id,
+        "WhatsApp",
+        "must not execute stale recommendation",
+        "stale-accepted-send",
+        DateTimeOffset.Now);
+}
+catch (InvalidOperationException)
+{
+    staleAcceptedSendBlocked = true;
+}
+var briefAfterAcceptedBecameStale = await new TodayBriefService(
+    reportRepository,
+    customerBrain: stagedBrainService).GetAsync();
+Check(staleAcceptedSendBlocked
+    && (await reportRepository.GetAiRecommendationHistoryAsync(reportLead.Id))
+        .Single(item => item.Id == acceptedBeforeSourceChangeId).Status == AiRecommendationStatus.Superseded
+    && (await reportRepository.GetFollowUpTasksAsync(reportLead.Id))
+        .Single(item => item.RecommendationId == acceptedBeforeSourceChangeId).Status == FollowUpTaskStatus.Dismissed
+    && (await reportRepository.GetSalesActionsAsync(reportLead.Id))
+        .Single(item => item.RecommendationId == acceptedBeforeSourceChangeId).Status == SalesActionStatus.Cancelled
+    && briefAfterAcceptedBecameStale.Items.All(item => item.RecommendationId != acceptedBeforeSourceChangeId),
+    "an accepted but not executed recommendation is revoked after source change, blocks automatic send and disappears from Today Brief");
+_ = await stagedBrainService.AnalyzeAsync(reportLead.Id);
+brainRecommendation = (await reportRepository.GetAiRecommendationHistoryAsync(reportLead.Id))
+    .First(item => item.Status == AiRecommendationStatus.Proposed);
+await actionLifecycle.AcceptAsync(reportLead.Id, brainRecommendation.Id);
 await actionLifecycle.DeferAsync(reportLead.Id, brainRecommendation.Id, TimeSpan.FromHours(24));
 var deferredTask = (await reportRepository.GetFollowUpTasksAsync(reportLead.Id)).Single(item => item.RecommendationId == brainRecommendation.Id);
 Check(deferredTask.Status == FollowUpTaskStatus.Open && deferredTask.DueAt > DateTimeOffset.Now.AddHours(23),
     "accepted Customer Brain recommendation can be deferred without losing its execution state");
 await actionLifecycle.StartAsync(reportLead.Id, brainRecommendation.Id);
+reportLead.CustomFields["in-progress-source-change"] = "changed";
+await reportRepository.UpsertLeadAsync(reportLead);
+_ = await stagedBrainService.RefreshAsync(reportLead.Id);
+Check((await reportRepository.GetAiRecommendationHistoryAsync(reportLead.Id))
+        .Single(item => item.Id == brainRecommendation.Id).Status == AiRecommendationStatus.InProgress
+    && (await reportRepository.GetFollowUpTasksAsync(reportLead.Id))
+        .Single(item => item.RecommendationId == brainRecommendation.Id).Status == FollowUpTaskStatus.InProgress,
+    "a genuinely in-progress human-authorized action is preserved after source change so it can be explicitly finished");
 var nicknameBriefLead = new Lead
 {
     Id="brief-nickname-customer",
@@ -2823,10 +3804,25 @@ await learningAwareAssistant.AnalyzeAsync(outcomeConversation.Id, outcomeLead);
 Check(learningAwareAssistantProvider.PayloadJson.Contains("\"personalPlaybooks\"", StringComparison.Ordinal)
     && learningAwareAssistantProvider.PayloadJson.Contains(outcomeRecommendation.SuggestedTalkTrack, StringComparison.Ordinal),
     "WhatsApp AI assistant receives only persisted real-outcome talk-track playbooks");
+var brainBeforeRestart = await reportRepository.GetCustomerIntelligenceProfileAsync(reportLead.Id);
+var actionStateBeforeRestart = (await reportRepository.GetSalesActionsAsync(reportLead.Id))
+    .Select(item => (item.Id, item.Status))
+    .OrderBy(item => item.Id, StringComparer.Ordinal)
+    .ToList();
+var feedbackIdsBeforeRestart = (await reportRepository.GetAiLearningFeedbackAsync(reportLead.Id))
+    .Select(item => item.Id)
+    .OrderBy(item => item, StringComparer.Ordinal)
+    .ToList();
 await reportRepository.InitializeAsync();
 var persistedLearning = await reportRepository.GetAiLearningFeedbackAsync(reportLead.Id);
-Check((await reportRepository.GetCustomerIntelligenceProfileAsync(reportLead.Id))?.Version == changedBrain.Version
-    && (await reportRepository.GetSalesActionsAsync(reportLead.Id)).Count == 2
+var actionStateAfterRestart = (await reportRepository.GetSalesActionsAsync(reportLead.Id))
+    .Select(item => (item.Id, item.Status))
+    .OrderBy(item => item.Id, StringComparer.Ordinal)
+    .ToList();
+Check((await reportRepository.GetCustomerIntelligenceProfileAsync(reportLead.Id))?.Version == brainBeforeRestart?.Version
+    && actionStateAfterRestart.SequenceEqual(actionStateBeforeRestart)
+    && persistedLearning.Select(item => item.Id).OrderBy(item => item, StringComparer.Ordinal)
+        .SequenceEqual(feedbackIdsBeforeRestart)
     && persistedLearning.Count(item => item.FeedbackSource == "human") == 2
     && persistedLearning.Any(item => item.FeedbackSource == "system_observed")
     && (await reportRepository.GetFollowUpTasksAsync(reportLead.Id)).Single(item => item.RecommendationId == brainRecommendation.Id).Priority == FollowUpPriority.High, "Customer Brain migration is additive and preserves tasks, actions and outcome learning across restarts");
@@ -3309,12 +4305,38 @@ Check(autoResumed.Mode == ConversationAgentMode.AutoActive
         .Single(item => item.AccountId == "account-e").Mode == ConversationAgentMode.SuggestOnly,
     "explicit automatic resume transfers the single global lock to the selected account");
 
+await customerSuccessRepository.UpsertWhatsAppConversationAsync(new WhatsAppConversation
+{
+    Id = "conversation-dana",
+    AccountId = "account-d",
+    Phone = dana.PhoneE164,
+    LeadId = dana.Id,
+    DisplayName = dana.Name,
+    LastMessage = "This conversation will be manually rebound.",
+    LastMessageAt = DateTimeOffset.Now
+});
+await customerSuccessRepository.UpsertWhatsAppMessageAsync(new WhatsAppMessage
+{
+    Id = "account-d:rebind-history",
+    ProviderMessageId = "rebind-history",
+    AccountId = "account-d",
+    ConversationId = "conversation-dana",
+    LeadId = dana.Id,
+    Phone = dana.PhoneE164,
+    Direction = WhatsAppMessageDirection.Incoming,
+    Status = WhatsAppMessageStatus.Received,
+    Body = "This conversation will be manually rebound.",
+    Timestamp = DateTimeOffset.Now
+});
 await customerIdentity.ConfirmBindingAsync(alice.Id, "account-d", "conversation-dana", dana.PhoneE164, "dana@c.us");
 var reboundDanaGlobal = await customerSuccessRepository.GetGlobalCustomerIdentityAsync(dana.Id);
 Check(reboundDanaGlobal is not null
     && !reboundDanaGlobal.LinkedAccountIds.Contains("account-d")
     && string.IsNullOrWhiteSpace(reboundDanaGlobal.PrimaryAccountId),
     "manual identity rebinding recomputes the previous customer's linked accounts and primary account");
+Check(!(await customerSuccessRepository.GetWhatsAppMessagesForCustomerAsync(dana.Id)).Any(item => item.Id == "account-d:rebind-history")
+    && (await customerSuccessRepository.GetWhatsAppMessagesForCustomerAsync(alice.Id)).Any(item => item.Id == "account-d:rebind-history"),
+    "identity-aware customer history follows the active manual binding and cannot leak through a stale lead_id after rebinding");
 await customerIdentity.DetachAsync("account-d", "conversation-dana", "smoke-user");
 Check((await customerSuccessRepository.GetWhatsAppIdentityLinkAsync("account-d", "conversation-dana"))?.IsActive == false,
     "incorrect identity binding can be detached without deleting customer history");
@@ -3468,6 +4490,194 @@ Check(persistedIdentity?.LinkedAccountIds.Count == 2
     $"customer-success identity, sourcing, visible output, handoff and agent audit state persist across restart " +
     $"[accounts={persistedIdentity?.LinkedAccountIds.Count ?? -1}, sourcing={persistedSourcing?.Completeness ?? -1}, " +
     $"handoff={persistedHandoff?.Status.ToString() ?? "null"}, logs={persistedTurnLogs.Count}]");
+
+var customerSuccessRaceRoot = Path.Combine(root, "customer-success-context-race");
+var customerSuccessRaceRepository = new LocalRepository(Path.Combine(customerSuccessRaceRoot, "context-race.db"));
+await customerSuccessRaceRepository.InitializeAsync();
+var customerSuccessRaceIdentity = new CustomerIdentityService(customerSuccessRaceRepository);
+var customerSuccessRaceSourcing = new SourcingRequestService(customerSuccessRaceRepository);
+var raceSourceCustomer = new Lead
+{
+    Id = "cs-race-source",
+    Name = "Race Source Buyer",
+    PhoneE164 = "+14155550881",
+    PhoneValid = true
+};
+var raceTargetCustomer = new Lead
+{
+    Id = "cs-race-target",
+    Name = "Race Target Buyer",
+    PhoneE164 = "+14155550882",
+    PhoneValid = true
+};
+await customerSuccessRaceRepository.UpsertLeadAsync(raceSourceCustomer);
+await customerSuccessRaceRepository.UpsertLeadAsync(raceTargetCustomer);
+var raceConversation = new WhatsAppConversation
+{
+    Id = "cs-race-conversation",
+    AccountId = "cs-race-account",
+    Phone = PhoneIdentity.Digits(raceSourceCustomer.PhoneE164),
+    LeadId = raceSourceCustomer.Id,
+    DisplayName = raceSourceCustomer.Name,
+    LastMessage = completeSourcingMessage,
+    LastMessageAt = DateTimeOffset.Now
+};
+await customerSuccessRaceRepository.UpsertWhatsAppConversationAsync(raceConversation);
+await customerSuccessRaceIdentity.ConfirmBindingAsync(
+    raceSourceCustomer.Id,
+    raceConversation.AccountId,
+    raceConversation.Id,
+    raceConversation.Phone,
+    "race-source@c.us");
+var raceMessage = new WhatsAppMessage
+{
+    Id = "cs-race-account:source-message",
+    ProviderMessageId = "source-message",
+    AccountId = raceConversation.AccountId,
+    ConversationId = raceConversation.Id,
+    LeadId = raceSourceCustomer.Id,
+    Phone = raceConversation.Phone,
+    Direction = WhatsAppMessageDirection.Incoming,
+    Status = WhatsAppMessageStatus.Received,
+    Body = completeSourcingMessage,
+    Timestamp = DateTimeOffset.Now
+};
+await customerSuccessRaceRepository.UpsertWhatsAppMessageAsync(raceMessage);
+var blockingCustomerSuccessProvider = new BlockingCustomerSuccessAgentProvider();
+var blockingCustomerSuccessAgent = new CustomerSuccessAgentService(
+    customerSuccessRaceRepository,
+    blockingCustomerSuccessProvider,
+    customerSuccessRaceIdentity,
+    customerSuccessRaceSourcing);
+await blockingCustomerSuccessAgent.SetModeAsync(
+    raceSourceCustomer.Id,
+    raceConversation.AccountId,
+    raceConversation.Id,
+    ConversationAgentMode.AutoActive);
+await using var customerSuccessRaceBridge = new WhatsAppConnectionManager(customerSuccessRaceRoot);
+var customerSuccessRaceSync = new WhatsAppSyncService(customerSuccessRaceRepository, customerSuccessRaceBridge);
+var preSendRaceSender = new BlockingCustomerSuccessMessageSender(block: false);
+using var preSendRaceCoordinator = new CustomerSuccessAgentCoordinator(
+    customerSuccessRaceRepository,
+    customerSuccessRaceSync,
+    preSendRaceSender,
+    blockingCustomerSuccessAgent);
+var coordinatorHandleMethod = typeof(CustomerSuccessAgentCoordinator).GetMethod(
+    "HandleAsync",
+    BindingFlags.Instance | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("Customer Success coordinator handle method missing.");
+var preSendRaceTask = (Task)(coordinatorHandleMethod.Invoke(
+    preSendRaceCoordinator,
+    [raceMessage, CancellationToken.None])
+    ?? throw new InvalidOperationException("Customer Success coordinator did not return a task."));
+await blockingCustomerSuccessProvider.GenerationStarted.WaitAsync(TimeSpan.FromSeconds(10));
+await customerSuccessRaceIdentity.ConfirmBindingAsync(
+    raceTargetCustomer.Id,
+    raceConversation.AccountId,
+    raceConversation.Id,
+    raceConversation.Phone,
+    "race-target@c.us");
+blockingCustomerSuccessProvider.ReleaseGeneration();
+await preSendRaceTask;
+Check(preSendRaceSender.SendCount == 0
+    && await customerSuccessRaceRepository.GetRelationshipMemoryAsync(raceSourceCustomer.Id) is null
+    && await customerSuccessRaceRepository.GetRelationshipMemoryAsync(raceTargetCustomer.Id) is null
+    && await customerSuccessRaceRepository.GetLatestSourcingRequestAsync(raceSourceCustomer.Id) is null
+    && await customerSuccessRaceRepository.GetLatestSourcingRequestAsync(raceTargetCustomer.Id) is null,
+    "Customer Success generation fails closed before send and writes no customer memory when the conversation is rebound in flight");
+
+var postSendSourceCustomer = new Lead
+{
+    Id = "cs-post-send-source",
+    Name = "Post-send Source Buyer",
+    PhoneE164 = "+14155550891",
+    PhoneValid = true
+};
+var postSendTargetCustomer = new Lead
+{
+    Id = "cs-post-send-target",
+    Name = "Post-send Target Buyer",
+    PhoneE164 = "+14155550892",
+    PhoneValid = true
+};
+await customerSuccessRaceRepository.UpsertLeadAsync(postSendSourceCustomer);
+await customerSuccessRaceRepository.UpsertLeadAsync(postSendTargetCustomer);
+var postSendConversation = new WhatsAppConversation
+{
+    Id = "cs-post-send-conversation",
+    AccountId = "cs-post-send-account",
+    Phone = PhoneIdentity.Digits(postSendSourceCustomer.PhoneE164),
+    LeadId = postSendSourceCustomer.Id,
+    DisplayName = postSendSourceCustomer.Name,
+    LastMessage = completeSourcingMessage,
+    LastMessageAt = DateTimeOffset.Now
+};
+await customerSuccessRaceRepository.UpsertWhatsAppConversationAsync(postSendConversation);
+await customerSuccessRaceIdentity.ConfirmBindingAsync(
+    postSendSourceCustomer.Id,
+    postSendConversation.AccountId,
+    postSendConversation.Id,
+    postSendConversation.Phone,
+    "post-send-source@c.us");
+var postSendMessage = new WhatsAppMessage
+{
+    Id = "cs-post-send-account:source-message",
+    ProviderMessageId = "source-message",
+    AccountId = postSendConversation.AccountId,
+    ConversationId = postSendConversation.Id,
+    LeadId = postSendSourceCustomer.Id,
+    Phone = postSendConversation.Phone,
+    Direction = WhatsAppMessageDirection.Incoming,
+    Status = WhatsAppMessageStatus.Received,
+    Body = completeSourcingMessage,
+    Timestamp = DateTimeOffset.Now
+};
+await customerSuccessRaceRepository.UpsertWhatsAppMessageAsync(postSendMessage);
+var postSendAgent = new CustomerSuccessAgentService(
+    customerSuccessRaceRepository,
+    new FakeCustomerSuccessAgentProvider(),
+    customerSuccessRaceIdentity,
+    customerSuccessRaceSourcing);
+await postSendAgent.SetModeAsync(
+    postSendSourceCustomer.Id,
+    postSendConversation.AccountId,
+    postSendConversation.Id,
+    ConversationAgentMode.AutoActive);
+var postSendRaceSender = new BlockingCustomerSuccessMessageSender(block: true);
+using var postSendRaceCoordinator = new CustomerSuccessAgentCoordinator(
+    customerSuccessRaceRepository,
+    customerSuccessRaceSync,
+    postSendRaceSender,
+    postSendAgent);
+var postSendRaceTask = (Task)(coordinatorHandleMethod.Invoke(
+    postSendRaceCoordinator,
+    [postSendMessage, CancellationToken.None])
+    ?? throw new InvalidOperationException("Customer Success coordinator did not return a task."));
+await postSendRaceSender.SendStarted.WaitAsync(TimeSpan.FromSeconds(10));
+await customerSuccessRaceIdentity.ConfirmBindingAsync(
+    postSendTargetCustomer.Id,
+    postSendConversation.AccountId,
+    postSendConversation.Id,
+    postSendConversation.Phone,
+    "post-send-target@c.us");
+postSendRaceSender.ReleaseSend();
+await postSendRaceTask;
+var postSendSourceLogs = await customerSuccessRaceRepository.GetAgentTurnLogsAsync(postSendSourceCustomer.Id);
+var postSendTargetStates = await customerSuccessRaceRepository.GetCustomerAgentStatesAsync(postSendTargetCustomer.Id);
+var postSendStoredMessage = await customerSuccessRaceRepository.GetWhatsAppMessageByProviderIdAsync(
+    postSendConversation.AccountId,
+    "context-race-provider-id");
+Check(postSendRaceSender.SendCount == 1
+    && postSendStoredMessage is { LeadAttributionFinal: true, LeadId.Length: 0 }
+    && (await customerSuccessRaceRepository.GetWhatsAppMessagesForCustomerAsync(postSendSourceCustomer.Id))
+        .All(item => item.ProviderMessageId != "context-race-provider-id")
+    && (await customerSuccessRaceRepository.GetWhatsAppMessagesForCustomerAsync(postSendTargetCustomer.Id))
+        .All(item => item.ProviderMessageId != "context-race-provider-id")
+    && postSendSourceLogs.All(item => item.Decision != "post_send_context_changed")
+    && postSendTargetStates.All(item => item.LastRunStatus != CustomerSuccessRunStatus.AutoReplySent
+        && string.IsNullOrWhiteSpace(item.LastProviderMessageId))
+    && await customerSuccessRaceRepository.GetRelationshipMemoryAsync(postSendTargetCustomer.Id) is null,
+    "Customer Success post-send race finalizes the ACK unbound without feeding either customer");
 
 // Knowledge Base / RAG: real parsers, immutable sources, activation, strict scopes,
 // feedback exclusion, conflicts, audit and restart persistence.
@@ -4295,7 +5505,8 @@ var enrichmentJob = new CustomerEnrichmentJob
     Id = "enrichment-db-job",
     CustomerId = enrichmentLead.Id,
     Status = CustomerEnrichmentJobStatus.Running,
-    Provider = "offline-test"
+    Provider = "offline-test",
+    IdentityHash = CustomerEnrichmentIdentityService.Build(enrichmentLead).IdentityHash
 };
 await enrichmentRepository.SaveCustomerEnrichmentJobAsync(enrichmentJob);
 var enrichmentQuery = new CustomerEnrichmentQuery
@@ -4418,6 +5629,7 @@ var newerCandidateJob = new CustomerEnrichmentJob
     CustomerId = enrichmentLead.Id,
     Status = CustomerEnrichmentJobStatus.NeedsReview,
     Provider = "offline-test",
+    IdentityHash = CustomerEnrichmentIdentityService.Build(enrichmentLead).IdentityHash,
     CreatedAt = DateTimeOffset.Now.AddMinutes(1)
 };
 await enrichmentRepository.SaveCustomerEnrichmentJobAsync(newerCandidateJob);
@@ -4655,6 +5867,21 @@ await using var enrichmentGuardrailService = new CustomerEnrichmentService(
 await enrichmentGuardrailService.SaveSettingsAsync(new CustomerEnrichmentSettings
 {
     ProviderOrder = ["tavily"],
+    MonthlyBudgetUsd = 0.01m,
+    AllowPaidRequests = false,
+    AllowAiAnalysisRequests = true,
+    AiAnalysisReservationUsd = 0,
+    MaxAutomaticJobsPerStartup = 0
+});
+var simplifiedAiEstimateSettings = await enrichmentGuardrailService.GetSettingsAsync();
+Check(
+    simplifiedAiEstimateSettings.AllowAiAnalysisRequests
+    && !simplifiedAiEstimateSettings.AllowPaidRequests
+    && simplifiedAiEstimateSettings.AiAnalysisReservationUsd == 0.01m,
+    "customer enrichment AI enablement uses an automatic advanced per-call estimate without enabling paid search");
+await enrichmentGuardrailService.SaveSettingsAsync(new CustomerEnrichmentSettings
+{
+    ProviderOrder = ["tavily"],
     MonthlyBudgetUsd = 1m,
     AllowPaidRequests = true,
     AllowAiAnalysisRequests = false,
@@ -4760,7 +5987,88 @@ await using (var retainedUsageConnection = new SqliteConnection(new SqliteConnec
 }
 Check(
     retainedUsageIds.SetEquals([retainedCurrentMonthUsage.Id]),
-    "customer enrichment retention never removes the current calendar-month usage ledger used by hard budget gates");
+    "customer enrichment retention never removes the current user-local calendar-month usage estimate ledger");
+
+var utcPlusEight = TimeZoneInfo.CreateCustomTimeZone(
+    "WAFlow-Smoke-UTC+08",
+    TimeSpan.FromHours(8),
+    "WAFlow Smoke UTC+08",
+    "WAFlow Smoke UTC+08");
+var localMonthTimeProvider = new FixedSmokeTimeProvider(
+    new DateTimeOffset(2026, 8, 31, 16, 30, 0, TimeSpan.Zero),
+    utcPlusEight);
+var localMonthDatabase = Path.Combine(root, "customer-enrichment-local-month.db");
+var localMonthRepository = new LocalRepository(localMonthDatabase, localMonthTimeProvider);
+await localMonthRepository.InitializeAsync();
+var localSeptemberUsage = new CustomerEnrichmentProviderUsage
+{
+    Id = "local-month-september",
+    Provider = "tavily",
+    JobId = "settings-test",
+    Requests = 3,
+    EstimatedCostUsd = 0.024m,
+    Succeeded = true,
+    RequestState = "completed",
+    CreatedAt = localMonthTimeProvider.GetUtcNow()
+};
+var localAugustUsage = new CustomerEnrichmentProviderUsage
+{
+    Id = "local-month-august",
+    Provider = "tavily",
+    JobId = "settings-test",
+    Requests = 5,
+    EstimatedCostUsd = 0.04m,
+    Succeeded = true,
+    RequestState = "completed",
+    CreatedAt = localMonthTimeProvider.GetUtcNow().AddHours(-1)
+};
+await localMonthRepository.SaveCustomerEnrichmentUsageAsync(localSeptemberUsage);
+await localMonthRepository.SaveCustomerEnrichmentUsageAsync(localAugustUsage);
+var localMonthSummary = await localMonthRepository.GetCustomerEnrichmentUsageSummaryAsync();
+var localUsagePeriods = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+await using (var localMonthConnection = new SqliteConnection(new SqliteConnectionStringBuilder
+{
+    DataSource = localMonthDatabase,
+    Pooling = false
+}.ToString()))
+{
+    await localMonthConnection.OpenAsync();
+    await using (var readPeriods = localMonthConnection.CreateCommand())
+    {
+        readPeriods.CommandText = "SELECT id,request_day || '|' || request_month FROM customer_enrichment_provider_usage ORDER BY id";
+        await using var reader = await readPeriods.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) localUsagePeriods[reader.GetString(0)] = reader.GetString(1);
+    }
+    await using (var backdateRows = localMonthConnection.CreateCommand())
+    {
+        backdateRows.CommandText = "UPDATE customer_enrichment_provider_usage SET created_at='2026-06-01T00:00:00.0000000+00:00' WHERE id IN ($august,$september)";
+        backdateRows.Parameters.AddWithValue("$august", localAugustUsage.Id);
+        backdateRows.Parameters.AddWithValue("$september", localSeptemberUsage.Id);
+        await backdateRows.ExecuteNonQueryAsync();
+    }
+}
+_ = await localMonthRepository.PruneCustomerEnrichmentDataAsync(30);
+var localMonthRetainedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+await using (var localMonthConnection = new SqliteConnection(new SqliteConnectionStringBuilder
+{
+    DataSource = localMonthDatabase,
+    Pooling = false
+}.ToString()))
+{
+    await localMonthConnection.OpenAsync();
+    await using var readIds = localMonthConnection.CreateCommand();
+    readIds.CommandText = "SELECT id FROM customer_enrichment_provider_usage";
+    await using var reader = await readIds.ExecuteReaderAsync();
+    while (await reader.ReadAsync()) localMonthRetainedIds.Add(reader.GetString(0));
+}
+Check(
+    localUsagePeriods.GetValueOrDefault(localSeptemberUsage.Id) == "2026-09-01|2026-09"
+    && localUsagePeriods.GetValueOrDefault(localAugustUsage.Id) == "2026-08-31|2026-08"
+    && localMonthSummary.TodayRequests == 3
+    && localMonthSummary.MonthRequests == 3
+    && localMonthSummary.MonthEstimatedCostUsd == 0.024m
+    && localMonthRetainedIds.SetEquals([localSeptemberUsage.Id]),
+    "customer enrichment writes, reads and prunes usage by the same user-local month at a UTC+8 month boundary");
 
 var guardrailLead = new Lead
 {
@@ -4881,7 +6189,8 @@ var reviewStatusJob = new CustomerEnrichmentJob
     Id = "enrichment-review-status-job",
     CustomerId = enrichmentLead.Id,
     Status = CustomerEnrichmentJobStatus.NeedsReview,
-    Provider = "offline-test"
+    Provider = "offline-test",
+    IdentityHash = CustomerEnrichmentIdentityService.Build(enrichmentLead).IdentityHash
 };
 await enrichmentRepository.SaveCustomerEnrichmentJobAsync(reviewStatusJob);
 var reviewStatusFact = new CustomerEnrichmentFact
@@ -5015,7 +6324,8 @@ var externalFactLifecycleJob = new CustomerEnrichmentJob
     Id = "enrichment-report-lifecycle-job",
     CustomerId = externalFactLifecycleLead.Id,
     Status = CustomerEnrichmentJobStatus.Succeeded,
-    Provider = "offline-test"
+    Provider = "offline-test",
+    IdentityHash = CustomerEnrichmentIdentityService.Build(externalFactLifecycleLead).IdentityHash
 };
 await externalFactLifecycleRepository.SaveCustomerEnrichmentJobAsync(externalFactLifecycleJob);
 var externalFactLifecycleFact = new CustomerEnrichmentFact
@@ -5041,6 +6351,61 @@ var seededExternalReportService = new CustomerAnalysisService(
 var seededExternalReport = await seededExternalReportService.GenerateAsync(externalFactLifecycleLead.Id);
 var externalFactLifecycleBrain = new CustomerBrainService(externalFactLifecycleRepository);
 var brainWithExternalFact = await externalFactLifecycleBrain.RefreshAsync(externalFactLifecycleLead.Id);
+var externalReviewAcceptedRecommendation = new AiRecommendationRecord
+{
+    Id = "external-review-accepted-recommendation",
+    CustomerId = externalFactLifecycleLead.Id,
+    Status = AiRecommendationStatus.Accepted,
+    Title = "Old accepted recommendation",
+    Action = "Act on the old external fact"
+};
+await externalFactLifecycleRepository.SaveAiRecommendationAsync(externalReviewAcceptedRecommendation);
+await externalFactLifecycleRepository.UpsertFollowUpTaskAsync(new FollowUpTask
+{
+    Id = "external-review-accepted-task",
+    CustomerId = externalFactLifecycleLead.Id,
+    RecommendationId = externalReviewAcceptedRecommendation.Id,
+    Status = FollowUpTaskStatus.Open,
+    Title = "Old accepted task",
+    SourceType = "customer_brain",
+    SourceId = externalReviewAcceptedRecommendation.Id
+});
+await externalFactLifecycleRepository.SaveSalesActionAsync(new SalesActionRecord
+{
+    Id = "external-review-accepted-action",
+    CustomerId = externalFactLifecycleLead.Id,
+    RecommendationId = externalReviewAcceptedRecommendation.Id,
+    Status = SalesActionStatus.Approved,
+    Description = "Old approved action"
+});
+var externalReviewInProgressRecommendation = new AiRecommendationRecord
+{
+    Id = "external-review-in-progress-recommendation",
+    CustomerId = externalFactLifecycleLead.Id,
+    Status = AiRecommendationStatus.InProgress,
+    Title = "Human-authorized in-progress recommendation",
+    Action = "Finish work already in progress"
+};
+await externalFactLifecycleRepository.SaveAiRecommendationAsync(externalReviewInProgressRecommendation);
+await externalFactLifecycleRepository.UpsertFollowUpTaskAsync(new FollowUpTask
+{
+    Id = "external-review-in-progress-task",
+    CustomerId = externalFactLifecycleLead.Id,
+    RecommendationId = externalReviewInProgressRecommendation.Id,
+    Status = FollowUpTaskStatus.InProgress,
+    Title = "In-progress task",
+    SourceType = "customer_brain",
+    SourceId = externalReviewInProgressRecommendation.Id
+});
+await externalFactLifecycleRepository.SaveSalesActionAsync(new SalesActionRecord
+{
+    Id = "external-review-in-progress-action",
+    CustomerId = externalFactLifecycleLead.Id,
+    RecommendationId = externalReviewInProgressRecommendation.Id,
+    Status = SalesActionStatus.InProgress,
+    ExecutedAt = DateTimeOffset.Now,
+    Description = "In-progress action"
+});
 var blockingExternalReportProvider = new BlockingStructuredReportProvider();
 var concurrentExternalReportService = new CustomerAnalysisService(
     externalFactLifecycleRepository,
@@ -5094,6 +6459,12 @@ var externalReportHistory = await externalFactLifecycleRepository.GetCustomerAna
     externalFactLifecycleLead.Id);
 var failedConcurrentExternalReport = externalReportHistory.FirstOrDefault(report => report.Version == 2);
 var brainAfterExternalFactRejection = await externalFactLifecycleBrain.RefreshAsync(externalFactLifecycleLead.Id);
+var recommendationStatesAfterExternalReview = await externalFactLifecycleRepository.GetAiRecommendationHistoryAsync(
+    externalFactLifecycleLead.Id);
+var taskStatesAfterExternalReview = await externalFactLifecycleRepository.GetFollowUpTasksAsync(
+    externalFactLifecycleLead.Id);
+var actionStatesAfterExternalReview = await externalFactLifecycleRepository.GetSalesActionsAsync(
+    externalFactLifecycleLead.Id);
 Check(
     seededExternalReport is { Status: CustomerReportStatus.Succeeded, Version: 1 }
     && seededExternalReport.SourceSnapshot.VerifiedExternalFacts.Any(fact => fact.Id == externalFactLifecycleFact.Id)
@@ -5106,8 +6477,638 @@ Check(
     && failedConcurrentExternalReport.Error.Contains("报告生成期间", StringComparison.Ordinal)
     && !brainAfterExternalFactRejection.Coverage.HasCustomerReport
     && brainAfterExternalFactRejection.Statements.All(statement =>
-        !statement.Source.StartsWith("客户外部调查", StringComparison.Ordinal)),
+        !statement.Source.StartsWith("客户外部调查", StringComparison.Ordinal))
+    && recommendationStatesAfterExternalReview.Single(item => item.Id == externalReviewAcceptedRecommendation.Id).Status == AiRecommendationStatus.Superseded
+    && taskStatesAfterExternalReview.Single(item => item.RecommendationId == externalReviewAcceptedRecommendation.Id) is
+        { Status: FollowUpTaskStatus.Dismissed, Outcome: "客户资料已变化，旧 AI 建议已失效。" }
+    && actionStatesAfterExternalReview.Single(item => item.RecommendationId == externalReviewAcceptedRecommendation.Id) is
+        { Status: SalesActionStatus.Cancelled, Outcome: "客户资料已变化，旧 AI 建议已失效。" }
+    && recommendationStatesAfterExternalReview.Single(item => item.Id == externalReviewInProgressRecommendation.Id).Status == AiRecommendationStatus.InProgress
+    && taskStatesAfterExternalReview.Single(item => item.RecommendationId == externalReviewInProgressRecommendation.Id).Status == FollowUpTaskStatus.InProgress
+    && actionStatesAfterExternalReview.Single(item => item.RecommendationId == externalReviewInProgressRecommendation.Id).Status == SalesActionStatus.InProgress,
     "rejecting an external fact invalidates Brain atomically, excludes stale reports and makes an in-flight report retryable");
+
+var leadDependencyRepository = new LocalRepository(Path.Combine(root, "lead-intelligence-external-dependency.db"));
+await leadDependencyRepository.InitializeAsync();
+var leadDependencyCustomer = new Lead
+{
+    Id = "lead-intelligence-external-dependency-customer",
+    BuyerId = "LI-DEPENDENCY-A",
+    Name = "Lead Dependency Buyer",
+    Company = "Dependency Trading",
+    Email = "lead.dependency@example.com"
+};
+await leadDependencyRepository.UpsertLeadAsync(leadDependencyCustomer);
+await leadDependencyRepository.SaveAppSettingsAsync(new AppSettings
+{
+    DeepSeekBaseUrl = "https://api.deepseek.com",
+    DeepSeekModel = "deepseek-chat"
+});
+var leadDependencyJob = new CustomerEnrichmentJob
+{
+    Id = "lead-intelligence-external-dependency-job",
+    CustomerId = leadDependencyCustomer.Id,
+    IdentityHash = CustomerEnrichmentIdentityService.Build(leadDependencyCustomer).IdentityHash,
+    Status = CustomerEnrichmentJobStatus.Succeeded
+};
+await leadDependencyRepository.SaveCustomerEnrichmentJobAsync(leadDependencyJob);
+var leadDependencyFact = new CustomerEnrichmentFact
+{
+    Id = "lead-intelligence-external-dependency-fact",
+    CustomerId = leadDependencyCustomer.Id,
+    JobId = leadDependencyJob.Id,
+    FieldType = "public_role",
+    FieldValue = "Procurement Director",
+    NormalizedValue = "procurement director",
+    Category = "公开职位",
+    FactType = "verified_fact",
+    ConfidenceScore = 96,
+    VerificationStatus = CustomerEnrichmentVerificationStatus.Verified,
+    EvidenceQuote = "Lead Dependency Buyer is Procurement Director.",
+    ExpiresAt = DateTimeOffset.Now.AddDays(90)
+};
+await leadDependencyRepository.SaveCustomerEnrichmentFactsAsync([leadDependencyFact]);
+var leadDependencyHandler = new QueueHandler([Envelope(V2AnalysisJson("Please quote 700 pcs monthly."))]);
+var leadDependencyDeepSeek = new DeepSeekService(
+    leadDependencyRepository,
+    new FakeSecretStore("lead-dependency-key"),
+    new HttpClient(leadDependencyHandler) { Timeout = TimeSpan.FromSeconds(5) });
+var leadDependencyAnalyzed = await leadDependencyDeepSeek.AnalyzeLeadAsync(leadDependencyCustomer);
+var leadDependencyBrain = new CustomerBrainService(leadDependencyRepository);
+var leadDependencyBrainBeforeReject = await leadDependencyBrain.RefreshAsync(leadDependencyCustomer.Id);
+var leadDependencyFactToReject = await leadDependencyRepository.GetCustomerEnrichmentFactAsync(leadDependencyFact.Id)
+    ?? throw new InvalidOperationException("Lead Intelligence dependency fact disappeared.");
+leadDependencyFactToReject.VerificationStatus = CustomerEnrichmentVerificationStatus.Rejected;
+leadDependencyFactToReject.ExpiresAt = DateTimeOffset.Now;
+await leadDependencyRepository.ApplyCustomerEnrichmentReviewAsync(
+    leadDependencyFactToReject,
+    new CustomerEnrichmentReview
+    {
+        Id = "lead-intelligence-external-dependency-reject",
+        CustomerId = leadDependencyCustomer.Id,
+        JobId = leadDependencyJob.Id,
+        FactId = leadDependencyFact.Id,
+        Action = CustomerEnrichmentReviewAction.Reject,
+        PreviousValue = leadDependencyFact.FieldValue,
+        NewValue = leadDependencyFact.FieldValue,
+        Reason = "reject after Lead Intelligence succeeds"
+    });
+var leadDependencyBrainAfterReject = await leadDependencyBrain.RefreshAsync(leadDependencyCustomer.Id);
+var leadDependencyAfterReject = await leadDependencyRepository.GetLeadAsync(leadDependencyCustomer.Id);
+var leadDependencyHistory = await leadDependencyRepository.GetLeadAnalysisHistoryAsync(leadDependencyCustomer.Id);
+Check(leadDependencyAnalyzed.HasCurrentAiScore
+    && !string.IsNullOrWhiteSpace(leadDependencyAnalyzed.AnalysisDependencyHash)
+    && leadDependencyHistory.Any(item => item.Status == "succeeded"
+        && item.Result?.DependencyHash == leadDependencyAnalyzed.AnalysisDependencyHash)
+    && leadDependencyHandler.RequestBodies.Single().Contains("verifiedExternalFacts")
+    && leadDependencyHandler.RequestBodies.Single().Contains("read-only background evidence")
+    && leadDependencyBrainBeforeReject.Statements.Any(item =>
+        item.Nature == IntelligenceStatementNature.Inference && item.Source == "Lead Intelligence")
+    && leadDependencyAfterReject is { HasCurrentAiScore: false, AnalysisStatus: AnalysisStatus.RetryableFailed }
+    && leadDependencyAfterReject.AnalysisError.Contains("外部调查事实", StringComparison.Ordinal)
+    && leadDependencyBrainAfterReject.Statements.All(item =>
+        !(item.Nature == IntelligenceStatementNature.Inference && item.Source == "Lead Intelligence")),
+    "Lead Intelligence binds its result to current external facts, preserves run history and Brain drops the old inference after rejection");
+
+var inFlightDependencyFact = new CustomerEnrichmentFact
+{
+    Id = "lead-intelligence-in-flight-dependency-fact",
+    CustomerId = leadDependencyCustomer.Id,
+    JobId = leadDependencyJob.Id,
+    FieldType = "official_website",
+    FieldValue = "https://dependency.example.com",
+    NormalizedValue = "https://dependency.example.com",
+    VerificationStatus = CustomerEnrichmentVerificationStatus.Verified,
+    ConfidenceScore = 94,
+    ExpiresAt = DateTimeOffset.Now.AddDays(90)
+};
+await leadDependencyRepository.SaveCustomerEnrichmentFactsAsync([inFlightDependencyFact]);
+var blockingLeadFactHandler = new BlockingLeadAnalysisHandler(
+    Envelope(V2AnalysisJson("Please quote 900 pcs monthly.")));
+var blockingLeadFactDeepSeek = new DeepSeekService(
+    leadDependencyRepository,
+    new FakeSecretStore("lead-dependency-blocking-key"),
+    new HttpClient(blockingLeadFactHandler) { Timeout = TimeSpan.FromSeconds(30) });
+var blockingLeadFactTask = blockingLeadFactDeepSeek.AnalyzeLeadAsync(
+    (await leadDependencyRepository.GetLeadAsync(leadDependencyCustomer.Id))!);
+await blockingLeadFactHandler.AnalysisStarted.WaitAsync(TimeSpan.FromSeconds(5));
+var inFlightDependencyFactToReject = await leadDependencyRepository.GetCustomerEnrichmentFactAsync(inFlightDependencyFact.Id)
+    ?? throw new InvalidOperationException("In-flight Lead Intelligence fact disappeared.");
+inFlightDependencyFactToReject.VerificationStatus = CustomerEnrichmentVerificationStatus.Rejected;
+inFlightDependencyFactToReject.ExpiresAt = DateTimeOffset.Now;
+await leadDependencyRepository.ApplyCustomerEnrichmentReviewAsync(
+    inFlightDependencyFactToReject,
+    new CustomerEnrichmentReview
+    {
+        Id = "lead-intelligence-in-flight-dependency-reject",
+        CustomerId = leadDependencyCustomer.Id,
+        JobId = leadDependencyJob.Id,
+        FactId = inFlightDependencyFact.Id,
+        Action = CustomerEnrichmentReviewAction.Reject,
+        PreviousValue = inFlightDependencyFact.FieldValue,
+        NewValue = inFlightDependencyFact.FieldValue,
+        Reason = "reject while Lead Intelligence provider is blocked"
+    });
+blockingLeadFactHandler.ReleaseAnalysis();
+DeepSeekException? blockingLeadFactError = null;
+try
+{
+    _ = await blockingLeadFactTask;
+}
+catch (DeepSeekException error)
+{
+    blockingLeadFactError = error;
+}
+var leadAfterInFlightFactReject = await leadDependencyRepository.GetLeadAsync(leadDependencyCustomer.Id);
+Check(blockingLeadFactError?.Code == "lead_analysis_source_changed"
+    && leadAfterInFlightFactReject is
+        { HasCurrentAiScore: false, AnalysisStatus: AnalysisStatus.RetryableFailed, AnalysisDependencyHash: "" }
+    && (await leadDependencyRepository.GetLeadAnalysisHistoryAsync(leadDependencyCustomer.Id))
+        .Last().Status == "retryable_failed",
+    "Lead Intelligence never commits a blocked provider result after its verified external fact is rejected");
+
+var identityOnlyLeadDependencyRepository = new LocalRepository(Path.Combine(root, "lead-intelligence-identity-only-dependency.db"));
+await identityOnlyLeadDependencyRepository.InitializeAsync();
+var identityOnlyLeadDependencyCustomer = new Lead
+{
+    Id = "lead-intelligence-identity-only-dependency-customer",
+    BuyerId = "IDENTITY-ONLY-A",
+    Name = "Identity Only Lead Dependency"
+};
+await identityOnlyLeadDependencyRepository.UpsertLeadAsync(identityOnlyLeadDependencyCustomer);
+await identityOnlyLeadDependencyRepository.SaveAppSettingsAsync(new AppSettings
+{
+    DeepSeekBaseUrl = "https://api.deepseek.com",
+    DeepSeekModel = "deepseek-chat"
+});
+var identityOnlyDependencyHashA = (await CustomerExternalFactPolicy.CaptureDependencyAsync(
+    identityOnlyLeadDependencyRepository,
+    identityOnlyLeadDependencyCustomer.Id,
+    DateTimeOffset.Now)).Hash;
+var blockingIdentityOnlyHandler = new BlockingLeadAnalysisHandler(
+    Envelope(V2AnalysisJson("Please quote 400 pcs monthly.")));
+var blockingIdentityOnlyDeepSeek = new DeepSeekService(
+    identityOnlyLeadDependencyRepository,
+    new FakeSecretStore("identity-only-blocking-key"),
+    new HttpClient(blockingIdentityOnlyHandler) { Timeout = TimeSpan.FromSeconds(30) });
+var blockingIdentityOnlyTask = blockingIdentityOnlyDeepSeek.AnalyzeLeadAsync(identityOnlyLeadDependencyCustomer);
+await blockingIdentityOnlyHandler.AnalysisStarted.WaitAsync(TimeSpan.FromSeconds(5));
+var changedIdentityOnlyLead = await identityOnlyLeadDependencyRepository.GetLeadAsync(identityOnlyLeadDependencyCustomer.Id)
+    ?? throw new InvalidOperationException("Identity-only Lead Intelligence customer disappeared.");
+changedIdentityOnlyLead.BuyerId = "IDENTITY-ONLY-B";
+await identityOnlyLeadDependencyRepository.UpsertLeadAsync(changedIdentityOnlyLead);
+blockingIdentityOnlyHandler.ReleaseAnalysis();
+DeepSeekException? blockingIdentityOnlyError = null;
+try
+{
+    _ = await blockingIdentityOnlyTask;
+}
+catch (DeepSeekException error)
+{
+    blockingIdentityOnlyError = error;
+}
+var leadAfterInFlightIdentityChange = await identityOnlyLeadDependencyRepository.GetLeadAsync(
+    identityOnlyLeadDependencyCustomer.Id);
+var inFlightIdentityChangePreservedB = leadAfterInFlightIdentityChange is
+    { BuyerId: "IDENTITY-ONLY-B", HasCurrentAiScore: false, AnalysisStatus: AnalysisStatus.RetryableFailed };
+leadAfterInFlightIdentityChange!.BuyerId = "IDENTITY-ONLY-A";
+await identityOnlyLeadDependencyRepository.UpsertLeadAsync(leadAfterInFlightIdentityChange);
+var identityOnlyDependencyHashReturnedToA = (await CustomerExternalFactPolicy.CaptureDependencyAsync(
+    identityOnlyLeadDependencyRepository,
+    identityOnlyLeadDependencyCustomer.Id,
+    DateTimeOffset.Now)).Hash;
+Check(blockingIdentityOnlyError?.Code == "lead_analysis_source_changed"
+    && inFlightIdentityChangePreservedB
+    && identityOnlyDependencyHashReturnedToA == identityOnlyDependencyHashA,
+    "Lead Intelligence binds even an empty fact set to identity, rejects A-to-B drift and restores the same dependency after B-to-A");
+
+var identityRevisionRepository = new LocalRepository(Path.Combine(root, "customer-enrichment-identity-revision.db"));
+await identityRevisionRepository.InitializeAsync();
+var identityRevisionLead = new Lead
+{
+    Id = "enrichment-identity-revision-customer",
+    BuyerId = "BUYER-A",
+    Name = "Identity Revision Buyer",
+    Company = "Revision Company",
+    Email = "revision@example.com",
+    PhoneE164 = "+14155550333",
+    Country = "US"
+};
+await identityRevisionRepository.UpsertLeadAsync(identityRevisionLead);
+var identityHashA = CustomerEnrichmentIdentityService.Build(identityRevisionLead).IdentityHash;
+var identityJobA = new CustomerEnrichmentJob
+{
+    Id = "identity-job-a",
+    CustomerId = identityRevisionLead.Id,
+    IdentityHash = identityHashA,
+    Status = CustomerEnrichmentJobStatus.Succeeded,
+    CreatedAt = DateTimeOffset.Now.AddMinutes(-5)
+};
+await identityRevisionRepository.SaveCustomerEnrichmentJobAsync(identityJobA);
+var identityFactA = new CustomerEnrichmentFact
+{
+    Id = "identity-fact-a",
+    CustomerId = identityRevisionLead.Id,
+    JobId = identityJobA.Id,
+    FieldType = "job_title",
+    FieldValue = "Purchasing Manager",
+    NormalizedValue = "purchasing manager",
+    VerificationStatus = CustomerEnrichmentVerificationStatus.Verified,
+    ConfidenceScore = 95,
+    EvidenceQuote = "Identity Revision Buyer is Purchasing Manager.",
+    ExpiresAt = DateTimeOffset.Now.AddDays(90)
+};
+await identityRevisionRepository.SaveCustomerEnrichmentFactsAsync([identityFactA]);
+var identityBrain = new CustomerBrainService(identityRevisionRepository);
+var selfHealedIdentityBrain = await identityBrain.GetAsync(identityRevisionLead.Id);
+var identityDeepSeek = new DeepSeekService(identityRevisionRepository, new FakeSecretStore(""), aiGuardrailHttp);
+await using var identityEnrichment = new CustomerEnrichmentService(
+    identityRevisionRepository,
+    identityDeepSeek,
+    identityBrain,
+    providers: Array.Empty<ICustomerSearchProvider>());
+var snapshotA = await identityEnrichment.GetSnapshotAsync(identityRevisionLead.Id);
+var queueSummaryA = (await identityRevisionRepository.GetCustomerEnrichmentQueueSummariesAsync())[identityRevisionLead.Id];
+
+identityRevisionLead.BuyerId = "BUYER-B";
+await identityRevisionRepository.UpsertLeadAsync(identityRevisionLead);
+var identityHashB = CustomerEnrichmentIdentityService.Build(identityRevisionLead).IdentityHash;
+var snapshotBeforeBJob = await identityEnrichment.GetSnapshotAsync(identityRevisionLead.Id);
+var queueSummaryBeforeBJob = (await identityRevisionRepository.GetCustomerEnrichmentQueueSummariesAsync())[identityRevisionLead.Id];
+var identityJobB = new CustomerEnrichmentJob
+{
+    Id = "identity-job-b",
+    CustomerId = identityRevisionLead.Id,
+    IdentityHash = identityHashB,
+    Status = CustomerEnrichmentJobStatus.NeedsReview,
+    CreatedAt = DateTimeOffset.Now
+};
+await identityRevisionRepository.SaveCustomerEnrichmentJobAsync(identityJobB);
+var identityFactB = new CustomerEnrichmentFact
+{
+    Id = "identity-fact-b",
+    CustomerId = identityRevisionLead.Id,
+    JobId = identityJobB.Id,
+    FieldType = identityFactA.FieldType,
+    FieldValue = identityFactA.FieldValue,
+    NormalizedValue = identityFactA.NormalizedValue,
+    VerificationStatus = CustomerEnrichmentVerificationStatus.PossibleMatch,
+    ConfidenceScore = 65
+};
+await identityRevisionRepository.SaveCustomerEnrichmentFactsAsync([identityFactB]);
+var snapshotB = await identityEnrichment.GetSnapshotAsync(identityRevisionLead.Id);
+var queueSummaryB = (await identityRevisionRepository.GetCustomerEnrichmentQueueSummariesAsync())[identityRevisionLead.Id];
+identityRevisionLead.BuyerId = "BUYER-A";
+await identityRevisionRepository.UpsertLeadAsync(identityRevisionLead);
+var snapshotReturnedToA = await identityEnrichment.GetSnapshotAsync(identityRevisionLead.Id);
+var queueSummaryReturnedToA = (await identityRevisionRepository.GetCustomerEnrichmentQueueSummariesAsync())[identityRevisionLead.Id];
+var staleBReviewBlocked = false;
+try
+{
+    await identityEnrichment.ReviewAsync(identityFactB.Id, CustomerEnrichmentReviewAction.Confirm);
+}
+catch (InvalidOperationException)
+{
+    staleBReviewBlocked = true;
+}
+Check(identityHashA != identityHashB
+    && selfHealedIdentityBrain is not null
+    && selfHealedIdentityBrain.Statements.Any(item => item.Text.Contains("Purchasing Manager", StringComparison.Ordinal))
+    && snapshotA.LatestJob?.Id == identityJobA.Id
+    && snapshotBeforeBJob.LatestJob is null && snapshotBeforeBJob.Facts.Count == 0
+    && snapshotB.LatestJob?.Id == identityJobB.Id
+    && snapshotReturnedToA.LatestJob?.Id == identityJobA.Id
+    && snapshotReturnedToA.Facts.Single().Id == identityFactA.Id
+    && queueSummaryA.LatestJob?.Id == identityJobA.Id && !queueSummaryA.NeedsRefresh
+    && queueSummaryBeforeBJob.LatestJob is null && queueSummaryBeforeBJob.NeedsRefresh
+    && queueSummaryB.LatestJob?.Id == identityJobB.Id && !queueSummaryB.NeedsRefresh
+    && queueSummaryReturnedToA.LatestJob?.Id == identityJobA.Id
+    && queueSummaryReturnedToA.LatestHistoricalJob?.Id == identityJobB.Id
+    && queueSummaryReturnedToA.FactCount == 1 && !queueSummaryReturnedToA.NeedsRefresh
+    && staleBReviewBlocked,
+    "Buyer ID participates in identity revision gating and A-B-A snapshots and queue summaries stay aligned");
+
+var conflictingIdentityJob = new CustomerEnrichmentJob
+{
+    Id = "identity-job-a-conflict",
+    CustomerId = identityRevisionLead.Id,
+    IdentityHash = identityHashA,
+    Status = CustomerEnrichmentJobStatus.Succeeded,
+    CreatedAt = DateTimeOffset.Now.AddMinutes(1)
+};
+await identityRevisionRepository.SaveCustomerEnrichmentJobAsync(conflictingIdentityJob);
+await identityRevisionRepository.SaveCustomerEnrichmentFactsAsync([
+    new CustomerEnrichmentFact
+    {
+        Id = "identity-fact-a-conflict",
+        CustomerId = identityRevisionLead.Id,
+        JobId = conflictingIdentityJob.Id,
+        FieldType = "job_title",
+        FieldValue = "Sales Director",
+        NormalizedValue = "sales director",
+        VerificationStatus = CustomerEnrichmentVerificationStatus.Verified,
+        ConfidenceScore = 93,
+        ExpiresAt = DateTimeOffset.Now.AddDays(90)
+    }
+]);
+var conflictSuppressed = await CustomerExternalFactPolicy.GetCurrentFactsAsync(
+    identityRevisionRepository,
+    identityRevisionLead.Id,
+    DateTimeOffset.Now);
+await identityRevisionRepository.SaveCustomerEnrichmentFactsAsync([
+    new CustomerEnrichmentFact
+    {
+        Id = "identity-company-size-old",
+        CustomerId = identityRevisionLead.Id,
+        JobId = identityJobA.Id,
+        FieldType = "company_size",
+        FieldValue = "11-50 employees",
+        NormalizedValue = "11-50 employees",
+        VerificationStatus = CustomerEnrichmentVerificationStatus.Verified,
+        ConfidenceScore = 92,
+        ExpiresAt = DateTimeOffset.Now.AddDays(90)
+    },
+    new CustomerEnrichmentFact
+    {
+        Id = "identity-website-old",
+        CustomerId = identityRevisionLead.Id,
+        JobId = identityJobA.Id,
+        FieldType = "official_website",
+        FieldValue = "https://revision.example.com",
+        NormalizedValue = "https://revision.example.com",
+        VerificationStatus = CustomerEnrichmentVerificationStatus.Verified,
+        ConfidenceScore = 91,
+        ExpiresAt = DateTimeOffset.Now.AddDays(90)
+    }
+]);
+await Task.Delay(2);
+await identityRevisionRepository.SaveCustomerEnrichmentFactsAsync([
+    new CustomerEnrichmentFact
+    {
+        Id = "identity-company-size-rejected",
+        CustomerId = identityRevisionLead.Id,
+        JobId = conflictingIdentityJob.Id,
+        FieldType = "company_size",
+        FieldValue = "11-50 employees",
+        NormalizedValue = "11-50 employees",
+        VerificationStatus = CustomerEnrichmentVerificationStatus.Rejected,
+        ConfidenceScore = 0
+    },
+    new CustomerEnrichmentFact
+    {
+        Id = "identity-website-outdated",
+        CustomerId = identityRevisionLead.Id,
+        JobId = conflictingIdentityJob.Id,
+        FieldType = "official_website",
+        FieldValue = "https://revision.example.com",
+        NormalizedValue = "https://revision.example.com",
+        VerificationStatus = CustomerEnrichmentVerificationStatus.Outdated,
+        ConfidenceScore = 0,
+        ExpiresAt = DateTimeOffset.Now
+    }
+]);
+var activeAfterRetirement = await CustomerExternalFactPolicy.GetCurrentFactsAsync(
+    identityRevisionRepository,
+    identityRevisionLead.Id,
+    DateTimeOffset.Now);
+var displayAfterRetirement = await identityEnrichment.GetSnapshotAsync(identityRevisionLead.Id);
+Check(conflictSuppressed.All(fact => fact.FieldType != "job_title")
+    && activeAfterRetirement.All(fact => fact.FieldType != "company_size")
+    && activeAfterRetirement.All(fact => fact.FieldType != "official_website")
+    && displayAfterRetirement.Facts.Single(fact => fact.FieldType == "company_size").VerificationStatus == CustomerEnrichmentVerificationStatus.Rejected
+    && displayAfterRetirement.Facts.Single(fact => fact.FieldType == "official_website").VerificationStatus == CustomerEnrichmentVerificationStatus.Outdated,
+    "single-value conflicts never enter AI and newer explicit Rejected/Outdated decisions suppress older duplicate facts");
+
+await Task.Delay(2);
+var restoredIdentityJob = new CustomerEnrichmentJob
+{
+    Id = "identity-job-a-restored",
+    CustomerId = identityRevisionLead.Id,
+    IdentityHash = identityHashA,
+    Status = CustomerEnrichmentJobStatus.Succeeded,
+    CreatedAt = DateTimeOffset.Now.AddMinutes(2)
+};
+await identityRevisionRepository.SaveCustomerEnrichmentJobAsync(restoredIdentityJob);
+await identityRevisionRepository.SaveCustomerEnrichmentFactsAsync([
+    new CustomerEnrichmentFact
+    {
+        Id = "identity-company-size-restored",
+        CustomerId = identityRevisionLead.Id,
+        JobId = restoredIdentityJob.Id,
+        FieldType = "company_size",
+        FieldValue = "11-50 employees",
+        NormalizedValue = "11-50 employees",
+        VerificationStatus = CustomerEnrichmentVerificationStatus.Verified,
+        ConfidenceScore = 96,
+        ExpiresAt = DateTimeOffset.Now.AddDays(90)
+    },
+    new CustomerEnrichmentFact
+    {
+        Id = "identity-website-restored",
+        CustomerId = identityRevisionLead.Id,
+        JobId = restoredIdentityJob.Id,
+        FieldType = "official_website",
+        FieldValue = "https://revision.example.com",
+        NormalizedValue = "https://revision.example.com",
+        VerificationStatus = CustomerEnrichmentVerificationStatus.Verified,
+        ConfidenceScore = 96,
+        ExpiresAt = DateTimeOffset.Now.AddDays(90)
+    }
+]);
+await Task.Delay(2);
+var laterCandidateJob = new CustomerEnrichmentJob
+{
+    Id = "identity-job-a-later-candidate",
+    CustomerId = identityRevisionLead.Id,
+    IdentityHash = identityHashA,
+    Status = CustomerEnrichmentJobStatus.NeedsReview,
+    CreatedAt = DateTimeOffset.Now.AddMinutes(3)
+};
+await identityRevisionRepository.SaveCustomerEnrichmentJobAsync(laterCandidateJob);
+await identityRevisionRepository.SaveCustomerEnrichmentFactsAsync([
+    new CustomerEnrichmentFact
+    {
+        Id = "identity-company-size-later-candidate",
+        CustomerId = identityRevisionLead.Id,
+        JobId = laterCandidateJob.Id,
+        FieldType = "company_size",
+        FieldValue = "11-50 employees",
+        NormalizedValue = "11-50 employees",
+        VerificationStatus = CustomerEnrichmentVerificationStatus.PossibleMatch,
+        ConfidenceScore = 70
+    }
+]);
+var activeAfterRestoredVerification = await CustomerExternalFactPolicy.GetCurrentFactsAsync(
+    identityRevisionRepository,
+    identityRevisionLead.Id,
+    DateTimeOffset.Now);
+var displayAfterRestoredVerification = await identityEnrichment.GetSnapshotAsync(identityRevisionLead.Id);
+Check(activeAfterRestoredVerification.Single(fact => fact.FieldType == "company_size").Id == "identity-company-size-restored"
+    && activeAfterRestoredVerification.Single(fact => fact.FieldType == "official_website").Id == "identity-website-restored"
+    && displayAfterRestoredVerification.Facts.Single(fact => fact.FieldType == "company_size").Id == "identity-company-size-restored",
+    "a later new Verified investigation restores a retired value while a pure candidate can never override the verified lifecycle decision");
+
+var blockingBrainProvider = new BlockingCustomerBrainProvider();
+var blockingIdentityBrain = new CustomerBrainService(identityRevisionRepository, blockingBrainProvider);
+var blockingBrainTask = blockingIdentityBrain.AnalyzeAsync(identityRevisionLead.Id);
+await blockingBrainProvider.RecommendationStarted.WaitAsync(TimeSpan.FromSeconds(5));
+var factChangedDuringBrain = await identityRevisionRepository.GetCustomerEnrichmentFactAsync("identity-company-size-restored")
+    ?? throw new InvalidOperationException("Blocking Customer Brain fact disappeared.");
+factChangedDuringBrain.VerificationStatus = CustomerEnrichmentVerificationStatus.Outdated;
+factChangedDuringBrain.ExpiresAt = DateTimeOffset.Now;
+await identityRevisionRepository.ApplyCustomerEnrichmentReviewAsync(
+    factChangedDuringBrain,
+    new CustomerEnrichmentReview
+    {
+        Id = "identity-company-size-outdated-during-brain",
+        CustomerId = factChangedDuringBrain.CustomerId,
+        JobId = factChangedDuringBrain.JobId,
+        FactId = factChangedDuringBrain.Id,
+        Action = CustomerEnrichmentReviewAction.MarkOutdated,
+        PreviousValue = factChangedDuringBrain.FieldValue,
+        NewValue = factChangedDuringBrain.FieldValue,
+        Reason = "outdated while Customer Brain is running"
+    });
+blockingBrainProvider.ReleaseRecommendation();
+Exception? blockingBrainError = null;
+try
+{
+    _ = await blockingBrainTask;
+}
+catch (Exception error)
+{
+    blockingBrainError = error;
+}
+var rejectedBrainRun = (await identityRevisionRepository.GetCustomerBrainRunsAsync(identityRevisionLead.Id)).First();
+var identityProfileAfterRejectedRun = await identityRevisionRepository.GetCustomerIntelligenceProfileAsync(identityRevisionLead.Id);
+Check(blockingBrainError is InvalidOperationException
+    && blockingBrainError.Message.Contains("分析期间", StringComparison.Ordinal)
+    && rejectedBrainRun.Status == CustomerBrainRunStatus.RetryableFailed
+    && rejectedBrainRun.Error.Contains("旧快照结果未提交", StringComparison.Ordinal)
+    && identityProfileAfterRejectedRun?.HasCurrentDecision != true
+    && !(await identityRevisionRepository.GetAiRecommendationHistoryAsync(identityRevisionLead.Id))
+        .Any(item => item.SourceProfileId == identityProfileAfterRejectedRun?.Id),
+    "Customer Brain rejects an in-flight decision when a verified external fact becomes outdated and creates no recommendation or task from the old snapshot");
+
+var reportCommitWindowRepository = new LocalRepository(Path.Combine(root, "customer-report-commit-window.db"));
+await reportCommitWindowRepository.InitializeAsync();
+var reportCommitWindowLead = new Lead
+{
+    Id = "customer-report-commit-window-customer",
+    BuyerId = "REPORT-COMMIT-A",
+    Name = "Report Commit Window Buyer",
+    Email = "report.commit@example.com"
+};
+await reportCommitWindowRepository.UpsertLeadAsync(reportCommitWindowLead);
+var reportCommitWindowJob = new CustomerEnrichmentJob
+{
+    Id = "customer-report-commit-window-job",
+    CustomerId = reportCommitWindowLead.Id,
+    IdentityHash = CustomerEnrichmentIdentityService.Build(reportCommitWindowLead).IdentityHash,
+    Status = CustomerEnrichmentJobStatus.Succeeded
+};
+await reportCommitWindowRepository.SaveCustomerEnrichmentJobAsync(reportCommitWindowJob);
+var reportCommitWindowFact = new CustomerEnrichmentFact
+{
+    Id = "customer-report-commit-window-fact",
+    CustomerId = reportCommitWindowLead.Id,
+    JobId = reportCommitWindowJob.Id,
+    FieldType = "company_size",
+    FieldValue = "51-200 employees",
+    NormalizedValue = "51-200 employees",
+    VerificationStatus = CustomerEnrichmentVerificationStatus.Verified,
+    ConfidenceScore = 95,
+    ExpiresAt = DateTimeOffset.Now.AddDays(90)
+};
+await reportCommitWindowRepository.SaveCustomerEnrichmentFactsAsync([reportCommitWindowFact]);
+var reportCommitBarrierReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+var releaseReportCommitBarrier = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+var reportCommitWindowService = new CustomerAnalysisService(
+    reportCommitWindowRepository,
+    new FakeStructuredReportProvider(),
+    beforeSuccessCommit: async cancellationToken =>
+    {
+        reportCommitBarrierReached.TrySetResult();
+        await releaseReportCommitBarrier.Task.WaitAsync(cancellationToken);
+    });
+var reportCommitWindowTask = reportCommitWindowService.GenerateAsync(reportCommitWindowLead.Id);
+await reportCommitBarrierReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+var reportCommitWindowFactToReject = await reportCommitWindowRepository.GetCustomerEnrichmentFactAsync(
+    reportCommitWindowFact.Id) ?? throw new InvalidOperationException("Report commit-window fact disappeared.");
+reportCommitWindowFactToReject.VerificationStatus = CustomerEnrichmentVerificationStatus.Rejected;
+reportCommitWindowFactToReject.ExpiresAt = DateTimeOffset.Now;
+await reportCommitWindowRepository.ApplyCustomerEnrichmentReviewAsync(
+    reportCommitWindowFactToReject,
+    new CustomerEnrichmentReview
+    {
+        Id = "customer-report-commit-window-reject",
+        CustomerId = reportCommitWindowLead.Id,
+        JobId = reportCommitWindowJob.Id,
+        FactId = reportCommitWindowFact.Id,
+        Action = CustomerEnrichmentReviewAction.Reject,
+        PreviousValue = reportCommitWindowFact.FieldValue,
+        NewValue = reportCommitWindowFact.FieldValue,
+        Reason = "reject after final recheck but before success save"
+    });
+releaseReportCommitBarrier.TrySetResult();
+Exception? reportCommitWindowError = null;
+try
+{
+    _ = await reportCommitWindowTask;
+}
+catch (Exception error)
+{
+    reportCommitWindowError = error;
+}
+var reportCommitWindowHistory = await reportCommitWindowRepository.GetCustomerAnalysisReportsAsync(
+    reportCommitWindowLead.Id);
+Check(reportCommitWindowError is InvalidOperationException
+    && reportCommitWindowHistory.Single().Status == CustomerReportStatus.Stale
+    && reportCommitWindowHistory.Single().Error == CustomerAnalysisFreshness.StaleReason,
+    "a fact review after the final pre-save recheck cannot escape the post-save freshness gate as a succeeded report");
+
+var identityOnlyReportLead = new Lead
+{
+    Id = "identity-only-report-customer",
+    BuyerId = "REPORT-A",
+    Name = "Identity Only Report Buyer",
+    Email = "identity-report@example.com"
+};
+await identityRevisionRepository.UpsertLeadAsync(identityOnlyReportLead);
+var identityOnlyAnalysis = new CustomerAnalysisService(identityRevisionRepository, new FakeStructuredReportProvider());
+var identityOnlyReport = await identityOnlyAnalysis.GenerateAsync(identityOnlyReportLead.Id);
+var staleExportPath = Path.Combine(root, "stale-identity-only-report.docx");
+const string preexistingExportContent = "preserve the user's existing export target";
+await File.WriteAllTextAsync(staleExportPath, preexistingExportContent);
+var exportFinalValidationReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+var releaseExportFinalValidation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+var guardedExportService = new CustomerReportExportService(
+    identityRevisionRepository,
+    async cancellationToken =>
+    {
+        exportFinalValidationReached.TrySetResult();
+        await releaseExportFinalValidation.Task.WaitAsync(cancellationToken);
+    });
+var guardedExportTask = guardedExportService.ExportWordAsync(identityOnlyReport, staleExportPath);
+await exportFinalValidationReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+identityOnlyReportLead.BuyerId = "REPORT-B";
+await identityRevisionRepository.UpsertLeadAsync(identityOnlyReportLead);
+releaseExportFinalValidation.TrySetResult();
+var staleExportBlocked = false;
+try
+{
+    await guardedExportTask;
+}
+catch (InvalidOperationException)
+{
+    staleExportBlocked = true;
+}
+var staleIdentityOnlyReport = (await identityOnlyAnalysis.GetHistoryAsync(identityOnlyReportLead.Id)).Single();
+Check(staleIdentityOnlyReport.Status == CustomerReportStatus.Stale
+    && staleIdentityOnlyReport.ExportHistory.Count == 0
+    && staleExportBlocked
+    && await File.ReadAllTextAsync(staleExportPath) == preexistingExportContent,
+    "identity changes during export stale the report, preserve the prior target and never let an old report save overwrite Stale");
 
 try { File.Delete(database); Directory.Delete(root, true); } catch { }
 Console.WriteLine(failures.Count == 0 ? "\nAI Sales OS native core smoke tests passed." : $"\n{failures.Count} smoke test(s) failed.");
@@ -5502,6 +7503,38 @@ sealed class QueueHandler(IEnumerable<string> responses) : HttpMessageHandler
     }
 }
 
+sealed class BlockingLeadAnalysisHandler(string response) : HttpMessageHandler
+{
+    private readonly TaskCompletionSource _analysisStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public Task AnalysisStarted => _analysisStarted.Task;
+
+    public void ReleaseAnalysis() => _release.TrySetResult();
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        if (request.Method == HttpMethod.Get)
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"data\":[{\"id\":\"deepseek-chat\"}]}",
+                    Encoding.UTF8,
+                    "application/json")
+            };
+
+        _ = await request.Content!.ReadAsStringAsync(cancellationToken);
+        _analysisStarted.TrySetResult();
+        await _release.Task.WaitAsync(cancellationToken);
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(response, Encoding.UTF8, "application/json")
+        };
+    }
+}
+
 sealed class ProviderProtocolHandler(string modelCatalog, IEnumerable<string> responses) : HttpMessageHandler
 {
     private readonly Queue<string> _responses = new(responses);
@@ -5764,6 +7797,41 @@ sealed class CapturingEmailAssistantProvider : IStructuredAiProvider
     }
 }
 
+sealed class BlockingEmailAssistantProvider : IStructuredAiProvider
+{
+    private readonly CapturingEmailAssistantProvider _inner = new();
+    private readonly TaskCompletionSource _generationStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _releaseGeneration = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public Task GenerationStarted => _generationStarted.Task;
+    public void ReleaseGeneration() => _releaseGeneration.TrySetResult();
+    public bool HasApiKey() => true;
+    public bool HasApiKey(string moduleKey) => true;
+    public Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult("blocking-email-copilot-test");
+    public Task<string> GetSelectedModelAsync(string moduleKey, CancellationToken cancellationToken = default) =>
+        Task.FromResult("blocking-email-copilot-test");
+
+    public Task<T> CompleteStructuredAsync<T>(
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class =>
+        CompleteStructuredAsync(AiModuleKeys.EmailInbox, instructions, payload, validate, cancellationToken);
+
+    public async Task<T> CompleteStructuredAsync<T>(
+        string moduleKey,
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        _generationStarted.TrySetResult();
+        await _releaseGeneration.Task.WaitAsync(cancellationToken);
+        return await _inner.CompleteStructuredAsync(moduleKey, instructions, payload, validate, cancellationToken);
+    }
+}
+
 sealed class FakeCustomerBrainProvider : IStructuredAiProvider
 {
     public bool HasApiKey() => true;
@@ -5865,6 +7933,33 @@ sealed class FakeCustomerBrainProvider : IStructuredAiProvider
     }
 }
 
+sealed class BlockingCustomerBrainProvider : IStructuredAiProvider
+{
+    private readonly FakeCustomerBrainProvider _inner = new();
+    private readonly TaskCompletionSource _recommendationStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public Task RecommendationStarted => _recommendationStarted.Task;
+    public void ReleaseRecommendation() => _release.TrySetResult();
+    public bool HasApiKey() => true;
+    public Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult("blocking-customer-brain-test");
+
+    public async Task<T> CompleteStructuredAsync<T>(
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        if (typeof(T) == typeof(CustomerSalesRecommendation))
+        {
+            _recommendationStarted.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken);
+        }
+        return await _inner.CompleteStructuredAsync(instructions, payload, validate, cancellationToken);
+    }
+}
+
 sealed class FakeCustomerSuccessAgentProvider : IStructuredAiProvider
 {
     public bool HasApiKey() => true;
@@ -5947,6 +8042,56 @@ sealed class FakeCustomerSuccessAgentProvider : IStructuredAiProvider
     };
 }
 
+sealed class BlockingCustomerSuccessAgentProvider : IStructuredAiProvider
+{
+    private readonly FakeCustomerSuccessAgentProvider _inner = new();
+    private readonly TaskCompletionSource _generationStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _releaseGeneration = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public Task GenerationStarted => _generationStarted.Task;
+    public void ReleaseGeneration() => _releaseGeneration.TrySetResult();
+    public bool HasApiKey() => true;
+    public Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult("blocking-customer-success-agent-test");
+
+    public async Task<T> CompleteStructuredAsync<T>(
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        _generationStarted.TrySetResult();
+        await _releaseGeneration.Task.WaitAsync(cancellationToken);
+        return await _inner.CompleteStructuredAsync(instructions, payload, validate, cancellationToken);
+    }
+}
+
+sealed class BlockingCustomerSuccessMessageSender(bool block) : ICustomerSuccessMessageSender
+{
+    private readonly TaskCompletionSource _sendStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _releaseSend = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _sendCount;
+
+    public int SendCount => Volatile.Read(ref _sendCount);
+    public Task SendStarted => _sendStarted.Task;
+    public void ReleaseSend() => _releaseSend.TrySetResult();
+
+    public async Task<JsonElement> SendTextAsync(
+        string accountId,
+        string phone,
+        string text,
+        CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref _sendCount);
+        _sendStarted.TrySetResult();
+        if (block)
+            await _releaseSend.Task.WaitAsync(cancellationToken);
+        using var document = JsonDocument.Parse(
+            "{\"messageId\":\"context-race-provider-id\",\"targetVerified\":true,\"status\":2}");
+        return document.RootElement.Clone();
+    }
+}
+
 sealed class FakeWhatsAppNumberRegistrationLookup : IWhatsAppNumberRegistrationLookup
 {
     public bool Connected { get; set; }
@@ -5966,4 +8111,19 @@ sealed class FakeWhatsAppNumberRegistrationLookup : IWhatsAppNumberRegistrationL
         var digits = new string(phone.Where(char.IsDigit).ToArray());
         return Task.FromResult(new WhatsAppNumberRegistrationLookupResult(exists, exists ? $"{digits}@s.whatsapp.net" : ""));
     }
+}
+
+sealed class FixedSmokeTimeProvider : TimeProvider
+{
+    private readonly DateTimeOffset _utcNow;
+    private readonly TimeZoneInfo _localTimeZone;
+
+    public FixedSmokeTimeProvider(DateTimeOffset utcNow, TimeZoneInfo localTimeZone)
+    {
+        _utcNow = utcNow.ToUniversalTime();
+        _localTimeZone = localTimeZone;
+    }
+
+    public override DateTimeOffset GetUtcNow() => _utcNow;
+    public override TimeZoneInfo LocalTimeZone => _localTimeZone;
 }

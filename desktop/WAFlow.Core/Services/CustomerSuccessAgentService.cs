@@ -8,6 +8,8 @@ namespace WAFlow.Core.Services;
 
 public sealed partial class CustomerSuccessAgentService
 {
+    private const string ContextChangedMessage = "上下文已变化，请重新生成";
+
     private const string Instructions = """
         你是 DHgate 客户成功团队的智能助手，不是商家、工厂、供应商或平台政策审批人。
 
@@ -22,6 +24,7 @@ public sealed partial class CustomerSuccessAgentService
         - 只有确实使用某个知识块时，才把它的 chunkId 放入 knowledgeChunkIds；不得编造、改写或引用列表外 ID。原文模板只有 usageMode=ExactTemplate 时才可逐字使用，其余话术只能作为表达风格参考。
         - 如果 policyKnowledgeRequired=true，但 knowledgeSufficient=false、存在 conflict/outdated，或批准知识不足以支持具体政策/数字/承诺，必须 ImmediateHuman，不能用常识猜测。
         - factPriority 固定为：人工确认 > 最新客户原话 > 历史客户原话 > 经批准知识 > 当前采购需求 > 有证据的 Customer Brain > AI 推断。推断不得作为对外事实。
+        - verifiedExternalFacts 是与当前客户身份版本一致且仍有效的公开商业证据，只能作背景；不能授权 CRM 更新，也不能覆盖最新客户原话或支持价格、库存、交期、政策承诺。
         - 客户原话发生冲突时必须保留冲突，不得静默覆盖。
         - safety 必须是 SafeToAnswer、DeferredHuman 或 ImmediateHuman。涉及折扣/最终报价批准、库存承诺、交期/物流/清关保证、退款/赔偿、投诉/法律/合同/税务/付款、平台处罚、客户要求人工、愤怒威胁、责任或无法确定的政策，必须 ImmediateHuman。
         - ImmediateHuman 时 replyText 只能是与客户语言一致的简短占位回复，英文使用 “Let me check this with my colleague.”，中文使用“我先和同事确认一下。”，不得继续业务问答。
@@ -90,8 +93,11 @@ public sealed partial class CustomerSuccessAgentService
         string accountId, string conversationId, CancellationToken cancellationToken = default)
     {
         var link = await _repository.GetWhatsAppIdentityLinkAsync(accountId, conversationId, cancellationToken);
-        if (link is null || string.IsNullOrWhiteSpace(link.CustomerId)) return null;
+        if (link is null || !link.IsActive || string.IsNullOrWhiteSpace(link.CustomerId)) return null;
         var customerId = link.CustomerId;
+        var brainCandidate = _customerBrain is null
+            ? await _repository.GetCustomerIntelligenceProfileAsync(customerId, cancellationToken)
+            : await _customerBrain.GetAsync(customerId, cancellationToken);
         return new CustomerSuccessContext
         {
             CustomerId = customerId,
@@ -101,9 +107,7 @@ public sealed partial class CustomerSuccessAgentService
                       new AccountPersona { AccountId = accountId },
             AccountRelationship = await _repository.GetAccountRelationshipMemoryAsync(customerId, accountId, cancellationToken),
             GlobalRelationship = await _repository.GetRelationshipMemoryAsync(customerId, cancellationToken),
-            Brain = _customerBrain is null
-                ? await _repository.GetCustomerIntelligenceProfileAsync(customerId, cancellationToken)
-                : await _customerBrain.GetAsync(customerId, cancellationToken),
+            Brain = brainCandidate?.HasCurrentDecision == true ? brainCandidate : null,
             SourcingRequest = await _repository.GetLatestSourcingRequestAsync(customerId, cancellationToken),
             AgentState = await _repository.GetConversationAgentStateAsync(accountId, conversationId, cancellationToken),
             AgentLock = await _repository.GetGlobalCustomerAgentLockAsync(customerId, cancellationToken),
@@ -143,6 +147,8 @@ public sealed partial class CustomerSuccessAgentService
 
         var context = await GetContextAsync(accountId, conversationId, cancellationToken);
         if (context is null) return new CustomerSuccessAgentRunResult { Identity = identity, BlockReason = "客户上下文尚未建立。" };
+        if (!string.Equals(identity.CustomerId, context.CustomerId, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(ContextChangedMessage);
         var state = context.AgentState ?? new ConversationAgentState
         {
             CustomerId = context.CustomerId,
@@ -150,24 +156,44 @@ public sealed partial class CustomerSuccessAgentService
             ConversationId = conversationId,
             Mode = ConversationAgentMode.SuggestOnly
         };
-        var source = context.Messages
-            .Where(message => message.Direction == WhatsAppMessageDirection.Incoming &&
-                              !message.IsRevoked && !message.IsStatusUpdate && !string.IsNullOrWhiteSpace(message.Body))
-            .Where(message => string.IsNullOrWhiteSpace(sourceMessageId) ||
-                              message.Id == sourceMessageId || message.ProviderMessageId == sourceMessageId)
-            .OrderBy(message => message.Timestamp).LastOrDefault()
-            ?? context.Messages.Where(message => message.Direction == WhatsAppMessageDirection.Incoming &&
-                                                  !message.IsRevoked && !message.IsStatusUpdate &&
-                                                  !string.IsNullOrWhiteSpace(message.Body))
-                .OrderBy(message => message.Timestamp).LastOrDefault();
+        var currentConversationMessages = await _repository.GetWhatsAppMessagesAsync(
+            conversationId,
+            5000,
+            cancellationToken);
+        var incomingForConversation = currentConversationMessages
+            .Where(message => IsCurrentIncoming(message, accountId, conversationId));
+        var source = string.IsNullOrWhiteSpace(sourceMessageId)
+            ? incomingForConversation.OrderBy(message => message.Timestamp).ThenBy(message => message.Id, StringComparer.Ordinal).LastOrDefault()
+            : incomingForConversation
+                .Where(message => message.Id.Equals(sourceMessageId, StringComparison.OrdinalIgnoreCase) ||
+                                  message.ProviderMessageId.Equals(sourceMessageId, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(message => message.Timestamp).ThenBy(message => message.Id, StringComparer.Ordinal).LastOrDefault();
         if (source is null)
             return new CustomerSuccessAgentRunResult { Identity = identity, Context = context, AgentState = state, BlockReason = "没有可分析的客户原话。" };
+
+        var verifiedExternalFacts = await CustomerExternalFactPolicy.GetCurrentFactsAsync(
+            _repository,
+            context.CustomerId,
+            DateTimeOffset.Now,
+            cancellationToken);
+        var requireAutoLock = trigger == CustomerSuccessRunTrigger.IncomingAutomation &&
+                              state.Mode == ConversationAgentMode.AutoActive;
+        var contextToken = await CaptureRunContextTokenAsync(
+            context,
+            accountId,
+            conversationId,
+            source,
+            verifiedExternalFacts,
+            requireAutoLock,
+            cancellationToken);
 
         if (context.OpenHandoff is not null ||
             state.Mode is ConversationAgentMode.HumanRequired or ConversationAgentMode.HumanActive or ConversationAgentMode.ResumeReview)
         {
+            await EnsureRunContextCurrentAsync(contextToken, false, false, cancellationToken);
             state.PausedMessageCount++;
             state.LastProcessedMessageId = source.Id;
+            state.PendingRunContextToken = contextToken.RunToken;
             await _repository.UpsertConversationAgentStateAsync(state, cancellationToken);
             if (context.OpenHandoff is not null)
             {
@@ -177,6 +203,7 @@ public sealed partial class CustomerSuccessAgentService
             return new CustomerSuccessAgentRunResult
             {
                 Identity = identity, Context = context, AgentState = state, Handoff = context.OpenHandoff,
+                ContextToken = contextToken,
                 BlockReason = "客户处于全局人工接管/恢复复核状态，新消息已保存但 AI 保持静默。"
             };
         }
@@ -185,10 +212,12 @@ public sealed partial class CustomerSuccessAgentService
         if (hardSafety == AgentQuestionSafety.ImmediateHuman)
         {
             var holdingDecision = CreateHoldingDecision(source);
+            await EnsureRunContextCurrentAsync(contextToken, requireAutoLock, false, cancellationToken);
             var handoff = await CreateHandoffAsync(
                 context, source, holdingDecision.SafetyReason, holdingDecision.ChineseSummary, cancellationToken);
             return await CompleteRunAsync(
-                identity, context, state, source, holdingDecision, null, handoff, null, trigger, cancellationToken);
+                identity, context, state, source, holdingDecision, null, handoff, null,
+                contextToken, requireAutoLock, trigger, cancellationToken);
         }
 
         if (!_provider.HasApiKey(AiModuleKeys.WhatsAppInbox))
@@ -228,10 +257,12 @@ public sealed partial class CustomerSuccessAgentService
                 : $"当前批准知识不足以安全回答政策问题：{knowledge.InsufficiencyReason}";
             holdingDecision.KnowledgeRetrievalId = knowledge.Id;
             holdingDecision.KnowledgeSufficient = false;
+            await EnsureRunContextCurrentAsync(contextToken, requireAutoLock, false, cancellationToken);
             var handoff = await CreateHandoffAsync(
                 context, source, holdingDecision.SafetyReason, holdingDecision.ChineseSummary, cancellationToken);
             return await CompleteRunAsync(
-                identity, context, state, source, holdingDecision, null, handoff, knowledge, trigger, cancellationToken);
+                identity, context, state, source, holdingDecision, null, handoff, knowledge,
+                contextToken, requireAutoLock, trigger, cancellationToken);
         }
         var allowedKnowledgeChunkIds = knowledge.Hits.Select(hit => hit.ChunkId)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -261,6 +292,15 @@ public sealed partial class CustomerSuccessAgentService
                 context.Brain.Risks, context.Brain.NextBestAction, context.Brain.Confidence, context.Brain.PurchaseProbability,
                 evidence = context.Brain.Statements.Where(item => item.Nature == IntelligenceStatementNature.Fact).Take(20)
             },
+            verifiedExternalFacts = verifiedExternalFacts.Select(fact => new
+            {
+                fact.FieldType,
+                fact.FieldValue,
+                fact.Category,
+                fact.ConfidenceScore,
+                status = fact.VerificationStatus.ToString(),
+                evidence = string.IsNullOrWhiteSpace(fact.EvidenceQuote) ? fact.ReviewNote : fact.EvidenceQuote
+            }),
             unresolvedQuestions = context.PendingQuestions,
             allowedCrmFields = allowedFields,
             policyKnowledgeRequired = hardSafety == AgentQuestionSafety.DeferredHuman,
@@ -301,6 +341,7 @@ public sealed partial class CustomerSuccessAgentService
         CustomerSuccessAgentDecision decision;
         try
         {
+            await EnsureRunContextCurrentAsync(contextToken, requireAutoLock, false, cancellationToken);
             decision = await _provider.CompleteStructuredAsync<CustomerSuccessAgentDecision>(
                 AiModuleKeys.WhatsAppInbox,
                 Instructions, payload,
@@ -337,11 +378,15 @@ public sealed partial class CustomerSuccessAgentService
         if (hardSafety == AgentQuestionSafety.DeferredHuman && decision.Safety == AgentQuestionSafety.SafeToAnswer)
             decision.Safety = AgentQuestionSafety.DeferredHuman;
 
+        await EnsureRunContextCurrentAsync(contextToken, requireAutoLock, false, cancellationToken);
         SourcingRequest? sourcing = null;
         if (decision.SourcingFields.Count > 0)
+        {
             sourcing = await _sourcing.MergeAsync(context.CustomerId, accountId, conversationId, source.Id, decision.SourcingFields, cancellationToken);
+        }
         if (!string.IsNullOrWhiteSpace(decision.PendingQuestion) || decision.Safety == AgentQuestionSafety.DeferredHuman)
         {
+            await EnsureRunContextCurrentAsync(contextToken, requireAutoLock, false, cancellationToken);
             await _repository.UpsertPendingQuestionAsync(new PendingQuestion
             {
                 CustomerId = context.CustomerId,
@@ -358,13 +403,17 @@ public sealed partial class CustomerSuccessAgentService
         if (decision.Safety == AgentQuestionSafety.ImmediateHuman)
         {
             decision.ReplyText = IsChinese(source.Body) ? "我先和同事确认一下。" : "Let me check this with my colleague.";
+            await EnsureRunContextCurrentAsync(contextToken, requireAutoLock, false, cancellationToken);
             immediate = await CreateHandoffAsync(context, source, decision.SafetyReason, decision.ChineseSummary, cancellationToken);
         }
         else if (!decision.UsedSafeFallback)
         {
+            await EnsureRunContextCurrentAsync(contextToken, requireAutoLock, false, cancellationToken);
             await UpdateMemoriesAsync(context, accountId, source, decision, cancellationToken);
         }
-        return await CompleteRunAsync(identity, context, state, source, decision, sourcing, immediate, knowledge, trigger, cancellationToken);
+        return await CompleteRunAsync(
+            identity, context, state, source, decision, sourcing, immediate, knowledge,
+            contextToken, requireAutoLock, trigger, cancellationToken);
     }
 
     public async Task<ConversationAgentState> SetModeAsync(
@@ -547,6 +596,245 @@ public sealed partial class CustomerSuccessAgentService
         return null;
     }
 
+    private async Task<CustomerSuccessRunContextToken> CaptureRunContextTokenAsync(
+        CustomerSuccessContext context,
+        string accountId,
+        string conversationId,
+        WhatsAppMessage source,
+        IReadOnlyCollection<CustomerEnrichmentFact> verifiedExternalFacts,
+        bool requireAutoLock,
+        CancellationToken cancellationToken)
+    {
+        var link = await _repository.GetWhatsAppIdentityLinkAsync(accountId, conversationId, cancellationToken);
+        if (link is null || !link.IsActive ||
+            !link.CustomerId.Equals(context.CustomerId, StringComparison.OrdinalIgnoreCase) ||
+            !link.AccountId.Equals(accountId, StringComparison.OrdinalIgnoreCase) ||
+            !link.ConversationId.Equals(conversationId, StringComparison.OrdinalIgnoreCase))
+            throw ContextChanged();
+
+        var dependency = await CustomerExternalFactPolicy.CaptureDependencyAsync(
+            _repository,
+            context.CustomerId,
+            DateTimeOffset.Now,
+            cancellationToken);
+        if (context.Customer is null || string.IsNullOrWhiteSpace(dependency.IdentityHash) ||
+            !CustomerEnrichmentIdentityService.Build(context.Customer).IdentityHash.Equals(
+                dependency.IdentityHash,
+                StringComparison.Ordinal) ||
+            !CustomerExternalFactPolicy.HasSameFactSet(verifiedExternalFacts, dependency.ActiveFacts))
+            throw ContextChanged();
+
+        var conversation = (await _repository.GetWhatsAppConversationsAsync(accountId, cancellationToken))
+            .FirstOrDefault(item => item.Id.Equals(conversationId, StringComparison.OrdinalIgnoreCase) &&
+                                    item.AccountId.Equals(accountId, StringComparison.OrdinalIgnoreCase));
+        if (conversation is null || conversation.IsGroup)
+            throw ContextChanged();
+
+        var messages = await _repository.GetWhatsAppMessagesAsync(conversationId, 5000, cancellationToken);
+        var incoming = messages.Where(message => IsCurrentIncoming(message, accountId, conversationId)).ToList();
+        var currentSource = incoming.FirstOrDefault(message =>
+            message.Id.Equals(source.Id, StringComparison.OrdinalIgnoreCase));
+        var latest = incoming.OrderBy(message => message.Timestamp)
+            .ThenBy(message => message.Id, StringComparer.Ordinal)
+            .LastOrDefault();
+        if (currentSource is null || latest is null ||
+            !latest.Id.Equals(source.Id, StringComparison.OrdinalIgnoreCase) ||
+            !BuildSourceMessageToken(currentSource).Equals(BuildSourceMessageToken(source), StringComparison.Ordinal))
+            throw ContextChanged();
+
+        var agentLock = await _repository.GetGlobalCustomerAgentLockAsync(context.CustomerId, cancellationToken);
+        if (requireAutoLock)
+        {
+            var state = await _repository.GetConversationAgentStateAsync(accountId, conversationId, cancellationToken);
+            if (state is null || state.Mode != ConversationAgentMode.AutoActive ||
+                !state.CustomerId.Equals(context.CustomerId, StringComparison.OrdinalIgnoreCase) ||
+                agentLock is null ||
+                !agentLock.ActiveAccountId.Equals(accountId, StringComparison.OrdinalIgnoreCase) ||
+                !agentLock.ActiveConversationId.Equals(conversationId, StringComparison.OrdinalIgnoreCase))
+                throw ContextChanged();
+        }
+
+        return new CustomerSuccessRunContextToken
+        {
+            CustomerId = context.CustomerId,
+            AccountId = accountId,
+            ConversationId = conversationId,
+            IdentityLinkId = link.Id,
+            IdentityLinkToken = BuildIdentityLinkToken(link),
+            CustomerIdentityHash = dependency.IdentityHash,
+            ActiveFactSetToken = dependency.Hash,
+            ConversationTargetToken = BuildConversationTargetToken(conversation),
+            SourceMessageId = source.Id,
+            SourceMessageToken = BuildSourceMessageToken(source),
+            AgentLockToken = agentLock is null ? "" : BuildAgentLockToken(agentLock)
+        };
+    }
+
+    public async Task<WhatsAppConversation> EnsureRunContextCurrentAsync(
+        CustomerSuccessRunContextToken contextToken,
+        bool requireAutoLock,
+        bool requireProcessedState,
+        CancellationToken cancellationToken = default)
+    {
+        if (contextToken is null ||
+            string.IsNullOrWhiteSpace(contextToken.RunToken) ||
+            string.IsNullOrWhiteSpace(contextToken.CustomerId) ||
+            string.IsNullOrWhiteSpace(contextToken.AccountId) ||
+            string.IsNullOrWhiteSpace(contextToken.ConversationId) ||
+            string.IsNullOrWhiteSpace(contextToken.IdentityLinkId) ||
+            string.IsNullOrWhiteSpace(contextToken.IdentityLinkToken) ||
+            string.IsNullOrWhiteSpace(contextToken.CustomerIdentityHash) ||
+            string.IsNullOrWhiteSpace(contextToken.ActiveFactSetToken) ||
+            string.IsNullOrWhiteSpace(contextToken.ConversationTargetToken) ||
+            string.IsNullOrWhiteSpace(contextToken.SourceMessageId) ||
+            string.IsNullOrWhiteSpace(contextToken.SourceMessageToken))
+            throw ContextChanged();
+
+        var link = await _repository.GetWhatsAppIdentityLinkAsync(
+            contextToken.AccountId,
+            contextToken.ConversationId,
+            cancellationToken);
+        if (link is null || !link.IsActive ||
+            !link.Id.Equals(contextToken.IdentityLinkId, StringComparison.OrdinalIgnoreCase) ||
+            !link.CustomerId.Equals(contextToken.CustomerId, StringComparison.OrdinalIgnoreCase) ||
+            !BuildIdentityLinkToken(link).Equals(contextToken.IdentityLinkToken, StringComparison.Ordinal))
+            throw ContextChanged();
+
+        var dependency = await CustomerExternalFactPolicy.CaptureDependencyAsync(
+            _repository,
+            contextToken.CustomerId,
+            DateTimeOffset.Now,
+            cancellationToken);
+        if (!dependency.IdentityHash.Equals(contextToken.CustomerIdentityHash, StringComparison.Ordinal) ||
+            !dependency.Hash.Equals(contextToken.ActiveFactSetToken, StringComparison.Ordinal))
+            throw ContextChanged();
+
+        var conversation = (await _repository.GetWhatsAppConversationsAsync(contextToken.AccountId, cancellationToken))
+            .FirstOrDefault(item => item.Id.Equals(contextToken.ConversationId, StringComparison.OrdinalIgnoreCase) &&
+                                    item.AccountId.Equals(contextToken.AccountId, StringComparison.OrdinalIgnoreCase));
+        if (conversation is null || conversation.IsGroup ||
+            !BuildConversationTargetToken(conversation).Equals(contextToken.ConversationTargetToken, StringComparison.Ordinal))
+            throw ContextChanged();
+
+        var messages = await _repository.GetWhatsAppMessagesAsync(
+            contextToken.ConversationId,
+            5000,
+            cancellationToken);
+        var incoming = messages.Where(message => IsCurrentIncoming(
+            message,
+            contextToken.AccountId,
+            contextToken.ConversationId)).ToList();
+        var source = incoming.FirstOrDefault(message =>
+            message.Id.Equals(contextToken.SourceMessageId, StringComparison.OrdinalIgnoreCase));
+        var latest = incoming.OrderBy(message => message.Timestamp)
+            .ThenBy(message => message.Id, StringComparer.Ordinal)
+            .LastOrDefault();
+        if (source is null || latest is null ||
+            !latest.Id.Equals(contextToken.SourceMessageId, StringComparison.OrdinalIgnoreCase) ||
+            !BuildSourceMessageToken(source).Equals(contextToken.SourceMessageToken, StringComparison.Ordinal))
+            throw ContextChanged();
+
+        ConversationAgentState? state = null;
+        if (requireAutoLock || requireProcessedState)
+        {
+            state = await _repository.GetConversationAgentStateAsync(
+                contextToken.AccountId,
+                contextToken.ConversationId,
+                cancellationToken);
+            if (state is null ||
+                !state.CustomerId.Equals(contextToken.CustomerId, StringComparison.OrdinalIgnoreCase) ||
+                !state.AccountId.Equals(contextToken.AccountId, StringComparison.OrdinalIgnoreCase) ||
+                !state.ConversationId.Equals(contextToken.ConversationId, StringComparison.OrdinalIgnoreCase))
+                throw ContextChanged();
+        }
+
+        if (requireAutoLock)
+        {
+            var agentLock = await _repository.GetGlobalCustomerAgentLockAsync(contextToken.CustomerId, cancellationToken);
+            if (state?.Mode != ConversationAgentMode.AutoActive || agentLock is null ||
+                string.IsNullOrWhiteSpace(contextToken.AgentLockToken) ||
+                !agentLock.ActiveAccountId.Equals(contextToken.AccountId, StringComparison.OrdinalIgnoreCase) ||
+                !agentLock.ActiveConversationId.Equals(contextToken.ConversationId, StringComparison.OrdinalIgnoreCase) ||
+                !BuildAgentLockToken(agentLock).Equals(contextToken.AgentLockToken, StringComparison.Ordinal))
+                throw ContextChanged();
+        }
+
+        if (requireProcessedState &&
+            (state is null ||
+             !state.LastProcessedMessageId.Equals(contextToken.SourceMessageId, StringComparison.OrdinalIgnoreCase) ||
+             !state.PendingRunContextToken.Equals(contextToken.RunToken, StringComparison.Ordinal)))
+            throw ContextChanged();
+
+        return conversation;
+    }
+
+    private static bool IsCurrentIncoming(WhatsAppMessage message, string accountId, string conversationId) =>
+        message.Direction == WhatsAppMessageDirection.Incoming &&
+        !message.IsRevoked &&
+        !message.IsStatusUpdate &&
+        !string.IsNullOrWhiteSpace(message.Body) &&
+        message.AccountId.Equals(accountId, StringComparison.OrdinalIgnoreCase) &&
+        message.ConversationId.Equals(conversationId, StringComparison.OrdinalIgnoreCase);
+
+    private static string BuildIdentityLinkToken(WhatsAppIdentityLink link) => HashToken(new
+    {
+        link.Id,
+        link.CustomerId,
+        link.AccountId,
+        link.ConversationId,
+        link.ContactJid,
+        link.ContactLid,
+        link.PhoneIdentityId,
+        link.MatchResult,
+        link.MatchMethod,
+        link.Confidence,
+        link.ManuallyConfirmed,
+        link.IsActive,
+        updatedAt = link.UpdatedAt.ToUniversalTime().ToString("O")
+    });
+
+    internal static string BuildConversationTargetToken(WhatsAppConversation conversation) => HashToken(new
+    {
+        conversation.Id,
+        conversation.AccountId,
+        conversation.Jid,
+        conversation.Phone,
+        conversation.IsGroup,
+        conversation.LeadId
+    });
+
+    internal static string BuildSourceMessageToken(WhatsAppMessage message) => HashToken(new
+    {
+        message.Id,
+        message.ProviderMessageId,
+        message.AccountId,
+        message.ConversationId,
+        message.LeadId,
+        message.Jid,
+        message.Phone,
+        message.Direction,
+        message.Kind,
+        message.Body,
+        message.IsRevoked,
+        message.IsStatusUpdate,
+        timestamp = message.Timestamp.ToUniversalTime().ToString("O")
+    });
+
+    private static string BuildAgentLockToken(GlobalCustomerAgentLock agentLock) => HashToken(new
+    {
+        agentLock.CustomerId,
+        agentLock.ActiveAccountId,
+        agentLock.ActiveConversationId,
+        agentLock.AcquiredBy,
+        acquiredAt = agentLock.AcquiredAt.ToUniversalTime().ToString("O"),
+        updatedAt = agentLock.UpdatedAt.ToUniversalTime().ToString("O")
+    });
+
+    private static string HashToken(object value) => Convert.ToHexString(
+        SHA256.HashData(Encoding.UTF8.GetBytes(Json.Serialize(value))));
+
+    private static InvalidOperationException ContextChanged() => new(ContextChangedMessage);
+
     private async Task<CustomerSuccessAgentRunResult> CompleteRunAsync(
         CustomerIdentityResolution identity,
         CustomerSuccessContext context,
@@ -556,10 +844,19 @@ public sealed partial class CustomerSuccessAgentService
         SourcingRequest? sourcing,
         HumanHandoffEvent? handoff,
         KnowledgeRetrievalResult? knowledge,
+        CustomerSuccessRunContextToken contextToken,
+        bool autoLockWasRequired,
         CustomerSuccessRunTrigger trigger,
         CancellationToken cancellationToken)
     {
+        var autoLockStillRequired = handoff is null && autoLockWasRequired;
+        await EnsureRunContextCurrentAsync(
+            contextToken,
+            autoLockStillRequired,
+            false,
+            cancellationToken);
         state.LastProcessedMessageId = source.Id;
+        state.PendingRunContextToken = contextToken.RunToken;
         if (handoff is not null)
         {
             // CreateHandoffAsync freezes every linked conversation. Keep the
@@ -597,11 +894,9 @@ public sealed partial class CustomerSuccessAgentService
         state.LastProviderMessageId = "";
         state.LastRunAt = DateTimeOffset.Now;
         await _repository.UpsertConversationAgentStateAsync(state, cancellationToken);
-        var lockMatches = context.AgentLock?.ActiveAccountId == source.AccountId &&
-                          context.AgentLock.ActiveConversationId == source.ConversationId;
         var autoAllowed = handoff is null && !decision.UsedSafeFallback &&
                           trigger == CustomerSuccessRunTrigger.IncomingAutomation &&
-                          state.Mode == ConversationAgentMode.AutoActive && lockMatches;
+                          state.Mode == ConversationAgentMode.AutoActive && autoLockStillRequired;
         await _repository.SaveAgentTurnLogAsync(new AgentTurnLog
         {
             CustomerId = context.CustomerId,
@@ -638,7 +933,8 @@ public sealed partial class CustomerSuccessAgentService
         return new CustomerSuccessAgentRunResult
         {
             Identity = identity, Context = context, Decision = decision, SourcingRequest = sourcing,
-            Handoff = handoff, AgentState = state, KnowledgeRetrieval = knowledge, AutoReplyAllowed = autoAllowed
+            Handoff = handoff, AgentState = state, KnowledgeRetrieval = knowledge, ContextToken = contextToken,
+            AutoReplyAllowed = autoAllowed
         };
     }
 

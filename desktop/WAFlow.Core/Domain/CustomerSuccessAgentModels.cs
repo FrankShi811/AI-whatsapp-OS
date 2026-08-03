@@ -219,9 +219,27 @@ public sealed class ConversationAgentState
     public string LastRunSummary { get; set; } = "";
     public string LastRecommendedAction { get; set; } = "";
     public string LastProviderMessageId { get; set; } = "";
+    public string PendingRunContextToken { get; set; } = "";
     public DateTimeOffset? LastRunAt { get; set; }
     public bool ExplicitResumeRequired { get; set; }
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
+}
+
+public sealed class CustomerSuccessRunContextToken
+{
+    public string RunToken { get; set; } = Guid.NewGuid().ToString("N");
+    public string CustomerId { get; set; } = "";
+    public string AccountId { get; set; } = "";
+    public string ConversationId { get; set; } = "";
+    public string IdentityLinkId { get; set; } = "";
+    public string IdentityLinkToken { get; set; } = "";
+    public string CustomerIdentityHash { get; set; } = "";
+    public string ActiveFactSetToken { get; set; } = "";
+    public string ConversationTargetToken { get; set; } = "";
+    public string SourceMessageId { get; set; } = "";
+    public string SourceMessageToken { get; set; } = "";
+    public string AgentLockToken { get; set; } = "";
+    public DateTimeOffset CapturedAt { get; set; } = DateTimeOffset.Now;
 }
 
 public sealed class RelationshipMemory
@@ -434,6 +452,7 @@ public sealed class CustomerSuccessAgentRunResult
     public HumanHandoffEvent? Handoff { get; set; }
     public ConversationAgentState? AgentState { get; set; }
     public KnowledgeRetrievalResult? KnowledgeRetrieval { get; set; }
+    public CustomerSuccessRunContextToken? ContextToken { get; set; }
     public bool AutoReplyAllowed { get; set; }
     public string BlockReason { get; set; } = "";
 }
