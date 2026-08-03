@@ -611,13 +611,19 @@ if (-not ($leadIntelligenceSource.Contains('var allLeads = await _services.Repos
     -not ($leadIntelligenceSource.Contains('已完成 {completed:N0} / {total:N0} · 本轮失败 {failedThisRun:N0} · 全局待重试 {retryableCount:N0} · 待继续 {pending:N0}')) -or
     -not ($leadIntelligenceSource.Contains('GetLeadBulkAnalysisRunStateAsync()')) -or
     -not ($leadIntelligenceSource.Contains('private void UpdateBulkAnalyzeButtonRunningContent(int completed, int total)')) -or
+    -not ($leadIntelligenceSource.Contains('if (TryRestoreActiveBulkProgress()) return;')) -or
+    -not ($leadIntelligenceSource.Contains('private bool TryRestoreActiveBulkProgress()')) -or
+    -not ($leadIntelligenceSource.Contains('private void ApplyBulkProgress(LeadBulkAnalysisProgress progress)')) -or
+    -not ($leadIntelligenceSource.Contains('if (_lastBulkProgress is { } progress)')) -or
+    -not ($leadIntelligenceSource.Contains('ApplyBulkProgress(progress);')) -or
+    -not ($leadIntelligenceSource.Contains('_bulkCancellation is { IsCancellationRequested: false }')) -or
     -not ($leadIntelligenceSource.Contains('UpdateBulkAnalyzeButtonRunningContent(0, allLeads.Count);')) -or
     -not ($leadIntelligenceSource.Contains('UpdateBulkAnalyzeButtonRunningContent(progress.Completed, progress.Total);')) -or
     -not ($leadIntelligenceSource.Contains('if (_bulkCancellation is null) return;')) -or
     -not ($guideCatalogSource.Contains('["intelligence"] = ModuleGuideVersion + 4'))) {
-  throw 'Lead Intelligence bulk action must show global idle counts, live running progress, ignore late callbacks and explain filter scope.'
+  throw 'Lead Intelligence bulk action must show global idle counts, restore the active progress snapshot after navigation, ignore late callbacks and explain filter scope.'
 }
-Write-Host 'PASS  Lead Intelligence global retry count and live bulk-action text contract'
+Write-Host 'PASS  Lead Intelligence global retry count, navigation-safe progress restore and live bulk-action text contract'
 
 if (-not ($leadIntelligenceXaml.Contains('x:Name="OpportunityImportButton"')) -or
     -not ($leadIntelligenceXaml.Contains('x:Name="OpportunitySignalFilter"')) -or
