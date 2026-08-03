@@ -74,9 +74,17 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
 
     public async Task RefreshAiRouteAsync()
     {
+        if (TryRestoreActiveBulkProgress()) return;
+
         var allLeads = await _services.Repository.GetLeadsAsync();
         var execution = await _services.DeepSeek.ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence);
         var runState = await _services.Repository.GetLeadBulkAnalysisRunStateAsync();
+
+        // A running bulk task can advance while the page refresh is reading the
+        // database. Its in-memory progress snapshot is authoritative until the
+        // task finishes, so an older persisted queue must not overwrite it.
+        if (TryRestoreActiveBulkProgress()) return;
+
         UpdateBulkAnalyzeButtonIdleContent(
             execution.ProviderId,
             execution.Model,
@@ -123,6 +131,32 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     private void UpdateBulkAnalyzeButtonRunningContent(int completed, int total)
     {
         BulkAnalyzeButton.Content = $"正在分析 {Math.Min(completed, total)} / {total}";
+    }
+
+    private bool TryRestoreActiveBulkProgress()
+    {
+        if (_bulkCancellation is null) return false;
+
+        BulkAnalyzeButton.IsEnabled = false;
+        BulkAnalyzeButton.ToolTip = "后台批量分析正在运行；切换页面不会中断任务。";
+        ImportButton.IsEnabled = false;
+        CancelBulkButton.Visibility = Visibility.Visible;
+        BulkProgressPanel.Visibility = Visibility.Visible;
+
+        if (_lastBulkProgress is { } progress)
+            ApplyBulkProgress(progress);
+
+        return true;
+    }
+
+    private void ApplyBulkProgress(LeadBulkAnalysisProgress progress)
+    {
+        BulkProgressBar.Maximum = Math.Max(1, progress.Total);
+        BulkProgressBar.Value = Math.Min(progress.Completed, progress.Total);
+        BulkProgressText.Text = $"{progress.Message} · {progress.Completed}/{progress.Total} · 成功 {progress.Succeeded} · 失败 {progress.Failed}";
+        UpdateBulkAnalyzeButtonRunningContent(progress.Completed, progress.Total);
+        CancelBulkButton.IsEnabled = _bulkCancellation is { IsCancellationRequested: false }
+            && progress.State is not "cancelled";
     }
 
     private async Task UpdateInspectorAsync(Lead? lead)
@@ -303,11 +337,7 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     {
         if (_bulkCancellation is null) return;
         _lastBulkProgress = progress;
-        BulkProgressBar.Maximum = Math.Max(1, progress.Total);
-        BulkProgressBar.Value = Math.Min(progress.Completed, progress.Total);
-        BulkProgressText.Text = $"{progress.Message} · {progress.Completed}/{progress.Total} · 成功 {progress.Succeeded} · 失败 {progress.Failed}";
-        UpdateBulkAnalyzeButtonRunningContent(progress.Completed, progress.Total);
-        CancelBulkButton.IsEnabled = progress.State is not "cancelled";
+        ApplyBulkProgress(progress);
     }
 
     private async void LeadGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
