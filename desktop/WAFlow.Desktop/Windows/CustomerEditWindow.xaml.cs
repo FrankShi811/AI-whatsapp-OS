@@ -71,7 +71,58 @@ public partial class CustomerEditWindow : Window
         StageLockCheck.IsChecked = lead.StageManuallyLocked;
     }
 
-    private async void Window_Loaded(object sender, RoutedEventArgs e) => await LoadCustomerBrainAsync(refresh: true);
+    private async void Window_Loaded(object sender, RoutedEventArgs e)
+    {
+        await LoadCustomerBrainAsync(refresh: true);
+        await LoadCustomerEnrichmentAsync();
+    }
+
+    private async Task LoadCustomerEnrichmentAsync()
+    {
+        try
+        {
+            var snapshot = await _services.CustomerEnrichment.GetSnapshotAsync(_lead.Id);
+            var now = DateTimeOffset.Now;
+            var verified = snapshot.Facts
+                .Where(fact => fact.VerificationStatus is CustomerEnrichmentVerificationStatus.Verified
+                    or CustomerEnrichmentVerificationStatus.HumanConfirmed)
+                .Where(fact => fact.ExpiresAt is null || fact.ExpiresAt > now)
+                .Take(5)
+                .ToList();
+            OpenWebStatusText.Text = snapshot.LatestJob is null
+                ? "尚未调查；可在不修改客户主档的前提下建立公开证据候选。"
+                : $"最近任务 {snapshot.LatestJob.Status} · {snapshot.LatestJob.SourcesCount} 个来源 · {verified.Count} 条已核验事实 · 预估 ${snapshot.LatestJob.CostUsd:0.####}";
+            OpenWebFactItems.ItemsSource = verified.Count == 0
+                ? new[] { "暂无通过证据门禁的公开商业事实" }
+                : verified.Select(fact => $"{fact.FieldType}：{fact.FieldValue}（{fact.VerificationStatus}，{fact.SourceCount} 个来源）").ToList();
+        }
+        catch (Exception error)
+        {
+            OpenWebStatusText.Text = $"公开调查状态暂时无法读取：{error.Message}";
+            OpenWebFactItems.ItemsSource = null;
+        }
+    }
+
+    private async void RunOpenWebInvestigation_Click(object sender, RoutedEventArgs e)
+    {
+        RunOpenWebInvestigationButton.IsEnabled = false;
+        try
+        {
+            var job = await _services.CustomerEnrichment.QueueAsync(
+                _lead.Id,
+                CustomerEnrichmentTriggerType.Manual,
+                force: false);
+            OpenWebStatusText.Text = job.ReusedCache
+                ? "已复用 30 天内缓存，未发起新的联网请求。"
+                : $"调查任务已进入队列：{job.Status}。完整进度与证据审核请到左侧“客户外部调查”。";
+            await LoadCustomerEnrichmentAsync();
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(error.Message, "无法启动客户外部调查", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally { RunOpenWebInvestigationButton.IsEnabled = true; }
+    }
 
     private async void RefreshBrain_Click(object sender, RoutedEventArgs e) => await LoadCustomerBrainAsync(refresh: true);
 

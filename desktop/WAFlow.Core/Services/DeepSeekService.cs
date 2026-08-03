@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -43,7 +44,8 @@ public sealed class DeepSeekService : IStructuredAiProvider
     private readonly Func<string, ISecretStore> _providerSecretResolver;
     private readonly HttpClient _http;
     private readonly HybridRetriever? _knowledgeRetrieval;
-    private readonly SemaphoreSlim _analysisGate = new(1, 1);
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _analysisGates =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public DeepSeekService(
         LocalRepository repository,
@@ -252,15 +254,32 @@ public sealed class DeepSeekService : IStructuredAiProvider
         object payload,
         Func<T, string?> validate,
         CancellationToken cancellationToken = default) where T : class
+        => await CompleteStructuredWithAttemptLimitAsync(
+            moduleKey,
+            instructions,
+            payload,
+            validate,
+            maximumAttempts: 3,
+            cancellationToken);
+
+    public async Task<T> CompleteStructuredWithAttemptLimitAsync<T>(
+        string moduleKey,
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        int maximumAttempts,
+        CancellationToken cancellationToken = default) where T : class
     {
-        await _analysisGate.WaitAsync(cancellationToken);
+        maximumAttempts = Math.Clamp(maximumAttempts, 1, 3);
+        var gate = _analysisGates.GetOrAdd(moduleKey, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
         try
         {
             var execution = await ResolveExecutionProfileAsync(moduleKey, cancellationToken);
             DeepSeekException? lastError = null;
             var previousOutput = "";
             var serializedPayload = Infrastructure.Json.Serialize(payload);
-            for (var attempt = 0; attempt < 3; attempt++)
+            for (var attempt = 0; attempt < maximumAttempts; attempt++)
             {
                 var attemptInstructions = attempt == 0
                     ? instructions
@@ -298,7 +317,7 @@ public sealed class DeepSeekService : IStructuredAiProvider
             }
             throw lastError ?? new DeepSeekException("invalid_structured_output", "AI 返回的结构化 JSON 无法解析。", true);
         }
-        finally { _analysisGate.Release(); }
+        finally { gate.Release(); }
     }
 
     public Task<AiModelCatalog> DiscoverModelsAsync(
@@ -471,9 +490,10 @@ public sealed class DeepSeekService : IStructuredAiProvider
 
     public async Task<Lead> AnalyzeLeadAsync(Lead lead, CancellationToken cancellationToken = default)
     {
-        await _analysisGate.WaitAsync(cancellationToken);
+        var gate = _analysisGates.GetOrAdd(AiModuleKeys.LeadIntelligence, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
         try { return await AnalyzeLeadCoreAsync(lead, cancellationToken); }
-        finally { _analysisGate.Release(); }
+        finally { gate.Release(); }
     }
 
     private async Task<Lead> AnalyzeLeadCoreAsync(Lead lead, CancellationToken cancellationToken)

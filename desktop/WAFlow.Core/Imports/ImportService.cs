@@ -16,6 +16,8 @@ public sealed class ImportService
     public const int WriteBatchSize = 500;
     private readonly LocalRepository _repository;
 
+    public event EventHandler<LeadsImportedEventArgs>? LeadsImported;
+
     public ImportService(LocalRepository repository)
     {
         _repository = repository;
@@ -308,6 +310,7 @@ public sealed class ImportService
             && !string.IsNullOrWhiteSpace(lead.PhoneE164)
             && lead.WhatsAppRegistrationStatus == WhatsAppRegistrationStatus.Pending);
         await _repository.LogEventAsync("import_committed", null, null, $"{fileName}; total={preview.Count}; created={created}; updated={updated}; invalid={invalid}; whatsapp_checks={pendingWhatsAppChecks}", cancellationToken);
+        LeadsImported?.Invoke(this, new LeadsImportedEventArgs(pending.Keys.ToList(), created, updated));
         return new(preview.Count, created, updated, invalid, pendingWhatsAppChecks, failed);
     }
 

@@ -109,6 +109,19 @@
                                 <TextBlock Grid.Column="1" Text="客户列表" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
                             </Grid>
                         </Button>
+                        <Button x:Name="CustomerEnrichmentButton" Tag="customer-enrichment" Click="Navigate_Click" Style="{StaticResource NavButton}"
+                                ToolTip="客户外部调查" AutomationProperties.Name="客户外部调查">
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Viewbox Style="{StaticResource NavIconFrame}">
+                                    <Canvas Width="24" Height="24">
+                                        <Ellipse Canvas.Left="3" Canvas.Top="3" Width="14" Height="14" Style="{StaticResource NavIconEllipse}"/>
+                                        <Path Data="M14.5 14.5L21 21 M6 10h8 M10 6c-2.2 2.4-2.2 5.6 0 8 M12 6c2.2 2.4 2.2 5.6 0 8" Style="{StaticResource NavIconPath}"/>
+                                    </Canvas>
+                                </Viewbox>
+                                <TextBlock Grid.Column="1" Text="客户外部调查" Style="{StaticResource NavText}" VerticalAlignment="Center"/>
+                            </Grid>
+                        </Button>
                         <Button x:Name="InboxButton" Tag="inbox" Click="Navigate_Click" Style="{StaticResource NavButton}" HorizontalContentAlignment="Stretch"
                                 ToolTip="WhatsApp Inbox" AutomationProperties.Name="WhatsApp Inbox">
                             <Grid>

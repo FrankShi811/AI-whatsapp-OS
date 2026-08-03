@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -27,6 +28,7 @@ public partial class SettingsWindow : Window
     private readonly List<AiModuleRoutingRow> _moduleRows = [];
     private CancellationTokenSource? _modelFetchCancellation;
     private AppSettings _settings = new();
+    private CustomerEnrichmentSettings _enrichmentSettings = new();
     private List<string> _availableModels = [];
     private string _modelsBaseUrl = "";
     private DateTimeOffset? _modelsFetchedAt;
@@ -63,6 +65,7 @@ public partial class SettingsWindow : Window
     {
         _hadConfiguredProviderAtLoad = _services.DeepSeek.HasApiKey();
         _settings = await _services.Repository.GetAppSettingsAsync();
+        await LoadCustomerEnrichmentSettingsAsync();
         _settings.AiModulePreferences ??= new Dictionary<string, AiModuleModelPreference>(StringComparer.OrdinalIgnoreCase);
         ThemeModeBox.ItemsSource = new[]
         {
@@ -105,6 +108,172 @@ public partial class SettingsWindow : Window
             await FetchModelsAsync(false);
         if (!GuideCatalog.IsSeen(_onboardingState, "settings"))
             SettingsGuide.ShowGuide(GuideCatalog.ForModule("settings"));
+    }
+
+    private async Task LoadCustomerEnrichmentSettingsAsync()
+    {
+        _enrichmentSettings = await _services.CustomerEnrichment.GetSettingsAsync();
+        var providerOrderOptions = new[]
+        {
+            new SearchProviderOrderOption("Tavily → Brave → SearXNG（默认）", "tavily,brave,searxng"),
+            new SearchProviderOrderOption("Brave → Tavily → SearXNG", "brave,tavily,searxng"),
+            new SearchProviderOrderOption("SearXNG → Tavily → Brave（本地优先）", "searxng,tavily,brave")
+        };
+        EnrichmentProviderOrderBox.ItemsSource = providerOrderOptions;
+        var savedOrder = string.Join(',', _enrichmentSettings.ProviderOrder).ToLowerInvariant();
+        EnrichmentProviderOrderBox.SelectedItem = providerOrderOptions.FirstOrDefault(option => option.Value == savedOrder)
+            ?? providerOrderOptions[0];
+        SearXngEnabledBox.IsChecked = _enrichmentSettings.SearXngEnabled;
+        SearXngBaseUrlBox.Text = _enrichmentSettings.SearXngBaseUrl;
+        EnrichmentBudgetBox.Text = _enrichmentSettings.MonthlyBudgetUsd.ToString("0.####", CultureInfo.InvariantCulture);
+        TavilyFreeRequestsBox.Text = _enrichmentSettings.TavilyMonthlyFreeRequests.ToString(CultureInfo.InvariantCulture);
+        BraveFreeRequestsBox.Text = _enrichmentSettings.BraveMonthlyFreeRequests.ToString(CultureInfo.InvariantCulture);
+        EnrichmentAllowAiAnalysisBox.IsChecked = _enrichmentSettings.AllowAiAnalysisRequests;
+        EnrichmentAiReservationBox.Text = _enrichmentSettings.AiAnalysisReservationUsd.ToString("0.####", CultureInfo.InvariantCulture);
+        EnrichmentAiStatusText.Text = _services.DeepSeek.HasApiKey(AiModuleKeys.CustomerEnrichment)
+            ? "板块 AI 路由已配置。Provider 定价随账号和模型变化，系统按预留额做本地预算门禁。"
+            : "板块 AI 路由未配置；调查仍会保存公开来源，但不会生成推断事实。";
+        EnrichmentMaxQueriesBox.Text = _enrichmentSettings.MaxQueriesPerCustomer.ToString(CultureInfo.InvariantCulture);
+        EnrichmentMaxResultsBox.Text = _enrichmentSettings.MaxResultsPerQuery.ToString(CultureInfo.InvariantCulture);
+        EnrichmentMaxPagesBox.Text = _enrichmentSettings.MaxPagesPerCustomer.ToString(CultureInfo.InvariantCulture);
+        EnrichmentCacheDaysBox.Text = _enrichmentSettings.CacheDays.ToString(CultureInfo.InvariantCulture);
+        EnrichmentRefreshDaysBox.Text = _enrichmentSettings.StandardRefreshDays.ToString(CultureInfo.InvariantCulture);
+        EnrichmentRetentionDaysBox.Text = _enrichmentSettings.DataRetentionDays.ToString(CultureInfo.InvariantCulture);
+        EnrichmentManualEnabledBox.IsChecked = _enrichmentSettings.ManualEnrichmentEnabled;
+        EnrichmentAutoGradeABox.IsChecked = _enrichmentSettings.AutoEnrichmentGrades.Contains("A", StringComparer.OrdinalIgnoreCase);
+        EnrichmentAutoGradeBBox.IsChecked = _enrichmentSettings.AutoEnrichmentGrades.Contains("B", StringComparer.OrdinalIgnoreCase);
+        EnrichmentAllowPaidBox.IsChecked = _enrichmentSettings.AllowPaidRequests;
+        var tavilyConfigured = _services.CustomerEnrichment.HasProviderKey("tavily");
+        var braveConfigured = _services.CustomerEnrichment.HasProviderKey("brave");
+        TavilySearchStatusText.Text = tavilyConfigured ? "已安全保存在 Windows 凭据管理器；留空会保留" : "未配置；留空不会写入任何 Key";
+        BraveSearchStatusText.Text = braveConfigured ? "已安全保存在 Windows 凭据管理器；留空会保留" : "未配置；留空不会写入任何 Key";
+        var configuredCount = (tavilyConfigured ? 1 : 0) + (braveConfigured ? 1 : 0) + (_enrichmentSettings.SearXngEnabled ? 1 : 0);
+        EnrichmentProviderStatusText.Text = configuredCount == 0 ? "未配置 · 主程序不受影响" : $"{configuredCount} 个检索源可用";
+        await RefreshCustomerEnrichmentUsageAsync();
+    }
+
+    private async Task RefreshCustomerEnrichmentUsageAsync()
+    {
+        var usage = await _services.Repository.GetCustomerEnrichmentUsageSummaryAsync();
+        var providers = usage.ProviderRequests.Count == 0
+            ? "暂无调用"
+            : string.Join(" · ", usage.ProviderRequests.Select(item => $"{item.Key} {item.Value} 次"));
+        var tavilyRemaining = Math.Max(0, _enrichmentSettings.TavilyMonthlyFreeRequests - usage.ProviderRequests.GetValueOrDefault("tavily"));
+        var braveRemaining = Math.Max(0, _enrichmentSettings.BraveMonthlyFreeRequests - usage.ProviderRequests.GetValueOrDefault("brave"));
+        EnrichmentUsageText.Text = $"今日 {usage.TodayRequests} 次 · 本月 {usage.MonthRequests} 次 · 预算预留/预估 ${usage.MonthEstimatedCostUsd:0.####} · Tavily 免费剩余 {tavilyRemaining} · Brave 免费剩余 {braveRemaining} · {providers}";
+    }
+
+    private bool CaptureCustomerEnrichmentSettings()
+    {
+        if (!decimal.TryParse(EnrichmentBudgetBox.Text.Trim(), NumberStyles.Number, CultureInfo.InvariantCulture, out var budget)
+            && !decimal.TryParse(EnrichmentBudgetBox.Text.Trim(), NumberStyles.Number, CultureInfo.CurrentCulture, out budget))
+        {
+            MessageBox.Show("客户外部调查月预算必须是有效数字。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+        if ((!decimal.TryParse(EnrichmentAiReservationBox.Text.Trim(), NumberStyles.Number, CultureInfo.InvariantCulture, out var aiReservation)
+                && !decimal.TryParse(EnrichmentAiReservationBox.Text.Trim(), NumberStyles.Number, CultureInfo.CurrentCulture, out aiReservation))
+            || aiReservation < 0)
+        {
+            MessageBox.Show("每任务 AI 分析预算预留必须是大于或等于 0 的有效数字。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+        if (!TryReadEnrichmentInteger(TavilyFreeRequestsBox, "Tavily 每月本地免费请求上限", 0, 1_000_000, out var tavilyFreeRequests)
+            || !TryReadEnrichmentInteger(BraveFreeRequestsBox, "Brave 每月本地免费请求上限", 0, 1_000_000, out var braveFreeRequests)
+            || !TryReadEnrichmentInteger(EnrichmentMaxQueriesBox, "每位客户最大查询数", 1, 6, out var maxQueries)
+            || !TryReadEnrichmentInteger(EnrichmentMaxResultsBox, "每条查询最大结果数", 1, 8, out var maxResults)
+            || !TryReadEnrichmentInteger(EnrichmentMaxPagesBox, "每位客户最大网页数", 1, 12, out var maxPages)
+            || !TryReadEnrichmentInteger(EnrichmentCacheDaysBox, "缓存天数", 1, 365, out var cacheDays)
+            || !TryReadEnrichmentInteger(EnrichmentRefreshDaysBox, "标准刷新天数", 7, 365, out var refreshDays)
+            || !TryReadEnrichmentInteger(EnrichmentRetentionDaysBox, "数据保留天数", 30, 3650, out var retentionDays))
+            return false;
+        if (budget < 0)
+        {
+            MessageBox.Show("客户外部调查月预算不能小于 0。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+        if (EnrichmentAllowPaidBox.IsChecked == true && budget <= 0)
+        {
+            MessageBox.Show("允许付费请求前，必须设置大于 0 的明确月预算。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+        if (EnrichmentAllowAiAnalysisBox.IsChecked == true
+            && (EnrichmentAllowPaidBox.IsChecked != true || budget <= 0 || aiReservation <= 0))
+        {
+            MessageBox.Show("启用板块 AI 分析前，必须同时允许付费请求，并设置大于 0 的月预算和每任务预算预留。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+        if (EnrichmentAllowAiAnalysisBox.IsChecked == true && aiReservation > budget)
+        {
+            MessageBox.Show("每任务 AI 分析预算预留不能高于月预算。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+        _enrichmentSettings.SearXngEnabled = SearXngEnabledBox.IsChecked == true;
+        _enrichmentSettings.ProviderOrder = ((EnrichmentProviderOrderBox.SelectedValue as string)
+                ?? "tavily,brave,searxng")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+        _enrichmentSettings.SearXngBaseUrl = SearXngBaseUrlBox.Text.Trim();
+        _enrichmentSettings.MonthlyBudgetUsd = budget;
+        _enrichmentSettings.AllowPaidRequests = EnrichmentAllowPaidBox.IsChecked == true;
+        _enrichmentSettings.AllowAiAnalysisRequests = EnrichmentAllowAiAnalysisBox.IsChecked == true;
+        _enrichmentSettings.AiAnalysisReservationUsd = aiReservation;
+        _enrichmentSettings.TavilyMonthlyFreeRequests = tavilyFreeRequests;
+        _enrichmentSettings.BraveMonthlyFreeRequests = braveFreeRequests;
+        _enrichmentSettings.MaxQueriesPerCustomer = maxQueries;
+        _enrichmentSettings.MaxResultsPerQuery = maxResults;
+        _enrichmentSettings.MaxPagesPerCustomer = maxPages;
+        _enrichmentSettings.CacheDays = cacheDays;
+        _enrichmentSettings.StandardRefreshDays = refreshDays;
+        _enrichmentSettings.DataRetentionDays = retentionDays;
+        _enrichmentSettings.HighValueRefreshDays = Math.Min(_enrichmentSettings.HighValueRefreshDays, refreshDays);
+        _enrichmentSettings.MajorOpportunityRefreshDays = Math.Min(_enrichmentSettings.MajorOpportunityRefreshDays, _enrichmentSettings.HighValueRefreshDays);
+        _enrichmentSettings.ManualEnrichmentEnabled = EnrichmentManualEnabledBox.IsChecked != false;
+        _enrichmentSettings.AutoEnrichmentGrades = new[]
+        {
+            EnrichmentAutoGradeABox.IsChecked == true ? "A" : "",
+            EnrichmentAutoGradeBBox.IsChecked == true ? "B" : ""
+        }.Where(value => value.Length > 0).ToList();
+        return true;
+    }
+
+    private static bool TryReadEnrichmentInteger(TextBox box, string label, int minimum, int maximum, out int value)
+    {
+        if (int.TryParse(box.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value)
+            && value >= minimum && value <= maximum) return true;
+        MessageBox.Show($"{label}必须是 {minimum}–{maximum} 之间的整数。", "AI Sales OS", MessageBoxButton.OK, MessageBoxImage.Warning);
+        return false;
+    }
+
+    private async void SearchProviderTest_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string providerId } button) return;
+        var keyOverride = providerId switch
+        {
+            "tavily" => TavilySearchKeyBox.Password,
+            "brave" => BraveSearchKeyBox.Password,
+            _ => null
+        };
+        button.IsEnabled = false;
+        EnrichmentConnectionStatusText.Text = $"正在测试 {providerId}；本次会真实联网并计入调用量…";
+        try
+        {
+            var health = await _services.CustomerEnrichment.TestProviderConfigurationAsync(
+                providerId,
+                keyOverride,
+                SearXngBaseUrlBox.Text.Trim());
+            EnrichmentConnectionStatusText.Text = health.Message;
+            EnrichmentConnectionStatusText.SetResourceReference(
+                TextBlock.ForegroundProperty,
+                health.Available ? "Success" : "Danger");
+            await RefreshCustomerEnrichmentUsageAsync();
+        }
+        catch (Exception error)
+        {
+            EnrichmentConnectionStatusText.Text = error.Message;
+            EnrichmentConnectionStatusText.SetResourceReference(TextBlock.ForegroundProperty, "Danger");
+        }
+        finally { button.IsEnabled = true; }
     }
 
     private void MigrateLegacyProvider()
@@ -269,6 +438,7 @@ public partial class SettingsWindow : Window
             new ModuleDefinition(AiModuleKeys.WhatsAppInbox, "Customer Operations · WhatsApp Inbox", "AI 会话助理与 Customer Success Agent；普通消息同步不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.EmailInbox, "Customer Operations · 邮件 Inbox", "Email Sales Copilot 根据 CRM、Customer Brain、邮件上下文和你的写信意图生成新邮件或回复草稿；同步和手写收发不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.Campaigns, "Customer Operations · 自动化群发", "AI 触达话术生成；普通群发、排期和投递本身不耗 Token。"),
+            new ModuleDefinition(AiModuleKeys.CustomerEnrichment, "Customer Operations · 客户外部调查", "公开来源的主体匹配与证据事实提取；查看缓存、来源和人工审核不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.KnowledgeBase, "Insights · 知识库", "图片资料 OCR 调用视觉模型；文本入库、审批和检索不耗 Token。"),
             new ModuleDefinition(AiModuleKeys.CustomerAnalytics, "Insights · 客户智能分析", "分阶段事实提取、商业判断、销售策略和报告生成。")
         };
@@ -459,6 +629,7 @@ public partial class SettingsWindow : Window
     {
         CommitPendingModuleSelections(ModuleRoutingItems);
         CaptureCurrentProvider();
+        if (!CaptureCustomerEnrichmentSettings()) return;
         if (!_profiles.TryGetValue(_currentProviderId, out var active)) return;
         var hasActiveKey = HasProviderKey(_currentProviderId);
         if (hasActiveKey
@@ -498,6 +669,11 @@ public partial class SettingsWindow : Window
         SaveButton.IsEnabled = false;
         try
         {
+            if (!string.IsNullOrWhiteSpace(TavilySearchKeyBox.Password))
+                _services.CustomerEnrichment.SaveProviderKey("tavily", TavilySearchKeyBox.Password);
+            if (!string.IsNullOrWhiteSpace(BraveSearchKeyBox.Password))
+                _services.CustomerEnrichment.SaveProviderKey("brave", BraveSearchKeyBox.Password);
+            await _services.CustomerEnrichment.SaveSettingsAsync(_enrichmentSettings);
             foreach (var pending in _pendingKeys)
                 ProviderCredentialStore(pending.Key).Save(pending.Value);
 
@@ -851,6 +1027,7 @@ public partial class SettingsWindow : Window
 
     private sealed record ThemeOption(string Label, string Value);
     private sealed record UiScaleOption(string Label, int Value);
+    private sealed record SearchProviderOrderOption(string Label, string Value);
     private sealed record ConfiguredProviderRow(string DisplayName, string ModelLabel, string StatusLabel);
     private sealed record ConfiguredProviderOption(string Id, string DisplayName);
     private sealed record ReasoningOption(string Label, string Value);

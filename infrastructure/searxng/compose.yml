@@ -1,0 +1,19 @@
+services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: ai-sales-os-searxng
+    restart: "no"
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      SEARXNG_BASE_URL: http://127.0.0.1:8080/
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?Run start-searxng.ps1 to create a local secret}
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

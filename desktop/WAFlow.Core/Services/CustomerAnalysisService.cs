@@ -106,6 +106,7 @@ public sealed class CustomerAnalysisService
             var synthesis = await RunStepAsync(report, "report_generation", 5, progress, "正在生成管理层摘要与最终报告",
                 () => SynthesizeReportAsync(snapshot, facts, business, strategy, cancellationToken), cancellationToken);
 
+            await EnsureExternalFactsStillCurrentAsync(snapshot, cancellationToken);
             business.ExecutiveSummary.OverallValueJudgment = synthesis.OverallValueJudgment;
             business.ExecutiveSummary.CurrentSalesRecommendation = synthesis.CurrentSalesRecommendation;
             business.OpportunityJudgment.DealProbability = synthesis.DealProbability;
@@ -213,6 +214,21 @@ public sealed class CustomerAnalysisService
         timeline.Insert(0, new CustomerHistoryEvent { Type = "customer_created", Detail = "客户资料进入 AI Sales OS", CreatedAt = lead.CreatedAt });
         timeline.Add(new CustomerHistoryEvent { Type = "customer_snapshot", Detail = $"当前阶段：{lead.StageLabel}；当前等级：{(lead.HasCurrentAiScore ? lead.Grade : "D")}", CreatedAt = lead.UpdatedAt });
         var customerBrain = await _repository.GetCustomerIntelligenceProfileAsync(lead.Id, cancellationToken);
+        var now = DateTimeOffset.Now;
+        var verifiedExternalFacts = (await _repository.GetCustomerEnrichmentFactsAsync(
+                lead.Id,
+                latestPerValue: false,
+                cancellationToken: cancellationToken))
+            .Where(fact => fact.VerificationStatus is CustomerEnrichmentVerificationStatus.Verified
+                or CustomerEnrichmentVerificationStatus.HumanConfirmed)
+            .Where(fact => fact.ExpiresAt is null || fact.ExpiresAt > now)
+            .GroupBy(fact => $"{fact.FieldType}|{fact.NormalizedValue}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderByDescending(fact => fact.VerificationStatus == CustomerEnrichmentVerificationStatus.HumanConfirmed)
+                .ThenByDescending(fact => fact.UpdatedAt)
+                .First())
+            .OrderByDescending(fact => fact.UpdatedAt)
+            .ToList();
         return new CustomerIntelligenceSourceSnapshot
         {
             CapturedAt = DateTimeOffset.Now,
@@ -222,9 +238,51 @@ public sealed class CustomerAnalysisService
             CampaignTouches = touches.OrderBy(item => item.ScheduledAt).ToList(),
             Timeline = timeline.OrderBy(item => item.CreatedAt).ToList(),
             LeadAnalysisHistory = await _repository.GetLeadAnalysisHistoryAsync(lead.Id, cancellationToken),
+            VerifiedExternalFacts = verifiedExternalFacts,
             ConversationContext = customerBrain?.ConversationContext ?? new CustomerConversationContext()
         };
     }
+
+    private async Task EnsureExternalFactsStillCurrentAsync(
+        CustomerIntelligenceSourceSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        if (snapshot.VerifiedExternalFacts.Count == 0) return;
+
+        var now = DateTimeOffset.Now;
+        var activeById = (await _repository.GetCustomerEnrichmentFactsAsync(
+                snapshot.Lead.Id,
+                latestPerValue: false,
+                cancellationToken: cancellationToken))
+            .Where(fact => fact.VerificationStatus is CustomerEnrichmentVerificationStatus.Verified
+                or CustomerEnrichmentVerificationStatus.HumanConfirmed)
+            .Where(fact => fact.ExpiresAt is null || fact.ExpiresAt > now)
+            .GroupBy(fact => fact.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+        if (snapshot.VerifiedExternalFacts.Any(captured =>
+                (captured.ExpiresAt is not null && captured.ExpiresAt <= now)
+                || !activeById.TryGetValue(captured.Id, out var active)
+                || !HasSameExternalFactMaterial(captured, active)))
+            throw new InvalidOperationException("客户外部调查事实已在报告生成期间被拒绝、过期或修改，请重新生成报告。");
+    }
+
+    private static bool HasSameExternalFactMaterial(
+        CustomerEnrichmentFact left,
+        CustomerEnrichmentFact right) =>
+        string.Equals(left.FieldType, right.FieldType, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(left.FieldValue, right.FieldValue, StringComparison.Ordinal)
+        && string.Equals(left.NormalizedValue, right.NormalizedValue, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(left.Category, right.Category, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(left.FactType, right.FactType, StringComparison.OrdinalIgnoreCase)
+        && left.ConfidenceScore == right.ConfidenceScore
+        && string.Equals(left.EvidenceQuote, right.EvidenceQuote, StringComparison.Ordinal)
+        && string.Equals(left.ReviewNote, right.ReviewNote, StringComparison.Ordinal)
+        && string.Equals(left.HumanReviewId, right.HumanReviewId, StringComparison.Ordinal)
+        && left.SourceIds.OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .SequenceEqual(
+                right.SourceIds.OrderBy(value => value, StringComparer.OrdinalIgnoreCase),
+                StringComparer.OrdinalIgnoreCase);
 
     private async Task<CustomerFactSet> ExtractFactsAsync(CustomerIntelligenceSourceSnapshot snapshot, CancellationToken cancellationToken)
     {
@@ -294,6 +352,14 @@ public sealed class CustomerAnalysisService
             Add("导入字段", $"{field.Key}：{field.Value}", field.Value, "Excel/CRM 自定义字段");
         foreach (var touch in snapshot.CampaignTouches)
             Add("自动化触达", $"群发任务“{touch.CampaignName}”状态为 {touch.Status}。", touch.Message, "WhatsApp Automation");
+        foreach (var fact in snapshot.VerifiedExternalFacts)
+            Add(
+                string.IsNullOrWhiteSpace(fact.Category) ? fact.FieldType : fact.Category,
+                $"{fact.FieldType}：{fact.FieldValue}",
+                string.IsNullOrWhiteSpace(fact.EvidenceQuote) ? fact.ReviewNote : fact.EvidenceQuote,
+                fact.VerificationStatus == CustomerEnrichmentVerificationStatus.HumanConfirmed
+                    ? "客户外部调查 · 人工确认"
+                    : "客户外部调查 · 公开来源");
         return facts;
     }
 

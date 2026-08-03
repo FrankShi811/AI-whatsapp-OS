@@ -68,19 +68,22 @@ public sealed partial class CustomerSuccessAgentService
     private readonly CustomerIdentityService _identity;
     private readonly SourcingRequestService _sourcing;
     private readonly HybridRetriever? _knowledgeRetrieval;
+    private readonly CustomerBrainService? _customerBrain;
 
     public CustomerSuccessAgentService(
         LocalRepository repository,
         IStructuredAiProvider provider,
         CustomerIdentityService identity,
         SourcingRequestService sourcing,
-        HybridRetriever? knowledgeRetrieval = null)
+        HybridRetriever? knowledgeRetrieval = null,
+        CustomerBrainService? customerBrain = null)
     {
         _repository = repository;
         _provider = provider;
         _identity = identity;
         _sourcing = sourcing;
         _knowledgeRetrieval = knowledgeRetrieval;
+        _customerBrain = customerBrain;
     }
 
     public async Task<CustomerSuccessContext?> GetContextAsync(
@@ -98,7 +101,9 @@ public sealed partial class CustomerSuccessAgentService
                       new AccountPersona { AccountId = accountId },
             AccountRelationship = await _repository.GetAccountRelationshipMemoryAsync(customerId, accountId, cancellationToken),
             GlobalRelationship = await _repository.GetRelationshipMemoryAsync(customerId, cancellationToken),
-            Brain = await _repository.GetCustomerIntelligenceProfileAsync(customerId, cancellationToken),
+            Brain = _customerBrain is null
+                ? await _repository.GetCustomerIntelligenceProfileAsync(customerId, cancellationToken)
+                : await _customerBrain.GetAsync(customerId, cancellationToken),
             SourcingRequest = await _repository.GetLatestSourcingRequestAsync(customerId, cancellationToken),
             AgentState = await _repository.GetConversationAgentStateAsync(accountId, conversationId, cancellationToken),
             AgentLock = await _repository.GetGlobalCustomerAgentLockAsync(customerId, cancellationToken),

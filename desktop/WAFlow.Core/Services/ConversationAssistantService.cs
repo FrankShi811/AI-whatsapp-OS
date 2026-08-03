@@ -57,17 +57,20 @@ public sealed class ConversationAssistantService
     private readonly IStructuredAiProvider _provider;
     private readonly PersonalSalesLearningService? _learning;
     private readonly HybridRetriever? _knowledgeRetrieval;
+    private readonly CustomerBrainService? _customerBrain;
 
     public ConversationAssistantService(
         LocalRepository repository,
         IStructuredAiProvider provider,
         PersonalSalesLearningService? learning = null,
-        HybridRetriever? knowledgeRetrieval = null)
+        HybridRetriever? knowledgeRetrieval = null,
+        CustomerBrainService? customerBrain = null)
     {
         _repository = repository;
         _provider = provider;
         _learning = learning;
         _knowledgeRetrieval = knowledgeRetrieval;
+        _customerBrain = customerBrain;
     }
 
     public async Task<ConversationAssistantResult> AnalyzeAsync(
@@ -90,7 +93,9 @@ public sealed class ConversationAssistantService
         var incomingEvidence = incoming.Select(message => message.Body).ToList();
         var customerBrain = lead is null
             ? null
-            : await _repository.GetCustomerIntelligenceProfileAsync(lead.Id, cancellationToken);
+            : _customerBrain is null
+                ? await _repository.GetCustomerIntelligenceProfileAsync(lead.Id, cancellationToken)
+                : await _customerBrain.GetAsync(lead.Id, cancellationToken);
         var playbooks = _learning is null
             ? []
             : await _learning.GetTopTalkTracksAsync(3, cancellationToken);

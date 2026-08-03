@@ -1978,7 +1978,7 @@ await repository.SaveAppSettingsAsync(new AppSettings
             AvailableModels=
             [
                 "gpt-5-mini", "gpt-5-nano", "gpt-4.1-mini", "dashboard-model",
-                "customer-brain-model", "campaign-model", "vision-model", "analytics-model"
+                "customer-brain-model", "campaign-model", "enrichment-model", "vision-model", "analytics-model"
             ],
             IsConfigured=true,
             ModelCapabilities=
@@ -2001,6 +2001,7 @@ await repository.SaveAppSettingsAsync(new AppSettings
         [AiModuleKeys.WhatsAppInbox]=new() { ProviderId="openai", Model="gpt-5-nano", ReasoningEffort="auto" },
         [AiModuleKeys.EmailInbox]=new() { ProviderId="openai", Model="gpt-4.1-mini", ReasoningEffort="ultra" },
         [AiModuleKeys.Campaigns]=new() { ProviderId="openai", Model="campaign-model", ReasoningEffort="auto" },
+        [AiModuleKeys.CustomerEnrichment]=new() { ProviderId="openai", Model="enrichment-model", ReasoningEffort="auto" },
         [AiModuleKeys.KnowledgeBase]=new() { ProviderId="openai", Model="vision-model", ReasoningEffort="auto" },
         [AiModuleKeys.CustomerAnalytics]=new() { ProviderId="openai", Model="analytics-model", ReasoningEffort="auto" }
     }
@@ -2025,6 +2026,7 @@ var expectedModuleModels = new Dictionary<string, string>(StringComparer.Ordinal
     [AiModuleKeys.WhatsAppInbox]="gpt-5-nano",
     [AiModuleKeys.EmailInbox]="gpt-4.1-mini",
     [AiModuleKeys.Campaigns]="campaign-model",
+    [AiModuleKeys.CustomerEnrichment]="enrichment-model",
     [AiModuleKeys.KnowledgeBase]="vision-model",
     [AiModuleKeys.CustomerAnalytics]="analytics-model"
 };
@@ -3979,9 +3981,1152 @@ Check(recoveredTranslations.Count == 5
       && recoveryTranslationProvider.TranslationCalls == 5,
     "WhatsApp translation falls back to local language detection and recursively repairs malformed multi-message batches");
 
+var enrichmentIdentity = CustomerEnrichmentIdentityService.Build(new Lead
+{
+    Id = "enrichment-identity",
+    Name = " John Smith ",
+    Company = " Example Company ",
+    Country = "US",
+    PreferredLanguage = "en",
+    Email = " John.Smith@Example.COM ",
+    PhoneE164 = "(415) 555-2671"
+});
+Check(
+    enrichmentIdentity.Email == "john.smith@example.com"
+    && enrichmentIdentity.EmailUserName == "john.smith"
+    && enrichmentIdentity.EmailDomain == "example.com"
+    && enrichmentIdentity.IsBusinessEmail
+    && enrichmentIdentity.PhoneE164 == "+14155552671"
+    && enrichmentIdentity.PhoneDigits == "14155552671"
+    && enrichmentIdentity.PhoneTail8 == "55552671",
+    "customer enrichment normalizes email and phone identity deterministically");
+
+var enrichmentQueries = CustomerEnrichmentQueryGenerator.Generate(enrichmentIdentity);
+var enrichmentQueriesAgain = CustomerEnrichmentQueryGenerator.Generate(enrichmentIdentity);
+Check(
+    enrichmentQueries.Count is > 0 and <= 6
+    && enrichmentQueries.SequenceEqual(enrichmentQueriesAgain, StringComparer.Ordinal)
+    && enrichmentQueries.Contains("\"john.smith@example.com\"", StringComparer.Ordinal)
+    && enrichmentQueries.Contains("\"+14155552671\"", StringComparer.Ordinal)
+    && enrichmentQueries.All(query => !CustomerEnrichmentQueryGenerator.IsForbidden(query)),
+    "customer enrichment generates no more than six deterministic, non-sensitive queries");
+Check(
+    CustomerEnrichmentQueryGenerator.IsForbidden("John Smith family member home address")
+    && CustomerEnrichmentQueryGenerator.IsForbidden("客户家庭成员和银行账户")
+    && CustomerEnrichmentQueryGenerator.IsForbidden("search leaked database credential"),
+    "customer enrichment rejects sensitive and leaked-data query terms");
+
+var sameNameMatch = CustomerEnrichmentEntityMatcher.Score(
+    enrichmentIdentity,
+    new CustomerEnrichmentSource
+    {
+        Title = "John Smith",
+        Domain = "directory.test",
+        Snippet = "John Smith joined the public directory."
+    });
+Check(
+    sameNameMatch.Status == CustomerEnrichmentVerificationStatus.PossibleMatch
+    && sameNameMatch.Score == 5
+    && sameNameMatch.Reasons.Any(reason => reason.Contains("只有姓名", StringComparison.Ordinal)),
+    "same-name-only enrichment evidence remains a candidate");
+
+var exactIdentityMatch = CustomerEnrichmentEntityMatcher.Score(
+    enrichmentIdentity,
+    new CustomerEnrichmentSource
+    {
+        Title = "Example Company purchasing team",
+        Domain = "directory.test",
+        ContentText = "John Smith can be reached at john.smith@example.com or +1 415 555 2671."
+    });
+Check(
+    exactIdentityMatch.Status == CustomerEnrichmentVerificationStatus.Verified
+    && exactIdentityMatch.Score == 100
+    && exactIdentityMatch.Reasons.Contains("完整邮箱一致", StringComparer.Ordinal)
+    && exactIdentityMatch.Reasons.Contains("完整电话号码一致", StringComparer.Ordinal),
+    "complete email and phone evidence reaches the verified identity threshold");
+
+var tailOnlyMatch = CustomerEnrichmentEntityMatcher.Score(
+    enrichmentIdentity,
+    new CustomerEnrichmentSource
+    {
+        Title = "Public contact",
+        Domain = "directory.test",
+        Snippet = "Business contact: +44 20 5555 2671"
+    });
+Check(
+    tailOnlyMatch.Status != CustomerEnrichmentVerificationStatus.Verified
+    && tailOnlyMatch.Score < 90
+    && tailOnlyMatch.Reasons.Contains("电话号码末 8 位一致，仅作为候选", StringComparer.Ordinal),
+    "phone tail-only evidence never automatically verifies an enrichment identity");
+
+var conflictingIdentityMatch = CustomerEnrichmentEntityMatcher.Score(
+    enrichmentIdentity,
+    new CustomerEnrichmentSource
+    {
+        Title = "John Smith at Example Company",
+        Domain = "directory.test",
+        ContentText = "John Smith works at Example Company. Contact other.person@other.test for details. The company is a wholesale importer."
+    });
+Check(
+    conflictingIdentityMatch.Status == CustomerEnrichmentVerificationStatus.Conflicting
+    && conflictingIdentityMatch.Conflicts.Any(conflict => conflict.Contains("不同邮箱", StringComparison.Ordinal)),
+    "conflicting email evidence overrides same-name and same-company matching");
+
+var analyzerSource = new CustomerEnrichmentSource
+{
+    Id = "source-analyzer-1",
+    Title = "Example Company team",
+    Snippet = "John Smith is Purchasing Manager for Example Company.",
+    ContentText = "The purchasing team serves North America and Europe."
+};
+var validAnalyzerResult = new CustomerEnrichmentAnalysisResult
+{
+    EntityMatch = new CustomerEnrichmentEntityMatch
+    {
+        Score = 94,
+        Status = "verified",
+        Reasons = ["完整邮箱和公司一致"]
+    },
+    Facts =
+    [
+        new CustomerEnrichmentExtractedFact
+        {
+            FieldType = "job_title",
+            Value = "Purchasing Manager",
+            Category = "公开职位",
+            Confidence = 94,
+            FactType = "verified_fact",
+            SourceIds = [analyzerSource.Id],
+            EvidenceQuote = "John Smith is   Purchasing Manager"
+        }
+    ]
+};
+Check(
+    CustomerEnrichmentAnalyzer.Validate(validAnalyzerResult, [analyzerSource]) is null,
+    "customer enrichment analyzer accepts source-bound evidence after whitespace normalization");
+Check(
+    CustomerEnrichmentAnalyzer.Validate(
+        new CustomerEnrichmentAnalysisResult
+        {
+            EntityMatch = new CustomerEnrichmentEntityMatch { Score = 0, Status = "rejected" }
+        },
+        [analyzerSource]) is null,
+    "customer enrichment analyzer accepts a valid no-facts result without fabricating data");
+
+var unknownSourceResult = new CustomerEnrichmentAnalysisResult
+{
+    EntityMatch = new CustomerEnrichmentEntityMatch { Score = 70, Status = "likely_match" },
+    Facts =
+    [
+        new CustomerEnrichmentExtractedFact
+        {
+            FieldType = "job_title",
+            Value = "Purchasing Manager",
+            Confidence = 80,
+            FactType = "verified_fact",
+            SourceIds = ["source-not-provided"],
+            EvidenceQuote = "John Smith is Purchasing Manager"
+        }
+    ]
+};
+var forgedEvidenceResult = new CustomerEnrichmentAnalysisResult
+{
+    EntityMatch = new CustomerEnrichmentEntityMatch { Score = 70, Status = "likely_match" },
+    Facts =
+    [
+        new CustomerEnrichmentExtractedFact
+        {
+            FieldType = "job_title",
+            Value = "Chief Executive Officer",
+            Confidence = 80,
+            FactType = "verified_fact",
+            SourceIds = [analyzerSource.Id],
+            EvidenceQuote = "John Smith is Chief Executive Officer"
+        }
+    ]
+};
+var missingSourceResult = new CustomerEnrichmentAnalysisResult
+{
+    EntityMatch = new CustomerEnrichmentEntityMatch { Score = 70, Status = "likely_match" },
+    Facts =
+    [
+        new CustomerEnrichmentExtractedFact
+        {
+            FieldType = "job_title",
+            Value = "Purchasing Manager",
+            Confidence = 80,
+            FactType = "verified_fact",
+            SourceIds = [],
+            EvidenceQuote = "John Smith is Purchasing Manager"
+        }
+    ]
+};
+var sensitiveFactResult = new CustomerEnrichmentAnalysisResult
+{
+    EntityMatch = new CustomerEnrichmentEntityMatch { Score = 70, Status = "likely_match" },
+    Facts =
+    [
+        new CustomerEnrichmentExtractedFact
+        {
+            FieldType = "bank_account",
+            Value = "redacted",
+            Category = "银行信息",
+            Confidence = 80,
+            FactType = "verified_fact",
+            SourceIds = [analyzerSource.Id],
+            EvidenceQuote = "John Smith is Purchasing Manager"
+        }
+    ]
+};
+Check(
+    CustomerEnrichmentAnalyzer.Validate(unknownSourceResult, [analyzerSource]) is not null
+    && CustomerEnrichmentAnalyzer.Validate(forgedEvidenceResult, [analyzerSource]) is not null
+    && CustomerEnrichmentAnalyzer.Validate(missingSourceResult, [analyzerSource]) is not null
+    && CustomerEnrichmentAnalyzer.Validate(sensitiveFactResult, [analyzerSource]) is not null,
+    "customer enrichment analyzer rejects unknown sources, forged quotes, source-less facts and sensitive fields");
+
+var irrelevantAnalyzerSource = new CustomerEnrichmentSource
+{
+    Id = "source-analyzer-irrelevant",
+    Title = "Unrelated public page",
+    Snippet = "This page contains no evidence for the proposed job title."
+};
+var normalizedAnalyzerResult = new CustomerEnrichmentAnalysisResult
+{
+    EntityMatch = new CustomerEnrichmentEntityMatch
+    {
+        Score = 99,
+        Status = "likely_match",
+        Reasons = ["model supplied a non-verified status"]
+    },
+    Facts =
+    [
+        new CustomerEnrichmentExtractedFact
+        {
+            FieldType = "job_title",
+            Value = "Purchasing Manager",
+            Category = "公开职位",
+            Confidence = 95,
+            FactType = "verified_fact",
+            SourceIds = [analyzerSource.Id, irrelevantAnalyzerSource.Id],
+            EvidenceQuote = "John Smith is Purchasing Manager"
+        }
+    ]
+};
+var conflictedAnalyzerResult = new CustomerEnrichmentAnalysisResult
+{
+    EntityMatch = new CustomerEnrichmentEntityMatch
+    {
+        Score = 99,
+        Status = "verified",
+        Reasons = ["model claimed verified"],
+        Conflicts = ["a conflicting public identity remains"]
+    }
+};
+var normalizeAnalyzerResult = typeof(CustomerEnrichmentAnalyzer).GetMethod(
+    "NormalizeResult",
+    BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("Customer enrichment analyzer normalization boundary is missing.");
+_ = normalizeAnalyzerResult.Invoke(
+    null,
+    [normalizedAnalyzerResult, new CustomerEnrichmentSource[] { analyzerSource, irrelevantAnalyzerSource }]);
+_ = normalizeAnalyzerResult.Invoke(
+    null,
+    [conflictedAnalyzerResult, new CustomerEnrichmentSource[] { analyzerSource }]);
+Check(
+    normalizedAnalyzerResult.Facts.Single().SourceIds.SequenceEqual([analyzerSource.Id], StringComparer.OrdinalIgnoreCase)
+    && normalizedAnalyzerResult.EntityMatch.Score == 89
+    && conflictedAnalyzerResult.EntityMatch.Score == 89,
+    "customer enrichment analyzer keeps only evidence-bearing sources and prevents non-verified or conflicted identities from auto-verification");
+
+var enrichmentDatabaseRoot = Path.Combine(root, "customer-enrichment-database");
+var enrichmentDatabase = Path.Combine(enrichmentDatabaseRoot, "enrichment.db");
+var enrichmentRepository = new LocalRepository(enrichmentDatabase);
+await enrichmentRepository.InitializeAsync();
+await enrichmentRepository.InitializeAsync();
+var enrichmentTableCount = 0;
+var enrichmentLinkForeignKeyTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+await using (var enrichmentSchema = new SqliteConnection(new SqliteConnectionStringBuilder
+{
+    DataSource = enrichmentDatabase,
+    Pooling = false
+}.ToString()))
+{
+    await enrichmentSchema.OpenAsync();
+    await using (var tables = enrichmentSchema.CreateCommand())
+    {
+        tables.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name LIKE 'customer_enrichment_%'";
+        enrichmentTableCount = Convert.ToInt32(await tables.ExecuteScalarAsync());
+    }
+    await using (var foreignKeys = enrichmentSchema.CreateCommand())
+    {
+        foreignKeys.CommandText = "PRAGMA foreign_key_list(customer_enrichment_fact_sources)";
+        await using var reader = await foreignKeys.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            enrichmentLinkForeignKeyTargets.Add(
+                $"{reader.GetString(reader.GetOrdinal("table"))}:{reader.GetString(reader.GetOrdinal("from"))}->{reader.GetString(reader.GetOrdinal("to"))}");
+    }
+}
+Check(
+    enrichmentTableCount == 8
+    && enrichmentLinkForeignKeyTargets.SetEquals(
+    [
+        "customer_enrichment_facts:fact_id->id",
+        "customer_enrichment_facts:job_id->job_id",
+        "customer_enrichment_facts:customer_id->customer_id",
+        "customer_enrichment_sources:source_id->id",
+        "customer_enrichment_sources:job_id->job_id",
+        "customer_enrichment_sources:customer_id->customer_id"
+    ]),
+    "customer enrichment migration creates eight tables, composite fact/source link foreign keys and reinitializes idempotently");
+
+var enrichmentLead = new Lead
+{
+    Id = "enrichment-db-customer",
+    Name = "Database Enrichment Customer",
+    Company = "Example Company",
+    Email = "buyer@example.com",
+    PhoneE164 = "+14155552671",
+    PhoneValid = true
+};
+await enrichmentRepository.UpsertLeadAsync(enrichmentLead);
+var enrichmentJob = new CustomerEnrichmentJob
+{
+    Id = "enrichment-db-job",
+    CustomerId = enrichmentLead.Id,
+    Status = CustomerEnrichmentJobStatus.Running,
+    Provider = "offline-test"
+};
+await enrichmentRepository.SaveCustomerEnrichmentJobAsync(enrichmentJob);
+var enrichmentQuery = new CustomerEnrichmentQuery
+{
+    Id = "enrichment-db-query",
+    JobId = enrichmentJob.Id,
+    CustomerId = enrichmentLead.Id,
+    QueryText = "\"buyer@example.com\"",
+    QueryHash = CustomerEnrichmentQueryGenerator.HashQuery("\"buyer@example.com\""),
+    Provider = "offline-test",
+    Status = "succeeded",
+    ResultsCount = 1,
+    RetrievedAt = DateTimeOffset.Now
+};
+await enrichmentRepository.SaveCustomerEnrichmentQueryAsync(enrichmentQuery);
+var originalSource = new CustomerEnrichmentSource
+{
+    Id = "enrichment-source-original",
+    JobId = enrichmentJob.Id,
+    QueryId = enrichmentQuery.Id,
+    CustomerId = enrichmentLead.Id,
+    Url = "https://example.com/team/buyer",
+    CanonicalUrl = "https://example.com/team/buyer",
+    Title = "Example Company team",
+    Domain = "example.com",
+    Snippet = "Buyer is Purchasing Manager.",
+    ContentText = "Buyer is Purchasing Manager for Example Company.",
+    ContentHash = "content-hash-1",
+    Provider = "offline-test",
+    IdentityMatchScore = 95,
+    IdentityMatchStatus = CustomerEnrichmentVerificationStatus.Verified
+};
+await enrichmentRepository.SaveCustomerEnrichmentSourcesAsync([originalSource]);
+var duplicateSource = new CustomerEnrichmentSource
+{
+    Id = "enrichment-source-duplicate",
+    JobId = enrichmentJob.Id,
+    QueryId = enrichmentQuery.Id,
+    CustomerId = enrichmentLead.Id,
+    Url = originalSource.Url,
+    CanonicalUrl = originalSource.CanonicalUrl,
+    Title = "Example Company purchasing team",
+    Domain = originalSource.Domain,
+    Snippet = originalSource.Snippet,
+    ContentText = originalSource.ContentText,
+    ContentHash = originalSource.ContentHash,
+    Provider = "offline-test",
+    IdentityMatchScore = 96,
+    IdentityMatchStatus = CustomerEnrichmentVerificationStatus.Verified
+};
+await enrichmentRepository.SaveCustomerEnrichmentSourcesAsync([duplicateSource]);
+var persistedSources = await enrichmentRepository.GetCustomerEnrichmentSourcesAsync(
+    enrichmentLead.Id,
+    enrichmentJob.Id);
+
+var originalFact = new CustomerEnrichmentFact
+{
+    Id = "enrichment-fact-original",
+    CustomerId = enrichmentLead.Id,
+    JobId = enrichmentJob.Id,
+    FieldType = "job_title",
+    FieldValue = "Purchasing Manager",
+    NormalizedValue = "purchasing manager",
+    Category = "公开职位",
+    FactType = "verified_fact",
+    ConfidenceScore = 94,
+    VerificationStatus = CustomerEnrichmentVerificationStatus.Verified,
+    SourceIds = [originalSource.Id],
+    EvidenceQuote = "Buyer is Purchasing Manager"
+};
+await enrichmentRepository.SaveCustomerEnrichmentFactsAsync([originalFact]);
+var duplicateFact = new CustomerEnrichmentFact
+{
+    Id = "enrichment-fact-duplicate",
+    CustomerId = enrichmentLead.Id,
+    JobId = enrichmentJob.Id,
+    FieldType = originalFact.FieldType,
+    FieldValue = originalFact.FieldValue,
+    NormalizedValue = originalFact.NormalizedValue,
+    Category = originalFact.Category,
+    FactType = originalFact.FactType,
+    ConfidenceScore = 97,
+    VerificationStatus = CustomerEnrichmentVerificationStatus.Verified,
+    SourceIds = [duplicateSource.Id],
+    EvidenceQuote = originalFact.EvidenceQuote
+};
+await enrichmentRepository.SaveCustomerEnrichmentFactsAsync([duplicateFact]);
+var persistedFacts = await enrichmentRepository.GetCustomerEnrichmentFactsAsync(
+    enrichmentLead.Id,
+    latestPerValue: false);
+var persistedFactSourceLinks = 0;
+await using (var enrichmentLinks = new SqliteConnection(new SqliteConnectionStringBuilder
+{
+    DataSource = enrichmentDatabase,
+    Pooling = false
+}.ToString()))
+{
+    await enrichmentLinks.OpenAsync();
+    await using var countLinks = enrichmentLinks.CreateCommand();
+    countLinks.CommandText = "SELECT COUNT(*) FROM customer_enrichment_fact_sources WHERE fact_id=$fact AND source_id=$source";
+    countLinks.Parameters.AddWithValue("$fact", originalFact.Id);
+    countLinks.Parameters.AddWithValue("$source", originalSource.Id);
+    persistedFactSourceLinks = Convert.ToInt32(await countLinks.ExecuteScalarAsync());
+}
+Check(
+    duplicateSource.Id == originalSource.Id
+    && persistedSources.Count == 1
+    && persistedSources[0].Id == originalSource.Id
+    && persistedSources[0].Title == "Example Company purchasing team"
+    && duplicateFact.Id == originalFact.Id
+    && persistedFacts.Count == 1
+    && persistedFacts[0].Id == originalFact.Id
+    && persistedFacts[0].ConfidenceScore == 97
+    && persistedFactSourceLinks == 1,
+    "customer enrichment source and fact deduplication preserve stable IDs and source links");
+
+var newerCandidateJob = new CustomerEnrichmentJob
+{
+    Id = "enrichment-newer-candidate-job",
+    CustomerId = enrichmentLead.Id,
+    Status = CustomerEnrichmentJobStatus.NeedsReview,
+    Provider = "offline-test",
+    CreatedAt = DateTimeOffset.Now.AddMinutes(1)
+};
+await enrichmentRepository.SaveCustomerEnrichmentJobAsync(newerCandidateJob);
+var newerCandidateFact = new CustomerEnrichmentFact
+{
+    Id = "enrichment-newer-candidate-fact",
+    CustomerId = enrichmentLead.Id,
+    JobId = newerCandidateJob.Id,
+    FieldType = originalFact.FieldType,
+    FieldValue = originalFact.FieldValue,
+    NormalizedValue = originalFact.NormalizedValue,
+    Category = originalFact.Category,
+    FactType = "possible_context",
+    ConfidenceScore = 65,
+    VerificationStatus = CustomerEnrichmentVerificationStatus.PossibleMatch,
+    EvidenceQuote = originalFact.EvidenceQuote,
+    CreatedAt = DateTimeOffset.Now.AddMinutes(1),
+    UpdatedAt = DateTimeOffset.Now.AddMinutes(1)
+};
+await enrichmentRepository.SaveCustomerEnrichmentFactsAsync([newerCandidateFact]);
+var preferredVerifiedFact = (await enrichmentRepository.GetCustomerEnrichmentFactsAsync(enrichmentLead.Id))
+    .Single(fact => fact.FieldType == originalFact.FieldType && fact.NormalizedValue == originalFact.NormalizedValue);
+Check(
+    preferredVerifiedFact.Id == originalFact.Id
+    && preferredVerifiedFact.VerificationStatus == CustomerEnrichmentVerificationStatus.Verified,
+    "a newer possible enrichment match cannot shadow an active verified fact with the same normalized value");
+
+var factForReview = persistedFacts.Single();
+factForReview.VerificationStatus = CustomerEnrichmentVerificationStatus.HumanConfirmed;
+factForReview.LastVerifiedAt = DateTimeOffset.Now;
+var enrichmentReview = new CustomerEnrichmentReview
+{
+    Id = "enrichment-review-confirm",
+    CustomerId = enrichmentLead.Id,
+    JobId = enrichmentJob.Id,
+    FactId = factForReview.Id,
+    Action = CustomerEnrichmentReviewAction.Confirm,
+    Actor = "smoke-test",
+    PreviousValue = factForReview.FieldValue,
+    NewValue = factForReview.FieldValue,
+    Reason = "offline transaction test"
+};
+await enrichmentRepository.ApplyCustomerEnrichmentReviewAsync(factForReview, enrichmentReview);
+var confirmedFact = await enrichmentRepository.GetCustomerEnrichmentFactAsync(factForReview.Id);
+var rollbackFact = await enrichmentRepository.GetCustomerEnrichmentFactAsync(factForReview.Id)
+                   ?? throw new InvalidOperationException("Reviewed enrichment fact was not persisted.");
+var valueBeforeRollbackProbe = rollbackFact.FieldValue;
+rollbackFact.FieldValue = "This update must roll back";
+rollbackFact.VerificationStatus = CustomerEnrichmentVerificationStatus.Rejected;
+var duplicateReview = new CustomerEnrichmentReview
+{
+    Id = enrichmentReview.Id,
+    CustomerId = enrichmentLead.Id,
+    JobId = enrichmentJob.Id,
+    FactId = rollbackFact.Id,
+    Action = CustomerEnrichmentReviewAction.Reject,
+    Actor = "smoke-test",
+    PreviousValue = valueBeforeRollbackProbe,
+    NewValue = rollbackFact.FieldValue,
+    Reason = "force duplicate review rollback"
+};
+var reviewRollbackObserved = false;
+try
+{
+    await enrichmentRepository.ApplyCustomerEnrichmentReviewAsync(rollbackFact, duplicateReview);
+}
+catch (SqliteException)
+{
+    reviewRollbackObserved = true;
+}
+var factAfterRollbackProbe = await enrichmentRepository.GetCustomerEnrichmentFactAsync(factForReview.Id);
+var persistedReviewCount = 0;
+await using (var enrichmentReviews = new SqliteConnection(new SqliteConnectionStringBuilder
+{
+    DataSource = enrichmentDatabase,
+    Pooling = false
+}.ToString()))
+{
+    await enrichmentReviews.OpenAsync();
+    await using var countReviews = enrichmentReviews.CreateCommand();
+    countReviews.CommandText = "SELECT COUNT(*) FROM customer_enrichment_reviews WHERE fact_id=$fact";
+    countReviews.Parameters.AddWithValue("$fact", factForReview.Id);
+    persistedReviewCount = Convert.ToInt32(await countReviews.ExecuteScalarAsync());
+}
+Check(
+    confirmedFact?.VerificationStatus == CustomerEnrichmentVerificationStatus.HumanConfirmed
+    && reviewRollbackObserved
+    && factAfterRollbackProbe?.VerificationStatus == CustomerEnrichmentVerificationStatus.HumanConfirmed
+    && factAfterRollbackProbe.FieldValue == valueBeforeRollbackProbe
+    && persistedReviewCount == 1,
+    "customer enrichment review updates and audit records commit atomically and roll back together");
+var preferredHumanConfirmedFact = (await enrichmentRepository.GetCustomerEnrichmentFactsAsync(enrichmentLead.Id))
+    .Single(fact => fact.FieldType == originalFact.FieldType && fact.NormalizedValue == originalFact.NormalizedValue);
+Check(
+    preferredHumanConfirmedFact.Id == originalFact.Id
+    && preferredHumanConfirmedFact.VerificationStatus == CustomerEnrichmentVerificationStatus.HumanConfirmed,
+    "a newer possible enrichment match cannot shadow a human-confirmed fact with the same normalized value");
+
+var searchProviderOptions = new CustomerSearchProviderOptions
+{
+    RequestTimeout = TimeSpan.FromSeconds(2),
+    MinimumRequestInterval = TimeSpan.Zero,
+    BaseRetryDelay = TimeSpan.Zero,
+    MaximumAttempts = 1
+};
+var tavilyHandler = new CustomerSearchHttpHandler(
+    HttpStatusCode.OK,
+    """{"results":[{"title":"<b>Example Team</b>","url":"https://example.com/team#people","content":"John &amp; team handle purchasing.","published_date":"2026-08-01T00:00:00Z"}]}""");
+using var tavilyHttp = new HttpClient(tavilyHandler) { Timeout = Timeout.InfiniteTimeSpan };
+var tavilyProvider = new TavilySearchProvider(
+    new FakeSecretStore("tavily-smoke-key"),
+    tavilyHttp,
+    searchProviderOptions,
+    delay: (_, _) => Task.CompletedTask);
+var tavilyResults = await tavilyProvider.SearchAsync(new CustomerSearchRequest("Example Company buyer", 2, "en", "US"));
+var tavilyRequest = tavilyHandler.Requests.Single();
+Check(
+    tavilyRequest.Method == "POST"
+    && tavilyRequest.Uri == "https://api.tavily.com/search"
+    && tavilyRequest.Authorization == "Bearer tavily-smoke-key"
+    && tavilyRequest.Body.Contains("\"max_results\":2", StringComparison.Ordinal)
+    && tavilyRequest.Body.Contains("\"country\":\"US\"", StringComparison.Ordinal)
+    && tavilyResults is [{ Provider: "tavily", Title: "Example Team", Snippet: "John & team handle purchasing." }]
+    && !tavilyResults[0].Url.Contains('#'),
+    "Tavily provider builds an authenticated offline request and parses normalized results");
+
+var braveHandler = new CustomerSearchHttpHandler(
+    HttpStatusCode.OK,
+    """{"web":{"results":[{"title":"Example Buyer","url":"https://example.org/buyer","description":"Purchasing manager profile.","extra_snippets":["Wholesale importer."],"page_age":"2026-08-02T00:00:00Z"}]}}""");
+using var braveHttp = new HttpClient(braveHandler) { Timeout = Timeout.InfiniteTimeSpan };
+var braveProvider = new BraveSearchProvider(
+    new FakeSecretStore("brave-smoke-key"),
+    braveHttp,
+    searchProviderOptions,
+    delay: (_, _) => Task.CompletedTask);
+var braveResults = await braveProvider.SearchAsync(new CustomerSearchRequest("Example Company buyer", 2, "en", "US"));
+var braveRequest = braveHandler.Requests.Single();
+Check(
+    braveRequest.Method == "GET"
+    && braveRequest.Uri.Contains("count=2", StringComparison.Ordinal)
+    && braveRequest.Uri.Contains("search_lang=en", StringComparison.Ordinal)
+    && braveRequest.Uri.Contains("country=US", StringComparison.Ordinal)
+    && braveRequest.Headers.GetValueOrDefault("X-Subscription-Token") == "brave-smoke-key"
+    && braveResults is [{ Provider: "brave", Title: "Example Buyer" }]
+    && braveResults[0].Snippet.Contains("Wholesale importer", StringComparison.Ordinal),
+    "Brave provider builds a keyed offline request and parses web results");
+
+var searXngHandler = new CustomerSearchHttpHandler(
+    HttpStatusCode.OK,
+    """{"results":[{"title":"Local Result","url":"http://public.example.test/result","content":"Public purchasing profile.","publishedDate":"2026-08-03T00:00:00Z"}]}""");
+using var searXngHttp = new HttpClient(searXngHandler) { Timeout = Timeout.InfiniteTimeSpan };
+var searXngProvider = new SearXngSearchProvider(
+    "http://127.0.0.1:8080",
+    searXngHttp,
+    searchProviderOptions,
+    delay: (_, _) => Task.CompletedTask);
+var searXngResults = await searXngProvider.SearchAsync(new CustomerSearchRequest("Example Company buyer", 2, "en", "US"));
+var searXngRequest = searXngHandler.Requests.Single();
+Check(
+    searXngRequest.Method == "GET"
+    && searXngRequest.Uri.StartsWith("http://127.0.0.1:8080/search?", StringComparison.Ordinal)
+    && searXngRequest.Uri.Contains("format=json", StringComparison.Ordinal)
+    && searXngRequest.Uri.Contains("safesearch=2", StringComparison.Ordinal)
+    && searXngRequest.Uri.Contains("language=en", StringComparison.Ordinal)
+    && searXngResults is [{ Provider: "searxng", Title: "Local Result", Snippet: "Public purchasing profile." }],
+    "SearXNG provider stays on the configured localhost endpoint and parses JSON results offline");
+
+var quotaHandler = new CustomerSearchHttpHandler(HttpStatusCode.TooManyRequests, "{}");
+using var quotaHttp = new HttpClient(quotaHandler) { Timeout = Timeout.InfiniteTimeSpan };
+var quotaProvider = new TavilySearchProvider(
+    new FakeSecretStore("tavily-smoke-key"),
+    quotaHttp,
+    searchProviderOptions,
+    delay: (_, _) => Task.CompletedTask);
+CustomerEnrichmentException? quotaError = null;
+try
+{
+    _ = await quotaProvider.SearchAsync(new CustomerSearchRequest("Example Company buyer", 1));
+}
+catch (CustomerEnrichmentException error)
+{
+    quotaError = error;
+}
+Check(
+    quotaError is { Code: CustomerEnrichmentErrorCodes.ProviderQuotaExhausted, Retryable: false }
+    && quotaHandler.Requests.Count == 1,
+    "search provider maps HTTP 429 to a non-paid quota error without retrying or using the network");
+
+var enrichmentGuardrailDatabase = Path.Combine(root, "customer-enrichment-guardrails.db");
+var enrichmentGuardrailRepository = new LocalRepository(enrichmentGuardrailDatabase);
+await enrichmentGuardrailRepository.InitializeAsync();
+var retrySuccessBody =
+    """{"results":[{"title":"Guardrail Buyer at Example Company","url":"https://8.8.8.8/public-profile","content":"Guardrail Buyer is Purchasing Manager for Example Company. Contact guardrail.buyer@example.com.","published_date":"2026-08-03T00:00:00Z"}]}""";
+var reservationObservedBeforeNetwork = false;
+var retryHandler = new SequencedCustomerSearchHttpHandler(
+    [
+        (HttpStatusCode.ServiceUnavailable, "{}"),
+        (HttpStatusCode.OK, retrySuccessBody)
+    ],
+    async (requestNumber, cancellationToken) =>
+    {
+        if (requestNumber != 1) return;
+        var reserved = await enrichmentGuardrailRepository.GetCustomerEnrichmentUsageSummaryAsync(cancellationToken);
+        reservationObservedBeforeNetwork = reserved.ProviderRequests.GetValueOrDefault("tavily") == 3
+                                           && reserved.MonthEstimatedCostUsd == 0.024m;
+    });
+using var retryHttp = new HttpClient(retryHandler) { Timeout = Timeout.InfiniteTimeSpan };
+var retryProvider = new TavilySearchProvider(
+    new FakeSecretStore("tavily-guardrail-key"),
+    retryHttp,
+    new CustomerSearchProviderOptions
+    {
+        RequestTimeout = TimeSpan.FromSeconds(2),
+        MinimumRequestInterval = TimeSpan.Zero,
+        BaseRetryDelay = TimeSpan.Zero,
+        MaximumAttempts = 3
+    },
+    delay: (_, _) => Task.CompletedTask);
+var aiGuardrailHandler = new CustomerSearchHttpHandler(HttpStatusCode.OK, "{}");
+using var aiGuardrailHttp = new HttpClient(aiGuardrailHandler) { Timeout = Timeout.InfiniteTimeSpan };
+var guardrailDeepSeek = new DeepSeekService(
+    enrichmentGuardrailRepository,
+    new FakeSecretStore("configured-ai-key"),
+    aiGuardrailHttp);
+var guardrailBrain = new CustomerBrainService(enrichmentGuardrailRepository);
+var publicWebGuardrailHandler = new CustomerSearchHttpHandler(HttpStatusCode.OK, "{}");
+using var publicWebGuardrailHttp = new HttpClient(publicWebGuardrailHandler) { Timeout = Timeout.InfiniteTimeSpan };
+using var publicWebGuardrailReader = new PublicWebReader(publicWebGuardrailHttp);
+await using var enrichmentGuardrailService = new CustomerEnrichmentService(
+    enrichmentGuardrailRepository,
+    guardrailDeepSeek,
+    guardrailBrain,
+    webReader: publicWebGuardrailReader,
+    providers: [retryProvider]);
+await enrichmentGuardrailService.SaveSettingsAsync(new CustomerEnrichmentSettings
+{
+    ProviderOrder = ["tavily"],
+    MonthlyBudgetUsd = 1m,
+    AllowPaidRequests = true,
+    AllowAiAnalysisRequests = false,
+    TavilyMonthlyFreeRequests = 0,
+    BraveMonthlyFreeRequests = 0,
+    MaxQueriesPerCustomer = 1,
+    MaxResultsPerQuery = 1,
+    MaxPagesPerCustomer = 1,
+    MaxAutomaticJobsPerStartup = 0
+});
+var retryHealth = await enrichmentGuardrailService.TestProviderAsync("tavily");
+var retryUsageSummary = await enrichmentGuardrailRepository.GetCustomerEnrichmentUsageSummaryAsync();
+var retryUsageRowCount = 0;
+CustomerEnrichmentProviderUsage? retryUsageRow = null;
+await using (var retryUsageConnection = new SqliteConnection(new SqliteConnectionStringBuilder
+{
+    DataSource = enrichmentGuardrailDatabase,
+    Pooling = false
+}.ToString()))
+{
+    await retryUsageConnection.OpenAsync();
+    await using (var countUsage = retryUsageConnection.CreateCommand())
+    {
+        countUsage.CommandText = "SELECT COUNT(*) FROM customer_enrichment_provider_usage WHERE provider='tavily'";
+        retryUsageRowCount = Convert.ToInt32(await countUsage.ExecuteScalarAsync());
+    }
+    await using (var readUsage = retryUsageConnection.CreateCommand())
+    {
+        readUsage.CommandText = "SELECT data_json FROM customer_enrichment_provider_usage WHERE provider='tavily' LIMIT 1";
+        retryUsageRow = WAFlow.Core.Infrastructure.Json.Deserialize<CustomerEnrichmentProviderUsage>(
+            (string?)await readUsage.ExecuteScalarAsync());
+    }
+}
+Check(
+    retryHealth.Available
+    && reservationObservedBeforeNetwork
+    && retryHandler.Requests.Count == 2
+    && retryProvider.LastAttemptCount == 2
+    && retryUsageRowCount == 1
+    && retryUsageRow is
+    {
+        Requests: 2,
+        EstimatedCostUsd: 0.016m,
+        Succeeded: true,
+        RequestState: "completed"
+    }
+    && retryUsageSummary.ProviderRequests.GetValueOrDefault("tavily") == 2
+    && retryUsageSummary.MonthEstimatedCostUsd == 0.016m,
+    "customer enrichment persists a pre-network reservation and updates the same ledger ID with actual HTTP attempts and cost");
+
+var retainedCurrentMonthUsage = new CustomerEnrichmentProviderUsage
+{
+    Id = "enrichment-current-month-retained",
+    Provider = "brave",
+    JobId = "settings-test",
+    Requests = 7,
+    EstimatedCostUsd = 0.035m,
+    Succeeded = true,
+    RequestState = "completed",
+    CreatedAt = DateTimeOffset.Now
+};
+var expiredPreviousMonthUsage = new CustomerEnrichmentProviderUsage
+{
+    Id = "enrichment-previous-month-pruned",
+    Provider = "brave",
+    JobId = "settings-test",
+    Requests = 5,
+    EstimatedCostUsd = 0.025m,
+    Succeeded = true,
+    RequestState = "completed",
+    CreatedAt = DateTimeOffset.Now.AddMonths(-2)
+};
+await enrichmentGuardrailRepository.SaveCustomerEnrichmentUsageAsync(retainedCurrentMonthUsage);
+await enrichmentGuardrailRepository.SaveCustomerEnrichmentUsageAsync(expiredPreviousMonthUsage);
+await using (var backdateCurrentMonthUsage = new SqliteConnection(new SqliteConnectionStringBuilder
+{
+    DataSource = enrichmentGuardrailDatabase,
+    Pooling = false
+}.ToString()))
+{
+    await backdateCurrentMonthUsage.OpenAsync();
+    await using var backdate = backdateCurrentMonthUsage.CreateCommand();
+    backdate.CommandText = "UPDATE customer_enrichment_provider_usage SET created_at=$old WHERE id=$id";
+    backdate.Parameters.AddWithValue("$old", DateTimeOffset.Now.AddDays(-60).ToString("O"));
+    backdate.Parameters.AddWithValue("$id", retainedCurrentMonthUsage.Id);
+    await backdate.ExecuteNonQueryAsync();
+}
+_ = await enrichmentGuardrailRepository.PruneCustomerEnrichmentDataAsync(30);
+var retainedUsageIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+await using (var retainedUsageConnection = new SqliteConnection(new SqliteConnectionStringBuilder
+{
+    DataSource = enrichmentGuardrailDatabase,
+    Pooling = false
+}.ToString()))
+{
+    await retainedUsageConnection.OpenAsync();
+    await using var readIds = retainedUsageConnection.CreateCommand();
+    readIds.CommandText = "SELECT id FROM customer_enrichment_provider_usage WHERE id IN ($current,$previous)";
+    readIds.Parameters.AddWithValue("$current", retainedCurrentMonthUsage.Id);
+    readIds.Parameters.AddWithValue("$previous", expiredPreviousMonthUsage.Id);
+    await using var reader = await readIds.ExecuteReaderAsync();
+    while (await reader.ReadAsync()) retainedUsageIds.Add(reader.GetString(0));
+}
+Check(
+    retainedUsageIds.SetEquals([retainedCurrentMonthUsage.Id]),
+    "customer enrichment retention never removes the current calendar-month usage ledger used by hard budget gates");
+
+var guardrailLead = new Lead
+{
+    Id = "enrichment-guardrail-customer",
+    Name = "Guardrail Buyer",
+    Company = "Example Company",
+    Email = "guardrail.buyer@example.com",
+    PhoneE164 = "+14155550199",
+    PhoneValid = true,
+    Grade = "D"
+};
+await enrichmentGuardrailRepository.UpsertLeadAsync(guardrailLead);
+await enrichmentGuardrailRepository.SaveCustomerEnrichmentSettingsAsync(new CustomerEnrichmentSettings
+{
+    ProviderOrder = ["tavily"],
+    MonthlyBudgetUsd = 0,
+    AllowPaidRequests = false,
+    AllowAiAnalysisRequests = true,
+    TavilyMonthlyFreeRequests = 100,
+    BraveMonthlyFreeRequests = 0,
+    MaxQueriesPerCustomer = 1,
+    MaxResultsPerQuery = 1,
+    MaxPagesPerCustomer = 1,
+    MaxAutomaticJobsPerStartup = 0
+});
+await enrichmentGuardrailService.StartAsync();
+var zeroBudgetJob = await enrichmentGuardrailService.QueueAsync(guardrailLead.Id, force: true);
+var zeroBudgetTerminal = await WaitForCustomerEnrichmentTerminalAsync(
+    enrichmentGuardrailRepository,
+    zeroBudgetJob.Id);
+
+await enrichmentGuardrailRepository.SaveCustomerEnrichmentSettingsAsync(new CustomerEnrichmentSettings
+{
+    ProviderOrder = ["tavily"],
+    MonthlyBudgetUsd = 1m,
+    AllowPaidRequests = true,
+    AllowAiAnalysisRequests = false,
+    TavilyMonthlyFreeRequests = 100,
+    BraveMonthlyFreeRequests = 0,
+    MaxQueriesPerCustomer = 1,
+    MaxResultsPerQuery = 1,
+    MaxPagesPerCustomer = 1,
+    MaxAutomaticJobsPerStartup = 0
+});
+var unauthorizedAiJob = await enrichmentGuardrailService.QueueAsync(guardrailLead.Id, force: true);
+var unauthorizedAiTerminal = await WaitForCustomerEnrichmentTerminalAsync(
+    enrichmentGuardrailRepository,
+    unauthorizedAiJob.Id);
+Check(
+    zeroBudgetTerminal.Status == CustomerEnrichmentJobStatus.NeedsReview
+    && zeroBudgetTerminal.ErrorCode == CustomerEnrichmentErrorCodes.AiAnalysisPaymentNotAuthorized
+    && zeroBudgetTerminal.SourcesCount > 0
+    && unauthorizedAiTerminal.Status == CustomerEnrichmentJobStatus.NeedsReview
+    && unauthorizedAiTerminal.ErrorCode == CustomerEnrichmentErrorCodes.AiAnalysisPaymentNotAuthorized
+    && unauthorizedAiTerminal.SourcesCount > 0
+    && aiGuardrailHandler.Requests.Count == 0,
+    "zero-budget and explicitly unauthorized enrichment analysis preserve sources without calling the configured AI model");
+
+var enrichmentRecoveryDatabase = Path.Combine(root, "customer-enrichment-recovery.db");
+var recoveryRepository = new LocalRepository(enrichmentRecoveryDatabase);
+await recoveryRepository.InitializeAsync();
+await recoveryRepository.SaveCustomerEnrichmentSettingsAsync(new CustomerEnrichmentSettings
+{
+    ProviderOrder = ["tavily"],
+    MaxAutomaticJobsPerStartup = 0,
+    DataRetentionDays = 730
+});
+await recoveryRepository.UpsertLeadAsync(new Lead
+{
+    Id = "enrichment-recovery-customer",
+    Name = "Recovery Guardrail Customer",
+    Email = "recovery.guardrail@example.com",
+    Grade = "D"
+});
+var recoveryJob = new CustomerEnrichmentJob
+{
+    Id = "enrichment-recovery-reserved-job",
+    CustomerId = "enrichment-recovery-customer",
+    Status = CustomerEnrichmentJobStatus.Running,
+    Provider = "tavily",
+    StartedAt = DateTimeOffset.Now.AddMinutes(-5)
+};
+await recoveryRepository.SaveCustomerEnrichmentJobAsync(recoveryJob);
+await recoveryRepository.SaveCustomerEnrichmentUsageAsync(new CustomerEnrichmentProviderUsage
+{
+    Id = "enrichment-recovery-reservation",
+    Provider = "tavily",
+    JobId = recoveryJob.Id,
+    Requests = 3,
+    EstimatedCostUsd = 0.024m,
+    Succeeded = false,
+    ErrorCode = "REQUEST_RESERVED",
+    RequestState = "reserved"
+});
+var replayProbeProvider = new ReplayProbeCustomerSearchProvider();
+var recoveryDeepSeek = new DeepSeekService(recoveryRepository, new FakeSecretStore("configured-ai-key"), aiGuardrailHttp);
+await using (var recoveryService = new CustomerEnrichmentService(
+                 recoveryRepository,
+                 recoveryDeepSeek,
+                 new CustomerBrainService(recoveryRepository),
+                 providers: [replayProbeProvider]))
+{
+    await recoveryService.StartAsync();
+    var recoveredJob = await recoveryRepository.GetCustomerEnrichmentJobAsync(recoveryJob.Id);
+    Check(
+        recoveredJob is
+        {
+            Status: CustomerEnrichmentJobStatus.Failed,
+            ErrorCode: CustomerEnrichmentErrorCodes.RecoveryReviewRequired
+        }
+        && recoveredJob.CostUsd == 0.024m
+        && replayProbeProvider.SearchCallCount == 0,
+        "a running job with durable reserved usage is marked failed on restart and is never replayed automatically");
+}
+
+var reviewStatusJob = new CustomerEnrichmentJob
+{
+    Id = "enrichment-review-status-job",
+    CustomerId = enrichmentLead.Id,
+    Status = CustomerEnrichmentJobStatus.NeedsReview,
+    Provider = "offline-test"
+};
+await enrichmentRepository.SaveCustomerEnrichmentJobAsync(reviewStatusJob);
+var reviewStatusFact = new CustomerEnrichmentFact
+{
+    Id = "enrichment-review-status-fact",
+    CustomerId = enrichmentLead.Id,
+    JobId = reviewStatusJob.Id,
+    FieldType = "public_business_model",
+    FieldValue = "Wholesale exporter",
+    NormalizedValue = "wholesale exporter",
+    Category = "公开业务模式",
+    FactType = "candidate_context",
+    ConfidenceScore = 72,
+    VerificationStatus = CustomerEnrichmentVerificationStatus.PossibleMatch,
+    EvidenceQuote = "Example Company operates as a wholesale exporter."
+};
+await enrichmentRepository.SaveCustomerEnrichmentFactsAsync([reviewStatusFact]);
+var reviewDeepSeek = new DeepSeekService(enrichmentRepository, new FakeSecretStore(""), aiGuardrailHttp);
+await using (var reviewStatusService = new CustomerEnrichmentService(
+                 enrichmentRepository,
+                 reviewDeepSeek,
+                 new CustomerBrainService(enrichmentRepository),
+                 providers: Array.Empty<ICustomerSearchProvider>()))
+{
+    await reviewStatusService.ReviewAsync(
+        reviewStatusFact.Id,
+        CustomerEnrichmentReviewAction.Confirm,
+        reason: "offline job-status backwrite test");
+}
+var reviewedStatusFact = await enrichmentRepository.GetCustomerEnrichmentFactAsync(reviewStatusFact.Id);
+var reviewedStatusJob = await enrichmentRepository.GetCustomerEnrichmentJobAsync(reviewStatusJob.Id);
+Check(
+    reviewedStatusFact?.VerificationStatus == CustomerEnrichmentVerificationStatus.HumanConfirmed
+    && reviewedStatusJob is { Status: CustomerEnrichmentJobStatus.Succeeded, ErrorCode: "" },
+    "customer enrichment human review writes the resolved terminal status back to its job");
+
+var editedEvidenceFact = new CustomerEnrichmentFact
+{
+    Id = "enrichment-edit-evidence-fact",
+    CustomerId = enrichmentLead.Id,
+    JobId = enrichmentJob.Id,
+    FieldType = "company_size",
+    FieldValue = "11-50 employees",
+    NormalizedValue = "11-50 employees",
+    Category = "公开公司规模",
+    FactType = "possible_context",
+    ConfidenceScore = 75,
+    VerificationStatus = CustomerEnrichmentVerificationStatus.PossibleMatch,
+    SourceIds = [originalSource.Id],
+    EvidenceQuote = "Buyer is Purchasing Manager for Example Company."
+};
+await enrichmentRepository.SaveCustomerEnrichmentFactsAsync([editedEvidenceFact]);
+await using (var evidenceReviewService = new CustomerEnrichmentService(
+                 enrichmentRepository,
+                 reviewDeepSeek,
+                 new CustomerBrainService(enrichmentRepository),
+                 providers: Array.Empty<ICustomerSearchProvider>()))
+{
+    await evidenceReviewService.ReviewAsync(
+        originalFact.Id,
+        CustomerEnrichmentReviewAction.Confirm,
+        reason: "retain unchanged public evidence");
+    await evidenceReviewService.ReviewAsync(
+        editedEvidenceFact.Id,
+        CustomerEnrichmentReviewAction.EditAndConfirm,
+        editedValue: "51-200 employees",
+        reason: "salesperson verified a corrected company size");
+}
+var confirmedEvidenceFact = await enrichmentRepository.GetCustomerEnrichmentFactAsync(originalFact.Id);
+var editedEvidenceFactAfterReview = await enrichmentRepository.GetCustomerEnrichmentFactAsync(editedEvidenceFact.Id);
+var confirmedEvidenceLinkCount = 0;
+var editedEvidenceLinkCount = 0;
+await using (var evidenceLinks = new SqliteConnection(new SqliteConnectionStringBuilder
+{
+    DataSource = enrichmentDatabase,
+    Pooling = false
+}.ToString()))
+{
+    await evidenceLinks.OpenAsync();
+    await using var countLinks = evidenceLinks.CreateCommand();
+    countLinks.CommandText = "SELECT fact_id,COUNT(*) FROM customer_enrichment_fact_sources WHERE fact_id IN ($confirmed,$edited) GROUP BY fact_id";
+    countLinks.Parameters.AddWithValue("$confirmed", originalFact.Id);
+    countLinks.Parameters.AddWithValue("$edited", editedEvidenceFact.Id);
+    await using var reader = await countLinks.ExecuteReaderAsync();
+    while (await reader.ReadAsync())
+    {
+        if (reader.GetString(0).Equals(originalFact.Id, StringComparison.OrdinalIgnoreCase))
+            confirmedEvidenceLinkCount = reader.GetInt32(1);
+        if (reader.GetString(0).Equals(editedEvidenceFact.Id, StringComparison.OrdinalIgnoreCase))
+            editedEvidenceLinkCount = reader.GetInt32(1);
+    }
+}
+Check(
+    confirmedEvidenceFact is
+    {
+        VerificationStatus: CustomerEnrichmentVerificationStatus.HumanConfirmed,
+        ReviewNote: "retain unchanged public evidence"
+    }
+    && confirmedEvidenceFact.SourceIds.SequenceEqual([originalSource.Id], StringComparer.OrdinalIgnoreCase)
+    && !string.IsNullOrWhiteSpace(confirmedEvidenceFact.EvidenceQuote)
+    && !string.IsNullOrWhiteSpace(confirmedEvidenceFact.HumanReviewId)
+    && confirmedEvidenceLinkCount == 1
+    && editedEvidenceFactAfterReview is
+    {
+        FieldValue: "51-200 employees",
+        VerificationStatus: CustomerEnrichmentVerificationStatus.HumanConfirmed,
+        EvidenceQuote: "",
+        ReviewNote: "salesperson verified a corrected company size"
+    }
+    && editedEvidenceFactAfterReview.SourceIds.Count == 0
+    && !string.IsNullOrWhiteSpace(editedEvidenceFactAfterReview.HumanReviewId)
+    && editedEvidenceLinkCount == 0,
+    "Confirm retains public evidence while EditAndConfirm records human provenance and atomically removes stale direct source links");
+
+var externalFactLifecycleDatabase = Path.Combine(root, "customer-enrichment-report-lifecycle.db");
+var externalFactLifecycleRepository = new LocalRepository(externalFactLifecycleDatabase);
+await externalFactLifecycleRepository.InitializeAsync();
+var externalFactLifecycleLead = new Lead
+{
+    Id = "enrichment-report-lifecycle-customer",
+    Name = "External Fact Lifecycle Buyer",
+    Company = "Example Export Group",
+    Email = "lifecycle.buyer@example.com",
+    PhoneE164 = "+14155550222",
+    PhoneValid = true,
+    Grade = "D"
+};
+await externalFactLifecycleRepository.UpsertLeadAsync(externalFactLifecycleLead);
+var externalFactLifecycleJob = new CustomerEnrichmentJob
+{
+    Id = "enrichment-report-lifecycle-job",
+    CustomerId = externalFactLifecycleLead.Id,
+    Status = CustomerEnrichmentJobStatus.Succeeded,
+    Provider = "offline-test"
+};
+await externalFactLifecycleRepository.SaveCustomerEnrichmentJobAsync(externalFactLifecycleJob);
+var externalFactLifecycleFact = new CustomerEnrichmentFact
+{
+    Id = "enrichment-report-lifecycle-fact",
+    CustomerId = externalFactLifecycleLead.Id,
+    JobId = externalFactLifecycleJob.Id,
+    FieldType = "public_role",
+    FieldValue = "Procurement Director",
+    NormalizedValue = "procurement director",
+    Category = "公开职位",
+    FactType = "verified_fact",
+    ConfidenceScore = 96,
+    VerificationStatus = CustomerEnrichmentVerificationStatus.Verified,
+    EvidenceQuote = "External Fact Lifecycle Buyer is Procurement Director.",
+    LastVerifiedAt = DateTimeOffset.Now,
+    ExpiresAt = DateTimeOffset.Now.AddDays(90)
+};
+await externalFactLifecycleRepository.SaveCustomerEnrichmentFactsAsync([externalFactLifecycleFact]);
+var seededExternalReportService = new CustomerAnalysisService(
+    externalFactLifecycleRepository,
+    new FakeStructuredReportProvider());
+var seededExternalReport = await seededExternalReportService.GenerateAsync(externalFactLifecycleLead.Id);
+var externalFactLifecycleBrain = new CustomerBrainService(externalFactLifecycleRepository);
+var brainWithExternalFact = await externalFactLifecycleBrain.RefreshAsync(externalFactLifecycleLead.Id);
+var blockingExternalReportProvider = new BlockingStructuredReportProvider();
+var concurrentExternalReportService = new CustomerAnalysisService(
+    externalFactLifecycleRepository,
+    blockingExternalReportProvider);
+var concurrentExternalReportTask = concurrentExternalReportService.GenerateAsync(externalFactLifecycleLead.Id);
+var synthesisWasBlocked = false;
+try
+{
+    await blockingExternalReportProvider.SynthesisStarted.WaitAsync(TimeSpan.FromSeconds(5));
+    synthesisWasBlocked = true;
+}
+catch (TimeoutException)
+{
+    // The assertion below reports a deterministic failure while still releasing
+    // the provider so the smoke process cannot hang.
+}
+CustomerIntelligenceProfile? profileImmediatelyAfterReview = null;
+if (synthesisWasBlocked)
+{
+    var factToReject = await externalFactLifecycleRepository.GetCustomerEnrichmentFactAsync(externalFactLifecycleFact.Id)
+                       ?? throw new InvalidOperationException("External lifecycle fact disappeared before review.");
+    factToReject.VerificationStatus = CustomerEnrichmentVerificationStatus.Rejected;
+    factToReject.ExpiresAt = DateTimeOffset.Now;
+    await externalFactLifecycleRepository.ApplyCustomerEnrichmentReviewAsync(
+        factToReject,
+        new CustomerEnrichmentReview
+        {
+            Id = "enrichment-report-lifecycle-reject",
+            CustomerId = factToReject.CustomerId,
+            JobId = factToReject.JobId,
+            FactId = factToReject.Id,
+            Action = CustomerEnrichmentReviewAction.Reject,
+            PreviousValue = factToReject.FieldValue,
+            NewValue = factToReject.FieldValue,
+            Reason = "reject while report synthesis is in flight"
+        });
+    profileImmediatelyAfterReview = await externalFactLifecycleRepository.GetCustomerIntelligenceProfileAsync(
+        externalFactLifecycleLead.Id);
+}
+blockingExternalReportProvider.ReleaseSynthesis();
+Exception? concurrentExternalReportError = null;
+try
+{
+    _ = await concurrentExternalReportTask;
+}
+catch (Exception error)
+{
+    concurrentExternalReportError = error;
+}
+var externalReportHistory = await externalFactLifecycleRepository.GetCustomerAnalysisReportsAsync(
+    externalFactLifecycleLead.Id);
+var failedConcurrentExternalReport = externalReportHistory.FirstOrDefault(report => report.Version == 2);
+var brainAfterExternalFactRejection = await externalFactLifecycleBrain.RefreshAsync(externalFactLifecycleLead.Id);
+Check(
+    seededExternalReport is { Status: CustomerReportStatus.Succeeded, Version: 1 }
+    && seededExternalReport.SourceSnapshot.VerifiedExternalFacts.Any(fact => fact.Id == externalFactLifecycleFact.Id)
+    && brainWithExternalFact.Coverage.HasCustomerReport
+    && brainWithExternalFact.Statements.Any(statement => statement.Source.StartsWith("客户外部调查", StringComparison.Ordinal))
+    && synthesisWasBlocked
+    && profileImmediatelyAfterReview is null
+    && concurrentExternalReportError is InvalidOperationException
+    && failedConcurrentExternalReport is { Status: CustomerReportStatus.RetryableFailed }
+    && failedConcurrentExternalReport.Error.Contains("报告生成期间", StringComparison.Ordinal)
+    && !brainAfterExternalFactRejection.Coverage.HasCustomerReport
+    && brainAfterExternalFactRejection.Statements.All(statement =>
+        !statement.Source.StartsWith("客户外部调查", StringComparison.Ordinal)),
+    "rejecting an external fact invalidates Brain atomically, excludes stale reports and makes an in-flight report retryable");
+
 try { File.Delete(database); Directory.Delete(root, true); } catch { }
 Console.WriteLine(failures.Count == 0 ? "\nAI Sales OS native core smoke tests passed." : $"\n{failures.Count} smoke test(s) failed.");
 return failures.Count == 0 ? 0 : 1;
+
+static async Task<CustomerEnrichmentJob> WaitForCustomerEnrichmentTerminalAsync(
+    LocalRepository repository,
+    string jobId)
+{
+    CustomerEnrichmentJob? current = null;
+    for (var attempt = 0; attempt < 200; attempt++)
+    {
+        current = await repository.GetCustomerEnrichmentJobAsync(jobId);
+        if (current is not null && current.Status is not CustomerEnrichmentJobStatus.Queued
+            and not CustomerEnrichmentJobStatus.Running) return current;
+        await Task.Delay(20);
+    }
+    return current ?? throw new InvalidOperationException($"Customer enrichment job {jobId} disappeared while waiting for completion.");
+}
 
 static void CreateKnowledgeDocx(string path, string heading, string body)
 {
@@ -4088,6 +5233,105 @@ sealed class FakeSecretStore(string value) : ISecretStore
 {
     public void Save(string secret) { }
     public string? Read() => value;
+}
+
+sealed record CustomerSearchCapturedRequest(
+    string Method,
+    string Uri,
+    string Authorization,
+    IReadOnlyDictionary<string, string> Headers,
+    string Body);
+
+sealed class CustomerSearchHttpHandler(HttpStatusCode statusCode, string responseBody) : HttpMessageHandler
+{
+    public List<CustomerSearchCapturedRequest> Requests { get; } = [];
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        var headers = request.Headers.ToDictionary(
+            header => header.Key,
+            header => string.Join(",", header.Value),
+            StringComparer.OrdinalIgnoreCase);
+        var body = request.Content is null
+            ? ""
+            : await request.Content.ReadAsStringAsync(cancellationToken);
+        Requests.Add(new CustomerSearchCapturedRequest(
+            request.Method.Method,
+            request.RequestUri?.ToString() ?? "",
+            request.Headers.Authorization?.ToString() ?? "",
+            headers,
+            body));
+        return new HttpResponseMessage(statusCode)
+        {
+            Content = new StringContent(responseBody, Encoding.UTF8, "application/json")
+        };
+    }
+}
+
+sealed class SequencedCustomerSearchHttpHandler : HttpMessageHandler
+{
+    private readonly IReadOnlyList<(HttpStatusCode StatusCode, string Body)> _responses;
+    private readonly Func<int, CancellationToken, Task>? _beforeResponse;
+
+    public SequencedCustomerSearchHttpHandler(
+        IReadOnlyList<(HttpStatusCode StatusCode, string Body)> responses,
+        Func<int, CancellationToken, Task>? beforeResponse = null)
+    {
+        if (responses.Count == 0) throw new ArgumentException("At least one response is required.", nameof(responses));
+        _responses = responses;
+        _beforeResponse = beforeResponse;
+    }
+
+    public List<CustomerSearchCapturedRequest> Requests { get; } = [];
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        var headers = request.Headers.ToDictionary(
+            header => header.Key,
+            header => string.Join(",", header.Value),
+            StringComparer.OrdinalIgnoreCase);
+        var body = request.Content is null
+            ? ""
+            : await request.Content.ReadAsStringAsync(cancellationToken);
+        Requests.Add(new CustomerSearchCapturedRequest(
+            request.Method.Method,
+            request.RequestUri?.ToString() ?? "",
+            request.Headers.Authorization?.ToString() ?? "",
+            headers,
+            body));
+        if (_beforeResponse is not null) await _beforeResponse(Requests.Count, cancellationToken);
+        var configured = _responses[Math.Min(Requests.Count - 1, _responses.Count - 1)];
+        return new HttpResponseMessage(configured.StatusCode)
+        {
+            Content = new StringContent(configured.Body, Encoding.UTF8, "application/json")
+        };
+    }
+}
+
+sealed class ReplayProbeCustomerSearchProvider : ICustomerSearchProvider, IMeteredCustomerSearchProvider
+{
+    public string Id => "tavily";
+    public bool RequiresApiKey => false;
+    public int MaximumAttempts => 3;
+    public int LastAttemptCount { get; private set; }
+    public int SearchCallCount { get; private set; }
+
+    public Task<IReadOnlyList<CustomerEnrichmentSearchResult>> SearchAsync(
+        CustomerSearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        SearchCallCount++;
+        LastAttemptCount = 1;
+        return Task.FromResult<IReadOnlyList<CustomerEnrichmentSearchResult>>([]);
+    }
+
+    public Task<CustomerSearchProviderHealth> CheckHealthAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(new CustomerSearchProviderHealth(Id, true, "offline probe", DateTimeOffset.Now));
 }
 
 sealed class RoutingProbe
@@ -4383,6 +5627,34 @@ sealed class FakeStructuredReportProvider : IStructuredAiProvider
         var error = validate(typed);
         if (!string.IsNullOrWhiteSpace(error)) throw new InvalidOperationException(error);
         return Task.FromResult(typed);
+    }
+}
+
+sealed class BlockingStructuredReportProvider : IStructuredAiProvider
+{
+    private readonly FakeStructuredReportProvider _inner = new();
+    private readonly TaskCompletionSource<bool> _synthesisStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource<bool> _releaseSynthesis = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public Task SynthesisStarted => _synthesisStarted.Task;
+    public bool HasApiKey() => true;
+    public Task<string> GetSelectedModelAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult("blocking-report-test");
+
+    public void ReleaseSynthesis() => _releaseSynthesis.TrySetResult(true);
+
+    public async Task<T> CompleteStructuredAsync<T>(
+        string instructions,
+        object payload,
+        Func<T, string?> validate,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        if (typeof(T) == typeof(CustomerReportSynthesisResult))
+        {
+            _synthesisStarted.TrySetResult(true);
+            await _releaseSynthesis.Task.WaitAsync(cancellationToken);
+        }
+        return await _inner.CompleteStructuredAsync(instructions, payload, validate, cancellationToken);
     }
 }
 

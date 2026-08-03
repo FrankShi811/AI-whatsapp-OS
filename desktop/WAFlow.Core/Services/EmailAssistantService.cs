@@ -36,15 +36,18 @@ public sealed class EmailAssistantService
     private readonly LocalRepository _repository;
     private readonly IStructuredAiProvider _provider;
     private readonly HybridRetriever? _knowledgeRetrieval;
+    private readonly CustomerBrainService? _customerBrain;
 
     public EmailAssistantService(
         LocalRepository repository,
         IStructuredAiProvider provider,
-        HybridRetriever? knowledgeRetrieval = null)
+        HybridRetriever? knowledgeRetrieval = null,
+        CustomerBrainService? customerBrain = null)
     {
         _repository = repository;
         _provider = provider;
         _knowledgeRetrieval = knowledgeRetrieval;
+        _customerBrain = customerBrain;
     }
 
     public async Task<EmailAssistantResult> AnalyzeAsync(
@@ -82,7 +85,9 @@ public sealed class EmailAssistantService
 
         var customerBrain = lead is null
             ? null
-            : await _repository.GetCustomerIntelligenceProfileAsync(lead.Id, cancellationToken);
+            : _customerBrain is null
+                ? await _repository.GetCustomerIntelligenceProfileAsync(lead.Id, cancellationToken)
+                : await _customerBrain.GetAsync(lead.Id, cancellationToken);
         var query = FirstNonEmpty(
             instruction,
             draftBody,

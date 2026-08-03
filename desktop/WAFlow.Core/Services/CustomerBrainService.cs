@@ -40,8 +40,13 @@ public sealed class CustomerBrainService
             .OrderBy(message => message.Timestamp)
             .ToList();
         var reports = await _repository.GetCustomerAnalysisReportsAsync(lead.Id, cancellationToken);
-        var latestReport = reports.FirstOrDefault(report => report.Status == CustomerReportStatus.Succeeded);
         var campaignTouches = await GetCampaignTouchesAsync(lead.Id, cancellationToken);
+        var now = DateTimeOffset.Now;
+        var verifiedExternalFacts = await GetActiveExternalFactsAsync(lead.Id, now, cancellationToken);
+        var latestReportCandidate = reports.FirstOrDefault(report => report.Status == CustomerReportStatus.Succeeded);
+        var reportHasStaleExternalDependencies = latestReportCandidate is not null
+            && HasStaleExternalFactDependencies(latestReportCandidate, verifiedExternalFacts, now);
+        var latestReport = reportHasStaleExternalDependencies ? null : latestReportCandidate;
 
         await SynchronizeBehaviorTimelineAsync(lead, whatsApp, emails, campaignTouches, reports, cancellationToken);
 
@@ -54,14 +59,32 @@ public sealed class CustomerBrainService
             HasCustomerReport = latestReport is not null,
             HasCampaignHistory = campaignTouches.Count > 0
         };
-        var sourceHash = ComputeSourceHash(lead, whatsApp, emails, campaignTouches, latestReport);
+        var sourceHash = ComputeSourceHash(lead, whatsApp, emails, campaignTouches, latestReport, verifiedExternalFacts);
         var current = await _repository.GetCustomerIntelligenceProfileAsync(lead.Id, cancellationToken);
-        if (current is not null && string.Equals(current.SourceSnapshotHash, sourceHash, StringComparison.Ordinal))
+        var profileHasStaleExternalDependencies = current is not null
+            && HasStaleMaterializedExternalFacts(current, verifiedExternalFacts);
+        if (current is not null
+            && !reportHasStaleExternalDependencies
+            && !profileHasStaleExternalDependencies
+            && string.Equals(current.SourceSnapshotHash, sourceHash, StringComparison.Ordinal))
             return current;
 
-        var profile = BuildProfile(lead, whatsApp, emails, campaignTouches, latestReport, coverage, sourceHash, current);
+        var profile = BuildProfile(
+            lead,
+            whatsApp,
+            emails,
+            campaignTouches,
+            latestReport,
+            verifiedExternalFacts,
+            coverage,
+            sourceHash,
+            current,
+            reuseCurrentDerivedState: !reportHasStaleExternalDependencies && !profileHasStaleExternalDependencies);
         await _repository.SaveCustomerIntelligenceProfileAsync(profile, cancellationToken);
-        await SynchronizeRecommendationAsync(profile, cancellationToken);
+        await SynchronizeRecommendationAsync(
+            profile,
+            cancellationToken,
+            forceReplace: reportHasStaleExternalDependencies || profileHasStaleExternalDependencies);
         await _repository.LogEventAsync(
             "customer_brain_materialized",
             lead.Id,
@@ -71,8 +94,13 @@ public sealed class CustomerBrainService
         return profile;
     }
 
-    public Task<CustomerIntelligenceProfile?> GetAsync(string customerId, CancellationToken cancellationToken = default) =>
-        _repository.GetCustomerIntelligenceProfileAsync(customerId, cancellationToken);
+    public async Task<CustomerIntelligenceProfile?> GetAsync(
+        string customerId,
+        CancellationToken cancellationToken = default)
+    {
+        var current = await _repository.GetCustomerIntelligenceProfileAsync(customerId, cancellationToken);
+        return current is null ? null : await RefreshAsync(customerId, cancellationToken);
+    }
 
     public async Task<CustomerIntelligenceProfile> UpdateConversationContextAsync(
         string customerId,
@@ -283,9 +311,28 @@ public sealed class CustomerBrainService
 
         var timeline = await _repository.GetCustomerBehaviorTimelineAsync(customerId, cancellationToken);
         var reports = await _repository.GetCustomerAnalysisReportsAsync(customerId, cancellationToken);
-        var recommendations = await _repository.GetAiRecommendationHistoryAsync(customerId, cancellationToken);
-        var actions = await _repository.GetSalesActionsAsync(customerId, cancellationToken);
-        var feedback = await _repository.GetAiLearningFeedbackAsync(customerId, cancellationToken);
+        var now = DateTimeOffset.Now;
+        var verifiedExternalFacts = await GetActiveExternalFactsAsync(customerId, now, cancellationToken);
+        var latestReportCandidate = reports.FirstOrDefault(report => report.Status == CustomerReportStatus.Succeeded);
+        var latestReport = latestReportCandidate is not null
+            && !HasStaleExternalFactDependencies(latestReportCandidate, verifiedExternalFacts, now)
+                ? latestReportCandidate
+                : null;
+        var recommendations = (await _repository.GetAiRecommendationHistoryAsync(customerId, cancellationToken))
+            .Where(item => string.Equals(item.SourceProfileId, profile.Id, StringComparison.OrdinalIgnoreCase)
+                && item.SourceProfileVersion == profile.Version)
+            .ToList();
+        var recommendationIds = recommendations
+            .Select(item => item.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var actions = (await _repository.GetSalesActionsAsync(customerId, cancellationToken))
+            .Where(item => recommendationIds.Contains(item.RecommendationId))
+            .ToList();
+        var actionIds = actions.Select(item => item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var feedback = (await _repository.GetAiLearningFeedbackAsync(customerId, cancellationToken))
+            .Where(item => recommendationIds.Contains(item.RecommendationId)
+                || actionIds.Contains(item.ActionId))
+            .ToList();
         var knowledge = _knowledgeRetrieval is null
             ? new KnowledgeRetrievalResult
             {
@@ -325,7 +372,7 @@ public sealed class CustomerBrainService
             coverage = profile.Coverage,
             verifiedStatements = profile.Statements.Where(statement => statement.Nature == IntelligenceStatementNature.Fact).Take(200),
             behaviorTimeline = timeline.Take(500),
-            latestReport = reports.FirstOrDefault(report => report.Status == CustomerReportStatus.Succeeded)?.Report,
+            latestReport = latestReport?.Report,
             recommendationHistory = recommendations.Take(20),
             salesActions = actions.Take(30),
             learningFeedback = feedback.Take(30),
@@ -607,11 +654,14 @@ public sealed class CustomerBrainService
         IReadOnlyList<EmailMessage> emails,
         IReadOnlyList<CustomerCampaignTouch> campaignTouches,
         CustomerAnalysisReport? latestReport,
+        IReadOnlyList<CustomerEnrichmentFact> verifiedExternalFacts,
         CustomerIntelligenceCoverage coverage,
         string sourceHash,
-        CustomerIntelligenceProfile? current)
+        CustomerIntelligenceProfile? current,
+        bool reuseCurrentDerivedState)
     {
         var report = latestReport?.Report;
+        var reusable = reuseCurrentDerivedState ? current : null;
         var profile = new CustomerIntelligenceProfile
         {
             Id = current?.Id ?? Guid.NewGuid().ToString("N"),
@@ -619,45 +669,45 @@ public sealed class CustomerBrainService
             Version = (current?.Version ?? 0) + 1,
             CustomerName = lead.DisplayName,
             Summary = FirstUseful(
-                current?.Summary,
+                reusable?.Summary,
                 report?.ExecutiveSummary.OneLinePositioning,
                 lead.HasCurrentAiScore ? lead.ProfileSummary : null,
                 $"{lead.DisplayName} 已进入客户工作区；当前商业背景和采购条件仍需通过沟通核实。"),
-            CustomerType = FirstUseful(current?.CustomerType, report?.BasicProfile.CustomerType, lead.CustomerSegment, "客户类型待核实"),
-            BusinessModels = Clean(current?.BusinessModels, report?.BasicProfile.BusinessModels),
+            CustomerType = FirstUseful(reusable?.CustomerType, report?.BasicProfile.CustomerType, lead.CustomerSegment, "客户类型待核实"),
+            BusinessModels = Clean(reusable?.BusinessModels, report?.BasicProfile.BusinessModels),
             PurchaseMotivations = Clean(
-                current?.PurchaseMotivations,
+                reusable?.PurchaseMotivations,
                 report?.PurchaseMotivation.InterestReasons,
                 report?.PurchaseMotivation.TriggerEvents),
-            PainPoints = Clean(current?.PainPoints, report?.PainAnalysis.SurfacePains, report?.PainAnalysis.DeepBusinessProblems),
+            PainPoints = Clean(reusable?.PainPoints, report?.PainAnalysis.SurfacePains, report?.PainAnalysis.DeepBusinessProblems),
             OpportunitySignals = Clean(
-                current?.OpportunitySignals,
+                reusable?.OpportunitySignals,
                 report?.OpportunityJudgment.PositiveFactors,
                 report?.WhatsAppAnalysis.PurchaseSignals,
                 lead.BehaviorSignals.Select(signal => signal.Signal)),
             Risks = Clean(
-                current?.Risks,
+                reusable?.Risks,
                 report?.RiskAnalysis.DealRisks,
                 report?.RiskAnalysis.AdoptionRisks,
                 report?.RiskAnalysis.ChurnRisks,
                 lead.Risks,
                 string.IsNullOrWhiteSpace(lead.RiskWarning) ? [] : [lead.RiskWarning]),
             NextBestAction = FirstUseful(
-                current?.NextBestAction,
+                reusable?.NextBestAction,
                 report?.ExecutiveSummary.CurrentSalesRecommendation,
                 report?.SalesStrategy.Actions.FirstOrDefault()?.Action,
                 lead.HasCurrentAiScore ? lead.NextAction : null,
                 "补齐客户业务模式、需求、预算、数量与决策时间后重新分析。"),
-            Confidence = current?.Confidence ?? (lead.HasCurrentAiScore
+            Confidence = reusable?.Confidence ?? (lead.HasCurrentAiScore
                 ? Math.Clamp(lead.AnalysisConfidence, 0, 1)
                 : latestReport is null ? 0 : Math.Min(.75, Math.Max(.35, coverage.Percentage / 100d))),
-            PurchaseProbability = current?.PurchaseProbability ?? lead.PurchaseProbability,
-            SuggestedStage = current?.SuggestedStage ?? lead.Stage,
+            PurchaseProbability = reusable?.PurchaseProbability ?? lead.PurchaseProbability,
+            SuggestedStage = reusable?.SuggestedStage ?? lead.Stage,
             DecisionStatus = ResolveDecisionStatus(current),
             DecisionSourceSnapshotHash = current?.DecisionSourceSnapshotHash ?? "",
-            LastBrainRunId = current?.LastBrainRunId ?? "",
-            LastBrainAnalyzedAt = current?.LastBrainAnalyzedAt,
-            AiModel = FirstUseful(current?.AiModel, latestReport?.AiModel),
+            LastBrainRunId = reusable?.LastBrainRunId ?? "",
+            LastBrainAnalyzedAt = reusable?.LastBrainAnalyzedAt,
+            AiModel = FirstUseful(reusable?.AiModel, latestReport?.AiModel),
             Coverage = coverage,
             ConversationContext = ResolveConversationContext(
                 current?.ConversationContext,
@@ -668,6 +718,23 @@ public sealed class CustomerBrainService
         };
 
         AddCrmFacts(profile.Statements, lead);
+        foreach (var fact in verifiedExternalFacts)
+        {
+            profile.Statements.Add(new CustomerIntelligenceStatement
+            {
+                Nature = IntelligenceStatementNature.Fact,
+                Topic = string.IsNullOrWhiteSpace(fact.Category) ? fact.FieldType : fact.Category,
+                Text = $"{fact.FieldType}：{fact.FieldValue}",
+                Evidence = string.IsNullOrWhiteSpace(fact.EvidenceQuote) ? fact.ReviewNote : fact.EvidenceQuote,
+                Source = fact.VerificationStatus == CustomerEnrichmentVerificationStatus.HumanConfirmed
+                    ? "客户外部调查 · 人工确认"
+                    : "客户外部调查 · 公开来源",
+                SourceId = fact.SourceIds.FirstOrDefault()
+                    ?? (string.IsNullOrWhiteSpace(fact.HumanReviewId) ? fact.Id : $"review:{fact.HumanReviewId}"),
+                Confidence = Math.Clamp(fact.ConfidenceScore / 100d, 0, 1),
+                ObservedAt = fact.LastVerifiedAt ?? fact.UpdatedAt
+            });
+        }
         if (latestReport is not null || lead.HasCurrentAiScore)
         {
             profile.Statements.Add(new CustomerIntelligenceStatement
@@ -751,20 +818,33 @@ public sealed class CustomerBrainService
         return profile;
     }
 
-    private async Task<AiRecommendationRecord?> SynchronizeRecommendationAsync(CustomerIntelligenceProfile profile, CancellationToken cancellationToken)
+    private async Task<AiRecommendationRecord?> SynchronizeRecommendationAsync(
+        CustomerIntelligenceProfile profile,
+        CancellationToken cancellationToken,
+        bool forceReplace = false)
     {
         if (string.IsNullOrWhiteSpace(profile.NextBestAction)) return null;
         var history = await _repository.GetAiRecommendationHistoryAsync(profile.CustomerId, cancellationToken);
         var active = history.FirstOrDefault(item => item.Status is AiRecommendationStatus.Proposed
             or AiRecommendationStatus.Accepted
             or AiRecommendationStatus.InProgress);
-        if (active is not null && string.Equals(active.Action.Trim(), profile.NextBestAction.Trim(), StringComparison.OrdinalIgnoreCase))
+        if (!forceReplace
+            && active is not null
+            && string.Equals(active.Action.Trim(), profile.NextBestAction.Trim(), StringComparison.OrdinalIgnoreCase))
         {
-            if (string.IsNullOrWhiteSpace(active.SuggestedTalkTrack) && !string.IsNullOrWhiteSpace(profile.SuggestedTalkTrack))
-            {
-                active.SuggestedTalkTrack = profile.SuggestedTalkTrack;
-                await _repository.SaveAiRecommendationAsync(active, cancellationToken);
-            }
+            active.Rationale = profile.Summary;
+            active.SuggestedTalkTrack = profile.SuggestedTalkTrack;
+            active.Evidence = profile.Statements
+                .Where(statement => statement.Nature is IntelligenceStatementNature.Fact or IntelligenceStatementNature.Inference)
+                .Select(statement => statement.Evidence)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(8)
+                .ToList();
+            active.Confidence = profile.Confidence;
+            active.SourceProfileId = profile.Id;
+            active.SourceProfileVersion = profile.Version;
+            await _repository.SaveAiRecommendationAsync(active, cancellationToken);
             return active;
         }
 
@@ -1030,12 +1110,95 @@ public sealed class CustomerBrainService
         || !string.IsNullOrWhiteSpace(lead.Email)
         || lead.CustomFields.Any(item => !string.IsNullOrWhiteSpace(item.Value));
 
+    private async Task<List<CustomerEnrichmentFact>> GetActiveExternalFactsAsync(
+        string customerId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var facts = await _repository.GetCustomerEnrichmentFactsAsync(
+            customerId,
+            latestPerValue: false,
+            cancellationToken);
+        return facts
+            .Where(fact => IsActiveExternalFact(fact, now))
+            .GroupBy(fact => $"{fact.FieldType}|{fact.NormalizedValue}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderByDescending(fact => fact.VerificationStatus == CustomerEnrichmentVerificationStatus.HumanConfirmed)
+                .ThenByDescending(fact => fact.UpdatedAt)
+                .First())
+            .OrderByDescending(fact => fact.UpdatedAt)
+            .ToList();
+    }
+
+    private static bool IsActiveExternalFact(CustomerEnrichmentFact fact, DateTimeOffset now) =>
+        (fact.VerificationStatus is CustomerEnrichmentVerificationStatus.Verified
+            or CustomerEnrichmentVerificationStatus.HumanConfirmed)
+        && (fact.ExpiresAt is null || fact.ExpiresAt > now);
+
+    private static bool HasStaleExternalFactDependencies(
+        CustomerAnalysisReport report,
+        IReadOnlyCollection<CustomerEnrichmentFact> activeFacts,
+        DateTimeOffset now)
+    {
+        var activeById = activeFacts
+            .GroupBy(fact => fact.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var capturedFacts = report.SourceSnapshot?.VerifiedExternalFacts ?? [];
+        if (capturedFacts.Any(captured =>
+                !IsActiveExternalFact(captured, now)
+                || !activeById.TryGetValue(captured.Id, out var active)
+                || !HasSameExternalFactMaterial(captured, active)))
+            return true;
+
+        var externalEvidence = report.Report?.EvidenceLedger?
+            .Where(statement => IsExternalEnrichmentSource(statement.Source))
+            .ToList() ?? [];
+        return externalEvidence.Any(statement => !activeFacts.Any(fact =>
+            string.Equals(statement.Statement, $"{fact.FieldType}：{fact.FieldValue}", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(statement.Evidence, EffectiveExternalEvidence(fact), StringComparison.Ordinal)));
+    }
+
+    private static bool HasStaleMaterializedExternalFacts(
+        CustomerIntelligenceProfile profile,
+        IReadOnlyCollection<CustomerEnrichmentFact> activeFacts) =>
+        profile.Statements
+            .Where(statement => IsExternalEnrichmentSource(statement.Source))
+            .Any(statement => !activeFacts.Any(fact =>
+                string.Equals(statement.Text, $"{fact.FieldType}：{fact.FieldValue}", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(statement.Evidence, EffectiveExternalEvidence(fact), StringComparison.Ordinal)
+                && (string.IsNullOrWhiteSpace(statement.SourceId)
+                    || fact.SourceIds.Contains(statement.SourceId, StringComparer.OrdinalIgnoreCase)
+                    || (!string.IsNullOrWhiteSpace(fact.HumanReviewId)
+                        && statement.SourceId.Equals($"review:{fact.HumanReviewId}", StringComparison.OrdinalIgnoreCase)))));
+
+    private static bool HasSameExternalFactMaterial(
+        CustomerEnrichmentFact left,
+        CustomerEnrichmentFact right) =>
+        string.Equals(left.FieldType, right.FieldType, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(left.FieldValue, right.FieldValue, StringComparison.Ordinal)
+        && string.Equals(left.NormalizedValue, right.NormalizedValue, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(left.Category, right.Category, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(left.FactType, right.FactType, StringComparison.OrdinalIgnoreCase)
+        && left.ConfidenceScore == right.ConfidenceScore
+        && string.Equals(left.EvidenceQuote, right.EvidenceQuote, StringComparison.Ordinal)
+        && string.Equals(left.ReviewNote, right.ReviewNote, StringComparison.Ordinal)
+        && string.Equals(left.HumanReviewId, right.HumanReviewId, StringComparison.Ordinal)
+        && left.SourceIds.OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .SequenceEqual(
+                right.SourceIds.OrderBy(value => value, StringComparer.OrdinalIgnoreCase),
+                StringComparer.OrdinalIgnoreCase);
+
+    private static bool IsExternalEnrichmentSource(string? source) =>
+        !string.IsNullOrWhiteSpace(source)
+        && source.StartsWith("客户外部调查", StringComparison.OrdinalIgnoreCase);
+
     private static string ComputeSourceHash(
         Lead lead,
         IReadOnlyList<WhatsAppMessage> whatsApp,
         IReadOnlyList<EmailMessage> emails,
         IReadOnlyList<CustomerCampaignTouch> campaignTouches,
-        CustomerAnalysisReport? latestReport)
+        CustomerAnalysisReport? latestReport,
+        IReadOnlyList<CustomerEnrichmentFact> verifiedExternalFacts)
     {
         var payload = new
         {
@@ -1060,10 +1223,28 @@ public sealed class CustomerBrainService
             {
                 touch.CampaignId, touch.Status, touch.ScheduledAt, touch.SentAt, touch.LastError, touch.Message
             }),
-            report = latestReport is null ? null : new { latestReport.Id, latestReport.Version, latestReport.Status, latestReport.UpdatedTime }
+            report = latestReport is null ? null : new { latestReport.Id, latestReport.Version, latestReport.Status, latestReport.UpdatedTime },
+            publicFacts = verifiedExternalFacts.Select(fact => new
+            {
+                fact.Id,
+                fact.FieldType,
+                fact.NormalizedValue,
+                fact.VerificationStatus,
+                fact.ConfidenceScore,
+                fact.SourceIds,
+                fact.EvidenceQuote,
+                fact.ReviewNote,
+                fact.HumanReviewId,
+                fact.LastVerifiedAt,
+                fact.ExpiresAt,
+                fact.UpdatedAt
+            })
         };
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Json.Serialize(payload)))).ToLowerInvariant();
     }
+
+    private static string EffectiveExternalEvidence(CustomerEnrichmentFact fact) =>
+        string.IsNullOrWhiteSpace(fact.EvidenceQuote) ? fact.ReviewNote : fact.EvidenceQuote;
 
     private static string StableId(params string[] values) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", values)))).ToLowerInvariant()[..32];

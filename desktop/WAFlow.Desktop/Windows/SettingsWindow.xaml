@@ -65,6 +65,92 @@
                 <Border Style="{StaticResource Card}" Margin="0,15,0,0">
                     <StackPanel>
                         <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="120"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="客户外部调查" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock Text="使用你自己的 Tavily / Brave Key 或可选本地 SearXNG；公开来源只形成证据候选，不覆盖客户主档。" Foreground="{DynamicResource Muted}" FontSize="10.5" Margin="0,5,20,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <Border Grid.Column="1" Background="{DynamicResource SuccessSoft}" CornerRadius="10" Padding="10,5" VerticalAlignment="Top">
+                                <TextBlock x:Name="EnrichmentProviderStatusText" Text="正在读取" Foreground="{DynamicResource Success}" FontSize="10" FontWeight="SemiBold"/>
+                            </Border>
+                        </Grid>
+
+                        <Grid Margin="0,14,0,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="180"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <TextBlock Text="检索切换顺序" Style="{StaticResource LabelText}" VerticalAlignment="Center"/>
+                            <ComboBox x:Name="EnrichmentProviderOrderBox" Grid.Column="1" DisplayMemberPath="Label" SelectedValuePath="Value" AutomationProperties.Name="客户外部调查检索 Provider 切换顺序"/>
+                        </Grid>
+
+                        <Grid Margin="0,15,0,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="120"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <StackPanel Margin="0,0,12,0">
+                                <TextBlock Text="Tavily API Key" Style="{StaticResource LabelText}"/>
+                                <PasswordBox x:Name="TavilySearchKeyBox" Margin="0,5,0,0" AutomationProperties.Name="Tavily 搜索 API Key"/>
+                                <TextBlock x:Name="TavilySearchStatusText" Text="留空会保留已保存 Key" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,4,0,0"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Margin="0,0,12,0"><TextBlock Text="本地免费上限/月" Style="{StaticResource LabelText}"/><TextBox x:Name="TavilyFreeRequestsBox" Text="1000" Margin="0,5,0,0" AutomationProperties.Name="Tavily 每月本地免费请求上限"/></StackPanel>
+                            <Button Grid.Column="2" Tag="tavily" Content="测试 Tavily" Style="{StaticResource SecondaryButton}" Padding="12,7" VerticalAlignment="Center" Click="SearchProviderTest_Click" AutomationProperties.Name="测试 Tavily 搜索连接"/>
+                        </Grid>
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="120"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <StackPanel Margin="0,0,12,0">
+                                <TextBlock Text="Brave Search API Key" Style="{StaticResource LabelText}"/>
+                                <PasswordBox x:Name="BraveSearchKeyBox" Margin="0,5,0,0" AutomationProperties.Name="Brave Search API Key"/>
+                                <TextBlock x:Name="BraveSearchStatusText" Text="留空会保留已保存 Key" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,4,0,0"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Margin="0,0,12,0"><TextBlock Text="本地免费上限/月" Style="{StaticResource LabelText}"/><TextBox x:Name="BraveFreeRequestsBox" Text="1000" Margin="0,5,0,0" AutomationProperties.Name="Brave 每月本地免费请求上限"/></StackPanel>
+                            <Button Grid.Column="2" Tag="brave" Content="测试 Brave" Style="{StaticResource SecondaryButton}" Padding="12,7" VerticalAlignment="Center" Click="SearchProviderTest_Click" AutomationProperties.Name="测试 Brave 搜索连接"/>
+                        </Grid>
+
+                        <Border Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="10" Padding="12" Margin="0,13,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <CheckBox x:Name="SearXngEnabledBox" Content="启用本地 SearXNG" VerticalAlignment="Center" FontWeight="SemiBold" AutomationProperties.Name="启用本地 SearXNG"/>
+                                <TextBox x:Name="SearXngBaseUrlBox" Grid.Column="1" Margin="16,0,12,0" Text="http://127.0.0.1:8080" AutomationProperties.Name="SearXNG 服务地址"/>
+                                <Button Grid.Column="2" Tag="searxng" Content="测试 SearXNG" Style="{StaticResource SecondaryButton}" Padding="12,7" Click="SearchProviderTest_Click" AutomationProperties.Name="测试 SearXNG 搜索连接"/>
+                            </Grid>
+                        </Border>
+
+                        <Grid Margin="0,14,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Margin="0,0,7,0"><TextBlock Text="月预算 USD" Style="{StaticResource LabelText}"/><TextBox x:Name="EnrichmentBudgetBox" Text="0" Margin="0,5,0,0" AutomationProperties.Name="客户调查月预算美元"/></StackPanel>
+                            <StackPanel Grid.Column="1" Margin="7,0"><TextBlock Text="每客查询" Style="{StaticResource LabelText}"/><TextBox x:Name="EnrichmentMaxQueriesBox" Text="6" Margin="0,5,0,0" AutomationProperties.Name="每位客户最大查询数"/></StackPanel>
+                            <StackPanel Grid.Column="2" Margin="7,0"><TextBlock Text="每条结果" Style="{StaticResource LabelText}"/><TextBox x:Name="EnrichmentMaxResultsBox" Text="8" Margin="0,5,0,0" AutomationProperties.Name="每条查询最大结果数"/></StackPanel>
+                            <StackPanel Grid.Column="3" Margin="7,0"><TextBlock Text="读取网页" Style="{StaticResource LabelText}"/><TextBox x:Name="EnrichmentMaxPagesBox" Text="12" Margin="0,5,0,0" AutomationProperties.Name="每位客户最大网页读取数"/></StackPanel>
+                            <StackPanel Grid.Column="4" Margin="7,0"><TextBlock Text="缓存天数" Style="{StaticResource LabelText}"/><TextBox x:Name="EnrichmentCacheDaysBox" Text="30" Margin="0,5,0,0" AutomationProperties.Name="客户调查缓存天数"/></StackPanel>
+                            <StackPanel Grid.Column="5" Margin="7,0,0,0"><TextBlock Text="标准刷新" Style="{StaticResource LabelText}"/><TextBox x:Name="EnrichmentRefreshDaysBox" Text="90" Margin="0,5,0,0" AutomationProperties.Name="客户调查标准刷新天数"/></StackPanel>
+                            <StackPanel Grid.Column="6" Margin="7,0,0,0"><TextBlock Text="数据保留" Style="{StaticResource LabelText}"/><TextBox x:Name="EnrichmentRetentionDaysBox" Text="730" Margin="0,5,0,0" AutomationProperties.Name="客户调查数据保留天数"/></StackPanel>
+                        </Grid>
+                        <WrapPanel Margin="0,13,0,0">
+                            <CheckBox x:Name="EnrichmentManualEnabledBox" Content="允许手动调查" IsChecked="True" Margin="0,0,22,0" AutomationProperties.Name="允许手动客户调查"/>
+                            <CheckBox x:Name="EnrichmentAutoGradeABox" Content="A级客户自动入队" IsChecked="True" Margin="0,0,22,0" AutomationProperties.Name="A级客户自动调查"/>
+                            <CheckBox x:Name="EnrichmentAutoGradeBBox" Content="B级客户自动入队" IsChecked="True" Margin="0,0,22,0" AutomationProperties.Name="B级客户自动调查"/>
+                            <CheckBox x:Name="EnrichmentAllowPaidBox" Content="允许产生付费请求" IsChecked="False" AutomationProperties.Name="允许客户调查产生付费请求"/>
+                        </WrapPanel>
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="150"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <CheckBox x:Name="EnrichmentAllowAiAnalysisBox" Content="允许调用板块 AI 分析" IsChecked="False" VerticalAlignment="Center" AutomationProperties.Name="允许客户调查调用可能计费的 AI 分析"/>
+                            <StackPanel Grid.Column="1" Margin="18,0,0,0">
+                                <TextBlock Text="每任务预算预留 USD" Style="{StaticResource LabelText}"/>
+                                <TextBox x:Name="EnrichmentAiReservationBox" Text="0.05" Margin="0,5,0,0" AutomationProperties.Name="客户调查每任务 AI 分析预算预留美元"/>
+                            </StackPanel>
+                            <TextBlock x:Name="EnrichmentAiStatusText" Grid.Column="2" Margin="14,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" FontSize="9.5" TextWrapping="Wrap" Text="正在读取板块 AI 路由状态…"/>
+                        </Grid>
+                        <Border Background="{DynamicResource WarningSoft}" CornerRadius="9" Padding="11" Margin="0,12,0,0">
+                            <TextBlock Text="默认月预算为 0 美元、付费与 AI 分析均关闭。搜索适配器只调用基础端点；免费额度耗尽时会切换下一 Provider 或停止。API 测试会真实联网并计入 Provider 调用量。本地上限只统计本程序调用，Provider 账号在其他工具中的用量不可见；请同时在 Provider 后台设置硬额度或仅免费方案。" Foreground="{DynamicResource Warning}" FontSize="9.5" TextWrapping="Wrap"/>
+                        </Border>
+                        <TextBlock x:Name="EnrichmentUsageText" Text="本月用量：正在读取" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,9,0,0" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="EnrichmentConnectionStatusText" Foreground="{DynamicResource Muted}" FontSize="9.5" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Margin="0,15,0,0">
+                    <StackPanel>
+                        <Grid>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <StackPanel>
                                 <TextBlock Text="板块模型与 Token 成本" Style="{StaticResource SectionTitle}"/>

@@ -7,7 +7,7 @@ using WAFlow.Core.Services;
 
 namespace WAFlow.Core.Infrastructure;
 
-public sealed class LocalRepository
+public sealed partial class LocalRepository
 {
     private static readonly string[] DemoLeadIds = ["lead_elena", "lead_ahmed", "lead_maria", "lead_james", "lead_invalid"];
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> ConversationWriteGates = new(StringComparer.OrdinalIgnoreCase);
@@ -642,6 +642,7 @@ public sealed class LocalRepository
         await using var command = db.CreateCommand();
         command.CommandText = sql;
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await InitializeCustomerEnrichmentSchemaAsync(db, cancellationToken);
         // CREATE TABLE IF NOT EXISTS does not evolve tables created by an earlier
         // preview build. 4.1 is an in-place upgrade, so add every promoted column
         // idempotently before backfill touches it.

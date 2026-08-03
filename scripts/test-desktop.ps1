@@ -36,6 +36,13 @@ $dashboardSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root
 $dashboardUnreadDigestSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\DashboardUnreadDigestService.cs')
 $customersXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CustomersView.xaml')
 $customersSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CustomersView.xaml.cs')
+$customerEnrichmentXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CustomerEnrichmentView.xaml')
+$customerEnrichmentSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CustomerEnrichmentView.xaml.cs')
+$customerEnrichmentServiceSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerEnrichmentService.cs')
+$customerEnrichmentAnalyzerSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerEnrichmentAnalyzer.cs')
+$customerSearchProviderSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\CustomerSearchProviders.cs')
+$customerEnrichmentRepositorySource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Infrastructure\LocalRepository.CustomerEnrichment.cs')
+$appServicesSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\AppServices.cs')
 $campaignsXaml = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CampaignsView.xaml')
 $campaignsSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\CampaignsView.xaml.cs')
 $todayBriefSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Core\Services\TodayBriefService.cs')
@@ -180,15 +187,98 @@ if ($appXaml -notmatch '<Style TargetType="\{x:Type TextBlock\}">[\s\S]*?<Setter
 }
 $navTextCount = ([regex]::Matches($mainWindowXaml, 'Style="\{StaticResource NavText\}"')).Count
 $navIconCount = ([regex]::Matches($mainWindowXaml, 'Style="\{StaticResource NavIconFrame\}"')).Count
-if ($navTextCount -ne 9 -or
-    $navIconCount -ne 9 -or
+if ($navTextCount -ne 10 -or
+    $navIconCount -ne 10 -or
     $appXaml -notmatch 'x:Key="NavText"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}' -or
     $appXaml -notmatch 'x:Key="NavIconFrame"[\s\S]*?<Setter Property="Width" Value="18"/>' -or
     $appXaml -notmatch 'x:Key="NavIconPath"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}[\s\S]*?<Setter Property="StrokeThickness" Value="2"/>' -or
     $appXaml -notmatch 'x:Key="NavIconRectangle"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}' -or
     $appXaml -notmatch 'x:Key="NavIconEllipse"[\s\S]*?Binding Foreground,\s*RelativeSource=\{RelativeSource AncestorType=\{x:Type Button\}\}') {
-  throw "Every sidebar module and the single settings entry must use one aligned 18px vector icon and a semantic foreground. expected_text=9 actual_text=$navTextCount expected_icons=9 actual_icons=$navIconCount"
+  throw "Every sidebar module and the single settings entry must use one aligned 18px vector icon and a semantic foreground. expected_text=10 actual_text=$navTextCount expected_icons=10 actual_icons=$navIconCount"
 }
+$customerEnrichmentContractFailures = @()
+if (-not $mainWindowXaml.Contains('x:Name="CustomerEnrichmentButton" Tag="customer-enrichment"') -or
+    -not $mainWindowXaml.Contains('Text="客户外部调查" Style="{StaticResource NavText}"') -or
+    -not $mainWindowXaml.Contains('AutomationProperties.Name="客户外部调查"')) {
+  $customerEnrichmentContractFailures += 'sidebar_button'
+}
+if (-not $mainWindowSource.Contains('private readonly CustomerEnrichmentView _customerEnrichment;') -or
+    -not $mainWindowSource.Contains('_customerEnrichment = new CustomerEnrichmentView(services);') -or
+    -not $mainWindowSource.Contains('"customer-enrichment" => CustomerEnrichmentButton') -or
+    -not $mainWindowSource.Contains('"customer-enrichment" => ((object)_customerEnrichment') -or
+    -not $mainWindowSource.Contains('case "customer-enrichment": await NavigateAsync(action, CustomerEnrichmentButton); break;') -or
+    -not $mainWindowSource.Contains('Key.D4 => ("customer-enrichment", CustomerEnrichmentButton)')) {
+  $customerEnrichmentContractFailures += 'shell_routing'
+}
+if (-not $guideCatalogSource.Contains('"customer-enrichment"') -or
+    -not $guideCatalogSource.Contains('["customer-enrichment"] = ModuleGuideVersion + 1') -or
+    -not $guideCatalogSource.Contains('"customer-enrichment", "OPEN WEB INTELLIGENCE", "客户外部调查使用手册"') -or
+    -not $guideCatalogSource.Contains('Ctrl+1 至 Ctrl+9')) {
+  $customerEnrichmentContractFailures += 'guide_coverage'
+}
+if (-not $domainModelsSource.Contains('public const string CustomerEnrichment = "customer_operations.customer_enrichment";') -or
+    $domainModelsSource -notmatch 'Configurable\s*=\s*\[[\s\S]*?CustomerEnrichment' -or
+    -not $customerEnrichmentAnalyzerSource.Contains('CompleteStructuredWithAttemptLimitAsync<CustomerEnrichmentAnalysisResult>') -or
+    -not $customerEnrichmentAnalyzerSource.Contains('AiModuleKeys.CustomerEnrichment') -or
+    -not $customerEnrichmentAnalyzerSource.Contains('maximumAttempts: 2') -or
+    -not $customerEnrichmentServiceSource.Contains('_analyzer = new CustomerEnrichmentAnalyzer(deepSeek);') -or
+    -not $customerEnrichmentServiceSource.Contains('_analyzer.AnalyzeAsync(identity, sources, cancellationToken)') -or
+    -not $appServicesSource.Contains('public CustomerEnrichmentService CustomerEnrichment { get; }') -or
+    -not $appServicesSource.Contains('CustomerEnrichment = new CustomerEnrichmentService(')) {
+  $customerEnrichmentContractFailures += 'module_ai_routing'
+}
+if (-not $customerEnrichmentXaml.Contains('AutomationProperties.Name="客户公开商业信息调查"') -or
+    -not $customerEnrichmentSource.Contains('_enrichmentService = services.CustomerEnrichment;') -or
+    -not $customerEnrichmentRepositorySource.Contains('customer_enrichment_fact_sources')) {
+  $customerEnrichmentContractFailures += 'page_backend_binding'
+}
+if ($customerEnrichmentContractFailures.Count -gt 0) {
+  throw "Customer external enrichment must have complete sidebar, guide, page/backend and module-AI routing. missing=$($customerEnrichmentContractFailures -join ',')"
+}
+Write-Host 'PASS  customer external enrichment sidebar, guide, page/backend and module-AI routing contract'
+$customerEnrichmentHardGateFailures = @()
+if ($customerSearchProviderSource -notmatch [regex]::Escape('Interlocked.Increment(ref _lastAttemptCount);') -or
+    $customerEnrichmentServiceSource -notmatch [regex]::Escape('var actualAttempts = GetActualAttempts(provider, reservedAttempts);') -or
+    $customerEnrichmentServiceSource -notmatch [regex]::Escape('usage.Requests = actualAttempts;') -or
+    $customerEnrichmentServiceSource -notmatch [regex]::Escape('EstimateSearchCost(provider.Id, settings, currentUsage, actualAttempts)')) {
+  $customerEnrichmentHardGateFailures += 'actual_attempt_metering'
+}
+if ($customerEnrichmentServiceSource -notmatch 'SaveCustomerEnrichmentUsageAsync\(usage, cancellationToken\);[\s\S]{0,900}?provider\.SearchAsync' -or
+    $customerEnrichmentRepositorySource -notmatch 'ON CONFLICT\(id\) DO UPDATE SET[\s\S]{0,500}?requests=excluded\.requests' -or
+    $customerEnrichmentRepositorySource -notmatch 'request_month < \$currentMonth') {
+  $customerEnrichmentHardGateFailures += 'durable_reservation_and_month_ledger'
+}
+if ($customerEnrichmentServiceSource -notmatch '!settings\.AllowPaidRequests \|\| !settings\.AllowAiAnalysisRequests[\s\S]{0,180}?settings\.MonthlyBudgetUsd <= 0' -or
+    $customerEnrichmentServiceSource -notmatch 'AiAnalysisPaymentNotAuthorized[\s\S]{0,1200}?return;[\s\S]{0,3000}?_analyzer\.AnalyzeAsync') {
+  $customerEnrichmentHardGateFailures += 'ai_payment_authorization'
+}
+if ($customerEnrichmentServiceSource -notmatch 'RequestState\.Equals\("reserved"[\s\S]{0,500}?CustomerEnrichmentJobStatus\.Failed[\s\S]{0,500}?RecoveryReviewRequired[\s\S]{0,500}?continue;' -or
+    $customerEnrichmentServiceSource -notmatch 'ResolveReviewedJobStatus\(reviewedFacts\)[\s\S]{0,500}?SaveCustomerEnrichmentJobAsync\(job, cancellationToken\)') {
+  $customerEnrichmentHardGateFailures += 'restart_and_review_status'
+}
+if ($customerEnrichmentRepositorySource -notmatch 'GetCustomerEnrichmentFactSelectionRank\(item, now\)' -or
+    $customerEnrichmentRepositorySource -notmatch 'HumanConfirmed when current => 600[\s\S]{0,120}?Verified when current => 500[\s\S]{0,120}?PossibleMatch => 300') {
+  $customerEnrichmentHardGateFailures += 'verified_fact_precedence'
+}
+if ($customerEnrichmentAnalyzerSource -notmatch 'Where\(source => ContainsEvidence\(source, fact\.EvidenceQuote\)\)' -or
+    $customerEnrichmentAnalyzerSource -notmatch '!result\.EntityMatch\.Status\.Equals\("verified"[\s\S]{0,180}?result\.EntityMatch\.Conflicts\.Count > 0[\s\S]{0,120}?Math\.Min\(result\.EntityMatch\.Score, 89\)') {
+  $customerEnrichmentHardGateFailures += 'evidence_source_and_entity_gate'
+}
+if ($customerEnrichmentServiceSource -notmatch 'EditAndConfirm:[\s\S]{0,700}?fact\.SourceIds = \[\];[\s\S]{0,120}?fact\.EvidenceQuote = "";' -or
+    $customerEnrichmentServiceSource -notmatch 'fact\.HumanReviewId = review\.Id' -or
+    $customerEnrichmentRepositorySource -notmatch 'DELETE FROM customer_enrichment_fact_sources WHERE fact_id=\$fact') {
+  $customerEnrichmentHardGateFailures += 'human_edit_provenance'
+}
+if ($customerEnrichmentRepositorySource -notmatch 'DELETE FROM customer_intelligence_profiles WHERE customer_id=\$customer' -or
+    $customerBrainSource -notmatch 'HasStaleExternalFactDependencies\(latestReportCandidate, verifiedExternalFacts, now\)' -or
+    $customerAnalysisSource -notmatch 'EnsureExternalFactsStillCurrentAsync\(snapshot, cancellationToken\)' -or
+    $customerAnalysisSource -notmatch 'report\.Status = CustomerReportStatus\.RetryableFailed') {
+  $customerEnrichmentHardGateFailures += 'brain_and_report_invalidation'
+}
+if ($customerEnrichmentHardGateFailures.Count -gt 0) {
+  throw "Customer external enrichment hard gates must preserve pre-network reservations, actual-attempt billing, monthly ledgers, AI authorization, safe restart and review status. missing=$($customerEnrichmentHardGateFailures -join ',')"
+}
+Write-Host 'PASS  customer external enrichment billing, reservation, restart and review hard-gate contract'
 if ($mainWindowXaml -match 'x:Name="ThemeButton"' -or
     $mainWindowXaml -match 'Click="CommandButton_Click"' -or
     $mainWindowXaml -match '<Button Content="设置"' -or
@@ -457,6 +547,9 @@ Write-Host 'PASS  shared primary-category preference display and filtering contr
 
 if (-not ($leadIntelligenceSource.Contains('var allLeads = await _services.Repository.GetLeadsAsync();')) -or
     -not ($leadIntelligenceSource.Contains('allLeads.Count(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed)')) -or
+    -not ($leadIntelligenceSource.Contains('重试 {retryableCount:N0} 位分析失败客户')) -or
+    -not ($leadIntelligenceSource.Contains('已完成 {completed:N0} / {total:N0} · 本轮失败 {failedThisRun:N0} · 全局待重试 {retryableCount:N0} · 待继续 {pending:N0}')) -or
+    -not ($leadIntelligenceSource.Contains('GetLeadBulkAnalysisRunStateAsync()')) -or
     -not ($leadIntelligenceSource.Contains('private void UpdateBulkAnalyzeButtonRunningContent(int completed, int total)')) -or
     -not ($leadIntelligenceSource.Contains('UpdateBulkAnalyzeButtonRunningContent(0, allLeads.Count);')) -or
     -not ($leadIntelligenceSource.Contains('UpdateBulkAnalyzeButtonRunningContent(progress.Completed, progress.Total);')) -or
@@ -915,10 +1008,11 @@ if ($emailInboxXaml -notmatch 'x:Name="NewEmailButton"' -or
     $emailAssistantSource -notmatch [regex]::Escape('CompleteStructuredAsync<EmailAssistantResult>') -or
     $settingsSource -notmatch [regex]::Escape('Email Sales Copilot') -or
     $guideCatalogSource -notmatch [regex]::Escape('Email Sales Copilot') -or
-    $guideCatalogSource -notmatch [regex]::Escape('GlobalGuideVersion = 9') -or
-    $guideCatalogSource -notmatch 'Ctrl\+1 . Ctrl\+8' -or
-    $guideCatalogSource -match 'Ctrl\+1 . Ctrl\+7' -or
+    $guideCatalogSource -notmatch [regex]::Escape('GlobalGuideVersion = 10') -or
+    $guideCatalogSource -notmatch 'Ctrl\+1 . Ctrl\+9' -or
+    $guideCatalogSource -match 'Ctrl\+1 . Ctrl\+8' -or
     $guideCatalogSource -notmatch [regex]::Escape('["customers"] = ModuleGuideVersion + 6') -or
+    $guideCatalogSource -notmatch [regex]::Escape('["customer-enrichment"] = ModuleGuideVersion + 1') -or
     $guideCatalogSource -notmatch [regex]::Escape('["broadcast"] = ModuleGuideVersion + 2') -or
     $guideCatalogSource -notmatch [regex]::Escape('["analytics"] = ModuleGuideVersion + 2') -or
     $guideCatalogSource -notmatch [regex]::Escape('["settings"] = ModuleGuideVersion + 8')) {
@@ -1083,7 +1177,13 @@ if (-not $aiProviderCatalogSource.Contains('"anthropic", "Anthropic Claude"') -o
     -not $aiModelCapabilityResolverSource.Contains('ResolveGemini') -or
     -not $aiModelCapabilityResolverSource.Contains('ResolveXai') -or
     -not $aiModelCapabilityResolverSource.Contains('ResolveGroq') -or
-    -not $settingsSource.Contains('自动（模型默认）') -or
+    -not $aiModelCapabilityResolverSource.Contains('ResolveMistral') -or
+    -not $aiModelCapabilityResolverSource.Contains('ResolveZhipu') -or
+    -not $aiModelCapabilityResolverSource.Contains('ResolveQwen') -or
+    -not $aiModelCapabilityResolverSource.Contains('ResolveTogether') -or
+    -not $settingsSource.Contains('自动（官方默认 high）') -or
+    -not $settingsSource.Contains('自动（官方默认 max）') -or
+    -not $settingsSource.Contains('自动（官方默认 xhigh）') -or
     $settingsSource.Contains('自动（API 未声明档位）')) {
   throw 'Provider settings must combine live capability metadata with official fallbacks and route Anthropic through the native Claude protocol.'
 }

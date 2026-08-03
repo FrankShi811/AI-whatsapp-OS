@@ -128,6 +128,23 @@
                             </Border>
                         </UniformGrid>
 
+                        <Border Background="{DynamicResource PrimarySoft}" BorderBrush="{DynamicResource Primary}" BorderThickness="1" CornerRadius="9" Padding="12" Margin="0,14,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,14,0">
+                                    <TextBlock Text="公开商业调查" Style="{StaticResource LabelText}"/>
+                                    <TextBlock x:Name="OpenWebStatusText" Text="正在读取公开证据状态…" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,5,0,0"/>
+                                    <ItemsControl x:Name="OpenWebFactItems" Margin="0,5,0,0">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate><TextBlock Text="{Binding StringFormat=• {0}}" TextWrapping="Wrap" Margin="0,2,0,0"/></DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <TextBlock Text="这里只显示已核验或人工确认且未过期的事实；候选与冲突请到左侧“客户外部调查”复核。" Foreground="{DynamicResource Muted}" FontSize="9.5" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                </StackPanel>
+                                <Button x:Name="RunOpenWebInvestigationButton" Grid.Column="1" Content="开始 / 刷新调查" Style="{StaticResource SecondaryButton}" Click="RunOpenWebInvestigation_Click" VerticalAlignment="Top" AutomationProperties.Name="开始或刷新当前客户公开商业调查"/>
+                            </Grid>
+                        </Border>
+
                         <TextBlock Text="客户理解" Style="{StaticResource LabelText}" Margin="0,16,0,5"/>
                         <TextBlock x:Name="BrainSummaryText" Text="等待 Customer Brain 整合 CRM、WhatsApp、邮件、触达和历史分析。" TextWrapping="Wrap"/>
                         <Border Background="{DynamicResource SuccessSoft}" CornerRadius="8" Padding="12" Margin="0,14,0,0">

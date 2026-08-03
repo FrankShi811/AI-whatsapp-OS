@@ -1,0 +1,522 @@
+<UserControl x:Class="WAFlow.Desktop.Pages.CustomerEnrichmentView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignHeight="820"
+             d:DesignWidth="1360"
+             MinWidth="760"
+             Loaded="UserControl_Loaded"
+             Unloaded="UserControl_Unloaded"
+             SizeChanged="Root_SizeChanged"
+             PreviewKeyDown="UserControl_PreviewKeyDown"
+             AutomationProperties.Name="客户公开商业信息调查">
+    <UserControl.Resources>
+        <Style x:Key="CompactButton" TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+            <Setter Property="MinHeight" Value="40"/>
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+        <Style x:Key="ReviewButton" TargetType="Button" BasedOn="{StaticResource CompactButton}">
+            <Setter Property="Margin" Value="0,0,7,7"/>
+        </Style>
+        <Style x:Key="StatusPill" TargetType="Border">
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Padding" Value="8,3"/>
+            <Setter Property="Background" Value="{DynamicResource SurfaceMuted}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource Line}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+        <Style x:Key="KeyboardListItem" TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0,0,0,4"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Style.Triggers>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="BorderBrush" Value="{DynamicResource AiAccent}"/>
+                    <Setter Property="BorderThickness" Value="2"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="FactRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+            <Setter Property="AutomationProperties.Name" Value="{Binding AutomationName}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource AiSoft}"/>
+                    <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
+                </Trigger>
+                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                    <Setter Property="BorderBrush" Value="{DynamicResource AiAccent}"/>
+                    <Setter Property="BorderThickness" Value="2"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="FactCellStyle" TargetType="DataGridCell" BasedOn="{StaticResource {x:Type DataGridCell}}">
+            <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource AiSoft}"/>
+                    <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid x:Name="RootGrid" Margin="26,22,26,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Style="{StaticResource AmbientHeroCard}" Padding="22,17" Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Style="{StaticResource PageEyebrow}" Text="CUSTOMER OPERATIONS · OPEN WEB INTELLIGENCE"/>
+                    <TextBlock Style="{StaticResource PageTitle}" FontSize="25" LineHeight="33" Text="客户公开商业信息调查"/>
+                    <TextBlock Style="{StaticResource BodyText}" Margin="0,3,0,0"
+                               Text="将公开来源、可核验证据与人工判断连接成客户事实，不自动覆盖客户档案。"/>
+                </StackPanel>
+                <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="18,0,0,0">
+                    <CheckBox x:Name="ForceRefreshCheckBox" Content="忽略缓存" Margin="0,0,14,0"
+                              AutomationProperties.Name="忽略缓存并重新调查"/>
+                    <Button Style="{StaticResource SecondaryButton}" Content="刷新" Margin="0,0,8,0"
+                            Click="Refresh_Click" AutomationProperties.Name="刷新调查页面"/>
+                    <Button x:Name="InvestigateButton" Style="{StaticResource AiButton}" Content="开始调查"
+                            Click="Investigate_Click" AutomationProperties.Name="开始调查当前客户"/>
+                </WrapPanel>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="1" Style="{StaticResource Card}" Padding="15,11" Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" MinWidth="112" Margin="0,0,16,0">
+                    <TextBlock Style="{StaticResource MicroText}" Text="搜索服务"/>
+                    <TextBlock x:Name="ProviderText" FontWeight="SemiBold" Text="正在检查" TextTrimming="CharacterEllipsis"
+                               AutomationProperties.Name="搜索服务状态"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" MinWidth="92" Margin="0,0,16,0">
+                    <TextBlock Style="{StaticResource MicroText}" Text="任务状态"/>
+                    <TextBlock x:Name="JobStatusText" FontWeight="SemiBold" Text="尚未调查"
+                               AutomationProperties.Name="调查任务状态"/>
+                </StackPanel>
+                <StackPanel Grid.Column="2" MinWidth="112" Margin="0,0,16,0">
+                    <TextBlock Style="{StaticResource MicroText}" Text="最近更新"/>
+                    <TextBlock x:Name="LastUpdatedText" FontWeight="SemiBold" Text="暂无"/>
+                </StackPanel>
+                <StackPanel Grid.Column="3" MinWidth="70" Margin="0,0,16,0">
+                    <TextBlock Style="{StaticResource MicroText}" Text="事实"/>
+                    <TextBlock x:Name="FactCountText" FontWeight="SemiBold" Text="0 条"/>
+                </StackPanel>
+                <StackPanel Grid.Column="4" MinWidth="70" Margin="0,0,16,0">
+                    <TextBlock Style="{StaticResource MicroText}" Text="来源"/>
+                    <TextBlock x:Name="SourceCountText" FontWeight="SemiBold" Text="0 个"/>
+                </StackPanel>
+                <StackPanel Grid.Column="5" MinWidth="76" Margin="0,0,16,0">
+                    <TextBlock Style="{StaticResource MicroText}" Text="本次费用"/>
+                    <TextBlock x:Name="CostText" FontWeight="SemiBold" Text="$0.000"
+                               AutomationProperties.Name="本次公开调查预估费用"/>
+                </StackPanel>
+                <StackPanel Grid.Column="6" VerticalAlignment="Center">
+                    <TextBlock x:Name="LiveStatusText" Style="{StaticResource LabelText}" Text="选择客户后查看公开调查结果。"
+                               TextTrimming="CharacterEllipsis"
+                               AutomationProperties.Name="调查运行状态"
+                               AutomationProperties.LiveSetting="Polite"/>
+                    <ProgressBar x:Name="JobProgress" Height="5" Margin="0,5,12,0" IsIndeterminate="True" Visibility="Collapsed"
+                                 AutomationProperties.Name="调查任务正在运行"/>
+                </StackPanel>
+                <StackPanel Grid.Column="7" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Style="{StaticResource CompactButton}" Content="导入客户" Margin="0,0,7,0"
+                            Click="Import_Click" AutomationProperties.Name="导入客户"/>
+                    <Button Style="{StaticResource CompactButton}" Content="调查设置"
+                            Click="Settings_Click" AutomationProperties.Name="打开客户调查设置"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="2">
+            <Grid x:Name="WorkbenchGrid">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition x:Name="CustomerColumn" Width="285"/>
+                    <ColumnDefinition x:Name="CustomerGapColumn" Width="12"/>
+                    <ColumnDefinition Width="*" MinWidth="360"/>
+                    <ColumnDefinition x:Name="SourceGapColumn" Width="12"/>
+                    <ColumnDefinition x:Name="SourceColumn" Width="380"/>
+                </Grid.ColumnDefinitions>
+
+                <Border x:Name="CustomerPanel" Grid.Column="0" Style="{StaticResource Card}" Padding="14">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}" FontSize="16" Text="客户队列"/>
+                                <TextBlock x:Name="CustomerCountText" Style="{StaticResource MicroText}" Text="0 位客户"/>
+                            </StackPanel>
+                            <Border Grid.Column="1" Style="{StaticResource StatusPill}" VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource PillText}" Foreground="{DynamicResource Primary}" Text="本地客户"/>
+                            </Border>
+                        </Grid>
+                        <Grid Grid.Row="1" Margin="0,11,0,9">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <TextBox x:Name="CustomerSearchBox" ToolTip="输入姓名、公司或国家，按 Enter 搜索"
+                                     KeyDown="CustomerSearchBox_KeyDown"
+                                     AutomationProperties.Name="搜索客户"/>
+                            <ComboBox x:Name="GradeFilter" Grid.Row="1" Margin="0,7,0,0"
+                                      DisplayMemberPath="Content"
+                                      SelectionChanged="CustomerFilter_SelectionChanged"
+                                      AutomationProperties.Name="按客户等级筛选">
+                                <ComboBoxItem Content="全部等级" IsSelected="True"/>
+                                <ComboBoxItem Content="A级" Tag="A"/>
+                                <ComboBoxItem Content="B级" Tag="B"/>
+                                <ComboBoxItem Content="C级" Tag="C"/>
+                                <ComboBoxItem Content="D级" Tag="D"/>
+                            </ComboBox>
+                        </Grid>
+                        <Grid Grid.Row="2">
+                            <ListBox x:Name="CustomerList" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                                     ItemContainerStyle="{StaticResource KeyboardListItem}"
+                                     SelectionChanged="CustomerList_SelectionChanged"
+                                     AutomationProperties.Name="客户调查队列">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="10,9" CornerRadius="9" Background="Transparent"
+                                                AutomationProperties.Name="{Binding AutomationName}">
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                </Grid.RowDefinitions>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock FontWeight="SemiBold" Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis"/>
+                                                    <Border Grid.Column="1" Style="{StaticResource StatusPill}" Padding="7,2" Margin="6,0,0,0">
+                                                        <TextBlock Style="{StaticResource PillText}" Text="{Binding GradeLabel}"/>
+                                                    </Border>
+                                                </Grid>
+                                                <TextBlock Grid.Row="1" Style="{StaticResource MicroText}" Margin="0,3,0,0"
+                                                           Text="{Binding CompanyAndCountry}" TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Grid.Row="2" Style="{StaticResource MicroText}" Margin="0,4,0,0"
+                                                           Foreground="{DynamicResource AiAccent}" Text="{Binding InvestigationLabel}"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <StackPanel x:Name="CustomerEmptyState" VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="220" Visibility="Collapsed">
+                                <TextBlock Margin="0,8,0,0" FontWeight="SemiBold" TextAlignment="Center" Text="没有匹配的客户"/>
+                                <TextBlock Style="{StaticResource MicroText}" Margin="0,4,0,0" TextAlignment="Center" Text="调整搜索条件，或先导入客户。"/>
+                            </StackPanel>
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Column="2" Style="{StaticResource Card}" Padding="0">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid Margin="17,14,17,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock x:Name="SelectedCustomerNameText" Style="{StaticResource SectionTitle}" FontSize="17" Text="请选择客户" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock x:Name="SelectedCustomerIdentityText" Style="{StaticResource MicroText}" Text="事实仅用于决策辅助，需核验后再写入客户档案。" TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                            <Button x:Name="ToggleEvidenceButton" Grid.Column="1" Style="{StaticResource CompactButton}" Content="证据详情"
+                                    Click="ToggleEvidence_Click" IsEnabled="False"
+                                    AutomationProperties.Name="显示选中事实的证据详情"/>
+                        </Grid>
+                        <Grid Grid.Row="1" Margin="17,0,17,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="FactCategoryFilter" Margin="0,0,6,0"
+                                      DisplayMemberPath="Content"
+                                      SelectionChanged="FactFilter_SelectionChanged"
+                                      AutomationProperties.Name="按事实分类筛选">
+                                <ComboBoxItem Content="全部分类" IsSelected="True"/>
+                                <ComboBoxItem Content="公司身份" Tag="identity"/>
+                                <ComboBoxItem Content="联系人" Tag="contact"/>
+                                <ComboBoxItem Content="业务与产品" Tag="business"/>
+                                <ComboBoxItem Content="规模与能力" Tag="scale"/>
+                                <ComboBoxItem Content="动态与风险" Tag="signal"/>
+                                <ComboBoxItem Content="其他" Tag="other"/>
+                            </ComboBox>
+                            <ComboBox x:Name="FactStatusFilter" Grid.Column="1" Margin="6,0,0,0"
+                                      DisplayMemberPath="Content"
+                                      SelectionChanged="FactFilter_SelectionChanged"
+                                      AutomationProperties.Name="按核验状态筛选">
+                                <ComboBoxItem Content="全部状态" IsSelected="True"/>
+                                <ComboBoxItem Content="已核验" Tag="verified"/>
+                                <ComboBoxItem Content="人工确认" Tag="human"/>
+                                <ComboBoxItem Content="高可能" Tag="likely"/>
+                                <ComboBoxItem Content="待核验" Tag="possible"/>
+                                <ComboBoxItem Content="冲突" Tag="conflict"/>
+                                <ComboBoxItem Content="已拒绝" Tag="rejected"/>
+                                <ComboBoxItem Content="已过期" Tag="outdated"/>
+                            </ComboBox>
+                        </Grid>
+                        <Grid Grid.Row="2">
+                            <DataGrid x:Name="FactGrid"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      CanUserReorderColumns="False"
+                                      CanUserResizeRows="False"
+                                      CanUserSortColumns="False"
+                                      IsReadOnly="True"
+                                      HeadersVisibility="Column"
+                                      RowHeight="54"
+                                      SelectionMode="Single"
+                                      SelectionUnit="FullRow"
+                                      BorderBrush="{DynamicResource Line}"
+                                      BorderThickness="0,1,0,0"
+                                      RowStyle="{StaticResource FactRowStyle}"
+                                      CellStyle="{StaticResource FactCellStyle}"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                      ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                      SelectionChanged="FactGrid_SelectionChanged"
+                                      AutomationProperties.Name="客户公开调查事实">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="分类" Binding="{Binding CategoryLabel}" Width="86"/>
+                                    <DataGridTextColumn Header="事实字段" Binding="{Binding FieldLabel}" Width="118"/>
+                                    <DataGridTemplateColumn Header="调查值" Width="*" MinWidth="150">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Margin="8,0,10,0" VerticalAlignment="Center" Text="{Binding Value}"
+                                                           TextTrimming="CharacterEllipsis" ToolTip="{Binding Value}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="核验" Width="92">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Border HorizontalAlignment="Left" VerticalAlignment="Center">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border" BasedOn="{StaticResource StatusPill}">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding StatusTone}" Value="success"><Setter Property="Background" Value="{DynamicResource SuccessSoft}"/><Setter Property="BorderBrush" Value="{DynamicResource Success}"/></DataTrigger>
+                                                                <DataTrigger Binding="{Binding StatusTone}" Value="info"><Setter Property="Background" Value="{DynamicResource InfoSoft}"/><Setter Property="BorderBrush" Value="{DynamicResource Info}"/></DataTrigger>
+                                                                <DataTrigger Binding="{Binding StatusTone}" Value="warning"><Setter Property="Background" Value="{DynamicResource WarningSoft}"/><Setter Property="BorderBrush" Value="{DynamicResource Warning}"/></DataTrigger>
+                                                                <DataTrigger Binding="{Binding StatusTone}" Value="danger"><Setter Property="Background" Value="{DynamicResource DangerSoft}"/><Setter Property="BorderBrush" Value="{DynamicResource Danger}"/></DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <TextBlock Style="{StaticResource PillText}" Text="{Binding StatusLabel}"/>
+                                                </Border>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="置信度" Width="94">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel VerticalAlignment="Center" Margin="0,0,10,0">
+                                                    <TextBlock Style="{StaticResource MicroText}" Text="{Binding ConfidenceLabel}"/>
+                                                    <ProgressBar Style="{StaticResource ConfidenceMeter}" Margin="0,3,0,0" Value="{Binding ConfidencePercent}"/>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="来源" Binding="{Binding SourceCountLabel}" Width="65"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <StackPanel x:Name="FactEmptyState" VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="360">
+                                <TextBlock x:Name="FactEmptyTitle" Margin="0,9,0,0" FontSize="15" FontWeight="SemiBold" TextAlignment="Center" Text="选择客户开始调查"/>
+                                <TextBlock x:Name="FactEmptyMessage" Style="{StaticResource BodyText}" Margin="0,5,0,0" TextAlignment="Center"
+                                           Text="调查结果会以事实、置信度和公开来源呈现。"/>
+                                <Button x:Name="FactEmptyActionButton" Style="{StaticResource AiButton}" Margin="0,14,0,0" Content="开始调查"
+                                        Visibility="Collapsed" Click="Investigate_Click"
+                                        AutomationProperties.Name="从空状态开始调查"/>
+                            </StackPanel>
+                        </Grid>
+                        <Border x:Name="FactPager" Grid.Row="3" Padding="14,8" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Visibility="Collapsed">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="FactPageText" Style="{StaticResource MicroText}" VerticalAlignment="Center" Text="第 1 / 1 页 · 共 0 条"/>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                    <Button x:Name="PreviousFactPageButton" Style="{StaticResource CompactButton}" MinWidth="64" Margin="0,0,7,0" Content="上一页"
+                                            Click="PreviousFactPage_Click" AutomationProperties.Name="上一页调查事实"/>
+                                    <Button x:Name="NextFactPageButton" Style="{StaticResource CompactButton}" MinWidth="64" Content="下一页"
+                                            Click="NextFactPage_Click" AutomationProperties.Name="下一页调查事实"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </Border>
+
+                <Border x:Name="EvidenceRail" Grid.Column="4" Style="{StaticResource Card}" Padding="0" Visibility="Collapsed">
+                    <Button Style="{StaticResource GhostButton}" Width="40" Padding="0" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                            Click="ToggleEvidence_Click" ToolTip="展开证据详情" AutomationProperties.Name="展开证据详情">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock FontSize="18" Text="‹" HorizontalAlignment="Center"/>
+                            <TextBlock Margin="0,8,0,0" FontSize="11" Text="证&#x0a;据" TextAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </Border>
+
+                <Border x:Name="EvidencePanel" Grid.Column="4" Style="{StaticResource Card}" Padding="0">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <Grid Margin="16,14,14,11">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}" FontSize="16" Text="证据与来源"/>
+                                <TextBlock x:Name="EvidenceFactTitleText" Style="{StaticResource MicroText}" Text="选择一条事实查看证据链" TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                            <Button Grid.Column="1" Style="{StaticResource IconButton}" Content="›" ToolTip="收起证据详情"
+                                    Click="ToggleEvidence_Click" AutomationProperties.Name="收起证据详情"/>
+                        </Grid>
+                        <ScrollViewer Grid.Row="1" Style="{StaticResource PassivePageViewport}" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel x:Name="EvidenceContent" Margin="16,0,16,16" IsEnabled="False">
+                                <Border Style="{StaticResource ReasoningStepCard}" Margin="0,0,0,10">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Style="{StaticResource LabelText}" Text="1 · 调查事实"/>
+                                            <Border Grid.Column="1" Style="{StaticResource StatusPill}">
+                                                <TextBlock x:Name="EvidenceStatusText" Style="{StaticResource PillText}" Text="待核验"/>
+                                            </Border>
+                                        </Grid>
+                                        <TextBlock x:Name="EvidenceValueText" Margin="0,8,0,0" FontSize="15" FontWeight="SemiBold" Text="暂无" TextWrapping="Wrap"/>
+                                        <Grid Margin="0,9,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <ProgressBar x:Name="EvidenceConfidenceBar" Style="{StaticResource ConfidenceMeter}" Value="0" VerticalAlignment="Center"/>
+                                            <TextBlock x:Name="EvidenceConfidenceText" Grid.Column="1" Style="{StaticResource MicroText}" Margin="9,0,0,0" Text="0%"/>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource ReasoningStepCard}" Margin="0,0,0,10">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource LabelText}" Text="2 · 原文证据"/>
+                                        <TextBlock x:Name="EvidenceQuoteText" Style="{StaticResource BodyText}" Margin="0,7,0,0" Text="暂无可引用原文。" TextWrapping="Wrap"/>
+                                        <TextBlock x:Name="EvidenceFreshnessText" Style="{StaticResource MicroText}" Margin="0,7,0,0" Text="时效信息：暂无"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource ReasoningStepCard}" Margin="0,0,0,10">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource LabelText}" Text="3 · 公开来源与实体匹配"/>
+                                        <ListBox x:Name="SourceList" Margin="0,7,0,0" MaxHeight="145" BorderThickness="1"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                 ItemContainerStyle="{StaticResource KeyboardListItem}"
+                                                 SelectionChanged="SourceList_SelectionChanged"
+                                                 AutomationProperties.Name="支持当前事实的公开来源">
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid Margin="8,6" AutomationProperties.Name="{Binding AutomationName}">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*"/>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel>
+                                                            <TextBlock FontWeight="SemiBold" FontSize="12" Text="{Binding Title}" TextTrimming="CharacterEllipsis"/>
+                                                            <TextBlock Style="{StaticResource MicroText}" Text="{Binding DomainAndProvider}" TextTrimming="CharacterEllipsis"/>
+                                                        </StackPanel>
+                                                        <TextBlock Grid.Column="1" Style="{StaticResource MicroText}" Margin="8,0,0,0" VerticalAlignment="Center" Text="{Binding MatchLabel}"/>
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                        <StackPanel x:Name="SourceDetailPanel" Margin="0,9,0,0" IsEnabled="False">
+                                            <TextBlock x:Name="SourceTitleText" FontWeight="SemiBold" Text="未选择来源" TextWrapping="Wrap"/>
+                                            <TextBlock x:Name="SourceMetaText" Style="{StaticResource MicroText}" Margin="0,3,0,0" Text="" TextWrapping="Wrap"/>
+                                            <TextBlock x:Name="SourceMatchText" Style="{StaticResource LabelText}" Margin="0,7,0,0" Text="实体匹配：暂无" TextWrapping="Wrap"/>
+                                            <TextBlock x:Name="SourceConflictText" Style="{StaticResource MicroText}" Margin="0,4,0,0" Foreground="{DynamicResource Danger}" Text="" TextWrapping="Wrap"/>
+                                            <TextBlock x:Name="SourceSnippetText" Style="{StaticResource BodyText}" Margin="0,7,0,0" Text="" TextWrapping="Wrap"/>
+                                            <Button x:Name="OpenSourceButton" Style="{StaticResource CompactButton}" Margin="0,9,0,0" HorizontalAlignment="Left"
+                                                    Content="打开公开来源" Click="OpenSource_Click" IsEnabled="False"
+                                                    AutomationProperties.Name="在浏览器打开选中的公开来源"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="{DynamicResource PrimarySurface}" BorderBrush="{DynamicResource PrimarySoft}" BorderThickness="1" CornerRadius="10" Padding="12">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource LabelText}" Text="人工复核"/>
+                                        <TextBlock Style="{StaticResource MicroText}" Margin="0,4,0,8" Text="确认后可供客户大脑使用；拒绝和过期事实会保留审计记录。"/>
+                                        <WrapPanel>
+                                            <Button x:Name="ConfirmFactButton" Style="{StaticResource ReviewButton}" Content="确认"
+                                                    Click="ConfirmFact_Click" AutomationProperties.Name="确认当前调查事实"/>
+                                            <Button x:Name="RejectFactButton" Style="{StaticResource ReviewButton}" Content="拒绝"
+                                                    Click="RejectFact_Click" AutomationProperties.Name="拒绝当前调查事实"/>
+                                            <Button x:Name="EditFactButton" Style="{StaticResource ReviewButton}" Content="编辑并确认"
+                                                    Click="EditFact_Click" AutomationProperties.Name="编辑并确认当前调查事实"/>
+                                            <Button x:Name="OutdateFactButton" Style="{StaticResource ReviewButton}" Content="标记过期"
+                                                    Click="OutdateFact_Click" AutomationProperties.Name="将当前调查事实标记为过期"/>
+                                        </WrapPanel>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <Border x:Name="PageLoadingOverlay" Background="{DynamicResource Overlay}" CornerRadius="12" Visibility="Collapsed"
+                    AutomationProperties.Name="正在加载客户调查数据" AutomationProperties.LiveSetting="Polite">
+                <Border Style="{StaticResource ElevatedCard}" Padding="24,20" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <StackPanel MinWidth="250">
+                        <TextBlock x:Name="LoadingTitleText" FontSize="15" FontWeight="SemiBold" Text="正在加载调查工作台" HorizontalAlignment="Center"/>
+                        <ProgressBar IsIndeterminate="True" Height="6" Margin="0,12,0,0"/>
+                    </StackPanel>
+                </Border>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

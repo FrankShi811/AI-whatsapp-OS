@@ -26,6 +26,7 @@ public partial class MainWindow : Window
     private readonly DashboardView _dashboard;
     private readonly LeadIntelligenceView _intelligence;
     private readonly CustomersView _customers;
+    private readonly CustomerEnrichmentView _customerEnrichment;
     private readonly WhatsAppInboxView _inbox;
     private readonly EmailInboxView _email;
     private readonly CampaignsView _campaigns;
@@ -65,6 +66,7 @@ public partial class MainWindow : Window
         _dashboard = new DashboardView(services);
         _intelligence = new LeadIntelligenceView(services);
         _customers = new CustomersView(services);
+        _customerEnrichment = new CustomerEnrichmentView(services);
         _inbox = new WhatsAppInboxView(services);
         _email = new EmailInboxView(services);
         _campaigns = new CampaignsView(services);
@@ -76,6 +78,9 @@ public partial class MainWindow : Window
         _intelligence.DataChanged += View_DataChanged;
         _customers.ImportRequested += OpenImport;
         _customers.DataChanged += View_DataChanged;
+        _customerEnrichment.DataChanged += View_DataChanged;
+        _customerEnrichment.ImportRequested += OpenImport;
+        _customerEnrichment.SettingsRequested += CustomerEnrichment_SettingsRequested;
         _inbox.DataChanged += View_DataChanged;
         _email.DataChanged += View_DataChanged;
         _campaigns.DataChanged += View_DataChanged;
@@ -365,6 +370,9 @@ public partial class MainWindow : Window
         _services.WhatsAppSync.MessageSynchronized -= MessagingUnreadChanged;
         _services.WhatsAppSync.SynchronizationChanged -= WhatsAppSynchronizationChanged;
         _services.Email.SynchronizationChanged -= EmailSynchronizationChanged;
+        _customerEnrichment.DataChanged -= View_DataChanged;
+        _customerEnrichment.ImportRequested -= OpenImport;
+        _customerEnrichment.SettingsRequested -= CustomerEnrichment_SettingsRequested;
         _unreadBadgeTimer.Stop();
         _unreadBadgeTimer.Tick -= UnreadBadgeTimer_Tick;
         _updates.StateChanged -= Updates_StateChanged;
@@ -462,6 +470,7 @@ public partial class MainWindow : Window
             "broadcast" => BroadcastButton,
             "knowledge" => KnowledgeButton,
             "customers" => CustomersButton,
+            "customer-enrichment" => CustomerEnrichmentButton,
             "analytics" => AnalyticsButton,
             _ => DashboardButton
         };
@@ -485,6 +494,7 @@ public partial class MainWindow : Window
         {
             "intelligence" => ((object)_intelligence, "商机智能", "AI 评分证据、客户画像与下一步决策"),
             "customers" => ((object)_customers, "客户列表", "统一客户数据、动态字段与批量运营"),
+            "customer-enrichment" => ((object)_customerEnrichment, "客户外部调查", "公开来源、主体匹配、证据事实与人工审核"),
             "inbox" => ((object)_inbox, "WhatsApp Inbox", "会话、客户资料与 AI 销售信号实时联动"),
             "email" => ((object)_email, "邮件 Inbox", "邮件收发、历史归档与 CRM 客户资料实时联动"),
             "broadcast" => ((object)_campaigns, "多渠道自动化触达", "WhatsApp 与邮件任务、动态字段、发送节奏与分渠道审计"),
@@ -699,7 +709,7 @@ public partial class MainWindow : Window
         foreach (var button in new[]
                  {
                      DashboardButton, IntelligenceButton, CustomersButton, InboxButton,
-                     EmailButton, BroadcastButton, KnowledgeButton, AnalyticsButton
+                     CustomerEnrichmentButton, EmailButton, BroadcastButton, KnowledgeButton, AnalyticsButton
                  })
             ApplyNavigationButtonState(button, ReferenceEquals(button, _activeButton));
         SettingsButton.SetResourceReference(Button.ForegroundProperty, "SidebarText");
@@ -816,6 +826,7 @@ public partial class MainWindow : Window
         {
             case "import": OpenImport(this, EventArgs.Empty); break;
             case "intelligence": await NavigateAsync(action, IntelligenceButton); break;
+            case "customer-enrichment": await NavigateAsync(action, CustomerEnrichmentButton); break;
             case "inbox": await NavigateAsync(action, InboxButton); break;
             case "email": await NavigateAsync(action, EmailButton); break;
             case "broadcast": await NavigateAsync(action, BroadcastButton); break;
@@ -857,11 +868,12 @@ public partial class MainWindow : Window
             Key.D1 => ("dashboard", DashboardButton),
             Key.D2 => ("intelligence", IntelligenceButton),
             Key.D3 => ("customers", CustomersButton),
-            Key.D4 => ("inbox", InboxButton),
-            Key.D5 => ("email", EmailButton),
-            Key.D6 => ("broadcast", BroadcastButton),
-            Key.D7 => ("knowledge", KnowledgeButton),
-            Key.D8 => ("analytics", AnalyticsButton),
+            Key.D4 => ("customer-enrichment", CustomerEnrichmentButton),
+            Key.D5 => ("inbox", InboxButton),
+            Key.D6 => ("email", EmailButton),
+            Key.D7 => ("broadcast", BroadcastButton),
+            Key.D8 => ("knowledge", KnowledgeButton),
+            Key.D9 => ("analytics", AnalyticsButton),
             _ => ((string Page, Button Button)?)null
         };
         if (target is null) return;
@@ -873,6 +885,9 @@ public partial class MainWindow : Window
     {
         QueueCurrentViewRefresh(_dashboard, _intelligence);
     }
+
+    private async void CustomerEnrichment_SettingsRequested(object? sender, EventArgs e) =>
+        await OpenSettingsAsync();
 
     private void View_DataChanged(object? sender, EventArgs e)
     {

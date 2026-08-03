@@ -666,6 +666,7 @@ public static class AiModuleKeys
     public const string WhatsAppInbox = "customer_operations.whatsapp_inbox";
     public const string EmailInbox = "customer_operations.email_inbox";
     public const string Campaigns = "customer_operations.campaigns";
+    public const string CustomerEnrichment = "customer_operations.customer_enrichment";
     public const string KnowledgeBase = "insights.knowledge_base";
     public const string CustomerAnalytics = "insights.customer_analytics";
 
@@ -676,6 +677,7 @@ public static class AiModuleKeys
         WhatsAppInbox,
         EmailInbox,
         Campaigns,
+        CustomerEnrichment,
         KnowledgeBase,
         CustomerAnalytics
     ];

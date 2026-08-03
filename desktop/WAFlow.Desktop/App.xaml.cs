@@ -102,6 +102,7 @@ public partial class App : Application
                     MessageBoxImage.Information);
             }
             await Services.LeadAutomation.StartAsync();
+            await Services.CustomerEnrichment.StartAsync();
             await Services.Campaigns.StartAsync();
             await Services.MessagingSync.StartAsync();
             await Services.WhatsAppNumberValidation.StartAsync();
@@ -208,6 +209,7 @@ public partial class App : Application
             if (Services is not null)
             {
                 DisposeForExit("lead-automation", () => Services.LeadAutomation.DisposeAsync());
+                DisposeForExit("customer-enrichment", () => Services.CustomerEnrichment.DisposeAsync());
                 DisposeForExit("campaigns", () => Services.Campaigns.DisposeAsync());
                 DisposeForExit("messaging-sync", () => Services.MessagingSync.DisposeAsync());
                 DisposeForExit("whatsapp-number-validation", () => Services.WhatsAppNumberValidation.DisposeAsync());

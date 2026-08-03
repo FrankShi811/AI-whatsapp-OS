@@ -60,6 +60,8 @@ public sealed class ImportPreviewRow
 
 public sealed record ImportCommitResult(int Total, int Created, int Updated, int InvalidPhones, int PendingWhatsAppChecks, int Failed);
 
+public sealed record LeadsImportedEventArgs(IReadOnlyList<string> LeadIds, int Created, int Updated);
+
 public sealed record ImportProgress(string Phase, int Completed, int Total)
 {
     public int Percent => Total <= 0 ? 0 : Math.Clamp((int)Math.Round(Completed * 100d / Total), 0, 100);

@@ -32,6 +32,7 @@ public sealed class AppServices
     public CustomerSuccessAgentService CustomerSuccessAgent { get; }
     public CustomerSuccessAgentCoordinator CustomerSuccessCoordinator { get; }
     public CustomerBrainService CustomerBrain { get; }
+    public CustomerEnrichmentService CustomerEnrichment { get; }
     public CustomerActionLifecycleService CustomerActions { get; }
     public PersonalSalesLearningService SalesLearning { get; }
     public TodayBriefService TodayBrief { get; }
@@ -65,18 +66,25 @@ public sealed class AppServices
         WhatsApp = new WhatsAppConnectionManager(DataWorkspace.RootDirectory);
         WhatsAppNumberValidation = new WhatsAppNumberValidationService(Repository, WhatsApp);
         WhatsAppSync = new WhatsAppSyncService(Repository, WhatsApp);
+        CustomerBrain = new CustomerBrainService(Repository, DeepSeek, KnowledgeRetrieval);
         Email = new EmailService(Repository);
-        EmailAssistant = new EmailAssistantService(Repository, DeepSeek, KnowledgeRetrieval);
+        EmailAssistant = new EmailAssistantService(Repository, DeepSeek, KnowledgeRetrieval, CustomerBrain);
         MessagingSync = new MessagingSyncService(Repository, WhatsApp, Email);
         LeadAutomation = new LeadIntelligenceAutomationService(Repository, DeepSeek, WhatsAppSync);
         PublicIp = new PublicIpMonitor(Repository);
         Campaigns = new CampaignAutomationService(Repository, WhatsApp, PublicIp, Email);
-        CustomerBrain = new CustomerBrainService(Repository, DeepSeek, KnowledgeRetrieval);
+        CustomerEnrichment = new CustomerEnrichmentService(
+            Repository,
+            DeepSeek,
+            CustomerBrain,
+            WhatsAppSync,
+            LeadAutomation,
+            Imports);
         CustomerAnalysis = new CustomerAnalysisService(Repository, DeepSeek, KnowledgeRetrieval, CustomerBrain);
         CustomerReportExports = new CustomerReportExportService(Repository);
         CustomerActions = new CustomerActionLifecycleService(Repository);
         SalesLearning = new PersonalSalesLearningService(Repository);
-        ConversationAssistant = new ConversationAssistantService(Repository, DeepSeek, SalesLearning, KnowledgeRetrieval);
+        ConversationAssistant = new ConversationAssistantService(Repository, DeepSeek, SalesLearning, KnowledgeRetrieval, CustomerBrain);
         WhatsAppTranslation = new WhatsAppTranslationService(Repository, DeepSeek);
         CustomerIdentity = new CustomerIdentityService(Repository);
         SourcingRequests = new SourcingRequestService(Repository);
@@ -86,7 +94,8 @@ public sealed class AppServices
             DeepSeek,
             CustomerIdentity,
             SourcingRequests,
-            KnowledgeRetrieval);
+            KnowledgeRetrieval,
+            CustomerBrain);
         CustomerSuccessCoordinator = new CustomerSuccessAgentCoordinator(Repository, WhatsAppSync, WhatsApp, CustomerSuccessAgent);
         TodayBrief = new TodayBriefService(Repository, SalesLearning);
         DashboardUnreadDigest = new DashboardUnreadDigestService(Repository, DeepSeek);
