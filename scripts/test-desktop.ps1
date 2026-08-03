@@ -821,17 +821,28 @@ Write-Host 'PASS  WhatsApp first-connect QR timeout, fallback, retry and visible
 if ($bridgeSource -notmatch "case 'catch_up_history'" -or
     $bridgeSource -notmatch 'receivedPendingNotifications' -or
     $bridgeSource -notmatch "connect\('reconnect'\)" -or
+    $bridgeSource -notmatch "Browsers\.macOS\('Desktop'\)" -or
+    $bridgeSource -notmatch 'desktop-history-profile\.json' -or
+    $bridgeSource -notmatch 'offline_history_profile' -or
+    $bridgeSource -notmatch 'requiresHistoryRepair' -or
+    $bridgeSource -notmatch 'fetchMessageHistory' -or
+    $bridgeSource -notmatch 'groupFetchAllParticipating' -or
     $bridgeOfflineCatchupSource -notmatch "sendPresenceUpdate\('available'\)" -or
     $bridgeOfflineCatchupSource -notmatch "sendPresenceUpdate\('unavailable'\)" -or
     $whatsAppBridgeClientSource -notmatch 'CatchUpHistoryAsync' -or
+    $whatsAppBridgeClientSource -notmatch 'WhatsAppHistoryCursor' -or
     $whatsAppManagerSource -notmatch 'CatchUpHistoryAsync' -or
+    $messagingSyncSource -notmatch 'BuildHistoryCursors' -or
+    $messagingSyncSource -notmatch [regex]::Escape('CatchUpHistoryAsync(account.Id, cursors') -or
     $whatsAppInboxSource -notmatch '正在重新连接并补齐离线期间的新消息' -or
     $whatsAppInboxSource -match '_automaticSyncRequested') {
-  throw 'WhatsApp must automatically drain the offline message queue after reconnect and expose a real manual catch-up command instead of refreshing cached contacts only.'
+  throw 'WhatsApp must request Desktop full history, discover groups and recover each persisted chat gap after reconnect instead of refreshing cached contacts only.'
 }
 & $node (Join-Path $root 'bridge\scripts\offline-catchup-smoke.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'WhatsApp offline-message catch-up smoke test failed.' }
-Write-Host 'PASS  WhatsApp startup and manual offline-message catch-up contract'
+& $node (Join-Path $root 'bridge\scripts\history-recovery-smoke.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'WhatsApp per-chat history recovery smoke test failed.' }
+Write-Host 'PASS  WhatsApp startup, Desktop history and per-chat offline-message recovery contract'
 
 if ($networkProxyResolverSource -notmatch 'WAFLOW_PROXY_URL' -or
     $networkProxyResolverSource -notmatch 'WebRequest\.DefaultWebProxy' -or

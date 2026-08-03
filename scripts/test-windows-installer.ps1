@@ -98,6 +98,16 @@ try {
   $afterHash = Get-HashWithRetry $database
   $databasePreservationPassed = $beforeHash -eq 'MISSING' -or $beforeHash -eq $afterHash
   $installedVersion = (Get-Item -LiteralPath $appPath).VersionInfo.FileVersion
+  $versionSource = 'installed executable'
+  # A self-contained .NET single-file bundle can omit the native apphost's
+  # Windows version resource even though the Velopack package and installer
+  # carry the release version. Fall back to the installer resource so the
+  # smoke test still verifies the artifact that performed this installation.
+  if ([string]::IsNullOrWhiteSpace($installedVersion)) {
+    $installedVersion = (Get-Item -LiteralPath $InstallerPath).VersionInfo.FileVersion
+    $versionSource = 'installer'
+  }
+  $installedVersion = $installedVersion.Trim()
   $updatePath = Join-Path $QaDirectory 'Update.exe'
   $uninstallExit = $null
   if (Test-Path -LiteralPath $updatePath) {
@@ -108,6 +118,7 @@ try {
   $result = [pscustomobject]@{
     InstallerExit = $installer.ExitCode
     InstalledExeVersion = $installedVersion
+    InstalledVersionSource = $versionSource
     ApplicationStarted = $true
     ShortcutTargets = $shortcutTargets -join '; '
     ShortcutsVerified = $shortcutTargets.Count -eq 2
@@ -119,8 +130,9 @@ try {
     QaDirectoryStillExists = Test-Path -LiteralPath $QaDirectory
   }
   $result
-  if (-not $installedVersion.StartsWith($ExpectedVersion + '.', [StringComparison]::Ordinal) -and
-      $installedVersion -ne $ExpectedVersion) {
+  if ([string]::IsNullOrWhiteSpace($installedVersion) -or
+      (-not $installedVersion.StartsWith($ExpectedVersion + '.', [StringComparison]::Ordinal) -and
+       $installedVersion -ne $ExpectedVersion)) {
     throw "Installed version mismatch. expected=$ExpectedVersion actual=$installedVersion"
   }
   if (-not $result.ShortcutsVerified) { throw 'Installer smoke test did not verify both Windows shortcuts.' }

@@ -8,6 +8,12 @@ using WAFlow.Core.Infrastructure;
 namespace WAFlow.Core.Services;
 
 public sealed record WhatsAppBridgeEvent(string Name, string AccountId, JsonElement Data);
+public sealed record WhatsAppHistoryCursor(
+    string Jid,
+    string Phone,
+    bool IsGroup,
+    DateTimeOffset LastMessageAt,
+    int UnreadCount);
 
 public sealed class WhatsAppBridgeException(string code, string message) : Exception(message)
 {
@@ -203,7 +209,19 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     public Task<JsonElement> SyncNowAsync(CancellationToken cancellationToken = default) =>
         SendCommandAsync("sync_now", null, cancellationToken);
     public Task<JsonElement> CatchUpHistoryAsync(CancellationToken cancellationToken = default) =>
-        SendCommandAsync("catch_up_history", null, cancellationToken);
+        CatchUpHistoryAsync([], cancellationToken);
+    public Task<JsonElement> CatchUpHistoryAsync(IReadOnlyCollection<WhatsAppHistoryCursor> cursors, CancellationToken cancellationToken = default) =>
+        SendCommandAsync("catch_up_history", new
+        {
+            cursors = cursors.Select(cursor => new
+            {
+                jid = cursor.Jid,
+                phone = cursor.Phone,
+                isGroup = cursor.IsGroup,
+                lastMessageAt = cursor.LastMessageAt == default ? "" : cursor.LastMessageAt.ToUniversalTime().ToString("O"),
+                unreadCount = Math.Max(0, cursor.UnreadCount)
+            }).ToArray()
+        }, cancellationToken);
 
     private async Task<JsonElement> SendCommandAsync(string command, object? payload, CancellationToken cancellationToken)
     {

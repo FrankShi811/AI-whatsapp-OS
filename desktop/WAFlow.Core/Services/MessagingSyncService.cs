@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using WAFlow.Core.Domain;
 using WAFlow.Core.Infrastructure;
 
 namespace WAFlow.Core.Services;
@@ -35,6 +36,18 @@ public sealed class MessagingSyncService : IAsyncDisposable
         }
     }
 
+    public static IReadOnlyList<WhatsAppHistoryCursor> BuildHistoryCursors(IEnumerable<WhatsAppConversation> conversations) =>
+        conversations
+            .Where(conversation => !string.IsNullOrWhiteSpace(conversation.Jid)
+                                   || !string.IsNullOrWhiteSpace(conversation.Phone))
+            .Select(conversation => new WhatsAppHistoryCursor(
+                conversation.Jid,
+                conversation.Phone,
+                conversation.IsGroup,
+                conversation.LastMessageAt,
+                conversation.UnreadCount))
+            .ToArray();
+
     private async Task RunWhatsAppSupervisorAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
@@ -63,8 +76,20 @@ public sealed class MessagingSyncService : IAsyncDisposable
                         }
 
                         var now = DateTimeOffset.Now;
-                        if (!_lastWhatsAppSync.TryGetValue(account.Id, out var lastSync)
-                            || now - lastSync >= TimeSpan.FromMinutes(5))
+                        if (!_lastWhatsAppSync.TryGetValue(account.Id, out var lastSync))
+                        {
+                            // A normal app-state sync only returns WhatsApp's current cached snapshot.
+                            // After the application was closed for a few days it can therefore report
+                            // "complete" while messages received during the gap are still missing.
+                            // Give the bridge the latest locally persisted message cursor for every chat
+                            // so startup/reconnect can request the actual history gap automatically.
+                            var conversations = await _repository.GetWhatsAppConversationsAsync(account.Id, cancellationToken);
+                            var cursors = BuildHistoryCursors(conversations);
+
+                            await _whatsApp.CatchUpHistoryAsync(account.Id, cursors, cancellationToken);
+                            _lastWhatsAppSync[account.Id] = now;
+                        }
+                        else if (now - lastSync >= TimeSpan.FromMinutes(5))
                         {
                             await _whatsApp.SyncNowAsync(account.Id, cancellationToken);
                             _lastWhatsAppSync[account.Id] = now;

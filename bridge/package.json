@@ -14,6 +14,7 @@
     "smoke:connection-bootstrap": "node scripts/connection-bootstrap-smoke.mjs",
     "smoke:network-routing": "node scripts/network-routing-smoke.mjs",
     "smoke:offline-catchup": "node scripts/offline-catchup-smoke.mjs",
+    "smoke:history-recovery": "node scripts/history-recovery-smoke.mjs",
     "build:exe": "node scripts/build-sea.mjs",
     "smoke:exe": "node scripts/smoke.mjs dist/WAFlow.WhatsApp.Bridge.exe"
   },

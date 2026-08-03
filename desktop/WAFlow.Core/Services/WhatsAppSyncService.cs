@@ -14,7 +14,9 @@ public sealed record WhatsAppSyncProgress(
     int Chats,
     int Messages,
     bool ExistingSession,
-    string Error = "");
+    string Error = "",
+    int RecoveredMessages = 0,
+    int RequestedChats = 0);
 
 public sealed class WhatsAppSyncService
 {
@@ -507,7 +509,9 @@ public sealed class WhatsAppSyncService
         Int(data, "chats"),
         Int(data, "messages"),
         Bool(data, "existingSession"),
-        Text(data, "error"));
+        Text(data, "error"),
+        Int(data, "recoveredMessages"),
+        Int(data, "requestedChats"));
 
     private static int Int(JsonElement data, string name) => data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var numeric) ? numeric : 0;
 }

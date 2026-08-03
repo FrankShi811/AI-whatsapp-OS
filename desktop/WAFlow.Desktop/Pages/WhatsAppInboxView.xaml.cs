@@ -394,9 +394,18 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         }
         SyncStatusText.Text = progress.State switch
         {
+            "action_required" when progress.Phase == "offline_history_profile" =>
+                string.IsNullOrWhiteSpace(progress.Error)
+                    ? "当前账号需退出并用新版重新扫码一次，才能补回完整离线历史"
+                    : progress.Error,
             "syncing" => $"正在同步 {PhaseLabel(progress.Phase)}{(progress.Progress is null ? "" : $" {progress.Progress}%")}",
-            "complete" when progress.Phase == "offline_messages" => "离线期间的新消息已补齐，实时同步已恢复",
-            "complete" when progress.Phase == "offline_messages_timeout" => "实时同步已恢复；暂未收到离线补齐确认，可稍后重试",
+            "complete" when progress.Phase == "offline_messages" =>
+                $"已恢复 {progress.RecoveredMessages} 条离线消息，实时同步已恢复",
+            "complete" when progress.Phase == "offline_messages_no_new_messages" => progress.RequestedChats > 0
+                ? $"已核对 {progress.RequestedChats} 个缺口会话；本次未收到新增历史，程序将保持在线继续接收"
+                : "本次未收到新增历史，程序将保持在线继续接收",
+            "complete" when progress.Phase == "offline_messages_timeout" =>
+                "离线历史恢复仍在等待手机响应，程序将保持在线；可稍后再次同步",
             "complete" => progress.Messages > 0 || progress.Contacts > 0 || progress.Chats > 0
                 ? $"已同步 {progress.Chats} 会话 / {progress.Contacts} 联系人 / {progress.Messages} 消息"
                 : _existingSession ? "已同步联系人与会话状态" : "同步完成",
@@ -567,6 +576,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             var connection = e.Data.TryGetProperty("state", out var state) ? state.GetString() ?? "disconnected" : "disconnected";
             _connected = connection == "connected";
             _existingSession = Bool(e.Data, "existingSession");
+            var requiresHistoryRepair = Bool(e.Data, "requiresHistoryRepair");
             SetConnectionText(connection switch { "connected" => "已连接", "connecting" => "连接中", "retrying" => "自动重试中", "logged_out" => "登录已失效", _ => "已断开" }, _connected);
             DisconnectButton.IsEnabled = _connected || connection is "connecting" or "retrying";
             LogoutButton.IsEnabled = _connected;
@@ -578,7 +588,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 QrPanel.Visibility = Visibility.Collapsed;
                 MessageList.Visibility = Visibility.Visible;
                 _ = SaveLinkedAccountAsync(e);
-                SyncStatusText.Text = _existingSession ? "正在自动补齐离线期间的新消息…" : "正在接收首次历史与联系人…";
+                SyncStatusText.Text = requiresHistoryRepair
+                    ? "当前账号需退出并用新版重新扫码一次，才能补回完整离线历史"
+                    : _existingSession ? "正在自动补齐离线期间的新消息…" : "正在接收首次历史与联系人…";
             }
             else if (connection == "logged_out")
             {
@@ -1587,7 +1599,17 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         if (!_connected) return;
         SyncButton.IsEnabled = false;
         SyncStatusText.Text = "正在重新连接并补齐离线期间的新消息…";
-        try { await _services.WhatsApp.CatchUpHistoryAsync(); }
+        try
+        {
+            var persisted = await _services.Repository.GetWhatsAppConversationsAsync(CurrentAccountId);
+            var cursors = persisted.Select(item => new WhatsAppHistoryCursor(
+                item.Jid,
+                item.Phone,
+                item.IsGroup,
+                item.LastMessageAt,
+                item.UnreadCount)).ToArray();
+            await _services.WhatsApp.CatchUpHistoryAsync(CurrentAccountId, cursors);
+        }
         catch (Exception error)
         {
             SyncStatusText.Text = "同步启动失败";
@@ -2625,7 +2647,9 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         "non_blocking_data" => "联系人资料",
         "app_state" => "联系人与会话变更",
         "offline_messages" => "离线期间的新消息",
+        "offline_messages_no_new_messages" => "离线会话缺口核对",
         "offline_messages_timeout" => "离线消息补齐确认",
+        "offline_history_profile" => "完整离线历史连接修复",
         _ => "WhatsApp 数据"
     };
     private sealed record ConversationLeadBinding(string CustomerId, string BindingToken, Lead? Lead)

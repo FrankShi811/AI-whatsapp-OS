@@ -21,9 +21,19 @@ import { isGroupJid, isSupportedInboundJid, normalizeGroupJid } from './conversa
 import { resolveBaileysVersion } from './connection-bootstrap.mjs'
 import { createProxyAgent, normalizeProxyUrl, safeProxyLabel } from './network-routing.mjs'
 import { OfflineCatchupCoordinator } from './offline-catchup.mjs'
+import {
+  anchorTimestamp,
+  embeddedChatMessages,
+  findHistoryCursor,
+  historyRequestKey,
+  latestChatAnchor,
+  normalizeHistoryCursors,
+  shouldRequestChatHistory
+} from './history-recovery.mjs'
 
 const logger = pino({ level: 'silent' })
 const QR_GENERATION_WATCHDOG_MS = 35000
+const DESKTOP_HISTORY_PROFILE_FILE = 'desktop-history-profile.json'
 const state = {
   accountId: 'default',
   sessionDir: '',
@@ -42,6 +52,8 @@ const state = {
   immediateReconnect: false,
   authKey: null,
   existingSession: false,
+  desktopHistoryProfile: false,
+  newDesktopPairing: false,
   pendingNotificationsAttempt: 0,
   contacts: new Map(),
   chats: new Map(),
@@ -49,10 +61,50 @@ const state = {
   outboundTargets: new Map(),
   mediaDownloads: new Map(),
   historyTotals: { contacts: 0, chats: 0, messages: 0 },
+  historyRecovery: {
+    active: false,
+    cursorIndex: normalizeHistoryCursors([]),
+    requested: new Set(),
+    source: 'startup'
+  },
   syncQueue: Promise.resolve()
 }
 
 const authFileLocks = new Map()
+
+function desktopHistoryProfilePath() {
+  return path.join(state.sessionDir, DESKTOP_HISTORY_PROFILE_FILE)
+}
+
+async function hasDesktopHistoryProfile() {
+  try {
+    const content = await fs.readFile(desktopHistoryProfilePath(), 'utf8')
+    return JSON.parse(content)?.mode === 'desktop_full_history'
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error instanceof SyntaxError) return false
+    throw error
+  }
+}
+
+async function writeDesktopHistoryProfile() {
+  const target = desktopHistoryProfilePath()
+  const temporary = `${target}.${process.pid}.${Date.now()}.tmp`
+  await fs.writeFile(temporary, JSON.stringify({ mode: 'desktop_full_history', version: 1 }), 'utf8')
+  await fs.rename(temporary, target)
+  state.desktopHistoryProfile = true
+  state.newDesktopPairing = false
+}
+
+function emitDesktopHistoryRepairRequired(source = 'manual') {
+  const message = '当前账号是在旧版连接模式下建立的，无法可靠补回关机期间的完整历史。请安装本次更新后退出该账号并重新扫码一次；新扫码会按 WhatsApp Desktop 完整历史模式恢复。'
+  emit({
+    type: 'event', event: 'sync_status', accountId: state.accountId,
+    data: {
+      state: 'action_required', phase: 'offline_history_profile', progress: null,
+      source, error: message, existingSession: true, requiresQr: true
+    }
+  })
+}
 
 function parseEncryptionKey(value) {
   const key = Buffer.from(String(value ?? ''), 'base64')
@@ -654,7 +706,7 @@ async function normalizeChat(chat, source = 'live') {
   const sourceJid = String(chat?.id ?? chat?.lidJid ?? chat?.pnJid ?? '')
   const groupJid = normalizeGroupJid(chat?.id) || normalizeGroupJid(chat?.jid)
   if (groupJid) {
-    const embedded = chat?.messages?.[0]?.message
+    const embedded = latestChatAnchor(chat)
     const timestamp = chat?.conversationTimestamp ?? chat?.lastMsgTimestamp ?? chat?.lastMessageRecvTimestamp
     return {
       jid: groupJid,
@@ -679,7 +731,7 @@ async function normalizeChat(chat, source = 'live') {
   const phone = phoneFromJid(jid)
   if (!phone) return null
   const cachedContact = [...state.contacts.values()].find(item => item.phone === phone || item.jid === jid || item.sourceJid === sourceJid)
-  const embedded = chat?.messages?.[0]?.message
+  const embedded = latestChatAnchor(chat)
   const timestamp = chat?.conversationTimestamp ?? chat?.lastMsgTimestamp ?? chat?.lastMessageRecvTimestamp
   return {
     jid,
@@ -859,6 +911,97 @@ async function normalizeChats(chats, source) {
   return items
 }
 
+async function emitEmbeddedChatMessages(chats, source) {
+  const seen = new Set()
+  const embedded = (chats ?? []).flatMap(embeddedChatMessages).filter(message => {
+    const id = String(message?.key?.id ?? '')
+    if (!id || seen.has(id) || state.messages.has(id)) return false
+    seen.add(id)
+    return true
+  })
+  if (embedded.length === 0) return []
+  const items = await normalizeMessages(embedded, `${source}:chat_anchor`)
+  if (items.length > 0) {
+    state.historyTotals.messages += items.length
+    emitItems('messages_history', items, `${source}:chat_anchor`)
+    getOfflineCatchupCoordinator().noteRecoveredMessages(items.length)
+  }
+  return items
+}
+
+async function requestMissingChatHistory(chats, source) {
+  if (!state.historyRecovery.active || !state.socket || state.connection !== 'connected') return 0
+  if (state.existingSession && !state.desktopHistoryProfile) return 0
+  if (String(source).toLowerCase().includes('on_demand')) return 0
+
+  const requests = []
+  for (const chat of chats ?? []) {
+    const anchor = latestChatAnchor(chat)
+    if (!anchor) continue
+    const normalized = await normalizeChat(chat, source)
+    if (!normalized) continue
+    const candidate = { ...chat, id: normalized.jid, jid: normalized.jid, phone: normalized.phone }
+    const cursor = findHistoryCursor(state.historyRecovery.cursorIndex, candidate)
+    if (!shouldRequestChatHistory(chat, cursor, anchor)) continue
+    const key = historyRequestKey(anchor)
+    if (!key || state.historyRecovery.requested.has(key)) continue
+    state.historyRecovery.requested.add(key)
+    requests.push({ anchor, key })
+  }
+
+  let requested = 0
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(3, Math.max(1, requests.length)) }, async () => {
+    while (cursor < requests.length) {
+      const item = requests[cursor++]
+      try {
+        await state.socket.fetchMessageHistory(50, item.anchor.key, anchorTimestamp(item.anchor))
+        requested++
+      } catch (error) {
+        emit({
+          type: 'event', event: 'connection_issue', accountId: state.accountId,
+          data: {
+            code: 'chat_history_request_failed', recoverable: true,
+            message: '个别 WhatsApp 会话的离线历史请求暂未送达，程序将保持连接并继续重试',
+            jid: String(item.anchor?.key?.remoteJid ?? ''), error: safeError(error)
+          }
+        })
+      }
+    }
+  })
+  await Promise.all(workers)
+  if (requested > 0) getOfflineCatchupCoordinator().noteHistoryRequest(requested)
+  return requested
+}
+
+async function processChats(chats, source) {
+  const items = await normalizeChats(chats, source)
+  emitItems('chats_upsert', items, source)
+  await emitEmbeddedChatMessages(chats, source)
+  await requestMissingChatHistory(chats, source)
+  return items
+}
+
+async function discoverParticipatingGroups(source) {
+  if (!state.socket?.groupFetchAllParticipating) return 0
+  try {
+    const groups = Object.values(await state.socket.groupFetchAllParticipating() ?? {})
+    if (groups.length === 0) return 0
+    const items = await normalizeChats(groups, source)
+    emitItems('chats_upsert', items, source)
+    return items.length
+  } catch (error) {
+    emit({
+      type: 'event', event: 'connection_issue', accountId: state.accountId,
+      data: {
+        code: 'group_discovery_failed', recoverable: true,
+        message: 'WhatsApp 群聊清单暂未完整返回，程序将保持连接并继续同步', error: safeError(error)
+      }
+    })
+    return 0
+  }
+}
+
 async function normalizeMessages(messages, source) {
   const input = messages ?? []
   const normalized = new Array(input.length)
@@ -942,18 +1085,30 @@ async function handleHistorySync(update) {
   emit({ type: 'event', event: 'sync_status', accountId: state.accountId, data: { state: 'syncing', phase, progress: update?.progress ?? null } })
   const contacts = await normalizeContacts(update?.contacts, `history:${phase}`)
   const chats = await normalizeChats(update?.chats, `history:${phase}`)
-  const messages = await normalizeMessages(update?.messages, `history:${phase}`)
+  const embeddedMessages = await emitEmbeddedChatMessages(update?.chats, `history:${phase}`)
+  const seen = new Set()
+  const historyMessages = (update?.messages ?? []).filter(message => {
+    const id = String(message?.key?.id ?? '')
+    if (!id || seen.has(id) || state.messages.has(id)) return false
+    seen.add(id)
+    return true
+  })
+  const messages = await normalizeMessages(historyMessages, `history:${phase}`)
   state.historyTotals.contacts += contacts.length
   state.historyTotals.chats += chats.length
   state.historyTotals.messages += messages.length
   emitItems('contacts_upsert', contacts, `history:${phase}`)
   emitItems('chats_upsert', chats, `history:${phase}`)
   emitItems('messages_history', messages, `history:${phase}`)
+  if (messages.length > 0) getOfflineCatchupCoordinator().noteRecoveredMessages(messages.length)
+  await requestMissingChatHistory(update?.chats, `history:${phase}`)
+  if (update?.isLatest && !state.existingSession) state.historyRecovery.active = false
   emit({
     type: 'event', event: 'sync_status', accountId: state.accountId,
     data: {
       state: update?.isLatest ? 'complete' : 'syncing', phase, progress: update?.progress ?? null,
       contacts: state.contacts.size, chats: state.chats.size, messages: state.historyTotals.messages,
+      embeddedMessages: embeddedMessages.length,
       isLatest: Boolean(update?.isLatest)
     }
   })
@@ -972,7 +1127,10 @@ let offlineCatchupCoordinator = null
 function getOfflineCatchupCoordinator() {
   offlineCatchupCoordinator ??= new OfflineCatchupCoordinator({
     enqueue: action => enqueueSync(action, 'offline_messages'),
-    emitStatus: data => emit({ type: 'event', event: 'sync_status', accountId: state.accountId, data }),
+    emitStatus: data => {
+      if (data?.state === 'complete') state.historyRecovery.active = false
+      emit({ type: 'event', event: 'sync_status', accountId: state.accountId, data })
+    },
     emitIssue: data => emit({
       type: 'event', event: 'connection_issue', accountId: state.accountId,
       data: { ...data, error: safeError(data.error) }
@@ -997,12 +1155,22 @@ async function manualSync() {
   }
 }
 
-async function catchUpOfflineMessages() {
+async function catchUpOfflineMessages(cursors = []) {
+  if (state.existingSession && !state.desktopHistoryProfile) {
+    emitDesktopHistoryRepairRequired('manual')
+    return
+  }
   emit({
     type: 'event', event: 'sync_status', accountId: state.accountId,
     data: { state: 'syncing', phase: 'offline_messages', progress: null, source: 'manual' }
   })
   try {
+    state.historyRecovery = {
+      active: true,
+      cursorIndex: normalizeHistoryCursors(cursors),
+      requested: new Set(),
+      source: 'manual'
+    }
     await state.socket?.resyncAppState?.(ALL_WA_PATCH_NAMES, false)
     await emitCachedSnapshot('manual:before_catchup')
     await connect('manual')
@@ -1033,6 +1201,8 @@ async function resetSessionForQr() {
   await fs.rm(state.sessionDir, { recursive: true, force: true })
   await fs.mkdir(state.sessionDir, { recursive: true })
   state.existingSession = false
+  state.desktopHistoryProfile = false
+  state.newDesktopPairing = true
 }
 
 async function connect(catchupSource = 'startup') {
@@ -1042,6 +1212,17 @@ async function connect(catchupSource = 'startup') {
   state.qrSeen = false
   const attempt = ++state.connectionAttempt
   state.pendingNotificationsAttempt = 0
+  if (!state.historyRecovery.active) {
+    state.historyRecovery = {
+      active: true,
+      cursorIndex: normalizeHistoryCursors([]),
+      requested: new Set(),
+      source: catchupSource
+    }
+  } else {
+    state.historyRecovery.requested = new Set()
+    state.historyRecovery.source = catchupSource
+  }
   emit({
     type: 'event', event: 'connection_stage', accountId: state.accountId,
     data: { state: 'preparing', attempt, message: '正在准备安全登录会话' }
@@ -1050,6 +1231,8 @@ async function connect(catchupSource = 'startup') {
   if (!state.authKey) throw new Error('session_encryption_key_missing')
   const { state: auth, saveCreds } = await loadAuthStateWithRecovery()
   state.existingSession = Boolean(auth.creds.registered)
+  state.newDesktopPairing = !state.existingSession
+  state.desktopHistoryProfile = state.existingSession ? await hasDesktopHistoryProfile() : false
   state.contacts.clear()
   state.chats.clear()
   state.messages.clear()
@@ -1076,7 +1259,9 @@ async function connect(catchupSource = 'startup') {
   const socket = makeWASocket({
     auth,
     ...(versionInfo.version ? { version: versionInfo.version } : {}),
-    browser: Browsers.windows('WAFlow'),
+    // Baileys only asks WhatsApp for the richer desktop history path when the
+    // companion identifies as an official Desktop client.
+    browser: Browsers.macOS('Desktop'),
     logger,
     printQRInTerminal: false,
     markOnlineOnConnect: false,
@@ -1158,16 +1343,10 @@ async function connect(catchupSource = 'startup') {
     }, 'contacts')
   })
   socket.ev.on('chats.upsert', chats => {
-    enqueueSync(async () => {
-      const items = await normalizeChats(chats, 'live')
-      emitItems('chats_upsert', items, 'live')
-    }, 'chats')
+    enqueueSync(() => processChats(chats, 'live'), 'chats')
   })
   socket.ev.on('chats.update', chats => {
-    enqueueSync(async () => {
-      const items = await normalizeChats(chats, 'live_update')
-      emitItems('chats_upsert', items, 'live_update')
-    }, 'chats')
+    enqueueSync(() => processChats(chats, 'live_update'), 'chats')
   })
   socket.ev.on('lid-mapping.update', mapping => {
     enqueueSync(async () => {
@@ -1307,11 +1486,22 @@ async function connect(catchupSource = 'startup') {
       if (state.pairingTimer) clearTimeout(state.pairingTimer)
       state.pairingTimer = null
       state.connection = 'connected'
+      if (state.newDesktopPairing) await writeDesktopHistoryProfile()
+      const requiresHistoryRepair = state.existingSession && !state.desktopHistoryProfile
       emit({
         type: 'event', event: 'connection', accountId: state.accountId,
-        data: { state: 'connected', user: socket.user?.id ?? '', name: socket.user?.name ?? '', existingSession: state.existingSession }
+        data: {
+          state: 'connected', user: socket.user?.id ?? '', name: socket.user?.name ?? '',
+          existingSession: state.existingSession, desktopHistoryProfile: state.desktopHistoryProfile,
+          requiresHistoryRepair
+        }
       })
+      if (requiresHistoryRepair) {
+        emitDesktopHistoryRepairRequired(catchupSource)
+        return
+      }
       await getOfflineCatchupCoordinator().start({ socket, attempt, source: catchupSource, existingSession: state.existingSession })
+      enqueueSync(() => discoverParticipatingGroups(`groups:${catchupSource}`), 'group_discovery')
       if (state.pendingNotificationsAttempt === attempt) {
         getOfflineCatchupCoordinator().receivePending({ socket, attempt })
       }
@@ -1520,7 +1710,8 @@ async function handle(command) {
       }
       case 'catch_up_history': {
         if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
-        enqueueSync(catchUpOfflineMessages, 'offline_messages')
+        const cursors = Array.isArray(command.cursors) ? command.cursors : []
+        enqueueSync(() => catchUpOfflineMessages(cursors), 'offline_messages')
         reply(requestId, true, { state: 'started', existingSession: state.existingSession })
         return
       }

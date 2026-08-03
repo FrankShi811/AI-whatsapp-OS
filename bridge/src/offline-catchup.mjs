@@ -1,8 +1,10 @@
-export const DEFAULT_OFFLINE_CATCHUP_TIMEOUT_MS = 20000
+export const DEFAULT_OFFLINE_CATCHUP_TIMEOUT_MS = 30000
+export const DEFAULT_OFFLINE_CATCHUP_SETTLE_MS = 6000
 
 export class OfflineCatchupCoordinator {
-  constructor({ timeoutMs = DEFAULT_OFFLINE_CATCHUP_TIMEOUT_MS, enqueue, emitStatus, emitIssue, emitSnapshot, getTotals }) {
+  constructor({ timeoutMs = DEFAULT_OFFLINE_CATCHUP_TIMEOUT_MS, settleMs = DEFAULT_OFFLINE_CATCHUP_SETTLE_MS, enqueue, emitStatus, emitIssue, emitSnapshot, getTotals }) {
     this.timeoutMs = timeoutMs
+    this.settleMs = settleMs
     this.enqueue = enqueue
     this.emitStatus = emitStatus
     this.emitIssue = emitIssue
@@ -13,6 +15,7 @@ export class OfflineCatchupCoordinator {
 
   cancel() {
     if (this.active?.timer) clearTimeout(this.active.timer)
+    if (this.active?.settleTimer) clearTimeout(this.active.settleTimer)
     this.active = null
   }
 
@@ -20,7 +23,12 @@ export class OfflineCatchupCoordinator {
     this.cancel()
     if (!existingSession || !socket) return false
 
-    const active = { socket, attempt, source, received: false, timer: null }
+    const active = {
+      socket, attempt, source, received: false, timer: null, settleTimer: null,
+      baselineMessages: Number(this.getTotals()?.messages ?? 0),
+      recoveredMessages: 0,
+      requestedChats: 0
+    }
     this.active = active
     this.emitStatus({ state: 'syncing', phase: 'offline_messages', progress: null, source })
 
@@ -42,7 +50,7 @@ export class OfflineCatchupCoordinator {
 
     if (this.active !== active) return false
     if (active.received) {
-      this.enqueue(() => this.finish(active, false))
+      this.scheduleSettle(active)
       return true
     }
 
@@ -60,25 +68,55 @@ export class OfflineCatchupCoordinator {
       clearTimeout(active.timer)
       active.timer = null
     }
-    this.enqueue(() => this.finish(active, false))
+    this.scheduleSettle(active)
     return true
+  }
+
+  noteHistoryRequest(count = 1) {
+    const active = this.active
+    if (!active) return false
+    active.requestedChats += Math.max(0, Number(count) || 0)
+    if (active.received) this.scheduleSettle(active)
+    return true
+  }
+
+  noteRecoveredMessages(count = 1) {
+    const active = this.active
+    if (!active) return false
+    active.recoveredMessages += Math.max(0, Number(count) || 0)
+    if (active.received) this.scheduleSettle(active)
+    return true
+  }
+
+  scheduleSettle(active) {
+    if (this.active !== active) return
+    if (active.settleTimer) clearTimeout(active.settleTimer)
+    active.settleTimer = setTimeout(() => this.enqueue(() => this.finish(active, false)), this.settleMs)
   }
 
   async finish(active, timedOut) {
     if (this.active !== active) return false
     this.active = null
     if (active.timer) clearTimeout(active.timer)
+    if (active.settleTimer) clearTimeout(active.settleTimer)
 
     try { await active.socket.sendPresenceUpdate('unavailable') } catch { }
     const counts = await this.emitSnapshot(`catchup:${active.source}`)
+    const totals = this.getTotals()
+    const totalDelta = Math.max(0, Number(totals?.messages ?? 0) - active.baselineMessages)
+    const recoveredMessages = Math.max(active.recoveredMessages, totalDelta)
     this.emitStatus({
       state: 'complete',
-      phase: timedOut ? 'offline_messages_timeout' : 'offline_messages',
+      phase: recoveredMessages > 0
+        ? 'offline_messages'
+        : timedOut ? 'offline_messages_timeout' : 'offline_messages_no_new_messages',
       progress: 100,
       source: active.source,
       pendingNotificationsReceived: !timedOut,
+      recoveredMessages,
+      requestedChats: active.requestedChats,
       ...counts,
-      ...this.getTotals()
+      ...totals
     })
     return true
   }

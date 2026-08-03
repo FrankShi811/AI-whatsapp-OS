@@ -117,6 +117,10 @@ public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLooku
     public Task<JsonElement> SyncNowAsync(string accountId, CancellationToken cancellationToken = default) => GetClient(accountId).SyncNowAsync(cancellationToken);
     public Task<JsonElement> CatchUpHistoryAsync(CancellationToken cancellationToken = default) => CatchUpHistoryAsync(ActiveAccountId, cancellationToken);
     public Task<JsonElement> CatchUpHistoryAsync(string accountId, CancellationToken cancellationToken = default) => GetClient(accountId).CatchUpHistoryAsync(cancellationToken);
+    public Task<JsonElement> CatchUpHistoryAsync(IReadOnlyCollection<WhatsAppHistoryCursor> cursors, CancellationToken cancellationToken = default) =>
+        CatchUpHistoryAsync(ActiveAccountId, cursors, cancellationToken);
+    public Task<JsonElement> CatchUpHistoryAsync(string accountId, IReadOnlyCollection<WhatsAppHistoryCursor> cursors, CancellationToken cancellationToken = default) =>
+        GetClient(accountId).CatchUpHistoryAsync(cursors, cancellationToken);
 
     private async Task<JsonElement> ConnectCoreAsync(string accountId, CancellationToken cancellationToken)
     {

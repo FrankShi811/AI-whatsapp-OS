@@ -46,6 +46,33 @@ await repository.InitializeAsync();
 var scorer = new LeadScoringService();
 var imports = new ImportService(repository);
 
+var historyCursorTimestamp = DateTimeOffset.Parse("2026-08-01T09:30:00+08:00");
+var startupHistoryCursors = MessagingSyncService.BuildHistoryCursors([
+    new WhatsAppConversation
+    {
+        Jid = "120363000000000000@g.us",
+        Phone = "",
+        IsGroup = true,
+        LastMessageAt = historyCursorTimestamp,
+        UnreadCount = 22
+    },
+    new WhatsAppConversation
+    {
+        Jid = "441234567890@s.whatsapp.net",
+        Phone = "+441234567890",
+        LastMessageAt = historyCursorTimestamp.AddMinutes(1),
+        UnreadCount = 2
+    },
+    new WhatsAppConversation { Jid = "", Phone = "" }
+]);
+Check(
+    startupHistoryCursors.Count == 2
+    && startupHistoryCursors[0].IsGroup
+    && startupHistoryCursors[0].UnreadCount == 22
+    && startupHistoryCursors[0].LastMessageAt == historyCursorTimestamp
+    && startupHistoryCursors[1].Phone == "+441234567890",
+    "application-wide WhatsApp recovery sends persisted group and direct-chat cursors after startup");
+
 var updateCacheRoot = Path.Combine(root, "update-cache-retention");
 var installedPackageCache = Path.Combine(updateCacheRoot, "packages");
 Directory.CreateDirectory(installedPackageCache);

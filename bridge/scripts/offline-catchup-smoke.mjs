@@ -13,6 +13,7 @@ async function drain(queue) {
   const socket = { sendPresenceUpdate: async value => presence.push(value) }
   const coordinator = new OfflineCatchupCoordinator({
     timeoutMs: 1000,
+    settleMs: 5,
     enqueue: action => queue.push(action),
     emitStatus: value => status.push(value),
     emitIssue: () => assert.fail('unexpected issue'),
@@ -24,11 +25,42 @@ async function drain(queue) {
   assert.deepEqual(presence, ['available'])
   assert.equal(status.at(-1).phase, 'offline_messages')
   assert.equal(coordinator.receivePending({ socket, attempt: 7 }), true)
+  await new Promise(resolve => setTimeout(resolve, 15))
   await drain(queue)
   assert.deepEqual(presence, ['available', 'unavailable'])
   assert.deepEqual(snapshots, ['catchup:startup'])
   assert.equal(status.at(-1).pendingNotificationsReceived, true)
   assert.equal(status.at(-1).messages, 2)
+  assert.equal(status.at(-1).phase, 'offline_messages_no_new_messages')
+  assert.equal(status.at(-1).recoveredMessages, 0)
+}
+
+{
+  const queue = []
+  const status = []
+  const presence = []
+  let messages = 2
+  const socket = { sendPresenceUpdate: async value => presence.push(value) }
+  const coordinator = new OfflineCatchupCoordinator({
+    timeoutMs: 1000,
+    settleMs: 5,
+    enqueue: action => queue.push(action),
+    emitStatus: value => status.push(value),
+    emitIssue: () => assert.fail('unexpected issue'),
+    emitSnapshot: async () => ({ contacts: 4, chats: 3 }),
+    getTotals: () => ({ messages, existingSession: true })
+  })
+
+  await coordinator.start({ socket, attempt: 10, source: 'manual', existingSession: true })
+  coordinator.noteHistoryRequest(2)
+  messages += 3
+  coordinator.noteRecoveredMessages(3)
+  assert.equal(coordinator.receivePending({ socket, attempt: 10 }), true)
+  await new Promise(resolve => setTimeout(resolve, 15))
+  await drain(queue)
+  assert.equal(status.at(-1).phase, 'offline_messages')
+  assert.equal(status.at(-1).recoveredMessages, 3)
+  assert.equal(status.at(-1).requestedChats, 2)
 }
 
 {
