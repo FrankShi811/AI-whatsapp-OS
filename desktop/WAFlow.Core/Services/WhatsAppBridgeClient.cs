@@ -202,6 +202,8 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
         SendCommandAsync("create_group", new { subject = request.Subject, participants = request.ParticipantPhones }, cancellationToken);
     public Task<JsonElement> SyncNowAsync(CancellationToken cancellationToken = default) =>
         SendCommandAsync("sync_now", null, cancellationToken);
+    public Task<JsonElement> CatchUpHistoryAsync(CancellationToken cancellationToken = default) =>
+        SendCommandAsync("catch_up_history", null, cancellationToken);
 
     private async Task<JsonElement> SendCommandAsync(string command, object? payload, CancellationToken cancellationToken)
     {
