@@ -31,7 +31,7 @@
                 <Grid>
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                     <StackPanel>
-                        <TextBlock Text="选择 Myybiz 商机补充工作簿" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Text="选择商机补充数据工作簿" Style="{StaticResource SectionTitle}"/>
                         <TextBlock x:Name="FilePathText" Text="尚未选择文件" Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis" Margin="0,7,18,0"/>
                     </StackPanel>
                     <Button x:Name="BrowseButton"

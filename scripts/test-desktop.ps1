@@ -476,6 +476,11 @@ if (-not ($leadIntelligenceXaml.Contains('x:Name="OpportunityImportButton"')) -o
     -not ($opportunityImportServiceSource.Contains('ConflictBuyerIds')) -or
     -not ($opportunityImportServiceSource.Contains('BuildSnapshot')) -or
     -not ($opportunityImportXaml.Contains('AutomationProperties.Name="商机补充数据导入"')) -or
+    -not ($opportunityImportXaml.Contains('Text="选择商机补充数据工作簿"')) -or
+    -not ($opportunityImportSource.Contains('Title = "选择商机补充数据工作簿"')) -or
+    $opportunityImportXaml.Contains('Myybiz') -or
+    $opportunityImportSource.Contains('Myybiz') -or
+    $releaseCatalogSource.Contains('Myybiz') -or
     -not ($opportunityImportXaml.Contains('重复交易零写入')) -or
     -not ($opportunityImportSource.Contains('BrowseButton.IsEnabled = !busy;'))) {
   throw 'Opportunity supplement import must preserve the exact-Buyer-ID preview/commit contract, local evidence filters, deduplication and accessible non-reentrant UI.'
