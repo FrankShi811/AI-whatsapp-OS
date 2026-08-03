@@ -20,7 +20,7 @@ public partial class OpportunitySupplementImportWindow : Window
     {
         var dialog = new OpenFileDialog
         {
-            Title = "选择 Myybiz 商机补充工作簿",
+            Title = "选择商机补充数据工作簿",
             Filter = "Excel 工作簿 (*.xlsx)|*.xlsx",
             Multiselect = false
         };
