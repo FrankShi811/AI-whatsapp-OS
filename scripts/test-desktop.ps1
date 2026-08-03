@@ -57,6 +57,7 @@ $bridgeMessageSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $
 $bridgeOutboundRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\outbound-routing.mjs')
 $bridgeConversationRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\conversation-routing.mjs')
 $bridgeNetworkRoutingSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\network-routing.mjs')
+$bridgeOfflineCatchupSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'bridge\src\offline-catchup.mjs')
 $whatsAppInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\WhatsAppInboxView.xaml.cs')
 $emailInboxSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Pages\EmailInboxView.xaml.cs')
 $batchCollectionSource = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop\Collections\BatchObservableCollection.cs')
@@ -655,6 +656,21 @@ if ($bridgeConnectionBootstrapSource -notmatch 'version_lookup_timeout' -or
 & $node (Join-Path $root 'bridge\scripts\connection-bootstrap-smoke.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'WhatsApp connection-bootstrap smoke test failed.' }
 Write-Host 'PASS  WhatsApp first-connect QR timeout, fallback, retry and visible recovery contract'
+
+if ($bridgeSource -notmatch "case 'catch_up_history'" -or
+    $bridgeSource -notmatch 'receivedPendingNotifications' -or
+    $bridgeSource -notmatch "connect\('reconnect'\)" -or
+    $bridgeOfflineCatchupSource -notmatch "sendPresenceUpdate\('available'\)" -or
+    $bridgeOfflineCatchupSource -notmatch "sendPresenceUpdate\('unavailable'\)" -or
+    $whatsAppBridgeClientSource -notmatch 'CatchUpHistoryAsync' -or
+    $whatsAppManagerSource -notmatch 'CatchUpHistoryAsync' -or
+    $whatsAppInboxSource -notmatch '正在重新连接并补齐离线期间的新消息' -or
+    $whatsAppInboxSource -match '_automaticSyncRequested') {
+  throw 'WhatsApp must automatically drain the offline message queue after reconnect and expose a real manual catch-up command instead of refreshing cached contacts only.'
+}
+& $node (Join-Path $root 'bridge\scripts\offline-catchup-smoke.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'WhatsApp offline-message catch-up smoke test failed.' }
+Write-Host 'PASS  WhatsApp startup and manual offline-message catch-up contract'
 
 if ($networkProxyResolverSource -notmatch 'WAFLOW_PROXY_URL' -or
     $networkProxyResolverSource -notmatch 'WebRequest\.DefaultWebProxy' -or

@@ -20,6 +20,7 @@ import { normalizeOutboundUserJid, summarizeOutboundDeviceFanout } from './outbo
 import { isGroupJid, isSupportedInboundJid, normalizeGroupJid } from './conversation-routing.mjs'
 import { resolveBaileysVersion } from './connection-bootstrap.mjs'
 import { createProxyAgent, normalizeProxyUrl, safeProxyLabel } from './network-routing.mjs'
+import { OfflineCatchupCoordinator } from './offline-catchup.mjs'
 
 const logger = pino({ level: 'silent' })
 const QR_GENERATION_WATCHDOG_MS = 35000
@@ -41,6 +42,7 @@ const state = {
   immediateReconnect: false,
   authKey: null,
   existingSession: false,
+  pendingNotificationsAttempt: 0,
   contacts: new Map(),
   chats: new Map(),
   messages: new Map(),
@@ -965,6 +967,22 @@ async function emitCachedSnapshot(source = 'manual') {
   return { contacts: contacts.length, chats: chats.length }
 }
 
+let offlineCatchupCoordinator = null
+
+function getOfflineCatchupCoordinator() {
+  offlineCatchupCoordinator ??= new OfflineCatchupCoordinator({
+    enqueue: action => enqueueSync(action, 'offline_messages'),
+    emitStatus: data => emit({ type: 'event', event: 'sync_status', accountId: state.accountId, data }),
+    emitIssue: data => emit({
+      type: 'event', event: 'connection_issue', accountId: state.accountId,
+      data: { ...data, error: safeError(data.error) }
+    }),
+    emitSnapshot: source => emitCachedSnapshot(source),
+    getTotals: () => ({ messages: state.historyTotals.messages, existingSession: state.existingSession })
+  })
+  return offlineCatchupCoordinator
+}
+
 async function manualSync() {
   emit({ type: 'event', event: 'sync_status', accountId: state.accountId, data: { state: 'syncing', phase: 'app_state', progress: null } })
   try {
@@ -979,7 +997,25 @@ async function manualSync() {
   }
 }
 
+async function catchUpOfflineMessages() {
+  emit({
+    type: 'event', event: 'sync_status', accountId: state.accountId,
+    data: { state: 'syncing', phase: 'offline_messages', progress: null, source: 'manual' }
+  })
+  try {
+    await state.socket?.resyncAppState?.(ALL_WA_PATCH_NAMES, false)
+    await emitCachedSnapshot('manual:before_catchup')
+    await connect('manual')
+  } catch (error) {
+    emit({
+      type: 'event', event: 'sync_status', accountId: state.accountId,
+      data: { state: 'failed', phase: 'offline_messages', error: safeError(error), existingSession: state.existingSession }
+    })
+  }
+}
+
 async function closeSocket() {
+  getOfflineCatchupCoordinator().cancel()
   if (state.reconnectTimer) clearTimeout(state.reconnectTimer)
   state.reconnectTimer = null
   if (state.pairingTimer) clearTimeout(state.pairingTimer)
@@ -999,12 +1035,13 @@ async function resetSessionForQr() {
   state.existingSession = false
 }
 
-async function connect() {
+async function connect(catchupSource = 'startup') {
   if (!state.sessionDir) throw new Error('bridge_not_initialized')
   await closeSocket()
   state.manualDisconnect = false
   state.qrSeen = false
   const attempt = ++state.connectionAttempt
+  state.pendingNotificationsAttempt = 0
   emit({
     type: 'event', event: 'connection_stage', accountId: state.accountId,
     data: { state: 'preparing', attempt, message: '正在准备安全登录会话' }
@@ -1012,7 +1049,7 @@ async function connect() {
   await fs.mkdir(state.sessionDir, { recursive: true })
   if (!state.authKey) throw new Error('session_encryption_key_missing')
   const { state: auth, saveCreds } = await loadAuthStateWithRecovery()
-  state.existingSession = Boolean(auth.creds.registered && (auth.creds.accountSyncCounter ?? 0) > 0)
+  state.existingSession = Boolean(auth.creds.registered)
   state.contacts.clear()
   state.chats.clear()
   state.messages.clear()
@@ -1238,6 +1275,7 @@ async function connect() {
   })
   socket.ev.on('connection.update', async update => {
     if (state.socket !== socket) return
+    if (update.receivedPendingNotifications === true) state.pendingNotificationsAttempt = attempt
     if (update.qr) {
       state.qrSeen = true
       if (state.pairingTimer) clearTimeout(state.pairingTimer)
@@ -1273,6 +1311,14 @@ async function connect() {
         type: 'event', event: 'connection', accountId: state.accountId,
         data: { state: 'connected', user: socket.user?.id ?? '', name: socket.user?.name ?? '', existingSession: state.existingSession }
       })
+      await getOfflineCatchupCoordinator().start({ socket, attempt, source: catchupSource, existingSession: state.existingSession })
+      if (state.pendingNotificationsAttempt === attempt) {
+        getOfflineCatchupCoordinator().receivePending({ socket, attempt })
+      }
+      return
+    }
+    if (update.receivedPendingNotifications === true) {
+      getOfflineCatchupCoordinator().receivePending({ socket, attempt })
       return
     }
     if (update.connection !== 'close') return
@@ -1305,7 +1351,7 @@ async function connect() {
             : '连接暂时中断，5 秒后自动重试'
         }
       })
-      state.reconnectTimer = setTimeout(() => connect().catch(error => emit({
+      state.reconnectTimer = setTimeout(() => connect('reconnect').catch(error => emit({
         type: 'event', event: 'bridge_error', accountId: state.accountId,
         data: { error: safeError(error), code: 'automatic_reconnect_failed' }
       })), retryDelay)
@@ -1318,7 +1364,7 @@ async function handle(command) {
   try {
     switch (command.command) {
       case 'ping':
-        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.8.0', connection: state.connection })
+        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.8.1', connection: state.connection })
         return
       case 'initialize': {
         state.accountId = validateAccountId(command.accountId ?? 'default')
@@ -1336,7 +1382,7 @@ async function handle(command) {
         state.allowDirectFallback = Boolean(command.allowDirectFallback && state.proxyUrl)
         state.directFallbackUsed = false
         state.immediateReconnect = false
-        await connect()
+        await connect('startup')
         reply(requestId, true, { state: state.connection })
         return
       case 'validate_session': {
@@ -1472,6 +1518,12 @@ async function handle(command) {
         reply(requestId, true, { state: 'started', existingSession: state.existingSession, contacts: state.contacts.size, chats: state.chats.size })
         return
       }
+      case 'catch_up_history': {
+        if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
+        enqueueSync(catchUpOfflineMessages, 'offline_messages')
+        reply(requestId, true, { state: 'started', existingSession: state.existingSession })
+        return
+      }
       default:
         throw new Error('unknown_command')
     }
@@ -1492,4 +1544,4 @@ lines.on('close', async () => {
   process.exit(0)
 })
 
-emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.8.0' } })
+emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.8.1' } })

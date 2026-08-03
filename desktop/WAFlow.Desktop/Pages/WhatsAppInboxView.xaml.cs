@@ -44,7 +44,6 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private string _currentStatusUpdateUrl = "";
     private int _persistedConversationCount;
     private int _contactCount;
-    private readonly HashSet<string> _automaticSyncRequested = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _warnedIpChanges = new(StringComparer.OrdinalIgnoreCase);
     private readonly DispatcherTimer _ipTimer = new() { Interval = TimeSpan.FromSeconds(60) };
     private bool _checkingIp;
@@ -365,7 +364,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         try
         {
             await _services.Campaigns.PauseAccountAsync(CurrentAccountId, "用户退出 WhatsApp，活动 Campaign 已暂停。");
-            await _services.WhatsApp.LogoutAsync(); _automaticSyncRequested.Remove(CurrentAccountId); _conversations.Clear(); ClearLead();
+            await _services.WhatsApp.LogoutAsync(); _conversations.Clear(); ClearLead();
         }
         catch (Exception error) { MessageBox.Show(error.Message, "WhatsApp", MessageBoxButton.OK, MessageBoxImage.Warning); }
     }
@@ -391,9 +390,11 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         SyncStatusText.Text = progress.State switch
         {
             "syncing" => $"正在同步 {PhaseLabel(progress.Phase)}{(progress.Progress is null ? "" : $" {progress.Progress}%")}",
+            "complete" when progress.Phase == "offline_messages" => "离线期间的新消息已补齐，实时同步已恢复",
+            "complete" when progress.Phase == "offline_messages_timeout" => "实时同步已恢复；暂未收到离线补齐确认，可稍后重试",
             "complete" => progress.Messages > 0 || progress.Contacts > 0 || progress.Chats > 0
                 ? $"已同步 {progress.Chats} 会话 / {progress.Contacts} 联系人 / {progress.Messages} 消息"
-                : _existingSession ? "已同步最新变更；首次历史需重新扫码获取" : "同步完成",
+                : _existingSession ? "已同步联系人与会话状态" : "同步完成",
             "paused" => "已保存手机提供的历史，传输现已暂停",
             "failed" => $"同步失败：{progress.Error}",
             _ => SyncStatusText.Text
@@ -572,8 +573,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 QrPanel.Visibility = Visibility.Collapsed;
                 MessageList.Visibility = Visibility.Visible;
                 _ = SaveLinkedAccountAsync(e);
-                SyncStatusText.Text = _existingSession ? "正在获取最新变更；旧历史缺失时需重新扫码一次" : "正在接收首次历史与联系人…";
-                if (_existingSession && _automaticSyncRequested.Add(CurrentAccountId)) _ = StartSyncAsync(showError: false);
+                SyncStatusText.Text = _existingSession ? "正在自动补齐离线期间的新消息…" : "正在接收首次历史与联系人…";
             }
             else if (connection == "logged_out")
             {
@@ -1398,8 +1398,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     {
         if (!_connected) return;
         SyncButton.IsEnabled = false;
-        SyncStatusText.Text = "正在同步联系人、会话和最新变更…";
-        try { await _services.WhatsApp.SyncNowAsync(); }
+        SyncStatusText.Text = "正在重新连接并补齐离线期间的新消息…";
+        try { await _services.WhatsApp.CatchUpHistoryAsync(); }
         catch (Exception error)
         {
             SyncStatusText.Text = "同步启动失败";
@@ -2287,6 +2287,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         "push_name" => "联系人名称",
         "non_blocking_data" => "联系人资料",
         "app_state" => "联系人与会话变更",
+        "offline_messages" => "离线期间的新消息",
+        "offline_messages_timeout" => "离线消息补齐确认",
         _ => "WhatsApp 数据"
     };
     private sealed record StageOption(string Label, LeadStage Value);
