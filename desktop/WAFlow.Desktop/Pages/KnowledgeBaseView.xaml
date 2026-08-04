@@ -7,7 +7,7 @@
         <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel>
-                <TextBlock Text="DHGATE KNOWLEDGE &amp; RAG" Style="{StaticResource PageEyebrow}"/>
+                <TextBlock Text="CUSTOMER KNOWLEDGE &amp; RAG" Style="{StaticResource PageEyebrow}"/>
                 <TextBlock Text="让 AI 先查证，再回答" Style="{StaticResource PageTitle}" Margin="0,4,0,0"/>
                 <TextBlock Text="批准资料、真实互动和结果验证经验分层治理；所有检索都受作用域、版本、冲突、时效和人工接管约束。"
                            Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0"/>

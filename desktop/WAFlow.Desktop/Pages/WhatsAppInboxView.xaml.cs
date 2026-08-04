@@ -1072,7 +1072,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
                 if (!IsCurrentTarget()) return;
                 MessageBox.Show(
                     string.IsNullOrWhiteSpace(result.BlockReason) ? "当前会话暂不允许 AI 自动处理。" : result.BlockReason,
-                    "DHgate Customer Success Agent", MessageBoxButton.OK, MessageBoxImage.Information);
+                    "Customer Success Agent", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 

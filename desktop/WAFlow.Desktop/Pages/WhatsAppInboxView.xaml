@@ -260,7 +260,7 @@
                                 <Grid>
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                     <StackPanel>
-                                        <TextBlock Text="DHgate Customer Success Agent" FontWeight="SemiBold" FontSize="13"/>
+                                        <TextBlock Text="Customer Success Agent" FontWeight="SemiBold" FontSize="13"/>
                                         <TextBlock x:Name="CustomerIdentityText" Text="等待会话身份" Foreground="{DynamicResource Muted}" FontSize="9.5" TextWrapping="Wrap" Margin="0,3,8,0"/>
                                     </StackPanel>
                                     <Border Grid.Column="1" Background="{DynamicResource PrimarySurface}" CornerRadius="8" Padding="8,4" VerticalAlignment="Top">

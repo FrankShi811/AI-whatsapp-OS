@@ -4031,6 +4031,22 @@ Check(aliceCrossAccountContext is not null
     && aliceCrossAccountContext.Messages.Any(item => item.AccountId == "account-a" && item.Body.Contains("account A"))
     && aliceCrossAccountContext.Messages.Any(item => item.AccountId == "account-b" && item.Body.Contains("account B")),
     "same customer context aggregates and updates messages across linked WhatsApp accounts");
+Check(new AccountPersona().RoleName == "Customer Success Agent"
+      && !new AccountPersona().Introduction.Contains("DHgate", StringComparison.OrdinalIgnoreCase),
+    "new customer success personas use platform-neutral built-in wording");
+await customerSuccessRepository.UpsertAccountPersonaAsync(new AccountPersona
+{
+    AccountId = "account-a",
+    RoleName = "DHgate Customer Success",
+    Introduction = "I’m the intelligent assistant for DHgate’s customer success team. I can help collect your sourcing needs and coordinate the next steps. A human colleague will follow up on matters that need judgment."
+});
+var normalizedLegacyContext = await customerSuccessAgent.GetContextAsync("account-a", "conversation-a");
+var persistedLegacyPersona = await customerSuccessRepository.GetAccountPersonaAsync("account-a");
+Check(normalizedLegacyContext?.Persona is { } normalizedLegacyPersona
+      && normalizedLegacyPersona.RoleName == "Customer Success Agent"
+      && !normalizedLegacyPersona.Introduction.Contains("DHgate", StringComparison.OrdinalIgnoreCase)
+      && persistedLegacyPersona?.RoleName == "DHgate Customer Success",
+    "legacy built-in persona wording is neutralized in memory without rewriting stored user data");
 var ambiguousState = await customerSuccessRepository.GetConversationAgentStateAsync("account-ambiguous", "conversation-ambiguous");
 Check(ambiguousState is { Mode: ConversationAgentMode.IdentityResolutionRequired, ExplicitResumeRequired: true },
     "ambiguous identity moves the conversation into explicit identity resolution");
@@ -5030,6 +5046,8 @@ catch (InvalidOperationException) { conflictBlocked = true; }
 var openConflicts = await knowledgeBase.GetConflictsAsync(policyFifteen.Id);
 Check(conflictBlocked && openConflicts.Any(conflict => conflict.Status == KnowledgeConflictStatus.Open),
     "contradictory active policy values are blocked and sent to human conflict review");
+Check(KnowledgeLabels.Category(KnowledgeCategory.DhgatePolicy) == "平台政策",
+    "legacy policy category identifiers render with a platform-neutral display label");
 if (openConflicts.FirstOrDefault() is { } openConflict)
 {
     await knowledgeBase.ResolveConflictAsync(openConflict.Id, policySeven.Id, "smoke");

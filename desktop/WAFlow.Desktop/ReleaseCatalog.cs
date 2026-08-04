@@ -9,10 +9,18 @@ public static class ReleaseCatalog
     public static string CurrentVersion =>
         Assembly.GetExecutingAssembly().GetName().Version is { } version
             ? $"{version.Major}.{version.Minor}.{version.Build}"
-            : "5.18.5";
+            : "5.18.6";
 
     public static IReadOnlyList<ReleaseNote> History { get; } =
     [
+        new("5.18.6", "2026-08-04", "Customer Success Agent 品牌中立化",
+        [
+            "WhatsApp Customer Intelligence 的内置 Agent 名称统一为“Customer Success Agent”，界面标题、提示框、默认身份、自我介绍和系统提示不再展示特定平台名称。",
+            "知识库的固定标题与政策分类统一改为品牌中立的“CUSTOMER KNOWLEDGE & RAG”和“平台政策”，程序内使用手册及历史版本说明同步清理固定平台字样。",
+            "旧版本曾保存的内置默认 Agent 身份会在读取时精确识别并仅在内存中转换为新版中立名称；不会覆盖用户自定义 Persona，也不会修改客户、聊天、导入或知识库业务数据。",
+            "导入字段兼容别名、历史数据库枚举和政策分类迁移标识继续保留，确保旧表格与旧数据库可以无损升级，但这些内部兼容项不会作为产品固定文案展示。",
+            "本版本仅发布 GitHub Windows 中文安装包与 Velopack 自动更新资产，不关闭、重启、安装或覆盖本机正式程序；安装或更新继续创建或修复桌面快捷方式，更新缓存继续只保留当前、待安装新版本及最近 3 个回滚版本，macOS 继续暂停。"
+        ], true),
         new("5.18.5", "2026-08-04", "商机智能实时进度统一修复",
         [
             "商机智能顶部操作固定只显示“使用 XX 模型分析”，不再把失败客户数、未完成客户数或重试状态塞入按钮文案，避免把操作名称误解为任务结果。",
@@ -20,7 +28,7 @@ public static class ReleaseCatalog
             "看板“AI 分析覆盖”与商机智能共用同一实时快照；例如当前任务为 290 / 598 时，两处都会同步显示 290 / 598 和对应百分比，不再出现商机智能 290 / 598、看板 549 / 598 的口径冲突。",
             "批量任务仍保留断点续跑、失败客户重试和安全停止能力，但这些内部状态只用于执行控制，不再改变用户看到的模型操作名称或制造额外进度口径。",
             "新增共享进度事件、返回页面恢复、看板实时同步、固定按钮文案及无障碍实时状态回归；本版本仅发布 GitHub Windows 中文安装包与 Velopack 自动更新资产，不关闭、重启、安装或覆盖本机正式程序，安装或更新继续创建或修复桌面快捷方式，更新缓存继续只保留当前、待安装新版本及最近 3 个回滚版本，macOS 继续暂停。"
-        ], true),
+        ]),
         new("5.18.4", "2026-08-04", "WhatsApp 强制重新扫码与会话清理修复",
         [
             "修复手机端已经从“已关联设备”剔除本机后，AI Sales OS 点击“退出账号”再点击“连接 / 显示二维码”仍在连接状态之间反复横跳、无法重新扫码的问题。",
@@ -597,9 +605,9 @@ public static class ReleaseCatalog
             "本次属于不扩展产品范围的显示缺陷修复，因此从 4.1.0 升级为 4.1.1。",
             "本版本仅通过 GitHub Release 发布 Windows 中文安装包与 Velopack 自动更新资产；不覆盖本机正式程序，macOS 构建继续暂停。"
         ]),
-        new("4.1.0", "2026-07-24", "DHgate Customer Success Agent · 跨 WhatsApp 账号客户连续性",
+        new("4.1.0", "2026-07-24", "Customer Success Agent · 跨 WhatsApp 账号客户连续性",
         [
-            "新增 DHgate Customer Success Conversation Agent：以客户成功经理身份理解采购需求、澄清缺失信息、协调人工跟进，不冒充商户、工厂或供应商，也不承诺库存、价格、物流、退款或平台政策。",
+            "新增 Customer Success Agent：以客户成功经理身份理解采购需求、澄清缺失信息、协调人工跟进，不冒充商户、工厂或供应商，也不承诺库存、价格、物流、退款或平台政策。",
             "建立全局客户身份层：统一保存号码原值、数字体、E.164、JID、LID、来源账号、会话、匹配方式与置信度；人工绑定、精确身份和唯一无冲突推断可关联，歧义、无匹配和冲突一律阻断自动回复。",
             "同一客户跨多个 WhatsApp 账号共享 Customer Brain、Customer 360、采购需求、时间线、待办与全局人工交接，同时保留每个账号独立的 Persona 和关系记忆。",
             "新增八态 Agent 状态机与全局客户锁；同一客户只能由一个账号自动回复，身份待确认、人工接管和恢复审核状态不会因重启或新消息自动恢复。",

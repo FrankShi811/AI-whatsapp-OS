@@ -139,6 +139,16 @@ else {
   Write-Host "PASS  Windows release version contract: $desktopVersion (macOS release paused at $macVersion)"
 }
 
+$desktopProductSourceFiles = Get-ChildItem -LiteralPath (Join-Path $root 'desktop\WAFlow.Desktop') -Recurse -File |
+  Where-Object { $_.Extension -in @('.xaml', '.cs') -and $_.FullName -notmatch '[\\/](?:bin|obj)[\\/]' }
+$legacyPlatformBrandInDesktopCopy = $desktopProductSourceFiles |
+  Select-String -Pattern '\bDHgate\b' -CaseSensitive:$false
+if ($legacyPlatformBrandInDesktopCopy) {
+  $matches = ($legacyPlatformBrandInDesktopCopy | ForEach-Object { "$($_.Path):$($_.LineNumber)" }) -join ', '
+  throw "Desktop product copy must remain platform-neutral; remove the legacy platform brand from fixed UI copy: $matches"
+}
+Write-Host 'PASS  platform-neutral desktop product-copy contract'
+
 $requiredBrushes = @(
   'Ink', 'InkSecondary', 'Muted', 'Primary', 'OnPrimary', 'AiAccent', 'OnAi', 'AiProcessing',
   'Surface', 'Canvas', 'Line', 'Success', 'Warning', 'Danger', 'Info',

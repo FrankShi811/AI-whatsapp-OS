@@ -405,7 +405,7 @@ public static class KnowledgeLabels
 
     public static string Category(KnowledgeCategory value) => value switch
     {
-        KnowledgeCategory.DhgatePolicy => "DHgate 政策",
+        KnowledgeCategory.DhgatePolicy => "平台政策",
         KnowledgeCategory.CustomerSuccessSop => "客户成功 SOP",
         KnowledgeCategory.SourcingRequirement => "搜品采集规范",
         KnowledgeCategory.ProductKnowledge => "产品知识",
