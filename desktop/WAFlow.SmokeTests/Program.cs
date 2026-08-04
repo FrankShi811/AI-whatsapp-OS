@@ -3454,10 +3454,25 @@ await using (var bulkBridge = new WhatsAppConnectionManager())
 {
     var bulkSync = new WhatsAppSyncService(bulkRepository, bulkBridge);
     await using var bulkAutomation = new LeadIntelligenceAutomationService(bulkRepository, bulkProvider, bulkSync);
+    var sharedBulkProgress = new List<LeadBulkAnalysisProgress>();
+    var sharedProgressObservedWhileRunning = false;
+    bulkAutomation.BulkAnalysisProgressChanged += (_, update) =>
+    {
+        sharedBulkProgress.Add(update);
+        sharedProgressObservedWhileRunning |= bulkAutomation.IsBulkAnalysisRunning;
+    };
     var bulkResult = await bulkAutomation.AnalyzeAllLeadsAsync();
     var bulkDashboard = await bulkRepository.GetDashboardAsync();
     Check(bulkResult is { Total: 2, Succeeded: 1, Failed: 1 } && bulkHandler.RequestBodies.Count == 4, "bulk lead analysis continues after one customer fails");
     Check(bulkDashboard.Grades["A"] == 1 && bulkDashboard.Grades["D"] == 1, "bulk AI results update Dashboard while failed customers remain D/0");
+    Check(
+        sharedProgressObservedWhileRunning
+        && sharedBulkProgress.Any(update => update.State == "running" && update.Total == 2)
+        && sharedBulkProgress.LastOrDefault() is { State: "completed", Total: 2, Completed: 2 }
+        && bulkAutomation.CurrentBulkProgress is { State: "completed", Total: 2, Completed: 2 }
+        && bulkAutomation.CurrentBulkModel == "deepseek-chat"
+        && !bulkAutomation.IsBulkAnalysisRunning,
+        "bulk analysis publishes one navigation-safe progress snapshot for Lead Intelligence and Dashboard");
 }
 
 var circuitRoot = Path.Combine(root, "bulk-lead-analysis-circuit");

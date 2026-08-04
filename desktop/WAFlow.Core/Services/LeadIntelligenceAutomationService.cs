@@ -5,7 +5,25 @@ using WAFlow.Core.Infrastructure;
 namespace WAFlow.Core.Services;
 
 public sealed record LeadAnalysisAutomationEventArgs(string LeadId, AnalysisStatus Status, string Message);
-public sealed record LeadBulkAnalysisProgress(int Total, int Completed, int Succeeded, int Failed, string CurrentLeadId, string CurrentLeadName, string State, string Message);
+public sealed class LeadBulkAnalysisProgress(
+    int total,
+    int completed,
+    int succeeded,
+    int failed,
+    string currentLeadId,
+    string currentLeadName,
+    string state,
+    string message) : EventArgs
+{
+    public int Total { get; } = total;
+    public int Completed { get; } = completed;
+    public int Succeeded { get; } = succeeded;
+    public int Failed { get; } = failed;
+    public string CurrentLeadId { get; } = currentLeadId;
+    public string CurrentLeadName { get; } = currentLeadName;
+    public string State { get; } = state;
+    public string Message { get; } = message;
+}
 public sealed record LeadBulkAnalysisResult(int Total, int Succeeded, int Failed);
 
 public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
@@ -15,9 +33,33 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
     private readonly WhatsAppSyncService _sync;
     private readonly Channel<string> _queue = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly SemaphoreSlim _bulkAnalysisGate = new(1, 1);
+    private readonly object _bulkProgressLock = new();
     private Task? _worker;
+    private LeadBulkAnalysisProgress? _currentBulkProgress;
+    private string _currentBulkModel = "";
+    private int _bulkAnalysisActive;
 
     public event EventHandler<LeadAnalysisAutomationEventArgs>? AnalysisChanged;
+    public event EventHandler<LeadBulkAnalysisProgress>? BulkAnalysisProgressChanged;
+
+    public bool IsBulkAnalysisRunning => Volatile.Read(ref _bulkAnalysisActive) == 1;
+
+    public LeadBulkAnalysisProgress? CurrentBulkProgress
+    {
+        get
+        {
+            lock (_bulkProgressLock) return _currentBulkProgress;
+        }
+    }
+
+    public string CurrentBulkModel
+    {
+        get
+        {
+            lock (_bulkProgressLock) return _currentBulkModel;
+        }
+    }
 
     public LeadIntelligenceAutomationService(LocalRepository repository, DeepSeekService provider, WhatsAppSyncService sync)
     {
@@ -78,8 +120,34 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
 
     public async Task<LeadBulkAnalysisResult> AnalyzeAllLeadsAsync(IProgress<LeadBulkAnalysisProgress>? progress = null, CancellationToken cancellationToken = default)
     {
+        if (!await _bulkAnalysisGate.WaitAsync(0, cancellationToken))
+        {
+            throw new DeepSeekException("bulk_analysis_running", "商机批量分析正在运行，请等待当前任务完成。", true);
+        }
+
+        lock (_bulkProgressLock)
+        {
+            _currentBulkProgress = null;
+            _currentBulkModel = "";
+        }
+        Volatile.Write(ref _bulkAnalysisActive, 1);
+
+        try
+        {
+            return await AnalyzeAllLeadsCoreAsync(progress, cancellationToken);
+        }
+        finally
+        {
+            Volatile.Write(ref _bulkAnalysisActive, 0);
+            _bulkAnalysisGate.Release();
+        }
+    }
+
+    private async Task<LeadBulkAnalysisResult> AnalyzeAllLeadsCoreAsync(IProgress<LeadBulkAnalysisProgress>? progress, CancellationToken cancellationToken)
+    {
         if (!_provider.HasApiKey()) throw new DeepSeekException("provider_not_configured", "请先在 API 对接中配置 API Key。", false);
         var execution = await _provider.ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence, cancellationToken);
+        lock (_bulkProgressLock) _currentBulkModel = execution.Model;
 
         var leads = await _repository.GetLeadsAsync(cancellationToken: cancellationToken);
         var currentIds = leads.Select(lead => lead.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -153,7 +221,7 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
             null,
             $"run={run.RunId}; total={total}; completed={completed}; pending={run.PendingLeadIds.Count}; provider={providerId}; model={execution.Model}; retry_failed_only={retryFailedOnly}",
             cancellationToken);
-        progress?.Report(new(total, completed, run.Succeeded, run.Failed, "", "", canResume ? "resuming" : "starting",
+        PublishBulkProgress(progress, new(total, completed, run.Succeeded, run.Failed, "", "", canResume ? "resuming" : "starting",
             canResume
                 ? $"继续上次任务并优先重试失败客户：剩余 {run.PendingLeadIds.Count} 位"
                 : retryFailedOnly
@@ -173,14 +241,14 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
                 run.UpdatedAt = DateTimeOffset.Now;
                 await _repository.SaveLeadBulkAnalysisRunStateAsync(run, cancellationToken);
                 completed = total - run.PendingLeadIds.Count;
-                progress?.Report(new(total, completed, run.Succeeded, run.Failed, leadId, "", "failed", "客户已不存在"));
+                PublishBulkProgress(progress, new(total, completed, run.Succeeded, run.Failed, leadId, "", "failed", "客户已不存在"));
                 continue;
             }
 
             lead.AnalysisTrigger = "bulk";
             lead.AnalysisRequestedAt = DateTimeOffset.Now;
             completed = total - run.PendingLeadIds.Count;
-            progress?.Report(new(total, completed, run.Succeeded, run.Failed, lead.Id, lead.DisplayName, "running", $"正在分析：{lead.DisplayName}"));
+            PublishBulkProgress(progress, new(total, completed, run.Succeeded, run.Failed, lead.Id, lead.DisplayName, "running", $"正在分析：{lead.DisplayName}"));
             try
             {
                 await _provider.AnalyzeLeadAsync(lead, cancellationToken);
@@ -190,13 +258,13 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
                 run.UpdatedAt = DateTimeOffset.Now;
                 await _repository.SaveLeadBulkAnalysisRunStateAsync(run, cancellationToken);
                 completed = total - run.PendingLeadIds.Count;
-                progress?.Report(new(total, completed, run.Succeeded, run.Failed, lead.Id, lead.DisplayName, "succeeded", $"已完成：{lead.DisplayName}"));
+                PublishBulkProgress(progress, new(total, completed, run.Succeeded, run.Failed, lead.Id, lead.DisplayName, "succeeded", $"已完成：{lead.DisplayName}"));
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 run.UpdatedAt = DateTimeOffset.Now;
                 await _repository.SaveLeadBulkAnalysisRunStateAsync(run, CancellationToken.None);
-                progress?.Report(new(total, completed, run.Succeeded, run.Failed, lead.Id, lead.DisplayName, "cancelled", $"已在 {lead.DisplayName} 处停止，下次从此处继续"));
+                PublishBulkProgress(progress, new(total, completed, run.Succeeded, run.Failed, lead.Id, lead.DisplayName, "cancelled", $"已在 {lead.DisplayName} 处停止，下次从此处继续"));
                 throw;
             }
             catch (Exception error)
@@ -218,7 +286,7 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
                         null,
                         $"run={run.RunId}; consecutive_failures={consecutiveFailures}; pending={run.PendingLeadIds.Count}; error={error.GetType().Name}",
                         cancellationToken);
-                    progress?.Report(new(total, completed, run.Succeeded, run.Failed, lead.Id, lead.DisplayName, "paused",
+                    PublishBulkProgress(progress, new(total, completed, run.Succeeded, run.Failed, lead.Id, lead.DisplayName, "paused",
                         $"AI 连续 {consecutiveFailures} 位客户分析失败，已暂停并保留剩余队列"));
                     throw new DeepSeekException(
                         "bulk_analysis_paused",
@@ -231,7 +299,7 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
                 run.UpdatedAt = DateTimeOffset.Now;
                 await _repository.SaveLeadBulkAnalysisRunStateAsync(run, cancellationToken);
                 completed = total - run.PendingLeadIds.Count;
-                progress?.Report(new(total, completed, run.Succeeded, run.Failed, lead.Id, lead.DisplayName, "failed", $"失败：{lead.DisplayName} · {error.Message}"));
+                PublishBulkProgress(progress, new(total, completed, run.Succeeded, run.Failed, lead.Id, lead.DisplayName, "failed", $"失败：{lead.DisplayName} · {error.Message}"));
             }
         }
 
@@ -239,7 +307,15 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
         run.UpdatedAt = DateTimeOffset.Now;
         await _repository.SaveLeadBulkAnalysisRunStateAsync(run, cancellationToken);
         await _repository.LogEventAsync("lead_bulk_analysis_completed", null, null, $"run={run.RunId}; total={total}; succeeded={run.Succeeded}; failed={run.Failed}; provider={providerId}; model={execution.Model}", cancellationToken);
+        PublishBulkProgress(progress, new(total, total, run.Succeeded, run.Failed, "", "", "completed", "分析完成"));
         return new LeadBulkAnalysisResult(total, run.Succeeded, run.Failed);
+    }
+
+    private void PublishBulkProgress(IProgress<LeadBulkAnalysisProgress>? progress, LeadBulkAnalysisProgress value)
+    {
+        lock (_bulkProgressLock) _currentBulkProgress = value;
+        progress?.Report(value);
+        BulkAnalysisProgressChanged?.Invoke(this, value);
     }
 
     private void Sync_MessageSynchronized(object? sender, WhatsAppMessage message)
@@ -304,5 +380,6 @@ public sealed class LeadIntelligenceAutomationService : IAsyncDisposable
             catch (OperationCanceledException) { }
         }
         _lifetime.Dispose();
+        _bulkAnalysisGate.Dispose();
     }
 }

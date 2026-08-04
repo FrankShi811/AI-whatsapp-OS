@@ -607,25 +607,25 @@ if ($customerDimensionSource -notmatch [regex]::Escape('PrimaryCategoryPreferenc
 }
 Write-Host 'PASS  shared primary-category preference display and filtering contract'
 
-if (-not ($leadIntelligenceSource.Contains('var allLeads = await _services.Repository.GetLeadsAsync();')) -or
-    -not ($leadIntelligenceSource.Contains('allLeads.Count(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed)')) -or
-    -not ($leadIntelligenceSource.Contains('重试 {retryableCount:N0} 位分析失败客户')) -or
-    -not ($leadIntelligenceSource.Contains('已完成 {completed:N0} / {total:N0} · 本轮失败 {failedThisRun:N0} · 全局待重试 {retryableCount:N0} · 待继续 {pending:N0}')) -or
-    -not ($leadIntelligenceSource.Contains('GetLeadBulkAnalysisRunStateAsync()')) -or
-    -not ($leadIntelligenceSource.Contains('private void UpdateBulkAnalyzeButtonRunningContent(int completed, int total)')) -or
+if (-not ($leadAutomationSource.Contains('public event EventHandler<LeadBulkAnalysisProgress>? BulkAnalysisProgressChanged;')) -or
+    -not ($leadAutomationSource.Contains('public bool IsBulkAnalysisRunning')) -or
+    -not ($leadAutomationSource.Contains('public LeadBulkAnalysisProgress? CurrentBulkProgress')) -or
+    -not ($leadAutomationSource.Contains('private void PublishBulkProgress')) -or
+    -not ($leadIntelligenceSource.Contains('BulkAnalyzeButton.Content = $"使用 {model} 模型分析";')) -or
+    $leadIntelligenceSource.Contains('位分析失败客户') -or
+    $leadIntelligenceSource.Contains('位未完成客户') -or
     -not ($leadIntelligenceSource.Contains('if (TryRestoreActiveBulkProgress()) return;')) -or
     -not ($leadIntelligenceSource.Contains('private bool TryRestoreActiveBulkProgress()')) -or
     -not ($leadIntelligenceSource.Contains('private void ApplyBulkProgress(LeadBulkAnalysisProgress progress)')) -or
-    -not ($leadIntelligenceSource.Contains('if (_lastBulkProgress is { } progress)')) -or
-    -not ($leadIntelligenceSource.Contains('ApplyBulkProgress(progress);')) -or
-    -not ($leadIntelligenceSource.Contains('_bulkCancellation is { IsCancellationRequested: false }')) -or
-    -not ($leadIntelligenceSource.Contains('UpdateBulkAnalyzeButtonRunningContent(0, allLeads.Count);')) -or
-    -not ($leadIntelligenceSource.Contains('UpdateBulkAnalyzeButtonRunningContent(progress.Completed, progress.Total);')) -or
-    -not ($leadIntelligenceSource.Contains('if (_bulkCancellation is null) return;')) -or
-    -not ($guideCatalogSource.Contains('["intelligence"] = ModuleGuideVersion + 4'))) {
-  throw 'Lead Intelligence bulk action must show global idle counts, restore the active progress snapshot after navigation, ignore late callbacks and explain filter scope.'
+    -not ($leadIntelligenceSource.Contains('_services.LeadAutomation.CurrentBulkProgress')) -or
+    -not ($dashboardSource.Contains('BulkAnalysisProgressChanged += LeadAutomation_BulkAnalysisProgressChanged')) -or
+    -not ($dashboardSource.Contains('private void ApplyAnalysisCoverage(LeadBulkAnalysisProgress progress)')) -or
+    -not ($dashboardSource.Contains('_services.LeadAutomation.CurrentBulkProgress')) -or
+    -not ($dashboardXaml.Contains('AutomationProperties.Name="AI 分析进度"')) -or
+    -not ($guideCatalogSource.Contains('["intelligence"] = ModuleGuideVersion + 5'))) {
+  throw 'Lead Intelligence and Dashboard must share one live bulk-progress snapshot, while the model action keeps a stable label without retry or remaining-customer counts.'
 }
-Write-Host 'PASS  Lead Intelligence global retry count, navigation-safe progress restore and live bulk-action text contract'
+Write-Host 'PASS  shared Lead Intelligence and Dashboard live-progress truth source with stable model-action text contract'
 
 if (-not ($leadIntelligenceXaml.Contains('x:Name="OpportunityImportButton"')) -or
     -not ($leadIntelligenceXaml.Contains('x:Name="OpportunitySignalFilter"')) -or

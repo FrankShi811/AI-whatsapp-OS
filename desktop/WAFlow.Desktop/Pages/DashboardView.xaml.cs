@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
+using WAFlow.Core.Services;
 
 namespace WAFlow.Desktop.Pages;
 
@@ -12,8 +13,42 @@ public partial class DashboardView : UserControl, IRefreshableView
     private bool _unreadDigestRefreshPending;
     private bool _unreadDigestForcePending;
     private int _unreadDigestDelayMilliseconds;
+    private bool _bulkProgressSubscribed;
     public event EventHandler<string>? NavigateRequested;
-    public DashboardView(AppServices services) { InitializeComponent(); _services = services; }
+    public DashboardView(AppServices services)
+    {
+        InitializeComponent();
+        _services = services;
+        Loaded += DashboardView_Loaded;
+        Unloaded += DashboardView_Unloaded;
+    }
+
+    private void DashboardView_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (!_bulkProgressSubscribed)
+        {
+            _services.LeadAutomation.BulkAnalysisProgressChanged += LeadAutomation_BulkAnalysisProgressChanged;
+            _bulkProgressSubscribed = true;
+        }
+
+        if (_services.LeadAutomation.IsBulkAnalysisRunning)
+        {
+            var progress = _services.LeadAutomation.CurrentBulkProgress;
+            if (progress is not null) ApplyAnalysisCoverage(progress);
+        }
+    }
+
+    private void DashboardView_Unloaded(object sender, RoutedEventArgs e)
+    {
+        if (!_bulkProgressSubscribed) return;
+        _services.LeadAutomation.BulkAnalysisProgressChanged -= LeadAutomation_BulkAnalysisProgressChanged;
+        _bulkProgressSubscribed = false;
+    }
+
+    private void LeadAutomation_BulkAnalysisProgressChanged(object? sender, LeadBulkAnalysisProgress progress)
+    {
+        _ = Dispatcher.InvokeAsync(() => ApplyAnalysisCoverage(progress));
+    }
 
     public async Task RefreshAsync()
     {
@@ -23,11 +58,29 @@ public partial class DashboardView : UserControl, IRefreshableView
         FollowUpsText.Text = data.PendingFollowUps.ToString(); ActiveCampaignsText.Text = data.ActiveCampaigns.ToString();
         LastImportText.Text = data.LastImportText;
         GradeDonut.SetValues(data.Grades.GetValueOrDefault("A"), data.Grades.GetValueOrDefault("B"), data.Grades.GetValueOrDefault("C"), data.Grades.GetValueOrDefault("D"));
-        var coverage = data.TotalLeads == 0 ? 0 : 100d * data.AnalyzedLeads / data.TotalLeads;
-        AnalysisCoverageText.Text = $"{coverage:0}%";
-        AnalysisCoverageBar.Value = coverage;
-        AnalyzedLeadsText.Text = $"{data.AnalyzedLeads} / {data.TotalLeads}";
-        AnalysisQueueText.Text = data.QueuedAnalyses > 0 ? $"{data.QueuedAnalyses} 个客户正在等待或分析中" : data.FailedAnalyses > 0 ? $"{data.FailedAnalyses} 个分析可重试" : "AI 队列已清空";
+        if (_services.LeadAutomation.IsBulkAnalysisRunning)
+        {
+            var activeBulkProgress = _services.LeadAutomation.CurrentBulkProgress;
+            if (activeBulkProgress is not null)
+            {
+                ApplyAnalysisCoverage(activeBulkProgress);
+            }
+            else
+            {
+                ApplyAnalysisCoverage(0, data.TotalLeads, $"正在准备分析 0 / {data.TotalLeads:N0}");
+            }
+        }
+        else
+        {
+            ApplyAnalysisCoverage(
+                data.AnalyzedLeads,
+                data.TotalLeads,
+                data.QueuedAnalyses > 0
+                    ? $"{data.QueuedAnalyses} 个客户正在等待或分析中"
+                    : data.FailedAnalyses > 0
+                        ? $"{data.FailedAnalyses} 个分析可重试"
+                        : "AI 队列已清空");
+        }
         CampaignSentText.Text = data.CampaignSent.ToString();
         CampaignQueuedText.Text = data.CampaignQueued.ToString();
         CampaignFailedText.Text = data.CampaignFailed.ToString();
@@ -134,6 +187,24 @@ public partial class DashboardView : UserControl, IRefreshableView
     private void Action_Click(object sender, System.Windows.RoutedEventArgs e)
     {
         if (sender is Button { Tag: string page }) NavigateRequested?.Invoke(this, page);
+    }
+
+    private void ApplyAnalysisCoverage(LeadBulkAnalysisProgress progress)
+    {
+        var completed = Math.Min(Math.Max(0, progress.Completed), Math.Max(0, progress.Total));
+        var state = progress.State == "completed" ? "已分析" : "正在分析";
+        ApplyAnalysisCoverage(completed, progress.Total, $"{state} {completed:N0} / {progress.Total:N0}");
+    }
+
+    private void ApplyAnalysisCoverage(int completed, int total, string queueText)
+    {
+        total = Math.Max(0, total);
+        completed = Math.Clamp(completed, 0, total);
+        var coverage = total == 0 ? 0 : 100d * completed / total;
+        AnalysisCoverageText.Text = $"{coverage:0}%";
+        AnalysisCoverageBar.Value = coverage;
+        AnalyzedLeadsText.Text = $"{completed:N0} / {total:N0}";
+        AnalysisQueueText.Text = queueText;
     }
 
     private sealed record StageMetric(string Label, int Count, double Percent);

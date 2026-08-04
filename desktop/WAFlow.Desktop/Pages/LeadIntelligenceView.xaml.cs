@@ -14,6 +14,8 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     private List<Lead> _visibleLeads = [];
     private CancellationTokenSource? _bulkCancellation;
     private LeadBulkAnalysisProgress? _lastBulkProgress;
+    private string _bulkAnalyzeModel = "AI";
+    private bool _bulkProgressSubscribed;
     private bool _decisionDrawerExpanded = true;
     private int _customerBrainRefreshGeneration;
     private int _currentPage = 1;
@@ -33,6 +35,37 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         OpportunityAmountFilter.ItemsSource = new[] { "全部成交金额", "尚无成交", "0–1,000", "1,000–10,000", "10,000 以上" }; OpportunityAmountFilter.SelectedIndex = 0;
         PageSizeBox.ItemsSource = new[] { new PageSizeOption("10 条/页", 10), new PageSizeOption("30 条/页", 30), new PageSizeOption("50 条/页", 50) };
         PageSizeBox.SelectedIndex = 1;
+        Loaded += LeadIntelligenceView_Loaded;
+        Unloaded += LeadIntelligenceView_Unloaded;
+    }
+
+    private void LeadIntelligenceView_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (!_bulkProgressSubscribed)
+        {
+            _services.LeadAutomation.BulkAnalysisProgressChanged += LeadAutomation_BulkAnalysisProgressChanged;
+            _bulkProgressSubscribed = true;
+        }
+        TryRestoreActiveBulkProgress();
+    }
+
+    private void LeadIntelligenceView_Unloaded(object sender, RoutedEventArgs e)
+    {
+        if (!_bulkProgressSubscribed) return;
+        _services.LeadAutomation.BulkAnalysisProgressChanged -= LeadAutomation_BulkAnalysisProgressChanged;
+        _bulkProgressSubscribed = false;
+    }
+
+    private void LeadAutomation_BulkAnalysisProgressChanged(object? sender, LeadBulkAnalysisProgress progress)
+    {
+        _ = Dispatcher.InvokeAsync(() =>
+        {
+            if (!_services.LeadAutomation.IsBulkAnalysisRunning && progress.State != "completed") return;
+            _lastBulkProgress = progress;
+            if (!string.IsNullOrWhiteSpace(_services.LeadAutomation.CurrentBulkModel))
+                _bulkAnalyzeModel = _services.LeadAutomation.CurrentBulkModel;
+            ApplyBulkProgress(progress);
+        });
     }
 
     public async Task RefreshAsync()
@@ -74,77 +107,72 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
 
     public async Task RefreshAiRouteAsync()
     {
+        var execution = await _services.DeepSeek.ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence);
+        _bulkAnalyzeModel = execution.Model;
         if (TryRestoreActiveBulkProgress()) return;
 
         var allLeads = await _services.Repository.GetLeadsAsync();
-        var execution = await _services.DeepSeek.ResolveExecutionProfileAsync(AiModuleKeys.LeadIntelligence);
-        var runState = await _services.Repository.GetLeadBulkAnalysisRunStateAsync();
 
         // A running bulk task can advance while the page refresh is reading the
-        // database. Its in-memory progress snapshot is authoritative until the
-        // task finishes, so an older persisted queue must not overwrite it.
+        // database. Its shared in-memory snapshot is the only authoritative
+        // progress source until the task finishes.
         if (TryRestoreActiveBulkProgress()) return;
 
         UpdateBulkAnalyzeButtonIdleContent(
             execution.ProviderId,
             execution.Model,
             execution.ReasoningEffort,
-            allLeads,
-            runState);
+            allLeads);
     }
 
     private void UpdateBulkAnalyzeButtonIdleContent(
         string providerId,
         string model,
         string reasoningEffort,
-        IReadOnlyList<Lead> allLeads,
-        LeadBulkAnalysisRunState? runState)
+        IReadOnlyList<Lead> allLeads)
     {
-        var retryableCount = allLeads.Count(lead => lead.AnalysisStatus == AnalysisStatus.RetryableFailed);
         var total = allLeads.Count;
         var completed = allLeads.Count(lead => lead.HasCurrentAiScore);
-        var currentIds = allLeads.Select(lead => lead.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var matchingRun = runState is not null
-            && runState.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase)
-            && runState.Model.Equals(model, StringComparison.OrdinalIgnoreCase)
-                ? runState
-                : null;
-        var pending = matchingRun is { IsComplete: false }
-            ? matchingRun.PendingLeadIds.Count(currentIds.Contains)
-            : 0;
-        var failedThisRun = matchingRun?.Failed ?? 0;
 
-        BulkAnalyzeButton.Content = retryableCount > 0
-            ? $"使用 {model} 重试 {retryableCount:N0} 位分析失败客户"
-            : pending > 0
-                ? $"使用 {model} 继续 {pending:N0} 位未完成客户"
-                : $"使用 {model} 分析全部";
+        BulkAnalyzeButton.Content = $"使用 {model} 模型分析";
         BulkAnalyzeButton.ToolTip =
-            $"商机智能实际路由：{providerId} · {model} · 推理深度 {reasoningEffort}。点击后优先继续已保存队列并重试失败客户。";
+            $"商机智能实际路由：{providerId} · {model} · 推理深度 {reasoningEffort}。";
+        BulkAnalyzeButton.IsEnabled = true;
+        ImportButton.IsEnabled = true;
+        CancelBulkButton.Visibility = Visibility.Collapsed;
         BulkProgressPanel.Visibility = Visibility.Visible;
         BulkProgressBar.Maximum = Math.Max(1, total);
         BulkProgressBar.Value = Math.Min(completed, total);
-        BulkProgressText.Text =
-            $"已完成 {completed:N0} / {total:N0} · 本轮失败 {failedThisRun:N0} · 全局待重试 {retryableCount:N0} · 待继续 {pending:N0}";
-    }
-
-    private void UpdateBulkAnalyzeButtonRunningContent(int completed, int total)
-    {
-        BulkAnalyzeButton.Content = $"正在分析 {Math.Min(completed, total)} / {total}";
+        BulkProgressText.Text = $"已分析 {completed:N0} / {total:N0}";
     }
 
     private bool TryRestoreActiveBulkProgress()
     {
-        if (_bulkCancellation is null) return false;
+        if (!_services.LeadAutomation.IsBulkAnalysisRunning) return false;
+
+        if (!string.IsNullOrWhiteSpace(_services.LeadAutomation.CurrentBulkModel))
+            _bulkAnalyzeModel = _services.LeadAutomation.CurrentBulkModel;
 
         BulkAnalyzeButton.IsEnabled = false;
+        BulkAnalyzeButton.Content = $"使用 {_bulkAnalyzeModel} 模型分析";
         BulkAnalyzeButton.ToolTip = "后台批量分析正在运行；切换页面不会中断任务。";
         ImportButton.IsEnabled = false;
         CancelBulkButton.Visibility = Visibility.Visible;
+        CancelBulkButton.IsEnabled = _bulkCancellation is { IsCancellationRequested: false };
         BulkProgressPanel.Visibility = Visibility.Visible;
 
-        if (_lastBulkProgress is { } progress)
+        var progress = _services.LeadAutomation.CurrentBulkProgress;
+        if (progress is not null)
+        {
+            _lastBulkProgress = progress;
             ApplyBulkProgress(progress);
+        }
+        else
+        {
+            BulkProgressBar.Maximum = 1;
+            BulkProgressBar.Value = 0;
+            BulkProgressText.Text = "正在准备分析";
+        }
 
         return true;
     }
@@ -153,8 +181,10 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
     {
         BulkProgressBar.Maximum = Math.Max(1, progress.Total);
         BulkProgressBar.Value = Math.Min(progress.Completed, progress.Total);
-        BulkProgressText.Text = $"{progress.Message} · {progress.Completed}/{progress.Total} · 成功 {progress.Succeeded} · 失败 {progress.Failed}";
-        UpdateBulkAnalyzeButtonRunningContent(progress.Completed, progress.Total);
+        BulkProgressText.Text = progress.State == "completed"
+            ? $"已分析 {Math.Min(progress.Completed, progress.Total):N0} / {progress.Total:N0}"
+            : $"正在分析 {Math.Min(progress.Completed, progress.Total):N0} / {progress.Total:N0}";
+        BulkAnalyzeButton.Content = $"使用 {_bulkAnalyzeModel} 模型分析";
         CancelBulkButton.IsEnabled = _bulkCancellation is { IsCancellationRequested: false }
             && progress.State is not "cancelled";
     }
@@ -291,13 +321,12 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         BulkProgressPanel.Visibility = Visibility.Visible;
         BulkProgressBar.Maximum = Math.Max(1, allLeads.Count);
         BulkProgressBar.Value = 0;
-        BulkProgressText.Text = $"准备分析 0 / {allLeads.Count}";
-        UpdateBulkAnalyzeButtonRunningContent(0, allLeads.Count);
-        var progress = new Progress<LeadBulkAnalysisProgress>(UpdateBulkProgress);
+        BulkProgressText.Text = $"正在分析 0 / {allLeads.Count}";
+        BulkAnalyzeButton.Content = $"使用 {_bulkAnalyzeModel} 模型分析";
         (string Message, string Title, MessageBoxImage Icon)? outcome = null;
         try
         {
-            var result = await _services.LeadAutomation.AnalyzeAllLeadsAsync(progress, _bulkCancellation.Token);
+            var result = await _services.LeadAutomation.AnalyzeAllLeadsAsync(null, _bulkCancellation.Token);
             DataChanged?.Invoke(this, EventArgs.Empty);
             outcome = (
                 $"批量分析完成。\n\n总数：{result.Total}\n成功：{result.Succeeded}\n失败：{result.Failed}",
@@ -335,13 +364,6 @@ public partial class LeadIntelligenceView : UserControl, IRefreshableView
         CancelBulkButton.IsEnabled = false;
         BulkProgressText.Text = "正在安全停止当前 AI 请求…";
         _bulkCancellation?.Cancel();
-    }
-
-    private void UpdateBulkProgress(LeadBulkAnalysisProgress progress)
-    {
-        if (_bulkCancellation is null) return;
-        _lastBulkProgress = progress;
-        ApplyBulkProgress(progress);
     }
 
     private async void LeadGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
