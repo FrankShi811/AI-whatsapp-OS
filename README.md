@@ -1,79 +1,38 @@
-# AI Sales OS Windows 原生版
+# Relvyn
 
-直接双击 `AI Sales OS.exe` 运行。当前 Windows 版本为 5.18.2。默认本地数据工作区位于 `%LOCALAPPDATA%\WAFlow`；也可在“设置 → 本地数据工作区”安全迁移到 D、E 等其他本机固定磁盘。升级和迁移后仍会读取原有客户、账号、邮件历史、自动化任务、分析报告、知识库和设置。
+**Local AI Workspace for Global Sales**
 
-这是 WPF/.NET 8 自包含单文件 EXE，不是 Electron、Tauri 或 WebView 套壳，不启动 localhost HTTP 服务。最终用户无需安装 Node.js、npm、浏览器或 .NET Runtime；WhatsApp 桥接程序已作为 Windows EXE 嵌入主程序。
+**Relvyn｜本地 AI 客户经营工作台**
 
-## 主要能力
+This repository is the **legacy public source and update-compatibility
+repository** for Relvyn. Active source development, build scripts, and internal
+documentation have moved to a private repository. Future approved installers,
+update manifests, release notes, and public legal documents are published at
+[AI-whatsapp-OS-releases](https://github.com/FrankShi811/AI-whatsapp-OS-releases).
 
-- 原生看板、商机智能、客户列表、客户外部调查、WhatsApp、邮件箱、多渠道自动化触达、Knowledge Base 和客户智能分析中心。
-- 程序启动后会在后台恢复全部已登录 WhatsApp 账号并持续接收消息；所有已配置邮箱分别保持 IMAP IDLE，服务商不支持 IDLE 时自动轮询，网络中断后自动退避重连。
-- 左侧 WhatsApp 与邮件箱会汇总所有账号的未读消息数量；用户在其他板块也能实时看到新消息，进入具体会话后才清除对应未读数。
-- 邮件箱的每个会话会独立显示新邮件数量气泡和浅色强调，超过 99 封显示 `99+`；进入对应会话后立即清零，切换板块、账号或重新同步不会恢复已读气泡。
-- 邮件箱搜索框右侧的“＋”可直接新建邮件；选择既有会话则以回复模式保留邮件线程，收件人、主题、正文和发送结果都保存在本地会话历史。
-- 邮件右侧 Customer Intelligence 会显示 Customer Brain 跨渠道画像，并提供 Email Sales Copilot：使用邮件板块独立模型，根据写信意图、CRM、Customer Brain、真实邮件上下文和已批准知识生成可编辑主题与正文；AI 不自动发送或修改 CRM。
-- WhatsApp 与邮件箱的 Customer Intelligence 将“人工备注”和“AI 上下文总结”分开：人工备注只由用户维护；AI 总结使用客户列表 / Customer Brain 板块模型，综合该客户全部已保留的 WhatsApp 与邮件历史，提炼态度、兴趣、性格倾向、说话语气、沟通习惯、异议、购买信号和当前关系。消息或人工备注变化后增量更新，无变化时复用本地结果。
-- Knowledge Base 支持 PDF、DOCX、TXT、Markdown、XLSX、CSV、PPTX、HTML 与常见图片；资料必须人工审核启用，并按全局、账号、客户、会话或临时任务严格隔离后，才会通过带来源和版本的混合检索进入 AI 建议与报告。
-- 邮件箱支持 Gmail、Outlook / Microsoft 365、Yahoo、iCloud 和自定义 IMAP / SMTP；邮件地址自动匹配 CRM 客户，收发历史保存在本地，未匹配联系人可从客户侧栏创建客户。
-- 客户智能分析会按“数据整理 → 事实提取 → 商业分析 → 销售策略 → 报告生成”分阶段调用所选 AI 模型，整合 CRM、完整 WhatsApp 与邮件历史、销售人员人工备注、Customer Intelligence AI 上下文、Lead Intelligence、自动化触达和客户轨迹，生成中文为主且客户事实、人工输入、AI 判断、销售建议明确分离的专业报告。
-- 每位客户的报告按版本永久保留，可重新分析、查看历史和对比版本；支持带封面、评分卡、图表、页码、证据台账和管理层摘要的原生 `.docx` 与 `.pdf` 导出。
-- 多个个人 WhatsApp 账号扫码登录；账号的会话、消息与 Campaign 队列相互隔离。
-- 已连接账号可在 WhatsApp 点击“＋ 建群”，填写群名并从已同步联系人中单选或多选成员，也可手动添加国际号码；确认后会通过当前个人账号真实创建 WhatsApp 群组并同步到手机端。建群不会进入自动化群发队列。
-- Inbox 接收手机提供的个人与群聊历史同步包、实时消息、会话和 WhatsApp 联系人；群聊按群名作为独立会话显示，每条群消息保留发送成员姓名，并参与 Inbox 与左侧导航的未读提醒。
-- 群聊当前采用只读安全模式：不会绑定为单一 CRM 客户，不进入 Customer Brain、Lead Intelligence 或 Customer Success Agent 自动回复；个人会话仍支持按姓名或号码搜索并与客户侧栏、客户列表双向联动。
-- 对话区按“自己发送的绿色气泡靠右、客户消息白色气泡靠左”显示；Enter 发送、Ctrl+Enter 换行，并支持不超过 100MB 的常见图片、视频、音频、Office、PDF 和压缩文件。
-- 发出消息显示发送中、服务器已接收、已送达、已读或失败状态；单双灰勾和双蓝勾与 WhatsApp 回执联动，并保存发送、送达和已读时间。
-- Inbox 每 60 秒显示公网出口 IP 和大致位置；存在运行或排期群发时，安全阀门每 10 秒并在每次发送前复核任务基线 IP。IP 不一致会停止所有账号的自动触达，保存停止位置并弹窗汇总成功、失败、跳过和待发送数量。
-- 会话按最新消息自动排序；右键可置顶或取消置顶，并通过已连接的个人 WhatsApp 会话同步到手机端。
-- 多渠道自动化触达支持 WhatsApp 与邮件任务、持久话术模板、邮件主题模板、与客户列表/商机智能/导入原表严格对齐的动态字段、客户单选或多选、即时或北京时间定时任务、按秒或分钟间隔、每日上限、暂停/恢复和发送审计。
-- 自动化页提供独立“发送历史与质量”统计表，按 WhatsApp / 邮件渠道显示任务总数、成功、失败、跳过、取消、待发送、完成进度、成功率、安全停止位置和原因。
-- 首次启动显示整套新手入门；看板、商机智能、客户列表、客户外部调查、WhatsApp、邮件箱、自动化群发、Knowledge Base、客户智能分析和 API 对接在第一次进入时还会分别显示本模块教程。每套教程同时解释模块用途、主要功能和操作步骤，关闭后右上角“本页使用手册”仍可随时重新打开。首次配置只要求 API 对接，不要求企业资料；客户外部调查会自动选用已配置的公开搜索服务，普通用户无需手工调整服务商顺序、查询数量或网页上限。
-- 客户外部调查只需填写一个自己的 Tavily 或 Brave 搜索密钥即可收集并保存公开来源。把来源进一步整理为可进入 Customer Brain 与客户智能分析的事实会调用现有 AI 模型，因此必须由用户显式开启并填写本程序本地月度估算提醒额度；默认额度为 0，付费搜索与 AI 事实整理均关闭。本地估算只统计本机调用，不含账号在其他工具中的用量，实际额度、定价和账单以 Provider 为准。
-- 导入时只需选择文件和工作表，不再逐列映射；原表每一列都按原表头保存，常用字段自动联动到 CRM。
-- 客户身份统一按“Buyer ID 优先、电话号码兜底”解析：只要存在 Buyer ID，导入更新、WhatsApp 关联、客户分析、自动化和跨板块记忆都会落到同一客户档案；没有 Buyer ID 时才使用标准化电话号码。重复或冲突的 Buyer ID 会停止自动合并并提示人工核对。
-- 不同客户可以拥有不同维度；客户列表按原始列顺序横向显示，长表头不会竖排，双击客户可逐项编辑全部系统字段和原表维度。
-- `.xlsx`、UTF-8/GB18030 CSV 单文件资源保护上限为 200MB，不设固定行数上限；大批量数据在后台解析并按批次写入 SQLite。
-- AI 分析和话术生成使用用户选择的 DeepSeek 或 OpenAI Chat Completions 兼容模型；可让全部功能继承一个全域默认模型，也可为客户列表、WhatsApp、邮件箱、自动化群发、知识库和客户智能分析分别选择已配置 Provider、模型及 API 明确声明支持的推理深度。未声明的推理档位不会被猜测或发送。
-- Customer Success Agent 会兼容模型常见的 JSON 包裹层、字段别名、蛇形枚举与百分比置信度；结构校验失败时会携带校验结果定向重试。手动生成连续失败时只提供不含价格、库存、交期或政策承诺的可编辑安全草稿，不修改 CRM/采购事实，也不会进入自动发送。
-- 新导入及尚未完成 AI 分析的客户统一为 D 级、0 分；导入和人工编辑不运行本地规则评分。WhatsApp 客户新回复会把原始消息与历史上下文送入 AI 队列，只有结构校验成功的 V2 结果才能更新商机智能和看板等级分布。
-- Lead Intelligence V2 的基础画像由付费营销意愿 25、供应链稳定性 20、电商基础 15、私域/流量 15、已有销售能力 15、素材准备度 10 六维组成，并叠加 -20 到 +20 的 WhatsApp 行为修正分；本地只校验算术、范围、原因和证据完整性，不使用关键词给客户加减分。
-- 每次启动会先校验 SQLite 并保存最近 10 个完整备份；发现可安全重建的页面或索引损坏时，先归档损坏原件，再恢复全部可读取表并显示恢复数量，避免初始化直接失败。
-- 安装版启动时自动检查公开 GitHub Release；发现新版本后在后台下载，左下角版本中心显示当前/最新版本、进度和更新日志。只有用户点击“安装更新并重启”后才应用更新，不需要自建服务器。
+## Existing users
 
-## 品牌资源
+Existing installed versions still query this repository for updates. It will
+remain publicly reachable until an approved transition release has moved those
+clients to the new feed. Making it private before that transition would break
+their update path.
 
-- 主程序：`AI Sales OS.exe`
-- 透明 Logo：`desktop\WAFlow.Desktop\Assets\AI-Sales-OS.png`
-- Windows 多尺寸图标：`desktop\WAFlow.Desktop\Assets\AI-Sales-OS.ico`
-- 独立 PNG 图标：`desktop\WAFlow.Desktop\Assets\Icons`
+Previously published installers remain legacy artifacts. No new commercial
+binary will be published while the compliance release gate is blocked by the
+identified copyleft-dependency and brand-asset provenance issues.
 
-ICO 内含 16、20、24、32、40、48、64、128 和 256 像素图标，并已写入主 EXE、主窗口、设置窗口和导入窗口。
+## Source and commercial use
 
-## 构建与测试
+The historical source snapshot in this repository is **proprietary software**.
+Public visibility does not grant an open-source license. Without written
+permission from the applicable rights holder, copying, modifying,
+redistributing, reselling, sublicensing, or commercially hosting the
+proprietary source is prohibited. GitHub platform permissions remain subject to
+GitHub's Terms of Service.
 
-```powershell
-cd "D:\whatsapp 自动化"
-.\scripts\test-desktop.ps1
-.\scripts\build-desktop.ps1
-.\scripts\build-velopack-release.ps1 -Version 2.0.0 -RepositoryUrl "https://github.com/FrankShi811/AI-whatsapp-OS" -SkipCanonicalCopy
-```
+Official installed software is governed by the [EULA](EULA.md). See the
+[privacy notice](PRIVACY.md), [third-party notices](THIRD_PARTY_NOTICES.md), and
+[project license](LICENSE). Third-party license texts are also mirrored in the
+[official release repository](https://github.com/FrankShi811/AI-whatsapp-OS-releases/tree/main/licenses/third-party).
 
-发布结果始终为项目根目录的固定文件 `AI Sales OS.exe`。后续构建只覆盖该文件，不再生成带版本号或 `outputs` 目录中的重复 EXE；程序使用稳定的 `AI.Sales.OS.Desktop` AppUserModelID 保持 Windows 任务栏身份不变。
-
-Windows 安装包固定输出为 `dist\installers\AI Sales OS Setup.exe`，后续构建同样覆盖旧文件。它是 Velopack 管理的正式安装入口；旧便携版或旧 Inno 安装版只需手动安装这一次，后续即可在程序内完成更新。GitHub Release 发布、打包、数据边界和升级测试见 `docs\GITHUB_RELEASE_UPDATES.md`。
-
-## macOS 原生中文测试版
-
-仓库已新增 `desktop\WAFlow.Mac` Avalonia 原生客户端，输出 Apple 芯片和 Intel 两个 Mach-O `.app`、中文 `.pkg` 安装包及 portable ZIP，不是 Electron、WebView 或改扩展名的 Windows 文件。两个架构均自包含 .NET 运行时，并分别使用 `osx-arm64` / `osx-x64` GitHub Release 更新通道。
-
-测试版已包含中文 Dashboard、商机智能、客户列表、WhatsApp 历史、自动化任务、客户智能分析、API 对接、macOS Keychain 保存，以及 GitHub Release 自动检查、后台下载和确认后安装重启。它尚未使用 Apple Developer ID 签名/公证，且原生 Mac WhatsApp Bridge 尚未完成，因此扫码、实时收发、建群和真实群发默认不可用。本轮按用户要求先交付包结构，由用户在真实 Mac 上人工安装测试。详细步骤和边界见 `docs\MACOS_NATIVE_PORT.md`。
-
-## 风险边界
-
-个人账号连接基于非官方 WhatsApp Web 多设备协议，不属于 Meta/WhatsApp Business Platform，可能发生重新验证、限制、登出或封号。AI Sales OS 不提供规避风控、指纹伪装、代理轮换或绕过平台限制的能力。请只向已经明确同意接收营销消息且未退订的联系人发送。
-
-WhatsApp 的完整历史包通常只在“首次关联设备”时下发。v5.18.1 起使用 Desktop 完整历史配对身份，并在本机记录该连接模式；如果账号曾由 v5.17.4 或更早版本扫码关联，升级后程序会明确提示在 Inbox 点击“退出账号”，再点击“连接 / 显示二维码”重新扫码一次。旧版本里已经重新扫过的二维码仍属于旧 Web 配对，也需要在 v5.18.1 安装后再扫一次。此后联系人、个人会话、群聊和消息历史会增量写入本地 SQLite，启动、重连和“同步联系人与历史”都会按每个会话最后一条本地消息核对离线缺口，不需要反复扫码。
-
-如果加密登录凭据损坏或 Windows 凭据密钥与本机会话不匹配，1.7.0 会把不可读取的会话目录改名备份，并自动进入重新扫码流程，不会删除客户列表、CRM 资料或已经同步到 SQLite 的消息。
-
-公网 IP 检测会向 ipify 查询当前出口 IP，并仅在首次检测或 IP 变化时向 ipwho.is 查询国家、地区和城市等近似位置；这些服务不会收到 AI Sales OS 中的客户、消息或 DeepSeek 数据。IP 位置仅供网络变化提醒，不能判断 WhatsApp 是否会封禁账号。
+Commercial licensing contact: **[TO BE CONFIRMED]**.
