@@ -338,7 +338,7 @@ public abstract class CustomerSearchProviderBase : ICustomerSearchProvider, IMet
             query,
             Math.Clamp(request.MaxResults, 1, 20),
             NormalizeLocale(request.Language),
-            NormalizeLocale(request.Country)?.ToUpperInvariant(),
+            NormalizeCountryCode(request.Country),
             request.MaximumAttempts is null ? null : Math.Clamp(request.MaximumAttempts.Value, 1, _options.MaximumAttempts));
     }
 
@@ -433,6 +433,11 @@ public abstract class CustomerSearchProviderBase : ICustomerSearchProvider, IMet
                 CustomerEnrichmentErrorCodes.ProviderQuotaExhausted,
                 $"{DisplayName} 返回账号额度或速率限制；本程序不会因该错误自动切换为付费模式，实际额度与账单以 Provider 为准。",
                 retryable: false);
+        if (statusCode == HttpStatusCode.BadRequest)
+            return CreateProviderException(
+                CustomerEnrichmentErrorCodes.ProviderRequestRejected,
+                $"{DisplayName} 拒绝了本次搜索参数（HTTP 400）。请刷新后重试；如仍失败，请检查客户国家或语言字段。",
+                retryable: false);
 
         var retryable = statusCode == HttpStatusCode.RequestTimeout || (int)statusCode >= 500;
         return CreateProviderException(
@@ -500,8 +505,19 @@ public abstract class CustomerSearchProviderBase : ICustomerSearchProvider, IMet
     {
         var normalized = (value ?? "").Trim();
         if (normalized.Length is < 2 or > 12) return null;
-        return normalized.All(character => char.IsLetter(character) || character == '-')
+        return normalized.All(character => character is >= 'A' and <= 'Z'
+                                           or >= 'a' and <= 'z'
+                                           or '-')
             ? normalized
+            : null;
+    }
+
+    private static string? NormalizeCountryCode(string? value)
+    {
+        var normalized = (value ?? "").Trim();
+        return normalized.Length == 2
+               && normalized.All(character => character is >= 'A' and <= 'Z' or >= 'a' and <= 'z')
+            ? normalized.ToUpperInvariant()
             : null;
     }
 
@@ -592,7 +608,10 @@ public sealed class TavilySearchProvider : CustomerSearchProviderBase
             ["include_raw_content"] = false,
             ["include_images"] = false
         };
-        if (!string.IsNullOrWhiteSpace(request.Country)) body["country"] = request.Country;
+        // CRM country values are user-entered and may be localized (for example
+        // “美国”). Tavily accepts only its exact English country enum, while the
+        // country boost is optional. Omitting it keeps customer searches valid;
+        // country remains available to the local entity matcher for verification.
 
         var message = new HttpRequestMessage(HttpMethod.Post, Endpoint);
         message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);

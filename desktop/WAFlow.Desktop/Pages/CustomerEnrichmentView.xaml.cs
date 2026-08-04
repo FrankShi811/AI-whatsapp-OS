@@ -1086,7 +1086,13 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
         if (string.Equals(job.ErrorCode, CustomerEnrichmentErrorCodes.PaidRequestBlocked, StringComparison.OrdinalIgnoreCase))
             return "下一次付费搜索已被本地估算提醒规则阻止；实际账单以 Provider 为准。";
         if (string.Equals(job.ErrorCode, CustomerEnrichmentErrorCodes.SearchProviderUnavailable, StringComparison.OrdinalIgnoreCase))
-            return "当前未配置可用搜索服务。";
+            return string.IsNullOrWhiteSpace(job.ErrorMessage)
+                ? "搜索服务暂时不可用，请检查网络或 Provider 状态后重试。"
+                : job.ErrorMessage;
+        if (string.Equals(job.ErrorCode, CustomerEnrichmentErrorCodes.ProviderRequestRejected, StringComparison.OrdinalIgnoreCase))
+            return string.IsNullOrWhiteSpace(job.ErrorMessage)
+                ? "搜索服务拒绝了本次请求，请刷新后重试。"
+                : job.ErrorMessage;
         if (string.Equals(job.ErrorCode, CustomerEnrichmentErrorCodes.AiAnalysisPaymentNotAuthorized, StringComparison.OrdinalIgnoreCase))
             return "公开来源已保存。如需整理为客户事实，请打开设置，启用 AI 事实整理并填写本程序本地月度估算提醒额度。";
         return string.IsNullOrWhiteSpace(job.ErrorMessage) ? "调查失败，请稍后重试。" : job.ErrorMessage;
@@ -1100,7 +1106,8 @@ public partial class CustomerEnrichmentView : UserControl, IRefreshableView
             {
                 CustomerEnrichmentErrorCodes.ProviderQuotaExhausted => "本地账号额度估算已用完，程序已停止额外调用；实际额度与账单以 Provider 为准。",
                 CustomerEnrichmentErrorCodes.PaidRequestBlocked => "下一次付费搜索已被本地估算提醒规则阻止；实际账单以 Provider 为准。",
-                CustomerEnrichmentErrorCodes.SearchProviderUnavailable => "联网调查尚未启用。点击“立即启用”，填写任一联网搜索密钥并保存；这一步只收集公开来源。",
+                CustomerEnrichmentErrorCodes.SearchProviderUnavailable => enrichment.Message,
+                CustomerEnrichmentErrorCodes.ProviderRequestRejected => enrichment.Message,
                 CustomerEnrichmentErrorCodes.SearXngNotRunning => "本机搜索服务未运行。点击“立即启用”选择另一种联网搜索方式，或启动本机服务。",
                 CustomerEnrichmentErrorCodes.CustomerIdentityMissing => "客户身份信息不足，请先补充姓名、公司、国家或联系方式。",
                 CustomerEnrichmentErrorCodes.NoPublicResults => "没有找到足够可靠的公开结果。",

@@ -5771,17 +5771,39 @@ var tavilyProvider = new TavilySearchProvider(
     tavilyHttp,
     searchProviderOptions,
     delay: (_, _) => Task.CompletedTask);
-var tavilyResults = await tavilyProvider.SearchAsync(new CustomerSearchRequest("Example Company buyer", 2, "en", "US"));
+var tavilyResults = await tavilyProvider.SearchAsync(new CustomerSearchRequest("Example Company buyer", 2, "en", "美国"));
 var tavilyRequest = tavilyHandler.Requests.Single();
 Check(
     tavilyRequest.Method == "POST"
     && tavilyRequest.Uri == "https://api.tavily.com/search"
     && tavilyRequest.Authorization == "Bearer tavily-smoke-key"
     && tavilyRequest.Body.Contains("\"max_results\":2", StringComparison.Ordinal)
-    && tavilyRequest.Body.Contains("\"country\":\"US\"", StringComparison.Ordinal)
+    && !tavilyRequest.Body.Contains("\"country\"", StringComparison.Ordinal)
     && tavilyResults is [{ Provider: "tavily", Title: "Example Team", Snippet: "John & team handle purchasing." }]
     && !tavilyResults[0].Url.Contains('#'),
-    "Tavily provider builds an authenticated offline request and parses normalized results");
+    "Tavily provider omits localized CRM country values and parses normalized results");
+
+var tavilyBadRequestHandler = new CustomerSearchHttpHandler(HttpStatusCode.BadRequest, "{}");
+using var tavilyBadRequestHttp = new HttpClient(tavilyBadRequestHandler) { Timeout = Timeout.InfiniteTimeSpan };
+var tavilyBadRequestProvider = new TavilySearchProvider(
+    new FakeSecretStore("tavily-smoke-key"),
+    tavilyBadRequestHttp,
+    searchProviderOptions,
+    delay: (_, _) => Task.CompletedTask);
+CustomerEnrichmentException? tavilyBadRequestError = null;
+try
+{
+    _ = await tavilyBadRequestProvider.SearchAsync(new CustomerSearchRequest("Example Company buyer", 1));
+}
+catch (CustomerEnrichmentException error)
+{
+    tavilyBadRequestError = error;
+}
+Check(
+    tavilyBadRequestError is { Code: CustomerEnrichmentErrorCodes.ProviderRequestRejected, Retryable: false }
+    && tavilyBadRequestError.Message.Contains("HTTP 400", StringComparison.Ordinal)
+    && !tavilyBadRequestError.Message.Contains("未配置", StringComparison.Ordinal),
+    "Tavily HTTP 400 is reported as a rejected request instead of a missing credential");
 
 var braveHandler = new CustomerSearchHttpHandler(
     HttpStatusCode.OK,

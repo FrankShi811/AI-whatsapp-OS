@@ -51,6 +51,7 @@ public enum CustomerEnrichmentTriggerType
 public static class CustomerEnrichmentErrorCodes
 {
     public const string SearchProviderUnavailable = "SEARCH_PROVIDER_UNAVAILABLE";
+    public const string ProviderRequestRejected = "PROVIDER_REQUEST_REJECTED";
     public const string SearXngNotRunning = "SEARXNG_NOT_RUNNING";
     public const string ProviderQuotaExhausted = "PROVIDER_QUOTA_EXHAUSTED";
     public const string PaidRequestBlocked = "PAID_REQUEST_BLOCKED";
