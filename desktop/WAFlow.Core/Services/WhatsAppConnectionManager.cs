@@ -140,8 +140,26 @@ public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLooku
         {
             var client = GetClient(accountId);
             if (client.ConnectionState == "connected") return default;
+            var startedFromLoggedOutState = client.ConnectionState == "logged_out";
+            if (startedFromLoggedOutState)
+                await client.ResetForPairingAsync();
             await client.StartAsync(accountId, cancellationToken);
-            return await client.ConnectAsync(cancellationToken);
+            try
+            {
+                return await client.ConnectAsync(cancellationToken);
+            }
+            catch (WhatsAppBridgeException error) when (
+                error.Code == "logged_out"
+                && !startedFromLoggedOutState
+                && !cancellationToken.IsCancellationRequested)
+            {
+                // The phone may have removed this linked device while the desktop
+                // was closed. Recover in the same click: discard the rejected
+                // session, start a new bridge and wait for its real QR milestone.
+                await client.ResetForPairingAsync();
+                await client.StartAsync(accountId, cancellationToken);
+                return await client.ConnectAsync(cancellationToken);
+            }
         }
         finally
         {

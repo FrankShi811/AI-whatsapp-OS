@@ -798,7 +798,11 @@ if ($bridgeSource -notmatch 'receiptBelongsToPhone' -or
 }
 
 if ($bridgeConnectionBootstrapSource -notmatch 'version_lookup_timeout' -or
-    $bridgeConnectionBootstrapSource -notmatch "source: 'bundled'" -or
+    $bridgeConnectionBootstrapSource -notmatch "cachedVersion \? 'cached' : 'bundled'" -or
+    $bridgeSource -notmatch 'fetchLatestWaWebVersion' -or
+    $bridgeSource -notmatch "Browsers\.windows\('Chrome'\)" -or
+    $bridgeSource -notmatch 'desktopUpgradeRequested' -or
+    $bridgeSource -notmatch 'desktop_history_upgrade' -or
     $bridgeSource -notmatch 'QR_GENERATION_WATCHDOG_MS' -or
     $bridgeSource -notmatch 'qr_generation_timeout' -or
     $bridgeSource -notmatch 'qr_render_failed' -or
@@ -859,9 +863,17 @@ if ($networkProxyResolverSource -notmatch 'WAFLOW_PROXY_URL' -or
 }
 & $node (Join-Path $root 'bridge\scripts\network-routing-smoke.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Network proxy routing smoke test failed.' }
+if ($bridgeSource -notmatch [regex]::Escape('state.connectionGeneration !== generation || state.socket !== socket || state.manualDisconnect') -or
+    $bridgeSource -notmatch 'credentials_save_failed' -or
+    $whatsAppBridgeClientSource -notmatch 'public async Task ResetForPairingAsync' -or
+    $whatsAppBridgeClientSource -notmatch '(?s)finally\s*\{\s*//.*?await ResetForPairingAsync\(\);\s*\}' -or
+    $whatsAppManagerSource -notmatch 'error\.Code == "logged_out"' -or
+    $whatsAppManagerSource -notmatch '(?s)await client\.ResetForPairingAsync\(\);\s*await client\.StartAsync\(accountId, cancellationToken\);\s*return await client\.ConnectAsync\(cancellationToken\);') {
+  throw 'WhatsApp logout must terminate the old bridge, block late credential rewrites and recover a remotely unlinked device into fresh QR pairing in the same click.'
+}
 & $node (Join-Path $root 'bridge\scripts\connection-lifecycle-smoke.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'WhatsApp connection-lifecycle smoke test failed.' }
-Write-Host 'PASS  Gmail and WhatsApp Windows proxy inheritance, direct fallback and non-blocking recovery contract'
+Write-Host 'PASS  Gmail and WhatsApp Windows proxy inheritance, forced session reset, fresh QR pairing and non-blocking recovery contract'
 
 if ($bridgeOutboundRoutingSource -notmatch 'jidNormalizedUser' -or
     $bridgeSource -notmatch [regex]::Escape('getUSyncDevices([senderIdentity, targetJid], false, false)') -or

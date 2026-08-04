@@ -3039,7 +3039,21 @@ if (!string.Equals(
     await embeddedBridge.StartAsync("embedded_smoke");
     var bridgePing = await embeddedBridge.PingAsync();
     Check(bridgePing.TryGetProperty("bridge", out var bridgeName) && bridgeName.GetString() == "WAFlow.WhatsApp.Bridge", "embedded bridge EXE extraction and startup");
+    var embeddedSessionRoot = Path.Combine(root, "embedded-bridge-workspace", "whatsapp-sessions");
+    var embeddedAccountSession = Path.Combine(embeddedSessionRoot, "embedded_smoke");
+    var siblingAccountSession = Path.Combine(embeddedSessionRoot, "sibling_account");
+    Directory.CreateDirectory(embeddedAccountSession);
+    Directory.CreateDirectory(siblingAccountSession);
+    var staleSessionMarker = Path.Combine(embeddedAccountSession, "stale-session-marker");
+    var siblingSessionMarker = Path.Combine(siblingAccountSession, "keep-session-marker");
+    await File.WriteAllTextAsync(staleSessionMarker, "stale");
+    await File.WriteAllTextAsync(siblingSessionMarker, "keep");
     await embeddedBridge.LogoutAsync();
+    Check(
+        Directory.Exists(embeddedAccountSession)
+        && !File.Exists(staleSessionMarker)
+        && File.Exists(siblingSessionMarker),
+        "successful logout terminates the old bridge, clears only the selected account session and preserves sibling accounts");
 }
 else Console.WriteLine("SKIP  embedded bridge EXE extraction and startup (WAFLOW_SKIP_EMBEDDED_BRIDGE_SMOKE=1)");
 

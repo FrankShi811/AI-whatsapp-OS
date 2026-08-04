@@ -12,6 +12,7 @@ import makeWASocket, {
   DisconnectReason,
   downloadMediaMessage,
   fetchLatestBaileysVersion,
+  fetchLatestWaWebVersion,
   initAuthCreds,
   proto
 } from '@whiskeysockets/baileys'
@@ -34,6 +35,7 @@ import {
 const logger = pino({ level: 'silent' })
 const QR_GENERATION_WATCHDOG_MS = 35000
 const DESKTOP_HISTORY_PROFILE_FILE = 'desktop-history-profile.json'
+const PROTOCOL_VERSION_CACHE_FILE = 'whatsapp-protocol-version.json'
 const state = {
   accountId: 'default',
   sessionDir: '',
@@ -56,6 +58,7 @@ const state = {
   existingSession: false,
   desktopHistoryProfile: false,
   newDesktopPairing: false,
+  desktopUpgradeRequested: false,
   pendingNotificationsAttempt: 0,
   contacts: new Map(),
   chats: new Map(),
@@ -287,6 +290,29 @@ function resolveDataRoot() {
   const localAppData = process.env.LOCALAPPDATA
   if (!localAppData) throw new Error('LOCALAPPDATA_not_available')
   return path.join(localAppData, 'WAFlow')
+}
+
+async function readCachedProtocolVersion() {
+  try {
+    const raw = JSON.parse(await fs.readFile(path.join(resolveDataRoot(), PROTOCOL_VERSION_CACHE_FILE), 'utf8'))
+    const version = raw?.version
+    return Array.isArray(version)
+      && version.length === 3
+      && version.every(part => Number.isInteger(part) && part >= 0)
+      ? version
+      : null
+  } catch {
+    return null
+  }
+}
+
+async function cacheProtocolVersion(version, source) {
+  if (!Array.isArray(version) || version.length !== 3) return
+  const cachePath = path.join(resolveDataRoot(), PROTOCOL_VERSION_CACHE_FILE)
+  const temporaryPath = `${cachePath}.${process.pid}.tmp`
+  await fs.mkdir(path.dirname(cachePath), { recursive: true })
+  await fs.writeFile(temporaryPath, JSON.stringify({ version, source, updatedAt: new Date().toISOString() }), 'utf8')
+  await fs.rename(temporaryPath, cachePath)
 }
 
 function jidFromPhone(phone) {
@@ -1206,6 +1232,7 @@ async function resetSessionForQr() {
   state.existingSession = false
   state.desktopHistoryProfile = false
   state.newDesktopPairing = true
+  state.desktopUpgradeRequested = false
 }
 
 async function connect(catchupSource = 'startup') {
@@ -1238,6 +1265,7 @@ async function connect(catchupSource = 'startup') {
   state.existingSession = Boolean(auth.creds.registered)
   state.newDesktopPairing = !state.existingSession
   state.desktopHistoryProfile = state.existingSession ? await hasDesktopHistoryProfile() : false
+  const freshWebPairing = state.newDesktopPairing
   state.contacts.clear()
   state.chats.clear()
   state.messages.clear()
@@ -1246,7 +1274,14 @@ async function connect(catchupSource = 'startup') {
     type: 'event', event: 'connection_stage', accountId: state.accountId,
     data: { state: 'checking_protocol', attempt, message: '正在检查 WhatsApp 兼容协议' }
   })
-  const versionInfo = await resolveBaileysVersion(fetchLatestBaileysVersion)
+  const cachedProtocolVersion = await readCachedProtocolVersion()
+  const versionInfo = await resolveBaileysVersion([
+    { source: 'whatsapp_web', fetch: fetchLatestWaWebVersion },
+    { source: 'baileys', fetch: fetchLatestBaileysVersion }
+  ], { cachedVersion: cachedProtocolVersion })
+  if (versionInfo.source === 'whatsapp_web' || versionInfo.source === 'baileys') {
+    await cacheProtocolVersion(versionInfo.version, versionInfo.source).catch(() => {})
+  }
   const networkAgent = createProxyAgent(state.currentProxyUrl)
   const routeLabel = safeProxyLabel(state.currentProxyUrl, state.proxySource)
   emit({
@@ -1255,18 +1290,24 @@ async function connect(catchupSource = 'startup') {
       state: 'opening',
       attempt,
       versionSource: versionInfo.source,
+      clientProfile: freshWebPairing ? 'windows_chrome_pairing' : 'desktop_history',
       warning: versionInfo.warning,
-      message: versionInfo.source === 'remote'
+      message: versionInfo.source === 'whatsapp_web' || versionInfo.source === 'baileys'
         ? `正在通过${routeLabel}建立 WhatsApp 安全连接`
-        : `在线协议检查不可用，正在通过${routeLabel}使用内置兼容协议连接`
+        : versionInfo.source === 'cached'
+          ? `在线协议检查暂不可用，正在通过${routeLabel}使用最近成功协议连接`
+          : `在线协议检查不可用，正在通过${routeLabel}使用内置兼容协议连接`
     }
   })
   const socket = makeWASocket({
     auth,
     ...(versionInfo.version ? { version: versionInfo.version } : {}),
-    // Baileys only asks WhatsApp for the richer desktop history path when the
-    // companion identifies as an official Desktop client.
-    browser: Browsers.macOS('Desktop'),
+    // WhatsApp currently rejects a brand-new unregistered session that claims
+    // to be a Desktop companion (status 428), before it can emit a QR. Pair as
+    // the Windows web client first; after the phone accepts the QR, the open
+    // handler reconnects the registered session with the Desktop profile so
+    // full-history recovery remains available.
+    browser: freshWebPairing ? Browsers.windows('Chrome') : Browsers.macOS('Desktop'),
     logger,
     printQRInTerminal: false,
     markOnlineOnConnect: false,
@@ -1321,7 +1362,20 @@ async function connect(catchupSource = 'startup') {
     try { socket.end(new Error('qr_generation_timeout')) } catch { }
   }, QR_GENERATION_WATCHDOG_MS)
 
-  socket.ev.on('creds.update', saveCreds)
+  socket.ev.on('creds.update', async () => {
+    // Ignore credentials emitted by a socket that was superseded or manually
+    // logged out. Without this guard a late Baileys callback can recreate the
+    // cleared session and prevent the next launch from ever reaching QR pairing.
+    if (state.connectionGeneration !== generation || state.socket !== socket || state.manualDisconnect) return
+    try {
+      await saveCreds()
+    } catch (error) {
+      emit({
+        type: 'event', event: 'bridge_error', accountId: state.accountId,
+        data: { code: 'credentials_save_failed', error: safeError(error) }
+      })
+    }
+  })
   socket.ev.on('messages.upsert', update => {
     enqueueSync(async () => {
       for (const message of update.messages ?? []) await forwardMessage(message, update.type ?? 'notify')
@@ -1490,8 +1544,38 @@ async function connect(catchupSource = 'startup') {
     if (update.connection === 'open') {
       if (state.pairingTimer) clearTimeout(state.pairingTimer)
       state.pairingTimer = null
+      if (state.newDesktopPairing) {
+        // Persist the registration before replacing the short-lived pairing
+        // socket. Without awaiting this write, the Desktop upgrade can reopen
+        // as an unregistered client and return to the QR/428 loop.
+        await saveCreds()
+        state.desktopUpgradeRequested = true
+        state.connection = 'retrying'
+        emit({
+          type: 'event', event: 'connection_stage', accountId: state.accountId,
+          data: {
+            state: 'upgrading_history', attempt,
+            message: '扫码验证成功，正在切换到完整历史同步模式'
+          }
+        })
+        emit({
+          type: 'event', event: 'connection', accountId: state.accountId,
+          data: { state: 'retrying', attempt, pairingAccepted: true }
+        })
+        state.reconnectTimer = setTimeout(() => {
+          if (state.connectionGeneration !== generation || state.manualDisconnect) return
+          connect('desktop_history_upgrade').catch(error => emit({
+            type: 'event', event: 'bridge_error', accountId: state.accountId,
+            data: { error: safeError(error), code: 'desktop_history_upgrade_failed' }
+          }))
+        }, 1200)
+        return
+      }
       state.connection = 'connected'
-      if (state.newDesktopPairing) await writeDesktopHistoryProfile()
+      if (state.desktopUpgradeRequested && !state.desktopHistoryProfile) {
+        await writeDesktopHistoryProfile()
+        state.desktopUpgradeRequested = false
+      }
       const requiresHistoryRepair = state.existingSession && !state.desktopHistoryProfile
       emit({
         type: 'event', event: 'connection', accountId: state.accountId,
@@ -1576,7 +1660,7 @@ async function handle(command) {
   try {
     switch (command.command) {
       case 'ping':
-        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.8.2', connection: state.connection })
+        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.8.3', connection: state.connection })
         return
       case 'initialize': {
         state.accountId = validateAccountId(command.accountId ?? 'default')
@@ -1794,4 +1878,4 @@ lines.on('close', async () => {
   process.exit(0)
 })
 
-emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.8.2' } })
+emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.8.3' } })

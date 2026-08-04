@@ -207,34 +207,46 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     public async Task<JsonElement> LogoutAsync(CancellationToken cancellationToken = default)
     {
         CancelPendingPairing("本机登录会话正在清除，可稍后重新生成二维码。");
-        JsonElement result = default;
+        var remoteLogoutCompleted = false;
+        var recoveryReason = "";
         try
         {
-            result = await SendCommandAsync("logout", null, cancellationToken);
-            return result;
+            var result = await SendCommandAsync("logout", null, cancellationToken);
+            remoteLogoutCompleted = result.ValueKind != JsonValueKind.Object
+                || !result.TryGetProperty("remoteLogoutCompleted", out var completed)
+                || completed.ValueKind == JsonValueKind.True;
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            // A wedged bridge must never trap the user in an old pairing. Stop only
-            // this client's child process and clear the exact account session; the
-            // encryption key is intentionally retained so the next QR session can
-            // still be decrypted after an app restart.
-            await StopBridgeProcessAsync();
-            ResetLocalSessionDirectory(CurrentAccountId);
-            return JsonSerializer.SerializeToElement(new
-            {
-                state = "logged_out",
-                remoteLogoutCompleted = false,
-                localSessionReset = true,
-                recoveryReason = error.Message
-            });
+            recoveryReason = error.Message;
         }
         finally
         {
-            ConnectionState = "logged_out";
-            LatestQrDataUrl = "";
-            FailPairing(new WhatsAppBridgeException("logged_out", "WhatsApp 登录已失效，请重新生成二维码。"));
+            // A successful bridge reply is not enough: Baileys can still deliver a
+            // late creds.update callback from the old socket. Always kill this
+            // account's child process before clearing its exact session directory,
+            // otherwise the stale callback can recreate creds.json.enc and the next
+            // Connect click oscillates between old-session states instead of showing QR.
+            await ResetForPairingAsync();
         }
+
+        return JsonSerializer.SerializeToElement(new
+        {
+            state = "logged_out",
+            remoteLogoutCompleted,
+            localSessionReset = true,
+            recoveryReason
+        });
+    }
+
+    public async Task ResetForPairingAsync()
+    {
+        CancelPendingPairing("正在建立全新的 WhatsApp 扫码会话。");
+        await StopBridgeProcessAsync();
+        ResetLocalSessionDirectory(CurrentAccountId);
+        ConnectionState = "logged_out";
+        LatestQrDataUrl = "";
+        FailPairing(new WhatsAppBridgeException("logged_out", "WhatsApp 登录已清除，请重新扫码登录。"));
     }
 
     private void ResetLocalSessionDirectory(string accountId)
