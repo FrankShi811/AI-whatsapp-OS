@@ -50,6 +50,8 @@ const state = {
   allowDirectFallback: false,
   directFallbackUsed: false,
   immediateReconnect: false,
+  connectionGeneration: 0,
+  lifecycleQueue: Promise.resolve(),
   authKey: null,
   existingSession: false,
   desktopHistoryProfile: false,
@@ -1184,6 +1186,7 @@ async function catchUpOfflineMessages(cursors = []) {
 
 async function closeSocket() {
   getOfflineCatchupCoordinator().cancel()
+  state.connectionGeneration += 1
   if (state.reconnectTimer) clearTimeout(state.reconnectTimer)
   state.reconnectTimer = null
   if (state.pairingTimer) clearTimeout(state.pairingTimer)
@@ -1208,8 +1211,10 @@ async function resetSessionForQr() {
 async function connect(catchupSource = 'startup') {
   if (!state.sessionDir) throw new Error('bridge_not_initialized')
   await closeSocket()
+  if (catchupSource === 'reconnect' && state.manualDisconnect) return
   state.manualDisconnect = false
   state.qrSeen = false
+  const generation = state.connectionGeneration
   const attempt = ++state.connectionAttempt
   state.pendingNotificationsAttempt = 0
   if (!state.historyRecovery.active) {
@@ -1277,7 +1282,7 @@ async function connect(catchupSource = 'startup') {
   state.connection = 'connecting'
   emit({ type: 'event', event: 'connection', accountId: state.accountId, data: { state: 'connecting' } })
   state.pairingTimer = setTimeout(() => {
-    if (state.socket !== socket || state.connection !== 'connecting' || state.qrSeen) return
+    if (state.connectionGeneration !== generation || state.socket !== socket || state.connection !== 'connecting' || state.qrSeen) return
     if (state.currentProxyUrl && state.allowDirectFallback && !state.directFallbackUsed) {
       state.directFallbackUsed = true
       state.currentProxyUrl = ''
@@ -1453,7 +1458,7 @@ async function connect(catchupSource = 'startup') {
     }
   })
   socket.ev.on('connection.update', async update => {
-    if (state.socket !== socket) return
+    if (state.connectionGeneration !== generation || state.socket !== socket) return
     if (update.receivedPendingNotifications === true) state.pendingNotificationsAttempt = attempt
     if (update.qr) {
       state.qrSeen = true
@@ -1528,6 +1533,20 @@ async function connect(catchupSource = 'startup') {
       data: { state: loggedOut ? 'logged_out' : 'disconnected', statusCode, error: safeError(update.lastDisconnect?.error) }
     })
     if (!loggedOut && !state.manualDisconnect) {
+      if (state.currentProxyUrl && state.allowDirectFallback && !state.directFallbackUsed && !state.qrSeen) {
+        state.directFallbackUsed = true
+        state.currentProxyUrl = ''
+        state.immediateReconnect = true
+        emit({
+          type: 'event', event: 'connection_issue', accountId: state.accountId,
+          data: {
+            code: 'proxy_route_failed',
+            recoverable: true,
+            attempt,
+            message: 'Windows 系统代理在二维码生成前断开，正在自动切换为直连'
+          }
+        })
+      }
       const reconnectImmediately = state.immediateReconnect
       state.immediateReconnect = false
       const retryDelay = reconnectImmediately ? 1000 : 5000
@@ -1541,10 +1560,13 @@ async function connect(catchupSource = 'startup') {
             : '连接暂时中断，5 秒后自动重试'
         }
       })
-      state.reconnectTimer = setTimeout(() => connect('reconnect').catch(error => emit({
-        type: 'event', event: 'bridge_error', accountId: state.accountId,
-        data: { error: safeError(error), code: 'automatic_reconnect_failed' }
-      })), retryDelay)
+      state.reconnectTimer = setTimeout(() => {
+        if (state.connectionGeneration !== generation || state.manualDisconnect) return
+        connect('reconnect').catch(error => emit({
+          type: 'event', event: 'bridge_error', accountId: state.accountId,
+          data: { error: safeError(error), code: 'automatic_reconnect_failed' }
+        }))
+      }, retryDelay)
     }
   })
 }
@@ -1554,7 +1576,7 @@ async function handle(command) {
   try {
     switch (command.command) {
       case 'ping':
-        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.8.1', connection: state.connection })
+        reply(requestId, true, { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.8.2', connection: state.connection })
         return
       case 'initialize': {
         state.accountId = validateAccountId(command.accountId ?? 'default')
@@ -1589,12 +1611,40 @@ async function handle(command) {
         return
       case 'logout':
         state.manualDisconnect = true
-        if (state.socket) await state.socket.logout()
-        await closeSocket()
+        getOfflineCatchupCoordinator().cancel()
+        state.connectionGeneration += 1
+        if (state.reconnectTimer) clearTimeout(state.reconnectTimer)
+        state.reconnectTimer = null
+        if (state.pairingTimer) clearTimeout(state.pairingTimer)
+        state.pairingTimer = null
+        const logoutSocket = state.socket
+        state.socket = null
+        let remoteLogoutCompleted = false
+        if (logoutSocket) {
+          try {
+            await Promise.race([
+              logoutSocket.logout(),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('remote_logout_timeout')), 8000))
+            ])
+            remoteLogoutCompleted = true
+          } catch (error) {
+            emit({
+              type: 'event', event: 'connection_issue', accountId: state.accountId,
+              data: {
+                code: 'remote_logout_incomplete',
+                recoverable: true,
+                message: '远端退出未确认，本机登录会话仍已清除，可立即重新扫码',
+                error: safeError(error)
+              }
+            })
+          }
+          try { logoutSocket.end(new Error('waflow_logout')) } catch { }
+        }
         state.outboundTargets.clear()
-        if (state.sessionDir) await fs.rm(state.sessionDir, { recursive: true, force: true })
+        await resetSessionForQr()
+        state.connection = 'logged_out'
         emit({ type: 'event', event: 'connection', accountId: state.accountId, data: { state: 'logged_out', manual: true } })
-        reply(requestId, true, { state: 'logged_out' })
+        reply(requestId, true, { state: 'logged_out', remoteLogoutCompleted })
         return
       case 'send_text': {
         if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
@@ -1726,7 +1776,16 @@ async function handle(command) {
 const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity })
 lines.on('line', line => {
   if (!line.trim()) return
-  try { handle(JSON.parse(line)) }
+  try {
+    const command = JSON.parse(line)
+    if (['connect', 'disconnect', 'logout'].includes(command.command)) {
+      state.lifecycleQueue = state.lifecycleQueue.then(
+        () => handle(command),
+        () => handle(command))
+      return
+    }
+    handle(command)
+  }
   catch (error) { emit({ type: 'event', event: 'bridge_error', data: { error: safeError(error) } }) }
 })
 lines.on('close', async () => {
@@ -1735,4 +1794,4 @@ lines.on('close', async () => {
   process.exit(0)
 })
 
-emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.8.1' } })
+emit({ type: 'event', event: 'ready', data: { bridge: 'WAFlow.WhatsApp.Bridge', version: '0.8.2' } })

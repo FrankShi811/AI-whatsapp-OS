@@ -25,6 +25,7 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     private static readonly UTF8Encoding Utf8NoBom = new(false);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pending = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly SemaphoreSlim _startLock = new(1, 1);
     private Process? _process;
     private StreamWriter? _input;
     private TaskCompletionSource _ready = NewSignal();
@@ -49,58 +50,66 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
 
     public async Task StartAsync(string accountId = "primary", CancellationToken cancellationToken = default)
     {
-        if (IsRunning) return;
-        CurrentAccountId = string.IsNullOrWhiteSpace(accountId) ? "primary" : accountId;
-        var sessionSecrets = new WindowsCredentialStore($"WAFlow/WhatsAppSessionKey/{CurrentAccountId}");
-        var encryptionKey = sessionSecrets.Read();
-        var requiresLocalAuthorization = string.IsNullOrWhiteSpace(encryptionKey)
-            && HasEncryptedSession(CurrentAccountId);
-        string? sessionBackupName = null;
-        if (requiresLocalAuthorization)
-            sessionBackupName = PrepareFreshLocalSession(CurrentAccountId);
-        if (string.IsNullOrWhiteSpace(encryptionKey))
+        await _startLock.WaitAsync(cancellationToken);
+        try
         {
-            encryptionKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-            sessionSecrets.Save(encryptionKey);
+            if (IsRunning) return;
+            CurrentAccountId = string.IsNullOrWhiteSpace(accountId) ? "primary" : accountId;
+            var sessionSecrets = new WindowsCredentialStore($"WAFlow/WhatsAppSessionKey/{CurrentAccountId}");
+            var encryptionKey = sessionSecrets.Read();
+            var requiresLocalAuthorization = string.IsNullOrWhiteSpace(encryptionKey)
+                && HasEncryptedSession(CurrentAccountId);
+            string? sessionBackupName = null;
+            if (requiresLocalAuthorization)
+                sessionBackupName = PrepareFreshLocalSession(CurrentAccountId);
+            if (string.IsNullOrWhiteSpace(encryptionKey))
+            {
+                encryptionKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+                sessionSecrets.Save(encryptionKey);
+            }
+
+            var launch = BridgeLaunch.Resolve(_dataRoot);
+            _ready = NewSignal();
+            _lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var start = new ProcessStartInfo
+            {
+                FileName = launch.Executable,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardInputEncoding = Utf8NoBom,
+                StandardOutputEncoding = Utf8NoBom,
+                StandardErrorEncoding = Utf8NoBom,
+                WorkingDirectory = launch.WorkingDirectory
+            };
+            start.Environment["WAFLOW_DATA_ROOT"] = _dataRoot;
+            foreach (var argument in launch.Arguments) start.ArgumentList.Add(argument);
+            _process = Process.Start(start) ?? throw new WhatsAppBridgeException("bridge_start_failed", "无法启动 WhatsApp 桥接进程。");
+            _input = _process.StandardInput;
+            _ = ReadOutputAsync(_process.StandardOutput, _lifetime.Token);
+            _ = ReadErrorsAsync(_process.StandardError, _lifetime.Token);
+            _ = ObserveExitAsync(_process, _lifetime.Token);
+
+            await _ready.Task.WaitAsync(TimeSpan.FromSeconds(15), cancellationToken);
+            await SendCommandAsync("initialize", new { accountId = CurrentAccountId, encryptionKey }, cancellationToken);
+            if (requiresLocalAuthorization)
+            {
+                EventReceived?.Invoke(this, new WhatsAppBridgeEvent(
+                    "local_authorization_required",
+                    CurrentAccountId,
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        reason = "machine_local_session_key_missing",
+                        backupName = sessionBackupName ?? "",
+                        requiresQr = true
+                    })));
+            }
         }
-
-        var launch = BridgeLaunch.Resolve(_dataRoot);
-        _ready = NewSignal();
-        _lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var start = new ProcessStartInfo
+        finally
         {
-            FileName = launch.Executable,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardInputEncoding = Utf8NoBom,
-            StandardOutputEncoding = Utf8NoBom,
-            StandardErrorEncoding = Utf8NoBom,
-            WorkingDirectory = launch.WorkingDirectory
-        };
-        start.Environment["WAFLOW_DATA_ROOT"] = _dataRoot;
-        foreach (var argument in launch.Arguments) start.ArgumentList.Add(argument);
-        _process = Process.Start(start) ?? throw new WhatsAppBridgeException("bridge_start_failed", "无法启动 WhatsApp 桥接进程。");
-        _input = _process.StandardInput;
-        _ = ReadOutputAsync(_process.StandardOutput, _lifetime.Token);
-        _ = ReadErrorsAsync(_process.StandardError, _lifetime.Token);
-        _ = ObserveExitAsync(_process, _lifetime.Token);
-
-        await _ready.Task.WaitAsync(TimeSpan.FromSeconds(15), cancellationToken);
-        await SendCommandAsync("initialize", new { accountId = CurrentAccountId, encryptionKey }, cancellationToken);
-        if (requiresLocalAuthorization)
-        {
-            EventReceived?.Invoke(this, new WhatsAppBridgeEvent(
-                "local_authorization_required",
-                CurrentAccountId,
-                JsonSerializer.SerializeToElement(new
-                {
-                    reason = "machine_local_session_key_missing",
-                    backupName = sessionBackupName ?? "",
-                    requiresQr = true
-                })));
+            _startLock.Release();
         }
     }
 
@@ -142,20 +151,22 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
             }
         }
         ConnectionState = "connecting";
-        var networkRoute = NetworkProxyResolver.Resolve(new Uri("https://web.whatsapp.com/"));
-        var result = sendConnectCommand
-            ? await SendCommandAsync(
-                "connect",
-                new
-                {
-                    proxyUrl = networkRoute.ProxyUrl,
-                    proxySource = networkRoute.Source,
-                    allowDirectFallback = networkRoute.AllowDirectFallback
-                },
-                cancellationToken)
-            : default;
+        JsonElement result = default;
         try
         {
+            if (sendConnectCommand)
+            {
+                var networkRoute = NetworkProxyResolver.Resolve(new Uri("https://web.whatsapp.com/"));
+                result = await SendCommandAsync(
+                    "connect",
+                    new
+                    {
+                        proxyUrl = networkRoute.ProxyUrl,
+                        proxySource = networkRoute.Source,
+                        allowDirectFallback = networkRoute.AllowDirectFallback
+                    },
+                    cancellationToken);
+            }
             await milestone.Task.WaitAsync(TimeSpan.FromSeconds(95), cancellationToken);
             return result;
         }
@@ -172,9 +183,21 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
                 "qr_generation_timeout",
                 "WhatsApp 二维码未能在限定时间内生成。程序已自动尝试 Windows 系统代理与直连；请检查防火墙、公司网络或代理是否允许访问 WhatsApp 后点击重试。");
         }
+        finally
+        {
+            lock (_pairingLock)
+                if (ReferenceEquals(_pairingMilestone, milestone)) _pairingMilestone = null;
+        }
+    }
+
+    public void CancelPendingPairing(string reason = "WhatsApp 连接已取消。")
+    {
+        lock (_pairingLock)
+            _pairingMilestone?.TrySetException(new WhatsAppBridgeException("connection_cancelled", reason));
     }
     public async Task<JsonElement> DisconnectAsync(CancellationToken cancellationToken = default)
     {
+        CancelPendingPairing();
         var result = await SendCommandAsync("disconnect", null, cancellationToken);
         ConnectionState = "disconnected";
         LatestQrDataUrl = "";
@@ -183,12 +206,65 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
     }
     public async Task<JsonElement> LogoutAsync(CancellationToken cancellationToken = default)
     {
-        var result = await SendCommandAsync("logout", null, cancellationToken);
-        ConnectionState = "logged_out";
-        LatestQrDataUrl = "";
-        FailPairing(new WhatsAppBridgeException("logged_out", "WhatsApp 登录已失效，请重新生成二维码。"));
-        new WindowsCredentialStore($"WAFlow/WhatsAppSessionKey/{CurrentAccountId}").Delete();
-        return result;
+        CancelPendingPairing("本机登录会话正在清除，可稍后重新生成二维码。");
+        JsonElement result = default;
+        try
+        {
+            result = await SendCommandAsync("logout", null, cancellationToken);
+            return result;
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            // A wedged bridge must never trap the user in an old pairing. Stop only
+            // this client's child process and clear the exact account session; the
+            // encryption key is intentionally retained so the next QR session can
+            // still be decrypted after an app restart.
+            await StopBridgeProcessAsync();
+            ResetLocalSessionDirectory(CurrentAccountId);
+            return JsonSerializer.SerializeToElement(new
+            {
+                state = "logged_out",
+                remoteLogoutCompleted = false,
+                localSessionReset = true,
+                recoveryReason = error.Message
+            });
+        }
+        finally
+        {
+            ConnectionState = "logged_out";
+            LatestQrDataUrl = "";
+            FailPairing(new WhatsAppBridgeException("logged_out", "WhatsApp 登录已失效，请重新生成二维码。"));
+        }
+    }
+
+    private void ResetLocalSessionDirectory(string accountId)
+    {
+        var sessionDirectory = Path.Combine(_dataRoot, "whatsapp-sessions", accountId);
+        if (Directory.Exists(sessionDirectory)) Directory.Delete(sessionDirectory, recursive: true);
+        Directory.CreateDirectory(sessionDirectory);
+    }
+
+    private async Task StopBridgeProcessAsync()
+    {
+        _lifetime?.Cancel();
+        var process = _process;
+        if (process is { HasExited: false })
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3));
+            }
+            catch { }
+        }
+        try { _input?.Dispose(); } catch { }
+        _input = null;
+        process?.Dispose();
+        _process = null;
+        _lifetime?.Dispose();
+        _lifetime = null;
+        _ready = NewSignal();
+        FailPending(new WhatsAppBridgeException("bridge_restarted", "WhatsApp 桥接已重置，可重新连接。"));
     }
     public Task<JsonElement> SendTextAsync(string phone, string text, CancellationToken cancellationToken = default) =>
         SendCommandAsync("send_text", new { phone, text }, cancellationToken);
@@ -385,6 +461,7 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
         }
         _process?.Dispose();
         _writeLock.Dispose();
+        _startLock.Dispose();
         _lifetime?.Dispose();
     }
 

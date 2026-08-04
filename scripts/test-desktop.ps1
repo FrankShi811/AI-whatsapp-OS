@@ -859,6 +859,8 @@ if ($networkProxyResolverSource -notmatch 'WAFLOW_PROXY_URL' -or
 }
 & $node (Join-Path $root 'bridge\scripts\network-routing-smoke.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Network proxy routing smoke test failed.' }
+& $node (Join-Path $root 'bridge\scripts\connection-lifecycle-smoke.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'WhatsApp connection-lifecycle smoke test failed.' }
 Write-Host 'PASS  Gmail and WhatsApp Windows proxy inheritance, direct fallback and non-blocking recovery contract'
 
 if ($bridgeOutboundRoutingSource -notmatch 'jidNormalizedUser' -or

@@ -18,6 +18,7 @@ public partial class App : Application
     private DataWorkspaceMigrationResult _startupMigration = new(false, true, "");
     private DataWorkspaceLease? _workspaceLease;
     private bool _workspaceMigrationShutdownRequested;
+    private DesktopSingleInstance? _singleInstance;
 
     [STAThread]
     public static void Main(string[] args)
@@ -62,10 +63,18 @@ public partial class App : Application
                 MessageBoxImage.Warning);
             return;
         }
+        var singleInstance = DesktopSingleInstance.Acquire();
+        if (!singleInstance.IsPrimary)
+        {
+            singleInstance.SignalPrimary();
+            singleInstance.Dispose();
+            return;
+        }
         var app = new App
         {
             DataWorkspaceManager = workspaceManager,
-            _startupMigration = startupMigration
+            _startupMigration = startupMigration,
+            _singleInstance = singleInstance
         };
         app.InitializeComponent();
         app.Run();
@@ -91,6 +100,7 @@ public partial class App : Application
             var main = new MainWindow(Services, Updates, settings.UiScalePercentage);
             MainWindow = main;
             main.Show();
+            _singleInstance?.StartActivationListener(Dispatcher, () => MainWindow);
             if (Services.Repository.LastRecoveryNotice is { } recovery)
             {
                 MessageBox.Show(
@@ -221,6 +231,8 @@ public partial class App : Application
         {
             _workspaceLease?.Dispose();
             _workspaceLease = null;
+            _singleInstance?.Dispose();
+            _singleInstance = null;
             base.OnExit(e);
         }
     }

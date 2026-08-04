@@ -65,6 +65,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private string _draftTranslationText = "";
     private bool _translatedDraftApplied;
     private bool _applyingTranslatedDraft;
+    private bool _connectionActionInProgress;
 
     private string CurrentAccountId => (AccountCombo.SelectedItem as WhatsAppAccount)?.Id ?? "primary";
 
@@ -321,17 +322,20 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
 
     private async void Connect_Click(object sender, RoutedEventArgs e)
     {
+        if (_connectionActionInProgress) return;
+        var accountId = CurrentAccountId;
+        _connectionActionInProgress = true;
         SetConnectionText("正在启动本地桥…", false);
         ShowQrProgress(
-            _services.WhatsApp.RequiresLocalAuthorization(CurrentAccountId)
+            _services.WhatsApp.RequiresLocalAuthorization(accountId)
                 ? "检测到这是另一台电脑：旧会话密钥不会跨设备迁移，正在安全建立新的扫码会话…"
                 : "正在准备安全登录会话，请稍候…",
             clearQr: true);
-        ConnectButton.IsEnabled = false;
+        UpdateConnectionControls();
         _ = RefreshPublicIpAsync();
         try
         {
-            await _services.WhatsApp.ConnectAsync(CurrentAccountId);
+            await _services.WhatsApp.ConnectAsync(accountId);
             RestoreLatestQr();
         }
         catch (WhatsAppBridgeException error)
@@ -350,28 +354,56 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             SetConnectionText("连接失败", false);
             ShowQrIssue($"WhatsApp 连接暂未完成：{error.Message} 请检查网络后重试。");
         }
-        finally { ConnectButton.IsEnabled = true; }
+        finally
+        {
+            _connectionActionInProgress = false;
+            UpdateConnectionControls();
+        }
     }
 
     private async void Disconnect_Click(object sender, RoutedEventArgs e)
     {
+        if (_connectionActionInProgress) return;
+        var accountId = CurrentAccountId;
+        _connectionActionInProgress = true;
+        SetConnectionText("正在断开…", false);
+        ShowQrProgress("正在停止当前连接与自动重试，请稍候…", clearQr: true);
+        UpdateConnectionControls();
         try
         {
-            await _services.Campaigns.PauseAccountAsync(CurrentAccountId, "用户手动断开 WhatsApp，活动 Campaign 已暂停。");
-            await _services.WhatsApp.DisconnectAsync();
+            await _services.Campaigns.PauseAccountAsync(accountId, "用户手动断开 WhatsApp，活动 Campaign 已暂停。");
+            await _services.WhatsApp.DisconnectAsync(accountId);
+            ShowQrIssue("连接已停止。点击“连接 / 显示二维码”可重新连接；如需更换登录，请先退出账号。");
         }
         catch (Exception error) { MessageBox.Show(error.Message, "WhatsApp", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        finally
+        {
+            _connectionActionInProgress = false;
+            UpdateConnectionControls();
+        }
     }
 
     private async void Logout_Click(object sender, RoutedEventArgs e)
     {
         if (MessageBox.Show("退出后将删除本机登录会话，需要重新扫码；已经同步到 AI Sales OS 的联系人和消息仍会保留。是否继续？", "退出 WhatsApp 账号", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (_connectionActionInProgress) return;
+        var accountId = CurrentAccountId;
+        _connectionActionInProgress = true;
+        SetConnectionText("正在清除本机登录…", false);
+        ShowQrProgress("正在停止所有自动重试并清除本机登录会话…", clearQr: true);
+        UpdateConnectionControls();
         try
         {
-            await _services.Campaigns.PauseAccountAsync(CurrentAccountId, "用户退出 WhatsApp，活动 Campaign 已暂停。");
-            await _services.WhatsApp.LogoutAsync(); _conversations.Clear(); ClearLead();
+            await _services.Campaigns.PauseAccountAsync(accountId, "用户退出 WhatsApp，活动 Campaign 已暂停。");
+            await _services.WhatsApp.LogoutAsync(accountId); _conversations.Clear(); ClearLead();
+            ShowQrIssue("本机登录会话已清除。现在点击“连接 / 显示二维码”即可生成新的 WhatsApp 二维码。");
         }
         catch (Exception error) { MessageBox.Show(error.Message, "WhatsApp", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        finally
+        {
+            _connectionActionInProgress = false;
+            UpdateConnectionControls();
+        }
     }
 
     private void WhatsApp_EventReceived(object? sender, WhatsAppBridgeEvent e)
@@ -578,8 +610,10 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             _existingSession = Bool(e.Data, "existingSession");
             var requiresHistoryRepair = Bool(e.Data, "requiresHistoryRepair");
             SetConnectionText(connection switch { "connected" => "已连接", "connecting" => "连接中", "retrying" => "自动重试中", "logged_out" => "登录已失效", _ => "已断开" }, _connected);
-            DisconnectButton.IsEnabled = _connected || connection is "connecting" or "retrying";
-            LogoutButton.IsEnabled = _connected;
+            var canStop = _connected || connection is "connecting" or "retrying";
+            DisconnectButton.IsEnabled = !_connectionActionInProgress && canStop;
+            LogoutButton.IsEnabled = !_connectionActionInProgress && (canStop || _services.WhatsApp.HasStoredSession(CurrentAccountId));
+            ConnectButton.IsEnabled = !_connectionActionInProgress && !canStop;
             UpdateComposerState();
             SyncButton.IsEnabled = _connected;
             if (_connected)
@@ -2530,9 +2564,12 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     {
         var state = _services.WhatsApp.ConnectionStateFor(CurrentAccountId);
         SetConnectionText(state switch { "connected" => "已连接", "connecting" => "连接中", "retrying" => "自动重试中", "logged_out" => "登录已失效", _ => "未连接" }, state == "connected");
-        DisconnectButton.IsEnabled = state is "connected" or "connecting" or "retrying"; LogoutButton.IsEnabled = state == "connected";
-        SyncButton.IsEnabled = state == "connected";
-        CreateGroupButton.IsEnabled = state == "connected";
+        var canStop = state is "connected" or "connecting" or "retrying";
+        ConnectButton.IsEnabled = !_connectionActionInProgress && !canStop;
+        DisconnectButton.IsEnabled = !_connectionActionInProgress && canStop;
+        LogoutButton.IsEnabled = !_connectionActionInProgress && (canStop || _services.WhatsApp.HasStoredSession(CurrentAccountId));
+        SyncButton.IsEnabled = !_connectionActionInProgress && state == "connected";
+        CreateGroupButton.IsEnabled = !_connectionActionInProgress && state == "connected";
         UpdateComposerState();
     }
 

@@ -72,7 +72,12 @@ public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLooku
     {
         accountId = Normalize(accountId);
         _autoReconnectSuppressed[accountId] = 0;
-        return await GetClient(accountId).DisconnectAsync(cancellationToken);
+        var client = GetClient(accountId);
+        client.CancelPendingPairing();
+        var gate = _connectionGates.GetOrAdd(accountId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try { return await client.DisconnectAsync(cancellationToken); }
+        finally { gate.Release(); }
     }
 
     public Task<JsonElement> LogoutAsync(CancellationToken cancellationToken = default) => LogoutAsync(ActiveAccountId, cancellationToken);
@@ -80,7 +85,12 @@ public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLooku
     {
         accountId = Normalize(accountId);
         _autoReconnectSuppressed[accountId] = 0;
-        return await GetClient(accountId).LogoutAsync(cancellationToken);
+        var client = GetClient(accountId);
+        client.CancelPendingPairing("本机登录会话正在清除，可稍后重新生成二维码。");
+        var gate = _connectionGates.GetOrAdd(accountId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try { return await client.LogoutAsync(cancellationToken); }
+        finally { gate.Release(); }
     }
     public Task<JsonElement> SendTextAsync(string phone, string text, CancellationToken cancellationToken = default) => SendTextAsync(ActiveAccountId, phone, text, cancellationToken);
     public Task<JsonElement> SendTextAsync(string accountId, string phone, string text, CancellationToken cancellationToken = default) => GetClient(accountId).SendTextAsync(phone, text, cancellationToken);
