@@ -1,4 +1,4 @@
-name: Deploy AI Sales OS PWA
+name: Deploy Relvyn PWA
 
 on:
   push:
