@@ -1,0 +1,14 @@
+name: Build Relvyn macOS DMG (Legacy disabled)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  archived:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Legacy macOS publishing is disabled; use the private Relvyn source workflow after compliance approval."
