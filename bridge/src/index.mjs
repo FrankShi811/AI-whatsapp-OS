@@ -34,6 +34,7 @@ import {
 
 const logger = pino({ level: 'silent' })
 const QR_GENERATION_WATCHDOG_MS = 35000
+const DESKTOP_UPGRADE_MAX_FAILURES = 3
 const DESKTOP_HISTORY_PROFILE_FILE = 'desktop-history-profile.json'
 const PROTOCOL_VERSION_CACHE_FILE = 'whatsapp-protocol-version.json'
 const state = {
@@ -59,6 +60,7 @@ const state = {
   desktopHistoryProfile: false,
   newDesktopPairing: false,
   desktopUpgradeRequested: false,
+  desktopUpgradeFailures: 0,
   pendingNotificationsAttempt: 0,
   contacts: new Map(),
   chats: new Map(),
@@ -1233,6 +1235,7 @@ async function resetSessionForQr() {
   state.desktopHistoryProfile = false
   state.newDesktopPairing = true
   state.desktopUpgradeRequested = false
+  state.desktopUpgradeFailures = 0
 }
 
 async function connect(catchupSource = 'startup') {
@@ -1265,7 +1268,6 @@ async function connect(catchupSource = 'startup') {
   state.existingSession = Boolean(auth.creds.registered)
   state.newDesktopPairing = !state.existingSession
   state.desktopHistoryProfile = state.existingSession ? await hasDesktopHistoryProfile() : false
-  const freshWebPairing = state.newDesktopPairing
   state.contacts.clear()
   state.chats.clear()
   state.messages.clear()
@@ -1290,7 +1292,9 @@ async function connect(catchupSource = 'startup') {
       state: 'opening',
       attempt,
       versionSource: versionInfo.source,
-      clientProfile: freshWebPairing ? 'windows_chrome_pairing' : 'desktop_history',
+      clientProfile: state.desktopUpgradeRequested || state.desktopHistoryProfile
+        ? 'desktop_history'
+        : 'windows_chrome_pairing',
       warning: versionInfo.warning,
       message: versionInfo.source === 'whatsapp_web' || versionInfo.source === 'baileys'
         ? `正在通过${routeLabel}建立 WhatsApp 安全连接`
@@ -1306,8 +1310,13 @@ async function connect(catchupSource = 'startup') {
     // to be a Desktop companion (status 428), before it can emit a QR. Pair as
     // the Windows web client first; after the phone accepts the QR, the open
     // handler reconnects the registered session with the Desktop profile so
-    // full-history recovery remains available.
-    browser: freshWebPairing ? Browsers.windows('Chrome') : Browsers.macOS('Desktop'),
+    // full-history recovery remains available. If that Desktop upgrade keeps
+    // failing, the close handler clears desktopUpgradeRequested so subsequent
+    // reconnects fall back to the already-accepted web profile instead of
+    // looping forever on the Desktop profile.
+    browser: state.desktopUpgradeRequested || (state.existingSession && state.desktopHistoryProfile)
+      ? Browsers.macOS('Desktop')
+      : Browsers.windows('Chrome'),
     logger,
     printQRInTerminal: false,
     markOnlineOnConnect: false,
@@ -1550,6 +1559,7 @@ async function connect(catchupSource = 'startup') {
         // as an unregistered client and return to the QR/428 loop.
         await saveCreds()
         state.desktopUpgradeRequested = true
+        state.desktopUpgradeFailures = 0
         state.connection = 'retrying'
         emit({
           type: 'event', event: 'connection_stage', accountId: state.accountId,
@@ -1617,6 +1627,25 @@ async function connect(catchupSource = 'startup') {
       data: { state: loggedOut ? 'logged_out' : 'disconnected', statusCode, error: safeError(update.lastDisconnect?.error) }
     })
     if (!loggedOut && !state.manualDisconnect) {
+      if (state.desktopUpgradeRequested) {
+        // The Desktop-profile upgrade (full history) is failing; after a few
+        // attempts give up the upgrade and fall back to the already-paired web
+        // profile so the account still connects and live messages keep flowing.
+        state.desktopUpgradeFailures += 1
+        if (state.desktopUpgradeFailures >= DESKTOP_UPGRADE_MAX_FAILURES) {
+          state.desktopUpgradeRequested = false
+          state.desktopUpgradeFailures = 0
+          emit({
+            type: 'event', event: 'connection_issue', accountId: state.accountId,
+            data: {
+              code: 'desktop_history_upgrade_failed',
+              recoverable: true,
+              attempt,
+              message: '完整历史同步暂不可用，已自动降级为普通连接模式；最新消息收发不受影响'
+            }
+          })
+        }
+      }
       if (state.currentProxyUrl && state.allowDirectFallback && !state.directFallbackUsed && !state.qrSeen) {
         state.directFallbackUsed = true
         state.currentProxyUrl = ''
