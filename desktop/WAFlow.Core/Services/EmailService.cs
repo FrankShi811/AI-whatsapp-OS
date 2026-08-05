@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using MailKit;
+using MailKit.Search;
 using MailKit.Net.Imap;
 using MailKit.Net.Smtp;
 using MailKit.Security;
@@ -247,6 +248,44 @@ public sealed class EmailService : IAsyncDisposable
         catch (Exception error)
         {
             throw new InvalidOperationException($"邮件同步暂时不可用：{Safe(error.Message)}", error);
+        }
+    }
+
+    /// <summary>Propagates local read state back to the mail server (IMAP STORE \Seen).
+    /// Best-effort: failures are swallowed so read marking never blocks the UI.</summary>
+    public async Task MarkMessagesSeenAsync(
+        string accountId,
+        IReadOnlyList<string> providerMessageIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (providerMessageIds.Count == 0 || !HasLocalCredential(accountId)) return;
+        var account = await RequireAccountAsync(accountId, cancellationToken);
+        var password = RequirePassword(account);
+        try
+        {
+            using var client = await ConnectImapAsync(account, password, cancellationToken);
+            var inbox = client.Inbox;
+            await inbox.OpenAsync(FolderAccess.ReadWrite, cancellationToken);
+            foreach (var providerMessageId in providerMessageIds.Take(50))
+            {
+                IList<UniqueId> uids;
+                if (providerMessageId.StartsWith("imap:", StringComparison.OrdinalIgnoreCase)
+                    && uint.TryParse(providerMessageId[5..], out var uidNumber))
+                {
+                    uids = [new UniqueId(uidNumber)];
+                }
+                else
+                {
+                    uids = await inbox.SearchAsync(
+                        SearchQuery.HeaderContains("Message-Id", providerMessageId), cancellationToken);
+                }
+                if (uids.Count > 0)
+                    await inbox.AddFlagsAsync(uids, MessageFlags.Seen, true, cancellationToken);
+            }
+        }
+        catch
+        {
+            // Read-state propagation is best-effort; local state stays authoritative.
         }
     }
 

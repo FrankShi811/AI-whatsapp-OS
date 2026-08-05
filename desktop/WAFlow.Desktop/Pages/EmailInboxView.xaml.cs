@@ -291,7 +291,8 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         UpdateComposerState();
         try
         {
-            if (IsVisible && item.Unread > 0)
+            var wasUnread = IsVisible && item.Unread > 0;
+            if (wasUnread)
             {
                 item.MarkRead(DateTimeOffset.Now);
                 await _services.Repository.MarkEmailConversationReadAsync(conversation.Id);
@@ -305,6 +306,23 @@ public partial class EmailInboxView : UserControl, IRefreshableView
             if (!IsCurrentEmailTarget(selectionGeneration, accountId, conversation.Id, recipient, false)) return;
             _messages.ReplaceAll(messages);
             _lead = lead;
+            if (wasUnread)
+            {
+                // Propagate the read state back to the mail server (best-effort,
+                // never blocks the conversation UI).
+                var seenIds = messages
+                    .Where(message => message.Direction == EmailMessageDirection.Incoming)
+                    .Select(message => message.ProviderMessageId)
+                    .ToList();
+                if (seenIds.Count > 0)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try { await _services.Email.MarkMessagesSeenAsync(accountId, seenIds); }
+                        catch { }
+                    });
+                }
+            }
             PopulateCustomer();
             UpdateLeadIntelligenceSummary(_lead);
             await UpdateCustomerBrainSummaryAsync(_lead);
