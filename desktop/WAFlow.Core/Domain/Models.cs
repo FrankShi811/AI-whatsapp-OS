@@ -407,6 +407,17 @@ public sealed class DashboardUnreadDigest
     [JsonIgnore] public string GeneratedLabel => GeneratedAt == default ? "" : GeneratedAt.LocalDateTime.ToString("MM-dd HH:mm");
 }
 
+public sealed record EmailAttachment(
+    string FileName,
+    string MimeType,
+    long Size,
+    string ContentId = "",
+    string LocalPath = "",
+    bool IsInline = false)
+{
+    [JsonIgnore] public string SizeLabel => Size >= 1024 * 1024 ? $"{Size / 1024d / 1024d:N1} MB" : $"{Size / 1024d:N0} KB";
+}
+
 public sealed class EmailMessage
 {
     public string Id { get; set; } = "";
@@ -423,6 +434,9 @@ public sealed class EmailMessage
     public string Subject { get; set; } = "";
     public string TextBody { get; set; } = "";
     public string HtmlBody { get; set; } = "";
+    public List<EmailAttachment>? Attachments { get; set; }
+    [JsonIgnore] public List<EmailAttachment> VisibleAttachments => Attachments?.Where(attachment => !attachment.IsInline).ToList() ?? [];
+    [JsonIgnore] public string HasVisibleAttachments => VisibleAttachments.Count > 0 ? "Visible" : "Collapsed";
     public string InReplyTo { get; set; } = "";
     public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.Now;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;

@@ -499,8 +499,20 @@ public sealed class EmailService : IAsyncDisposable
                 var providerId = string.IsNullOrWhiteSpace(summary.Envelope?.MessageId)
                     ? $"imap:{summary.UniqueId.Id}"
                     : summary.Envelope.MessageId;
-                if (await _repository.GetEmailMessageAsync($"{account.Id}:{providerId}", cancellationToken) is not null)
+                var messageId = $"{account.Id}:{providerId}";
+                if (await _repository.GetEmailMessageAsync(messageId, cancellationToken) is { } existing)
+                {
+                    // Messages synced before attachment support have
+                    // Attachments == null; fetch the full message once and
+                    // backfill attachments so existing mail gains them too.
+                    if (existing.Attachments is null)
+                    {
+                        var full = await inbox.GetMessageAsync(summary.UniqueId, cancellationToken);
+                        existing.Attachments = await CollectAttachmentsAsync(account, providerId, full, cancellationToken);
+                        await _repository.UpsertEmailMessageAsync(existing, cancellationToken);
+                    }
                     continue;
+                }
                 var message = await inbox.GetMessageAsync(summary.UniqueId, cancellationToken);
                 var incrementUnread = !summary.Flags.HasValue || !summary.Flags.Value.HasFlag(MessageFlags.Seen);
                 if (await StoreIncomingAsync(account, summary.UniqueId.Id.ToString(), message, incrementUnread, cancellationToken))
@@ -708,6 +720,75 @@ public sealed class EmailService : IAsyncDisposable
         }, cancellationToken);
     }
 
+    private static string SanitizeFileName(string value)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var cleaned = new string(value.Where(character => !invalid.Contains(character)).ToArray()).Trim();
+        return string.IsNullOrWhiteSpace(cleaned) ? "attachment" : cleaned;
+    }
+
+    private static string EmailAttachmentDirectory(EmailAccount account, string providerMessageId)
+    {
+        var root = Path.Combine(new DataWorkspaceManager().Resolve().RootDirectory, "email-attachments");
+        var safeMessageId = SanitizeFileName(providerMessageId);
+        if (safeMessageId.Length > 120) safeMessageId = safeMessageId[..120];
+        return Path.Combine(root, SanitizeFileName(account.Id), safeMessageId);
+    }
+
+    private async Task<List<EmailAttachment>> CollectAttachmentsAsync(
+        EmailAccount account,
+        string providerMessageId,
+        MimeMessage source,
+        CancellationToken cancellationToken)
+    {
+        var attachments = new List<EmailAttachment>();
+        try
+        {
+            var hasAttachmentCandidate = source.Attachments.Any()
+                || source.BodyParts.Any(part => part is MimePart { ContentId: not null and not "" });
+            if (!hasAttachmentCandidate) return attachments;
+            var directory = EmailAttachmentDirectory(account, providerMessageId);
+            Directory.CreateDirectory(directory);
+            foreach (var entity in source.Attachments)
+            {
+                if (entity is not MimePart part || part.Content is null) continue;
+                var fileName = SanitizeFileName(string.IsNullOrWhiteSpace(part.FileName)
+                    ? $"attachment-{attachments.Count + 1}"
+                    : part.FileName);
+                var localPath = Path.Combine(directory, fileName);
+                if (!File.Exists(localPath))
+                {
+                    await using var stream = File.Create(localPath);
+                    await part.Content.DecodeToAsync(stream, cancellationToken);
+                }
+                attachments.Add(new EmailAttachment(
+                    fileName, part.ContentType.MimeType, new FileInfo(localPath).Length, LocalPath: localPath));
+            }
+            foreach (var part in source.BodyParts.OfType<MimePart>())
+            {
+                var contentId = part.ContentId?.Trim('<', '>') ?? "";
+                if (string.IsNullOrWhiteSpace(contentId) || part.Content is null) continue;
+                if (attachments.Any(attachment => attachment.ContentId == contentId)) continue;
+                var fileName = SanitizeFileName(string.IsNullOrWhiteSpace(part.FileName)
+                    ? $"inline-{contentId}"
+                    : part.FileName);
+                var localPath = Path.Combine(directory, fileName);
+                if (!File.Exists(localPath))
+                {
+                    await using var stream = File.Create(localPath);
+                    await part.Content.DecodeToAsync(stream, cancellationToken);
+                }
+                attachments.Add(new EmailAttachment(
+                    fileName, part.ContentType.MimeType, new FileInfo(localPath).Length, contentId, localPath, IsInline: true));
+            }
+        }
+        catch
+        {
+            // Attachment persistence must never break mail synchronization.
+        }
+        return attachments;
+    }
+
     private async Task<bool> StoreIncomingAsync(
         EmailAccount account,
         string uid,
@@ -732,6 +813,7 @@ public sealed class EmailService : IAsyncDisposable
             ToAddresses = source.To.Mailboxes.Select(address => NormalizeEmail(address.Address)).Where(value => value.Length > 0).ToList(),
             CcAddresses = source.Cc.Mailboxes.Select(address => NormalizeEmail(address.Address)).Where(value => value.Length > 0).ToList(),
             Subject = source.Subject ?? "", TextBody = source.TextBody ?? "", HtmlBody = source.HtmlBody ?? "",
+            Attachments = await CollectAttachmentsAsync(account, providerId, source, cancellationToken),
             InReplyTo = source.InReplyTo ?? "", Timestamp = timestamp
         };
         return await _repository.UpsertEmailMessageAsync(item, cancellationToken);

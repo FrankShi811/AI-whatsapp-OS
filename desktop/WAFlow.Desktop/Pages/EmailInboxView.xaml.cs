@@ -1,9 +1,11 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using Microsoft.Win32;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
 using WAFlow.Core.Services;
@@ -1002,6 +1004,33 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         IReadOnlyList<EmailAccount> Accounts,
         string? SelectedAccountId,
         IReadOnlyList<EmailConversationItem> Conversations);
+
+    private void AttachmentDownload_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: EmailAttachment attachment }) return;
+        if (string.IsNullOrWhiteSpace(attachment.LocalPath) || !File.Exists(attachment.LocalPath))
+        {
+            MessageBox.Show("该附件尚未保存到本地，请稍后重新同步收件箱后再试。", "附件不可用", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var dialog = new SaveFileDialog
+        {
+            FileName = attachment.FileName,
+            Filter = "所有文件 (*.*)|*.*",
+            Title = "保存邮件附件"
+        };
+        if (dialog.ShowDialog() == true)
+        {
+            try
+            {
+                File.Copy(attachment.LocalPath, dialog.FileName, overwrite: true);
+            }
+            catch (Exception error)
+            {
+                MessageBox.Show($"附件保存失败：{error.Message}", "保存附件", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+    }
 
     private sealed class EmailConversationItem(EmailConversation conversation) : INotifyPropertyChanged
     {
