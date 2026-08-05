@@ -93,6 +93,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         Loaded += async (_, _) =>
         {
             _ipTimer.Start();
+            _existingSession = _services.WhatsApp.HasStoredSession(CurrentAccountId);
             RestoreLatestQr();
             await RefreshPublicIpAsync();
         };
@@ -822,7 +823,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             if (!conversation.Messages.Any(x => x.Id == message.ProviderMessageId))
                 conversation.Messages.Add(new MessageItem(message.ProviderMessageId, message.Body, message.Timestamp, message.Direction == WhatsAppMessageDirection.Outgoing, message.Kind, message.FileName, message.MimeType, message.MediaPath, message.MediaDownloadError, message.Status, message.StatusUpdatedAt, message.DeliveredAt, message.ReadAt, message.FailureReason, message.QuotedMessageId, message.QuotedText, message.QuotedFromMe, message.IsRevoked, message.RevokedAt, message.IsStatusUpdate, message.StatusExpiresAt, message.ParticipantName, message.IsGroup));
         MessageList.ItemsSource = VisibleMessages(conversation);
-        if (_connected) { QrPanel.Visibility = Visibility.Collapsed; MessageList.Visibility = Visibility.Visible; }
+        if (_connected || _existingSession) { QrPanel.Visibility = Visibility.Collapsed; MessageList.Visibility = Visibility.Visible; }
         SaveLeadButton.IsEnabled = !conversation.IsGroup
                                    && !string.IsNullOrWhiteSpace(conversation.Phone)
                                    && FindOwnedPeerAccount(conversation.AccountId, conversation.Phone) is null;
@@ -2582,6 +2583,10 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         }
         QrProgressBar.Visibility = Visibility.Visible;
         QrHintText.Text = message;
+        // A previously paired account keeps its message list visible during
+        // reconnection stages; only a QR-less fresh pairing should cover the
+        // conversation area with the progress panel.
+        if (_existingSession) return;
         QrPanel.Visibility = Visibility.Visible;
         MessageList.Visibility = Visibility.Collapsed;
     }
@@ -2592,6 +2597,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         QrImage.Visibility = Visibility.Collapsed;
         QrProgressBar.Visibility = Visibility.Collapsed;
         QrHintText.Text = message;
+        if (_existingSession) return;
         QrPanel.Visibility = Visibility.Visible;
         MessageList.Visibility = Visibility.Collapsed;
     }

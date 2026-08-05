@@ -34,7 +34,8 @@ import {
 
 const logger = pino({ level: 'silent' })
 const QR_GENERATION_WATCHDOG_MS = 35000
-const DESKTOP_UPGRADE_MAX_FAILURES = 3
+const DESKTOP_UPGRADE_MAX_FAILURES = 1
+const VERSION_LOOKUP_TIMEOUT_MS = 3000
 const DESKTOP_HISTORY_PROFILE_FILE = 'desktop-history-profile.json'
 const PROTOCOL_VERSION_CACHE_FILE = 'whatsapp-protocol-version.json'
 const state = {
@@ -1280,7 +1281,7 @@ async function connect(catchupSource = 'startup') {
   const versionInfo = await resolveBaileysVersion([
     { source: 'whatsapp_web', fetch: fetchLatestWaWebVersion },
     { source: 'baileys', fetch: fetchLatestBaileysVersion }
-  ], { cachedVersion: cachedProtocolVersion })
+  ], { cachedVersion: cachedProtocolVersion, timeoutMs: VERSION_LOOKUP_TIMEOUT_MS })
   if (versionInfo.source === 'whatsapp_web' || versionInfo.source === 'baileys') {
     await cacheProtocolVersion(versionInfo.version, versionInfo.source).catch(() => {})
   }
@@ -1303,6 +1304,7 @@ async function connect(catchupSource = 'startup') {
           : `在线协议检查不可用，正在通过${routeLabel}使用内置兼容协议连接`
     }
   })
+  const useDesktopProfile = state.desktopUpgradeRequested || (state.existingSession && state.desktopHistoryProfile)
   const socket = makeWASocket({
     auth,
     ...(versionInfo.version ? { version: versionInfo.version } : {}),
@@ -1313,14 +1315,15 @@ async function connect(catchupSource = 'startup') {
     // full-history recovery remains available. If that Desktop upgrade keeps
     // failing, the close handler clears desktopUpgradeRequested so subsequent
     // reconnects fall back to the already-accepted web profile instead of
-    // looping forever on the Desktop profile.
-    browser: state.desktopUpgradeRequested || (state.existingSession && state.desktopHistoryProfile)
-      ? Browsers.macOS('Desktop')
-      : Browsers.windows('Chrome'),
+    // looping forever on the Desktop profile. A web-profile session must not
+    // request full history (syncFullHistory) — WhatsApp rejects that request
+    // for non-Desktop companions, which is what kept the fallback reconnect
+    // stuck in a retry loop.
+    browser: useDesktopProfile ? Browsers.macOS('Desktop') : Browsers.windows('Chrome'),
     logger,
     printQRInTerminal: false,
     markOnlineOnConnect: false,
-    syncFullHistory: true,
+    syncFullHistory: useDesktopProfile,
     connectTimeoutMs: 20000,
     defaultQueryTimeoutMs: 30000,
     qrTimeout: 60000,
@@ -1627,6 +1630,22 @@ async function connect(catchupSource = 'startup') {
       data: { state: loggedOut ? 'logged_out' : 'disconnected', statusCode, error: safeError(update.lastDisconnect?.error) }
     })
     if (!loggedOut && !state.manualDisconnect) {
+      // Persist the disconnect reason so repeated connection failures can be
+      // diagnosed without a debug bridge build (pino is silent by default).
+      try {
+        const logPath = path.join(state.sessionDir, 'connection-errors.log')
+        const currentSize = await fs.stat(logPath).then(s => s.size).catch(() => 0)
+        if (currentSize < 512 * 1024) {
+          const entry = JSON.stringify({
+            at: new Date().toISOString(),
+            attempt,
+            statusCode,
+            profile: state.desktopUpgradeRequested || state.desktopHistoryProfile ? 'desktop' : 'web',
+            error: safeError(update.lastDisconnect?.error)
+          })
+          await fs.appendFile(logPath, `${entry}\n`, 'utf8')
+        }
+      } catch { }
       if (state.desktopUpgradeRequested) {
         // The Desktop-profile upgrade (full history) is failing; after a few
         // attempts give up the upgrade and fall back to the already-paired web
