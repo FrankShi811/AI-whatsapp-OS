@@ -50,8 +50,8 @@
                             <Grid Margin="0,9,0,0">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Button x:Name="SyncButton" Content="同步联系人与历史" Style="{StaticResource SecondaryButton}" Click="Sync_Click" Padding="10,6" IsEnabled="False"/>
-                                <ComboBox x:Name="LabelFilterCombo" Grid.Column="1" Width="118" FontSize="11" Margin="8,0,0,0" SelectionChanged="LabelFilter_SelectionChanged" ToolTip="按 WhatsApp 标签筛选会话"/>
-                                <TextBlock x:Name="SyncStatusText" Grid.Column="2" Text="连接后自动同步" Foreground="{DynamicResource Muted}" FontSize="10" Margin="8,0,0,0" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                                <ComboBox x:Name="LabelFilterCombo" Grid.Column="1" Width="104" FontSize="11" Margin="8,0,0,0" SelectionChanged="LabelFilter_SelectionChanged" ToolTip="按 WhatsApp 标签筛选会话"/>
+                                <TextBlock x:Name="SyncStatusText" Grid.Column="2" Text="连接后自动同步" Foreground="{DynamicResource Muted}" FontSize="10" Margin="8,0,0,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
                             </Grid>
                         </StackPanel>
                     </Border>
