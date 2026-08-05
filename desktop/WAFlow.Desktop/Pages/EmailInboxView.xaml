@@ -101,6 +101,17 @@
                                     </Border>
                                 </DataTemplate></ItemsControl.ItemTemplate>
                             </ItemsControl>
+                            <ItemsControl ItemsSource="{Binding HtmlLinks}" Margin="0,6,0,0" Visibility="{Binding HasHtmlLinks}">
+                                <ItemsControl.ItemTemplate><DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                                        <TextBlock Text="🔗" FontSize="11" VerticalAlignment="Center"/>
+                                        <TextBlock FontSize="11" VerticalAlignment="Center" Margin="4,0,0,0">
+                                            <Hyperlink Click="HtmlLink_Click" CommandParameter="{Binding Url}" ToolTip="{Binding Url}"><Run Text="{Binding Text}"/></Hyperlink>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </DataTemplate></ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <Button Content="查看原格式（表格/按钮/链接）" Style="{StaticResource SecondaryButton}" FontSize="10.5" Padding="8,3" Margin="0,6,0,0" HorizontalAlignment="Left" Visibility="{Binding HasHtmlBody}" Click="HtmlPreview_Click" CommandParameter="{Binding}"/>
                             <TextBlock Text="{Binding DirectionLabel}" Foreground="{DynamicResource Muted}" FontSize="9" HorizontalAlignment="Right" Margin="0,7,0,0"/><TextBlock Text="{Binding TimeLabel}" Foreground="{DynamicResource Muted}" FontSize="9" HorizontalAlignment="Right"/></StackPanel>
                     </Border>
                 </DataTemplate></ItemsControl.ItemTemplate></ItemsControl></ScrollViewer>

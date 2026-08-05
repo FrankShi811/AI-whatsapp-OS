@@ -8,7 +8,7 @@
     <AssemblyName>AISalesOS</AssemblyName>
     <AssemblyTitle>AI Sales OS</AssemblyTitle>
     <RootNamespace>WAFlow.Desktop</RootNamespace>
-    <Version>5.18.10</Version>
+    <Version>5.18.11</Version>
     <Title>AI Sales OS</Title>
     <Product>AI Sales OS</Product>
     <Company>AI Sales OS</Company>
@@ -39,6 +39,7 @@
     </AssemblyAttribute>
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
     <PackageReference Include="Velopack" Version="1.2.0" />
   </ItemGroup>
 </Project>

@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace WAFlow.Core.Domain;
 
@@ -418,6 +419,8 @@ public sealed record EmailAttachment(
     [JsonIgnore] public string SizeLabel => Size >= 1024 * 1024 ? $"{Size / 1024d / 1024d:N1} MB" : $"{Size / 1024d:N0} KB";
 }
 
+public sealed record EmailLink(string Text, string Url);
+
 public sealed class EmailMessage
 {
     public string Id { get; set; } = "";
@@ -437,6 +440,42 @@ public sealed class EmailMessage
     public List<EmailAttachment>? Attachments { get; set; }
     [JsonIgnore] public List<EmailAttachment> VisibleAttachments => Attachments?.Where(attachment => !attachment.IsInline).ToList() ?? [];
     [JsonIgnore] public string HasVisibleAttachments => VisibleAttachments.Count > 0 ? "Visible" : "Collapsed";
+
+    [JsonIgnore]
+    public List<EmailLink> HtmlLinks
+    {
+        get
+        {
+            var links = new List<EmailLink>();
+            if (string.IsNullOrWhiteSpace(HtmlBody)) return links;
+            try
+            {
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (Match match in Regex.Matches(
+                             HtmlBody,
+                             @"<a\s[^>]*href\s*=\s*[""'](?<url>[^""']+)[""'][^>]*>(?<text>.*?)</a>",
+                             RegexOptions.IgnoreCase | RegexOptions.Singleline))
+                {
+                    var url = match.Groups["url"].Value.Trim();
+                    if (url.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (url.StartsWith("#")) continue;
+                    var text = Regex.Replace(match.Groups["text"].Value, "<[^>]+>", "").Trim();
+                    if (string.IsNullOrWhiteSpace(text)) text = url;
+                    if (text.Length > 120) text = text[..120];
+                    if (seen.Add(url)) links.Add(new EmailLink(text, url));
+                    if (links.Count >= 20) break;
+                }
+            }
+            catch
+            {
+                // Link extraction must never break message rendering.
+            }
+            return links;
+        }
+    }
+    [JsonIgnore] public string HasHtmlLinks => HtmlLinks.Count > 0 ? "Visible" : "Collapsed";
+    [JsonIgnore] public string HasHtmlBody => string.IsNullOrWhiteSpace(HtmlBody) ? "Collapsed" : "Visible";
+
     public string InReplyTo { get; set; } = "";
     public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.Now;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
 using MailKit;
 using MailKit.Net.Imap;
 using MailKit.Net.Smtp;
@@ -486,6 +487,7 @@ public sealed class EmailService : IAsyncDisposable
         try
         {
             var imported = 0;
+            var backfills = new List<(UniqueId Uid, string ProviderId, EmailMessage Existing)>();
             if (inbox.Count == 0) return imported;
             var start = Math.Max(0, inbox.Count - Math.Clamp(maxMessages, 1, 2_000));
             var summaries = await inbox.FetchAsync(
@@ -503,20 +505,42 @@ public sealed class EmailService : IAsyncDisposable
                 if (await _repository.GetEmailMessageAsync(messageId, cancellationToken) is { } existing)
                 {
                     // Messages synced before attachment support have
-                    // Attachments == null; fetch the full message once and
-                    // backfill attachments so existing mail gains them too.
+                    // Attachments == null; backfill them in batches below.
                     if (existing.Attachments is null)
-                    {
-                        var full = await inbox.GetMessageAsync(summary.UniqueId, cancellationToken);
-                        existing.Attachments = await CollectAttachmentsAsync(account, providerId, full, cancellationToken);
-                        await _repository.UpsertEmailMessageAsync(existing, cancellationToken);
-                    }
+                        backfills.Add((summary.UniqueId, providerId, existing));
                     continue;
                 }
                 var message = await inbox.GetMessageAsync(summary.UniqueId, cancellationToken);
                 var incrementUnread = !summary.Flags.HasValue || !summary.Flags.Value.HasFlag(MessageFlags.Seen);
                 if (await StoreIncomingAsync(account, summary.UniqueId.Id.ToString(), message, incrementUnread, cancellationToken))
                     imported++;
+            }
+            if (backfills.Count > 0)
+            {
+                // Pre-check message structure in one batched round trip; only
+                // messages that actually carry attachments are downloaded in
+                // full, bounded per cycle so a large mailbox cannot stall sync.
+                var structures = await inbox.FetchAsync(
+                    backfills.Select(item => item.Uid).ToArray(),
+                    MessageSummaryItems.BodyStructure,
+                    cancellationToken);
+                var budget = 250;
+                foreach (var (uid, providerId, existing) in backfills)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var structure = structures.FirstOrDefault(item => item.UniqueId == uid);
+                    if (structure is null || !structure.Attachments.Any())
+                    {
+                        existing.Attachments = [];
+                        await _repository.UpsertEmailMessageAsync(existing, cancellationToken);
+                    }
+                    else if (budget-- > 0)
+                    {
+                        var full = await inbox.GetMessageAsync(uid, cancellationToken);
+                        existing.Attachments = await CollectAttachmentsAsync(account, providerId, full, cancellationToken);
+                        await _repository.UpsertEmailMessageAsync(existing, cancellationToken);
+                    }
+                }
             }
             return imported;
         }
@@ -1136,7 +1160,7 @@ public sealed class EmailService : IAsyncDisposable
             lock (_wakeLock) _wake?.Cancel();
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(60));
+            timeout.CancelAfter(TimeSpan.FromSeconds(180));
             try
             {
                 return await completion.Task.WaitAsync(timeout.Token);

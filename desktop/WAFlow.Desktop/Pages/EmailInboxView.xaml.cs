@@ -1,10 +1,12 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Documents;
 using Microsoft.Win32;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
@@ -1030,6 +1032,56 @@ public partial class EmailInboxView : UserControl, IRefreshableView
                 MessageBox.Show($"附件保存失败：{error.Message}", "保存附件", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
+    }
+
+    private void HtmlLink_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Hyperlink { CommandParameter: string url }
+            && Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+        {
+            try { Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }); }
+            catch { }
+        }
+    }
+
+    private void HtmlPreview_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: EmailMessage message } || string.IsNullOrWhiteSpace(message.HtmlBody)) return;
+        try
+        {
+            var window = new HtmlPreviewWindow(message.Subject, BuildPreviewHtml(message))
+            {
+                Owner = Window.GetWindow(this)
+            };
+            window.Show();
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show($"无法打开邮件原格式预览：{error.Message}", "邮件预览", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private static string BuildPreviewHtml(EmailMessage message)
+    {
+        var html = message.HtmlBody;
+        if (message.Attachments is not null)
+        {
+            foreach (var attachment in message.Attachments.Where(item => !string.IsNullOrWhiteSpace(item.ContentId) && !string.IsNullOrWhiteSpace(item.LocalPath)))
+            {
+                var fileUri = new Uri(attachment.LocalPath).AbsoluteUri;
+                html = html.Replace($"cid:{attachment.ContentId}", fileUri);
+            }
+        }
+        return """
+            <!DOCTYPE html><html><head><meta charset="utf-8">
+            <style>
+              body{background:#fff;color:#1f2328;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;line-height:1.55;margin:18px;word-wrap:break-word;}
+              table{border-collapse:collapse;} td,th{border:1px solid #d0d7de;padding:5px 8px;text-align:left;}
+              a{color:#1a73e8;} img{max-width:100%;height:auto;} pre{white-space:pre-wrap;}
+              button, .button, input[type=submit], input[type=button]{font-family:inherit;}
+            </style></head><body>
+            """ + html + "</body></html>";
     }
 
     private sealed class EmailConversationItem(EmailConversation conversation) : INotifyPropertyChanged
