@@ -182,6 +182,23 @@ public sealed partial class LocalRepository
             );
             CREATE INDEX IF NOT EXISTS ix_opportunity_snapshots_category ON opportunity_snapshots(primary_category COLLATE NOCASE);
             CREATE INDEX IF NOT EXISTS ix_opportunity_snapshots_activity ON opportunity_snapshots(latest_activity_at DESC);
+            CREATE TABLE IF NOT EXISTS whatsapp_labels (
+              id TEXT NOT NULL,
+              account_id TEXT NOT NULL,
+              name TEXT NOT NULL,
+              color INTEGER NOT NULL,
+              deleted INTEGER NOT NULL DEFAULT 0,
+              predefined_id INTEGER,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY(account_id, id)
+            );
+            CREATE TABLE IF NOT EXISTS whatsapp_chat_labels (
+              account_id TEXT NOT NULL,
+              chat_id TEXT NOT NULL,
+              label_id TEXT NOT NULL,
+              PRIMARY KEY(account_id, chat_id, label_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_whatsapp_chat_labels_label ON whatsapp_chat_labels(account_id, label_id);
             CREATE TABLE IF NOT EXISTS whatsapp_conversations (
               id TEXT PRIMARY KEY,
               account_id TEXT NOT NULL,
@@ -5545,5 +5562,86 @@ public sealed partial class LocalRepository
             await transaction.RollbackAsync(cancellationToken);
             throw;
         }
+    }
+
+    public async Task UpsertWhatsAppLabelAsync(WhatsAppLabel label, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = """
+            INSERT INTO whatsapp_labels(id,account_id,name,color,deleted,predefined_id,updated_at)
+            VALUES($id,$account,$name,$color,$deleted,$predefined,$updated)
+            ON CONFLICT(account_id,id) DO UPDATE SET
+              name=excluded.name,color=excluded.color,deleted=excluded.deleted,
+              predefined_id=excluded.predefined_id,updated_at=excluded.updated_at
+            """;
+        command.Parameters.AddWithValue("$id", label.Id);
+        command.Parameters.AddWithValue("$account", label.AccountId);
+        command.Parameters.AddWithValue("$name", label.Name);
+        command.Parameters.AddWithValue("$color", label.Color);
+        command.Parameters.AddWithValue("$deleted", label.Deleted ? 1 : 0);
+        command.Parameters.AddWithValue("$predefined", label.PredefinedId is null ? DBNull.Value : label.PredefinedId.Value);
+        command.Parameters.AddWithValue("$updated", label.UpdatedAt.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<WhatsAppLabel>> GetWhatsAppLabelsAsync(string accountId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT id,account_id,name,color,deleted,predefined_id,updated_at FROM whatsapp_labels WHERE account_id=$account AND deleted=0 ORDER BY name COLLATE NOCASE";
+        command.Parameters.AddWithValue("$account", accountId);
+        var labels = new List<WhatsAppLabel>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            labels.Add(new WhatsAppLabel
+            {
+                Id = reader.GetString(0), AccountId = reader.GetString(1), Name = reader.GetString(2),
+                Color = reader.GetInt32(3), Deleted = reader.GetInt32(4) != 0,
+                PredefinedId = reader.IsDBNull(5) ? null : reader.GetInt32(5),
+                UpdatedAt = DateTimeOffset.Parse(reader.GetString(6))
+            });
+        }
+        return labels;
+    }
+
+    public async Task<List<string>> GetWhatsAppChatLabelIdsAsync(string accountId, string chatId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT label_id FROM whatsapp_chat_labels WHERE account_id=$account AND chat_id=$chat";
+        command.Parameters.AddWithValue("$account", accountId);
+        command.Parameters.AddWithValue("$chat", chatId);
+        var ids = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken)) ids.Add(reader.GetString(0));
+        return ids;
+    }
+
+    public async Task SetWhatsAppChatLabelAsync(string accountId, string chatId, string labelId, bool add, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = add
+            ? "INSERT OR IGNORE INTO whatsapp_chat_labels(account_id,chat_id,label_id) VALUES($account,$chat,$label)"
+            : "DELETE FROM whatsapp_chat_labels WHERE account_id=$account AND chat_id=$chat AND label_id=$label";
+        command.Parameters.AddWithValue("$account", accountId);
+        command.Parameters.AddWithValue("$chat", chatId);
+        command.Parameters.AddWithValue("$label", labelId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<string>> GetWhatsAppChatIdsWithLabelAsync(string accountId, string labelId, CancellationToken cancellationToken = default)
+    {
+        await using var db = Open(); await db.OpenAsync(cancellationToken);
+        await using var command = db.CreateCommand();
+        command.CommandText = "SELECT chat_id FROM whatsapp_chat_labels WHERE account_id=$account AND label_id=$label";
+        command.Parameters.AddWithValue("$account", accountId);
+        command.Parameters.AddWithValue("$label", labelId);
+        var ids = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken)) ids.Add(reader.GetString(0));
+        return ids;
     }
 }

@@ -90,6 +90,16 @@
                     <Border x:Name="Bubble" BorderThickness="1" CornerRadius="12" Padding="12" Margin="0,5" MaxWidth="640">
                         <Border.Style><Style TargetType="Border"><Setter Property="HorizontalAlignment" Value="Left"/><Setter Property="Background" Value="{DynamicResource Surface}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Style.Triggers><DataTrigger Binding="{Binding DirectionLabel}" Value="已发送"><Setter Property="HorizontalAlignment" Value="Right"/><Setter Property="Background" Value="{DynamicResource PrimarySoft}"/><Setter Property="BorderBrush" Value="{DynamicResource PrimarySoft}"/></DataTrigger></Style.Triggers></Style></Border.Style>
                         <StackPanel><TextBlock Text="{Binding Subject}" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="{Binding TextBody}" Margin="0,7,0,0" TextWrapping="Wrap"/>
+                            <ItemsControl ItemsSource="{Binding VisibleInlineImages}" Margin="0,6,0,0" Visibility="{Binding HasInlineImages}">
+                                <ItemsControl.ItemTemplate><DataTemplate>
+                                    <Border Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="6" Margin="0,3">
+                                        <StackPanel>
+                                            <Image Source="{Binding LocalPath}" MaxHeight="260" Stretch="Uniform" ToolTip="{Binding FileName}"/>
+                                            <TextBlock Text="{Binding FileName}" FontSize="9" Foreground="{DynamicResource Muted}" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate></ItemsControl.ItemTemplate>
+                            </ItemsControl>
                             <ItemsControl ItemsSource="{Binding VisibleAttachments}" Margin="0,8,0,0" Visibility="{Binding HasVisibleAttachments}">
                                 <ItemsControl.ItemTemplate><DataTemplate>
                                     <Border Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="10,7" Margin="0,3">

@@ -65,6 +65,14 @@ public sealed class WhatsAppSyncService
                 foreach (var item in Items(e.Data)) await IngestChatAsync(accountId, item);
                 RaiseDataChanged(accountId, "chats");
                 return;
+            case "label_upsert":
+                await IngestLabelAsync(accountId, e.Data);
+                RaiseDataChanged(accountId, "labels");
+                return;
+            case "chat_label_upsert":
+                await IngestChatLabelAsync(accountId, e.Data);
+                RaiseDataChanged(accountId, "labels");
+                return;
             case "messages_history":
                 foreach (var item in Items(e.Data))
                 {
@@ -213,6 +221,36 @@ public sealed class WhatsAppSyncService
         }
         if (string.IsNullOrWhiteSpace(conversation.DisplayName)) conversation.DisplayName = $"+{phone}";
         await _repository.UpsertWhatsAppConversationAsync(conversation);
+    }
+
+    private async Task IngestLabelAsync(string accountId, JsonElement data)
+    {
+        var id = Text(data, "id");
+        if (string.IsNullOrWhiteSpace(id)) return;
+        var name = WhatsAppTextEncodingRepair.Repair(Text(data, "name"));
+        if (string.IsNullOrWhiteSpace(name)) name = id;
+        var label = new WhatsAppLabel
+        {
+            Id = id,
+            AccountId = accountId,
+            Name = name,
+            Color = Int(data, "color"),
+            Deleted = Bool(data, "deleted"),
+            PredefinedId = NullableInt(data, "predefinedId"),
+            UpdatedAt = DateTimeOffset.Now
+        };
+        await _repository.UpsertWhatsAppLabelAsync(label);
+    }
+
+    private async Task IngestChatLabelAsync(string accountId, JsonElement data)
+    {
+        // chat_id is stored as the bare phone (matches WhatsAppConversation.Id
+        // which is accountId:phone); the bridge sends both jid and phone.
+        var chatId = Text(data, "phone");
+        if (string.IsNullOrWhiteSpace(chatId)) chatId = Text(data, "chatId");
+        var labelId = Text(data, "labelId");
+        if (string.IsNullOrWhiteSpace(chatId) || string.IsNullOrWhiteSpace(labelId)) return;
+        await _repository.SetWhatsAppChatLabelAsync(accountId, chatId, labelId, Text(data, "type") != "remove");
     }
 
     private async Task IngestMessageAsync(string accountId, JsonElement data)
@@ -489,6 +527,7 @@ public sealed class WhatsAppSyncService
 
     private static string Text(JsonElement data, string name) => data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";
     private static bool Bool(JsonElement data, string name) => data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
+    private static int? NullableInt(JsonElement data, string name) => data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var numeric) ? numeric : null;
     private static string Digits(string value) => new(value.Where(char.IsDigit).ToArray());
     private static IEnumerable<JsonElement> Items(JsonElement data) => data.ValueKind == JsonValueKind.Object && data.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array ? items.EnumerateArray() : [];
     private static string FirstText(JsonElement data, params string[] names)

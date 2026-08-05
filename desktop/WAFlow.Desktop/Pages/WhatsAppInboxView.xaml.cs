@@ -244,6 +244,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         _persistedConversationCount = snapshot.PersistedConversationCount;
         _contactCount = snapshot.ContactCount;
         ConversationCountText.Text = $"{_persistedConversationCount} 会话 · {_contactCount} 联系人";
+        await RefreshConversationLabelsAsync();
         ApplyConversationFilter();
         ConversationList.SelectedItem = _conversations.FirstOrDefault(item => item.Id == selectedConversationId);
         UpdateConnectionControls();
@@ -789,7 +790,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             ClearAttachment();
             ClearReply();
             ResetTranslationUi();
-            ChatTitleText.Text = "选择会话"; ChatNumberText.Text = "连接后会同步个人与群聊会话"; ChatModeBadgeText.Text = "CRM LIVE SYNC"; MessageList.ItemsSource = null; HideStatusUpdateBanner(); ClearLead(); return;
+            ChatTitleText.Text = "选择会话"; ChatNumberText.Text = "连接后会同步个人与群聊会话"; ChatModeBadgeText.Text = "CRM LIVE SYNC"; ChatLabelButton.Visibility = Visibility.Collapsed; MessageList.ItemsSource = null; HideStatusUpdateBanner(); ClearLead(); return;
         }
         if (!_composerConversationId.Equals(conversation.Id, StringComparison.OrdinalIgnoreCase))
         {
@@ -811,6 +812,7 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
             if (hadUnread) DataChanged?.Invoke(this, EventArgs.Empty);
         }
         ChatTitleText.Text = conversation.DisplayName;
+        ChatLabelButton.Visibility = conversation.IsGroup ? Visibility.Collapsed : Visibility.Visible;
         ChatNumberText.Text = conversation.IsGroup
             ? "WhatsApp 群聊 · 实时同步与未读提醒 · CRM、Customer Brain 和自动回复已隔离"
             : string.IsNullOrWhiteSpace(conversation.Phone) ? "WhatsApp 尚未提供该联系人的电话号码" : $"+{conversation.Phone}";
@@ -1580,10 +1582,59 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
     private void ApplyConversationFilter()
     {
         var query = ConversationSearchBox.Text.Trim();
-        ConversationList.ItemsSource = query.Length == 0
-            ? _conversations
-            : _conversations.Where(x => x.DisplayName.Contains(query, StringComparison.CurrentCultureIgnoreCase) || x.Phone.Contains(query, StringComparison.OrdinalIgnoreCase) || x.Jid.Contains(query, StringComparison.OrdinalIgnoreCase)).ToList();
-        ConversationCountText.Text = query.Length == 0 ? $"{_persistedConversationCount} 会话 · {_contactCount} 联系人" : $"找到 {ConversationList.Items.Count} 个";
+        var selectedLabel = LabelFilterCombo.SelectedItem as string;
+        IEnumerable<ConversationItem> visible = _conversations;
+        if (query.Length > 0)
+            visible = visible.Where(x => x.DisplayName.Contains(query, StringComparison.CurrentCultureIgnoreCase) || x.Phone.Contains(query, StringComparison.OrdinalIgnoreCase) || x.Jid.Contains(query, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(selectedLabel) && selectedLabel != "全部标签")
+            visible = visible.Where(x => x.Labels.Contains(selectedLabel, StringComparer.OrdinalIgnoreCase));
+        ConversationList.ItemsSource = visible.ToList();
+        var filtered = query.Length > 0 || (selectedLabel is not null && selectedLabel != "全部标签");
+        ConversationCountText.Text = filtered ? $"找到 {ConversationList.Items.Count} 个" : $"{_persistedConversationCount} 会话 · {_contactCount} 联系人";
+    }
+
+    private async Task RefreshConversationLabelsAsync()
+    {
+        var accountId = CurrentAccountId;
+        var labels = await _services.Repository.GetWhatsAppLabelsAsync(accountId);
+        var labelNames = labels.ToDictionary(label => label.Id, label => label.Name, StringComparer.OrdinalIgnoreCase);
+        var previous = LabelFilterCombo.SelectedItem as string;
+        LabelFilterCombo.Items.Clear();
+        LabelFilterCombo.Items.Add("全部标签");
+        foreach (var label in labels) LabelFilterCombo.Items.Add(label.Name);
+        LabelFilterCombo.SelectedItem = previous ?? "全部标签";
+        if (LabelFilterCombo.SelectedItem is null && LabelFilterCombo.Items.Count > 0) LabelFilterCombo.SelectedIndex = 0;
+        foreach (var conversation in _conversations)
+        {
+            conversation.Labels.Clear();
+            var ids = await _services.Repository.GetWhatsAppChatLabelIdsAsync(accountId, conversation.Phone);
+            foreach (var id in ids)
+                if (labelNames.TryGetValue(id, out var name)) conversation.Labels.Add(name);
+        }
+    }
+
+    private void LabelFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_switchingAccount) return;
+        ApplyConversationFilter();
+    }
+
+    private void ChatLabelButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (ConversationList.SelectedItem is not ConversationItem conversation || conversation.IsGroup) return;
+        try
+        {
+            var window = new LabelManagerWindow(_services, conversation.AccountId, conversation.Phone, conversation.DisplayName)
+            {
+                Owner = Window.GetWindow(this)
+            };
+            window.ShowDialog();
+            _ = RefreshConversationLabelsAsync();
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show($"无法打开标签管理：{error.Message}", "WhatsApp 标签", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void ConversationList_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
@@ -2734,6 +2785,8 @@ public partial class WhatsAppInboxView : UserControl, IRefreshableView
         public DateTimeOffset? PinnedAt { get => _pinnedAt; set => Set(ref _pinnedAt, value); }
         public Visibility PinnedVisibility => IsPinned ? Visibility.Visible : Visibility.Collapsed;
         public string PinActionLabel => IsGroup ? "群聊置顶请在手机 WhatsApp 操作" : IsPinned ? "取消置顶并同步到手机" : "置顶并同步到手机";
+        public ObservableCollection<string> Labels { get; } = [];
+        public Visibility LabelsVisibility => Labels.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         public event PropertyChangedEventHandler? PropertyChanged;
         private bool Set<T>(ref T field, T value, [CallerMemberName] string? property = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; OnPropertyChanged(property); return true; }
         private void OnPropertyChanged(string? name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

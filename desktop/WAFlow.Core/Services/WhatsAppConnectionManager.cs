@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using WAFlow.Core.Domain;
 using WAFlow.Core.Infrastructure;
 
 namespace WAFlow.Core.Services;
@@ -111,6 +112,8 @@ public sealed class WhatsAppConnectionManager : IWhatsAppNumberRegistrationLooku
     public Task<JsonElement> RevokeMessageAsync(string accountId, string phone, string messageId, CancellationToken cancellationToken = default) => GetClient(accountId).RevokeMessageAsync(phone, messageId, cancellationToken);
     public Task<JsonElement> SetChatPinnedAsync(string phone, bool pinned, CancellationToken cancellationToken = default) => SetChatPinnedAsync(ActiveAccountId, phone, pinned, cancellationToken);
     public Task<JsonElement> SetChatPinnedAsync(string accountId, string phone, bool pinned, CancellationToken cancellationToken = default) => GetClient(accountId).SetChatPinnedAsync(phone, pinned, cancellationToken);
+    public Task<JsonElement> UpsertLabelAsync(string accountId, WhatsAppLabel label, CancellationToken cancellationToken = default) => GetClient(accountId).UpsertLabelAsync(label, cancellationToken);
+    public Task<JsonElement> SetChatLabelAsync(string accountId, string phone, string labelId, bool add, CancellationToken cancellationToken = default) => GetClient(accountId).SetChatLabelAsync(phone, labelId, add, cancellationToken);
     public async Task<WhatsAppGroupCreateResult> CreateGroupAsync(string accountId, WhatsAppGroupCreateRequest request, CancellationToken cancellationToken = default)
     {
         var result = await GetClient(accountId).CreateGroupAsync(request, cancellationToken);

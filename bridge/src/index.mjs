@@ -1424,6 +1424,30 @@ async function connect(catchupSource = 'startup') {
   socket.ev.on('chats.update', chats => {
     enqueueSync(() => processChats(chats, 'live_update'), 'chats')
   })
+  socket.ev.on('labels.edit', label => {
+    if (!label || typeof label !== 'object') return
+    const data = {
+      id: String(label.id ?? ''),
+      name: String(label.name ?? ''),
+      color: Number(label.color ?? 0),
+      deleted: Boolean(label.deleted),
+      predefinedId: label.predefinedId != null ? Number(label.predefinedId) : null
+    }
+    if (!data.id) return
+    emit({ type: 'event', event: 'label_upsert', accountId: state.accountId, data })
+  })
+  socket.ev.on('labels.association', payload => {
+    const association = payload?.association
+    if (!association) return
+    const chatId = String(association.chatId ?? association.jid ?? '')
+    const labelId = String(association.labelId ?? '')
+    const type = payload.type === 'remove' ? 'remove' : 'add'
+    if (!chatId || !labelId) return
+    emit({
+      type: 'event', event: 'chat_label_upsert', accountId: state.accountId,
+      data: { chatId, labelId, type, phone: phoneFromJid(chatId) }
+    })
+  })
   socket.ev.on('lid-mapping.update', mapping => {
     enqueueSync(async () => {
       const lid = String(mapping?.lid ?? '')
@@ -1898,6 +1922,37 @@ async function handle(command) {
         if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
         enqueueSync(manualSync, 'manual')
         reply(requestId, true, { state: 'started', existingSession: state.existingSession, contacts: state.contacts.size, chats: state.chats.size })
+        return
+      }
+      case 'label_upsert': {
+        if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
+        const id = String(command.id ?? '').trim()
+        if (!id) throw new Error('invalid_label_id')
+        await state.socket.addLabel('status@broadcast', {
+          id,
+          name: String(command.name ?? ''),
+          color: Number(command.color ?? 0),
+          deleted: Boolean(command.deleted)
+        })
+        reply(requestId, true, { id })
+        return
+      }
+      case 'chat_label_set': {
+        if (!state.socket || state.connection !== 'connected') throw new Error('whatsapp_not_connected')
+        const jid = await resolveOutboundJid(command.phone, command.jid)
+        const labelId = String(command.labelId ?? '').trim()
+        if (!labelId) throw new Error('invalid_label_id')
+        const add = Boolean(command.add)
+        if (add) await state.socket.addChatLabel(jid, labelId)
+        else await state.socket.removeChatLabel(jid, labelId)
+        const chat = state.chats.get(phoneFromJid(jid))
+        if (chat) {
+          const labels = new Set(chat.labels ?? [])
+          if (add) labels.add(labelId)
+          else labels.delete(labelId)
+          rememberChat({ ...chat, labels: [...labels], source: 'live_update' })
+        }
+        reply(requestId, true, { jid, labelId, add })
         return
       }
       case 'catch_up_history': {

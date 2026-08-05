@@ -184,6 +184,19 @@ public enum WhatsAppMessageDirection { Incoming, Outgoing }
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum WhatsAppMessageStatus { Pending, Sent, Delivered, Read, Failed, Received }
 
+public sealed class WhatsAppLabel
+{
+    public string Id { get; set; } = "";
+    public string AccountId { get; set; } = "primary";
+    public string Name { get; set; } = "";
+    public int Color { get; set; }
+    public bool Deleted { get; set; }
+    public int? PredefinedId { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
+
+    [JsonIgnore] public string BrushKey => $"LabelColor{Math.Clamp(Color, 0, 19)}";
+}
+
 public sealed class WhatsAppConversation
 {
     public string Id { get; set; } = "";
@@ -440,6 +453,8 @@ public sealed class EmailMessage
     public List<EmailAttachment>? Attachments { get; set; }
     [JsonIgnore] public List<EmailAttachment> VisibleAttachments => Attachments?.Where(attachment => !attachment.IsInline).ToList() ?? [];
     [JsonIgnore] public string HasVisibleAttachments => VisibleAttachments.Count > 0 ? "Visible" : "Collapsed";
+    [JsonIgnore] public List<EmailAttachment> VisibleInlineImages => Attachments?.Where(attachment => attachment.IsInline && !string.IsNullOrWhiteSpace(attachment.LocalPath) && File.Exists(attachment.LocalPath)).ToList() ?? [];
+    [JsonIgnore] public string HasInlineImages => VisibleInlineImages.Count > 0 ? "Visible" : "Collapsed";
 
     [JsonIgnore]
     public List<EmailLink> HtmlLinks

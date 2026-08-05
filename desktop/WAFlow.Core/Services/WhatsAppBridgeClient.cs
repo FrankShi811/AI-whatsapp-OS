@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using WAFlow.Core.Domain;
 using WAFlow.Core.Infrastructure;
 
 namespace WAFlow.Core.Services;
@@ -292,6 +293,10 @@ public sealed class WhatsAppBridgeClient : IAsyncDisposable
         SendCommandAsync("revoke_message", new { phone, messageId }, cancellationToken);
     public Task<JsonElement> SetChatPinnedAsync(string phone, bool pinned, CancellationToken cancellationToken = default) =>
         SendCommandAsync("set_chat_pin", new { phone, pinned }, cancellationToken);
+    public Task<JsonElement> UpsertLabelAsync(WhatsAppLabel label, CancellationToken cancellationToken = default) =>
+        SendCommandAsync("label_upsert", new { id = label.Id, name = label.Name, color = label.Color, deleted = label.Deleted }, cancellationToken);
+    public Task<JsonElement> SetChatLabelAsync(string phone, string labelId, bool add, CancellationToken cancellationToken = default) =>
+        SendCommandAsync("chat_label_set", new { phone, labelId, add }, cancellationToken);
     public Task<JsonElement> CreateGroupAsync(WhatsAppGroupCreateRequest request, CancellationToken cancellationToken = default) =>
         SendCommandAsync("create_group", new { subject = request.Subject, participants = request.ParticipantPhones }, cancellationToken);
     public Task<JsonElement> SyncNowAsync(CancellationToken cancellationToken = default) =>

@@ -10,6 +10,7 @@ using System.Windows.Documents;
 using Microsoft.Win32;
 using WAFlow.Core;
 using WAFlow.Core.Domain;
+using WAFlow.Core.Infrastructure;
 using WAFlow.Core.Services;
 using WAFlow.Desktop.Collections;
 using WAFlow.Desktop.Windows;
@@ -1068,7 +1069,7 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         if (sender is not Button { DataContext: EmailMessage message } || string.IsNullOrWhiteSpace(message.HtmlBody)) return;
         try
         {
-            var window = new HtmlPreviewWindow(message.Subject, BuildPreviewHtml(message))
+            var window = new HtmlPreviewWindow(message.Subject, BuildPreviewHtml(message), EmailAttachmentRoot())
             {
                 Owner = Window.GetWindow(this)
             };
@@ -1080,6 +1081,9 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         }
     }
 
+    private static string EmailAttachmentRoot() =>
+        Path.Combine(new DataWorkspaceManager().Resolve().RootDirectory, "email-attachments");
+
     private static string BuildPreviewHtml(EmailMessage message)
     {
         var html = message.HtmlBody;
@@ -1087,8 +1091,16 @@ public partial class EmailInboxView : UserControl, IRefreshableView
         {
             foreach (var attachment in message.Attachments.Where(item => !string.IsNullOrWhiteSpace(item.ContentId) && !string.IsNullOrWhiteSpace(item.LocalPath)))
             {
-                var fileUri = new Uri(attachment.LocalPath).AbsoluteUri;
-                html = html.Replace($"cid:{attachment.ContentId}", fileUri);
+                try
+                {
+                    var relative = Path.GetRelativePath(EmailAttachmentRoot(), attachment.LocalPath).Replace('\\', '/');
+                    var virtualUrl = "https://email-attachments/" + string.Join("/", relative.Split('/').Select(Uri.EscapeDataString));
+                    html = html.Replace($"cid:{attachment.ContentId}", virtualUrl);
+                }
+                catch
+                {
+                    // Unmapped cid references simply render as broken images.
+                }
             }
         }
         return """

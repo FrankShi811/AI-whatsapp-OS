@@ -22,3 +22,8 @@ work/
 *.key
 .vs/
 .idea/
+
+# local tooling & worktrees
+.pnpm-store/
+.codex-tmp/
+worktrees/

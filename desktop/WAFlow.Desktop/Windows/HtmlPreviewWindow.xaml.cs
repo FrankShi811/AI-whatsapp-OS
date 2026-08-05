@@ -1,19 +1,24 @@
 using System.Diagnostics;
+using System.IO;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
 
 namespace WAFlow.Desktop.Windows;
 
 /// <summary>Renders an email's original HTML body (tables, buttons, links) with WebView2.
-/// External http(s) links open in the system browser instead of navigating the preview.</summary>
+/// External http(s) links open in the system browser instead of navigating the preview.
+/// Local inline images (cid:) are served through a virtual host mapping so
+/// NavigateToString pages can load them (file:// is blocked by WebView2).</summary>
 public partial class HtmlPreviewWindow : Window
 {
     private readonly string _html;
+    private readonly string _attachmentRoot;
 
-    public HtmlPreviewWindow(string subject, string html)
+    public HtmlPreviewWindow(string subject, string html, string attachmentRoot)
     {
         InitializeComponent();
         _html = html;
+        _attachmentRoot = attachmentRoot;
         Title = string.IsNullOrWhiteSpace(subject) ? "邮件预览" : $"邮件预览 · {subject}";
         PreviewWeb.CoreWebView2InitializationCompleted += OnCoreWebView2Initialized;
         Loaded += async (_, _) =>
@@ -35,6 +40,20 @@ public partial class HtmlPreviewWindow : Window
         if (!e.IsSuccess) return;
         PreviewWeb.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
         PreviewWeb.CoreWebView2.Settings.IsZoomControlEnabled = true;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_attachmentRoot) && Directory.Exists(_attachmentRoot))
+            {
+                PreviewWeb.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                    "email-attachments",
+                    _attachmentRoot,
+                    CoreWebView2HostResourceAccessKind.Allow);
+            }
+        }
+        catch
+        {
+            // Without the mapping, cid images simply render as broken images.
+        }
         PreviewWeb.CoreWebView2.NavigationStarting += OnNavigationStarting;
         PreviewWeb.CoreWebView2.NewWindowRequested += OnNewWindowRequested;
     }
