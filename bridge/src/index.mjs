@@ -104,7 +104,7 @@ async function writeDesktopHistoryProfile() {
 }
 
 function emitDesktopHistoryRepairRequired(source = 'manual') {
-  const message = '当前账号是在旧版连接模式下建立的，无法可靠补回关机期间的完整历史。请安装本次更新后退出该账号并重新扫码一次；新扫码会按 WhatsApp Desktop 完整历史模式恢复。'
+  const message = '当前账号以网页模式连接，只能同步配对后收到的新消息；本地已保存的历史聊天记录仍可正常查看，关机期间的离线消息可能无法完整补齐。'
   emit({
     type: 'event', event: 'sync_status', accountId: state.accountId,
     data: {
@@ -1304,7 +1304,12 @@ async function connect(catchupSource = 'startup') {
           : `在线协议检查不可用，正在通过${routeLabel}使用内置兼容协议连接`
     }
   })
-  const useDesktopProfile = state.desktopUpgradeRequested || (state.existingSession && state.desktopHistoryProfile)
+  // Only a session that was previously established as a Desktop companion
+  // (marker file) reconnects with the Desktop profile. Fresh QR pairings are
+  // web sessions — WhatsApp rejects Desktop-profile reconnects of web-paired
+  // sessions with status 428, so desktopUpgradeRequested no longer selects
+  // the Desktop profile.
+  const useDesktopProfile = state.existingSession && state.desktopHistoryProfile
   const socket = makeWASocket({
     auth,
     ...(versionInfo.version ? { version: versionInfo.version } : {}),
@@ -1557,32 +1562,21 @@ async function connect(catchupSource = 'startup') {
       if (state.pairingTimer) clearTimeout(state.pairingTimer)
       state.pairingTimer = null
       if (state.newDesktopPairing) {
-        // Persist the registration before replacing the short-lived pairing
-        // socket. Without awaiting this write, the Desktop upgrade can reopen
-        // as an unregistered client and return to the QR/428 loop.
+        // The phone accepted the QR. Persist the registration immediately and
+        // force the registered flag: Baileys can still report registered=false
+        // at open time, and the later creds.update (registered=true) is dropped
+        // by the generation guard once this socket is replaced, which made
+        // every reconnect treat the session as brand-new and re-enter the
+        // QR/upgrade loop.
+        auth.creds.registered = true
         await saveCreds()
-        state.desktopUpgradeRequested = true
+        // Stay on the paired web profile. WhatsApp rejects a Desktop-profile
+        // reconnect of a web-paired session (status 428), so the old
+        // desktop-history upgrade can never succeed on this protocol version.
+        // Local history remains available from the database and new messages
+        // sync live over the web session.
+        state.desktopUpgradeRequested = false
         state.desktopUpgradeFailures = 0
-        state.connection = 'retrying'
-        emit({
-          type: 'event', event: 'connection_stage', accountId: state.accountId,
-          data: {
-            state: 'upgrading_history', attempt,
-            message: '扫码验证成功，正在切换到完整历史同步模式'
-          }
-        })
-        emit({
-          type: 'event', event: 'connection', accountId: state.accountId,
-          data: { state: 'retrying', attempt, pairingAccepted: true }
-        })
-        state.reconnectTimer = setTimeout(() => {
-          if (state.connectionGeneration !== generation || state.manualDisconnect) return
-          connect('desktop_history_upgrade').catch(error => emit({
-            type: 'event', event: 'bridge_error', accountId: state.accountId,
-            data: { error: safeError(error), code: 'desktop_history_upgrade_failed' }
-          }))
-        }, 1200)
-        return
       }
       state.connection = 'connected'
       if (state.desktopUpgradeRequested && !state.desktopHistoryProfile) {
@@ -1664,6 +1658,22 @@ async function connect(catchupSource = 'startup') {
             }
           })
         }
+      }
+      // A recorded Desktop profile that the server now rejects (428) means the
+      // session is actually a web pairing; clear the marker so reconnects use
+      // the web profile instead of looping on the Desktop profile.
+      if (state.desktopHistoryProfile && statusCode === DisconnectReason.connectionClosed) {
+        state.desktopHistoryProfile = false
+        try { await fs.rm(desktopHistoryProfilePath(), { force: true }) } catch { }
+        emit({
+          type: 'event', event: 'connection_issue', accountId: state.accountId,
+          data: {
+            code: 'desktop_profile_rejected',
+            recoverable: true,
+            attempt,
+            message: 'WhatsApp 拒绝该会话的桌面完整历史模式，已自动切换为普通连接模式；最新消息收发不受影响'
+          }
+        })
       }
       if (state.currentProxyUrl && state.allowDirectFallback && !state.directFallbackUsed && !state.qrSeen) {
         state.directFallbackUsed = true
