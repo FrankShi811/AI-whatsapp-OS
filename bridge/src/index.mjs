@@ -104,7 +104,7 @@ async function writeDesktopHistoryProfile() {
 }
 
 function emitDesktopHistoryRepairRequired(source = 'manual') {
-  const message = '当前账号以网页模式连接，只能同步配对后收到的新消息；本地已保存的历史聊天记录仍可正常查看，关机期间的离线消息可能无法完整补齐。'
+  const message = '当前账号以网页模式连接，正在尽力补齐可用的历史消息；个别较早的会话消息可能因 WhatsApp 加密限制无法完整恢复，最新消息收发不受影响。'
   emit({
     type: 'event', event: 'sync_status', accountId: state.accountId,
     data: {
@@ -848,12 +848,15 @@ async function normalizeMessage(message, source) {
       source
     }
   }
-  const recoveryPending = message.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT
-    && !isDisplayableMessage(message.message)
-  if (!recoveryPending && !isDisplayableMessage(message.message)) return null
-  const kind = recoveryPending ? 'unavailable' : messageKind(message.message)
-  const fileName = messageFileName(message.message)
-  const mimeType = messageMimeType(message.message)
+  const displayable = isDisplayableMessage(message.message)
+  const recoveryPending = message.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT && !displayable
+  // Undecryptable or unsupported content is surfaced as a placeholder instead
+  // of being dropped: freshly paired web devices often miss the group sender
+  // key, and once the key arrives the next messages decrypt normally. Dropping
+  // here made entire group chats invisible (5.18.15 fix).
+  const kind = displayable || recoveryPending ? (recoveryPending ? 'unavailable' : messageKind(message.message)) : 'unavailable'
+  const fileName = displayable ? messageFileName(message.message) : ''
+  const mimeType = displayable ? messageMimeType(message.message) : ''
   const media = await downloadMessageMedia(message, kind, fileName, mimeType)
   const quote = quotedMessageDetails(message.message)
   const timestamp = timestampToIso(message.messageTimestamp)
@@ -962,7 +965,6 @@ async function emitEmbeddedChatMessages(chats, source) {
 
 async function requestMissingChatHistory(chats, source) {
   if (!state.historyRecovery.active || !state.socket || state.connection !== 'connected') return 0
-  if (state.existingSession && !state.desktopHistoryProfile) return 0
   if (String(source).toLowerCase().includes('on_demand')) return 0
 
   const requests = []
@@ -1176,10 +1178,11 @@ async function manualSync() {
   emit({ type: 'event', event: 'sync_status', accountId: state.accountId, data: { state: 'syncing', phase: 'app_state', progress: null } })
   try {
     await state.socket?.resyncAppState?.(ALL_WA_PATCH_NAMES, false)
+    const groupCount = await discoverParticipatingGroups('manual')
     const counts = await emitCachedSnapshot('manual')
     emit({
       type: 'event', event: 'sync_status', accountId: state.accountId,
-      data: { state: 'complete', phase: 'app_state', progress: 100, ...counts, messages: state.historyTotals.messages, existingSession: state.existingSession }
+      data: { state: 'complete', phase: 'app_state', progress: 100, ...counts, messages: state.historyTotals.messages, existingSession: state.existingSession, groups: groupCount }
     })
   } catch (error) {
     emit({ type: 'event', event: 'sync_status', accountId: state.accountId, data: { state: 'failed', phase: 'app_state', error: safeError(error), existingSession: state.existingSession } })
@@ -1187,10 +1190,9 @@ async function manualSync() {
 }
 
 async function catchUpOfflineMessages(cursors = []) {
-  if (state.existingSession && !state.desktopHistoryProfile) {
-    emitDesktopHistoryRepairRequired('manual')
-    return
-  }
+  // On-demand history requests (fetchMessageHistory) work for web sessions
+  // too — the old guard skipped them entirely, so group chats and offline
+  // messages never backfilled for web-paired accounts (5.18.15 fix).
   emit({
     type: 'event', event: 'sync_status', accountId: state.accountId,
     data: { state: 'syncing', phase: 'offline_messages', progress: null, source: 'manual' }
@@ -1618,7 +1620,9 @@ async function connect(catchupSource = 'startup') {
       })
       if (requiresHistoryRepair) {
         emitDesktopHistoryRepairRequired(catchupSource)
-        return
+        // NOTE: do not return here — web sessions still get group discovery
+        // and on-demand history requests (5.18.15 fix); the repair hint is
+        // informational only.
       }
       await getOfflineCatchupCoordinator().start({ socket, attempt, source: catchupSource, existingSession: state.existingSession })
       enqueueSync(() => discoverParticipatingGroups(`groups:${catchupSource}`), 'group_discovery')
